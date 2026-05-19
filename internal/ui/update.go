@@ -5,7 +5,9 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/spinner"
+	tea "charm.land/bubbletea/v2"
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
@@ -14,13 +16,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.filter.Width = channelsWidth - 4
+		m.filter.SetWidth(channelsWidth - 4)
 		m.resizeMessagesViewport()
 		m.resizeInput()
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
+
+	case tea.PasteMsg:
+		return m.handlePaste(msg)
 
 	case meLoadedMsg:
 		m.me = msg.user
@@ -148,6 +153,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case copyClipboardMsg:
+		m.status = "copied markdown to clipboard"
+		return m, nil
+
 	case mentionDebounceMsg:
 		if !m.mention.active || msg.seq != m.mention.fetchSeq {
 			return m, nil
@@ -194,6 +203,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.mention.idx = 0
 		}
 		return m, nil
+
+	case clipboardReadMsg:
+		if msg.err != nil {
+			m.status = msg.err.Error()
+			return m, nil
+		}
+		if len(msg.payloads) > 0 {
+			return m, m.addAttachments(msg.payloads)
+		}
+		if msg.text != "" {
+			// No file in clipboard but text is — route it as a paste so it
+			// lands in whatever input is currently focused.
+			return m.handlePaste(tea.PasteMsg{Content: msg.text})
+		}
+		m.status = "nothing to paste"
+		return m, nil
+
+	case attachmentUploadedMsg:
+		m.applyUploadResult(msg)
+		return m, nil
+
+	case spinner.TickMsg:
+		cmd := m.tickAttachmentSpinners(msg)
+		return m, cmd
 	}
 
 	var cmd tea.Cmd
@@ -469,12 +502,14 @@ func (m *Model) maybeFetchInitialPosts() tea.Cmd {
 }
 
 // ensureSelection clamps teamIdx/channelIdx to valid values given current
-// teams + channels state. Picks the first team that has channels; falls
-// back to DMs if no team channels exist.
+// teams + channels state. If a last-active channel was recorded from a
+// previous session, it is restored first; otherwise the first team with
+// channels is selected. Falls back to DMs if no team channels exist.
 func (m *Model) ensureSelection() {
 	if len(m.teams) == 0 && !m.hasDMs {
 		return
 	}
+	m.restoreLastActive()
 	if m.teamIdx > m.maxTeamIdx() {
 		m.teamIdx = 0
 	}
@@ -509,7 +544,50 @@ func (m *Model) maxTeamIdx() int {
 	return n
 }
 
-func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+// handlePaste routes bracketed-paste (terminal right-click / shift-insert /
+// terminal-level paste) into whichever text component is currently focused.
+// Without this the PasteMsg falls through to the messages viewport and the
+// pasted text is dropped on the floor.
+func (m Model) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
+	if m.switcherMode {
+		old := m.switcher.Value()
+		var cmd tea.Cmd
+		m.switcher, cmd = m.switcher.Update(msg)
+		if m.switcher.Value() != old {
+			m.switcherIdx = 0
+		}
+		return m, cmd
+	}
+	if m.filterMode {
+		var cmd tea.Cmd
+		m.filter, cmd = m.filter.Update(msg)
+		m.filterValue = m.filter.Value()
+		m.channelIdx = 0
+		m.chanOff = 0
+		return m, cmd
+	}
+	if m.focus == focusInput {
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		mentionCmd := m.updateMention()
+		m.syncInputHeight()
+		return m, tea.Batch(cmd, mentionCmd)
+	}
+	return m, nil
+}
+
+func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// Switcher is fully modal: it owns every keystroke while open. Check
+	// before any other mode so escape/enter/etc. don't leak through.
+	if m.switcherMode {
+		return m.handleSwitcherKey(msg)
+	}
+	// ctrl+k opens the switcher from anywhere — even inside the input or
+	// the filter, where the regular handlers below would otherwise eat it
+	// (textarea binds ctrl+k to delete-to-end-of-line by default).
+	if key.Matches(msg, m.keys.Switcher) && msg.String() != "ctrl+c" {
+		return m.openSwitcher()
+	}
 	// Filter mode and input mode each own most keys while active; check
 	// before the global shortcuts so plain "q" / "/" / "esc" don't leak
 	// through while the user is typing.
@@ -520,29 +598,37 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleInputKey(msg)
 	}
 
-	switch msg.String() {
-	case "ctrl+c":
+	switch {
+	case msg.String() == "ctrl+c":
 		return m, tea.Quit
-	case "q":
+	case key.Matches(msg, m.keys.Quit):
 		if m.focus == focusChannels && m.filterValue != "" {
 			// Don't quit while a filter is applied; let user clear with esc.
 			return m, nil
 		}
 		return m, tea.Quit
 
-	case "tab":
+	case key.Matches(msg, m.keys.Help):
+		m.help.ShowAll = !m.help.ShowAll
+		m.resizeMessagesViewport()
+		return m, nil
+
+	case key.Matches(msg, m.keys.Unread):
+		return m.jumpToUnread()
+
+	case key.Matches(msg, m.keys.Tab):
 		return m.cycleFocus(1)
-	case "shift+tab":
+	case key.Matches(msg, m.keys.ShiftTab):
 		return m.cycleFocus(-1)
 
-	case "/":
+	case msg.String() == "/":
 		if m.focus == focusChannels {
 			m.filterMode = true
 			m.filter.SetValue(m.filterValue)
 			m.filter.Focus()
 			return m, nil
 		}
-	case "esc":
+	case msg.String() == "esc":
 		if m.filterValue != "" {
 			m.filterValue = ""
 			m.filter.SetValue("")
@@ -563,38 +649,75 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleMessagesKey(msg)
 	case focusThread:
 		return m.handleThreadKey(msg)
+	case focusAttachments:
+		return m.handleAttachmentsKey(msg)
 	case focusTeams:
 		return m.handleTeamsKey(msg)
 	}
 	return m, nil
 }
 
-func (m Model) handleThreadKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
+func (m Model) handleAttachmentsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if len(m.attachments) == 0 {
+		m.focus = focusInput
+		cmd := m.input.Focus()
+		return m, cmd
+	}
+	switch {
+	case key.Matches(msg, m.keys.Left):
+		if m.attachmentIdx > 0 {
+			m.attachmentIdx--
+		}
+		return m, nil
+	case key.Matches(msg, m.keys.Right):
+		if m.attachmentIdx < len(m.attachments)-1 {
+			m.attachmentIdx++
+		}
+		return m, nil
+	case key.Matches(msg, m.keys.Home):
+		m.attachmentIdx = 0
+		return m, nil
+	case key.Matches(msg, m.keys.End):
+		m.attachmentIdx = len(m.attachments) - 1
+		return m, nil
+	case key.Matches(msg, m.keys.OpenAttach):
+		att := m.attachments[m.attachmentIdx]
+		m.status = "opening " + att.filename + "…"
+		return m, xdgOpenPath(att.filename, att.localPath)
+	case key.Matches(msg, m.keys.AttachRemove):
+		id := m.attachments[m.attachmentIdx].id
+		m.removeAttachment(id)
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m Model) handleThreadKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.CloseThread):
 		m.closeThread()
 		return m, nil
-	case "up", "k":
+	case key.Matches(msg, m.keys.Up):
 		if m.threadIdx > 0 {
 			m.threadIdx--
 			m.renderThread()
 		}
 		return m, nil
-	case "down", "j":
+	case key.Matches(msg, m.keys.Down):
 		if m.threadIdx < len(m.threadPosts)-1 {
 			m.threadIdx++
 			m.renderThread()
 		}
 		return m, nil
-	case "home", "g":
+	case key.Matches(msg, m.keys.Home):
 		m.threadIdx = 0
 		m.renderThread()
 		return m, nil
-	case "end", "G":
+	case key.Matches(msg, m.keys.End):
 		m.threadIdx = len(m.threadPosts) - 1
 		m.renderThread()
 		return m, nil
-	case "o":
+	case key.Matches(msg, m.keys.OpenAttach):
 		if m.threadIdx < 0 || m.threadIdx >= len(m.threadPosts) {
 			m.status = "no message selected"
 			return m, nil
@@ -607,10 +730,51 @@ func (m Model) handleThreadKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		o := opens[0]
 		m.status = "opening " + o.name + "…"
 		return m, m.openOpenable(o)
+	case key.Matches(msg, m.keys.CopyMD):
+		if m.threadIdx < 0 || m.threadIdx >= len(m.threadPosts) {
+			m.status = "no message selected"
+			return m, nil
+		}
+		return m, m.copyPostMarkdown(m.threadPosts[m.threadIdx])
 	}
 	var cmd tea.Cmd
 	m.threadView, cmd = m.threadView.Update(msg)
 	return m, cmd
+}
+
+// jumpToUnread switches to the synthetic Unread tab and selects its
+// first channel (loading its messages). If nothing is unread, it leaves
+// the tab focused with an "all caught up" status so the user still gets
+// confirmation that `u` did something.
+func (m Model) jumpToUnread() (tea.Model, tea.Cmd) {
+	target := -1
+	for i := 0; i <= m.maxTeamIdx(); i++ {
+		if kind, _, _ := m.tabAt(i); kind == tabUnread {
+			target = i
+			break
+		}
+	}
+	if target < 0 {
+		return m, nil
+	}
+	m.teamIdx = target
+	m.focus = focusChannels
+	m.channelIdx = 0
+	m.chanOff = 0
+	m.filterMode = false
+	m.filterValue = ""
+	m.filter.SetValue("")
+	m.filter.Blur()
+	m.input.Blur()
+	m.posts = nil
+	m.renderMessages()
+	vis := m.visibleChannels()
+	if len(vis) == 0 {
+		m.status = "all caught up"
+		return m, nil
+	}
+	m.status = "loading messages…"
+	return m, m.fetchPosts(vis[0].Id)
 }
 
 // cycleFocus advances the active focus by `step` (typically +1 / -1)
@@ -620,6 +784,9 @@ func (m Model) cycleFocus(step int) (tea.Model, tea.Cmd) {
 	for i := 0; i < numFocus; i++ {
 		m.focus = focus((int(m.focus) + step + numFocus) % numFocus)
 		if m.focus == focusThread && !m.threadOpen {
+			continue
+		}
+		if m.focus == focusAttachments && len(m.attachments) == 0 {
 			continue
 		}
 		break
@@ -636,7 +803,7 @@ func (m Model) cycleFocus(step int) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// When the @-mention popup is open with at least one candidate, it
 	// owns navigation/accept/dismiss keys before the normal input flow.
 	if m.mention.active && len(m.mention.items) > 0 {
@@ -661,22 +828,28 @@ func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	switch msg.String() {
-	case "ctrl+c":
+	switch {
+	case msg.String() == "ctrl+c":
 		return m, tea.Quit
-	case "tab":
+	case key.Matches(msg, m.keys.Paste):
+		return m, readClipboard()
+	case key.Matches(msg, m.keys.Tab):
 		return m.cycleFocus(1)
-	case "shift+tab":
+	case key.Matches(msg, m.keys.ShiftTab):
 		return m.cycleFocus(-1)
-	case "esc":
+	case key.Matches(msg, m.keys.LeaveInput):
 		m.closeMention()
 		m.input.Blur()
 		m.focus = focusMessages
 		m.renderMessages()
 		return m, nil
-	case "enter":
+	case key.Matches(msg, m.keys.Send):
 		text := strings.TrimSpace(m.input.Value())
-		if text == "" {
+		if text == "" && len(m.attachments) == 0 {
+			return m, nil
+		}
+		if m.hasUploadingAttachments() {
+			m.status = "waiting for upload…"
 			return m, nil
 		}
 		// Replying inside an open thread targets the thread's channel
@@ -694,28 +867,34 @@ func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			channelID = vis[m.channelIdx].Id
 		}
+		fileIDs := m.collectAttachmentFileIDs()
 		m.input.Reset()
+		m.syncInputHeight()
 		m.closeMention()
-		m.appendOptimistic(channelID, rootID, text)
+		m.appendOptimistic(channelID, rootID, text, fileIDs)
+		m.clearAttachments()
+		m.resizeMessagesViewport()
 		if !m.threadOpen {
 			m.postIdx = len(m.posts) - 1
 		}
 		m.renderMessages()
 		m.renderThread()
 		m.status = "sending…"
-		return m, m.sendMessage(channelID, rootID, text)
+		return m, m.sendMessage(channelID, rootID, text, fileIDs)
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	// After the textarea has consumed the keystroke, recompute mention
-	// state from the new value + cursor position.
+	// state and reflow the input/messages split so newlines from
+	// shift+enter (or alt+enter / ctrl+j) make the input grow.
 	mentionCmd := m.updateMention()
+	m.syncInputHeight()
 	return m, tea.Batch(cmd, mentionCmd)
 }
 
-func (m Model) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
+func (m Model) handleFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.CancelEdit):
 		m.filterMode = false
 		m.filterValue = ""
 		m.filter.SetValue("")
@@ -723,21 +902,23 @@ func (m Model) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.channelIdx = 0
 		m.chanOff = 0
 		return m, nil
-	case "enter":
+	case key.Matches(msg, m.keys.ApplyOpen):
 		m.filterMode = false
 		m.filter.Blur()
 		// Keep current filter applied. Selecting the highlighted channel:
 		vis := m.visibleChannels()
 		if len(vis) > 0 && m.channelIdx < len(vis) {
+			ch := vis[m.channelIdx]
 			m.status = "loading messages…"
 			m.posts = nil
 			m.renderMessages()
-			return m, m.fetchPosts(vis[m.channelIdx].Id)
+			return m, tea.Batch(m.fetchPosts(ch.Id), m.bumpChannelStat(ch.Id))
 		}
 		return m, nil
-	case "up", "down":
-		// Allow navigating the filtered list while still typing.
-		_ = msg
+	case msg.String() == "up", msg.String() == "down":
+		// Allow arrow-key navigation of the filtered list while still
+		// typing. We deliberately don't accept j/k here — the user may be
+		// typing those characters into the filter.
 		return m.handleChannelsKey(msg)
 	}
 	var cmd tea.Cmd
@@ -750,7 +931,7 @@ func (m Model) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Model) handleChannelsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleChannelsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	vis := m.visibleChannels()
 	if len(vis) == 0 {
 		return m, nil
@@ -764,20 +945,20 @@ func (m Model) handleChannelsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.channelIdx < 0 {
 		m.channelIdx = 0
 	}
-	switch msg.String() {
-	case "up", "k":
+	switch {
+	case key.Matches(msg, m.keys.Up):
 		if m.channelIdx > 0 {
 			m.channelIdx--
 		}
-	case "down", "j":
+	case key.Matches(msg, m.keys.Down):
 		if m.channelIdx < len(vis)-1 {
 			m.channelIdx++
 		}
-	case "home", "g":
+	case key.Matches(msg, m.keys.Home):
 		m.channelIdx = 0
-	case "end", "G":
+	case key.Matches(msg, m.keys.End):
 		m.channelIdx = len(vis) - 1
-	case "enter":
+	case key.Matches(msg, m.keys.OpenChannel):
 		ch := vis[m.channelIdx]
 		// When opening from the virtual Unread tab, hop to the channel's
 		// home team so isCurrentChannel keeps tracking the open channel
@@ -787,37 +968,44 @@ func (m Model) handleChannelsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.filterValue = ""
 			m.filter.SetValue("")
 		}
+		m.focus = focusInput
 		m.status = "loading messages…"
 		m.posts = nil
 		m.renderMessages()
-		return m, m.fetchPosts(ch.Id)
+		saveCmd := m.bumpChannelStat(ch.Id)
+		return m, tea.Batch(m.input.Focus(), m.fetchPosts(ch.Id), saveCmd)
 	}
 	return m, nil
 }
 
-func (m Model) handleMessagesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "up", "k":
+func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.Up):
 		if m.postIdx > 0 {
 			m.postIdx--
 			m.renderMessages()
 		}
 		return m, nil
-	case "down", "j":
+	case key.Matches(msg, m.keys.Down):
 		if m.postIdx < len(m.posts)-1 {
 			m.postIdx++
 			m.renderMessages()
 		}
 		return m, nil
-	case "home", "g":
+	case key.Matches(msg, m.keys.Home):
 		m.postIdx = 0
 		m.renderMessages()
 		return m, nil
-	case "end", "G":
+	case key.Matches(msg, m.keys.End):
 		m.postIdx = len(m.posts) - 1
 		m.renderMessages()
 		return m, nil
-	case "o":
+	case key.Matches(msg, m.keys.OpenThread):
+		if m.postIdx < 0 || m.postIdx >= len(m.posts) {
+			return m, nil
+		}
+		return m.openThreadForPost(m.posts[m.postIdx])
+	case key.Matches(msg, m.keys.OpenAttach):
 		if m.postIdx < 0 || m.postIdx >= len(m.posts) {
 			m.status = "no message selected"
 			return m, nil
@@ -830,11 +1018,12 @@ func (m Model) handleMessagesKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		o := opens[0]
 		m.status = "opening " + o.name + "…"
 		return m, m.openOpenable(o)
-	case "enter":
+	case key.Matches(msg, m.keys.CopyMD):
 		if m.postIdx < 0 || m.postIdx >= len(m.posts) {
+			m.status = "no message selected"
 			return m, nil
 		}
-		return m.openThreadForPost(m.posts[m.postIdx])
+		return m, m.copyPostMarkdown(m.posts[m.postIdx])
 	}
 	// Anything else (pgup/pgdn, half-page, etc.) falls through to viewport.
 	var cmd tea.Cmd
@@ -870,7 +1059,7 @@ func (m Model) openThreadForPost(p *model.Post) (tea.Model, tea.Cmd) {
 	m.threadLoading = true
 	m.focus = focusThread
 	m.input.Blur()
-	m.input.Prompt = "↳ "
+	m.input.SetPromptFunc(2, inputPromptFunc("↳ "))
 	m.resizeMessagesViewport()
 	m.resizeInput()
 	m.renderMessages()
@@ -892,27 +1081,27 @@ func (m *Model) closeThread() {
 	if m.focus == focusThread {
 		m.focus = focusMessages
 	}
-	m.input.Prompt = "> "
+	m.input.SetPromptFunc(2, inputPromptFunc("> "))
 	m.resizeMessagesViewport()
 	m.resizeInput()
 	m.renderMessages()
 }
 
-func (m Model) handleTeamsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m Model) handleTeamsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	max := m.maxTeamIdx()
 	if max == 0 && len(m.teams) == 0 && !m.hasDMs {
 		return m, nil
 	}
-	switch msg.String() {
-	case "left", "h":
+	switch {
+	case key.Matches(msg, m.keys.Left):
 		if m.teamIdx > 0 {
 			m.teamIdx--
 		}
-	case "right", "l":
+	case key.Matches(msg, m.keys.Right):
 		if m.teamIdx < max {
 			m.teamIdx++
 		}
-	case "enter":
+	case key.Matches(msg, m.keys.LoadTeam):
 		m.focus = focusChannels
 		m.posts = nil
 		m.channelIdx = 0
@@ -930,7 +1119,7 @@ func (m Model) handleTeamsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.status = "loading messages…"
-		return m, m.fetchPosts(vis[m.channelIdx].Id)
+		return m, tea.Batch(m.fetchPosts(vis[m.channelIdx].Id), m.bumpChannelStat(vis[m.channelIdx].Id))
 	}
 	return m, nil
 }

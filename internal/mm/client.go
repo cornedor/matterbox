@@ -88,12 +88,14 @@ func (c *Client) ViewChannel(ctx context.Context, userID, channelID string) erro
 }
 
 // Send posts a new message to the given channel. If rootID is non-empty,
-// the message is sent as a reply in that thread.
-func (c *Client) Send(ctx context.Context, channelID, rootID, message string) (*model.Post, error) {
+// the message is sent as a reply in that thread. fileIDs (may be empty)
+// are previously-uploaded files to attach to the post.
+func (c *Client) Send(ctx context.Context, channelID, rootID, message string, fileIDs []string) (*model.Post, error) {
 	p, _, err := c.c.CreatePost(ctx, &model.Post{
 		ChannelId: channelID,
 		RootId:    rootID,
 		Message:   message,
+		FileIds:   fileIDs,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create post: %w", err)
@@ -128,6 +130,20 @@ func (c *Client) DownloadFile(ctx context.Context, fileID string) ([]byte, error
 		return nil, fmt.Errorf("download file: %w", err)
 	}
 	return b, nil
+}
+
+// UploadFile uploads raw bytes to the given channel and returns the
+// FileInfo for the resulting upload. The returned FileInfo.Id is the
+// fileId to pass in Post.FileIds (via Send) when creating the post.
+func (c *Client) UploadFile(ctx context.Context, channelID, filename string, data []byte) (*model.FileInfo, error) {
+	resp, _, err := c.c.UploadFile(ctx, data, channelID, filename)
+	if err != nil {
+		return nil, fmt.Errorf("upload file: %w", err)
+	}
+	if resp == nil || len(resp.FileInfos) == 0 {
+		return nil, fmt.Errorf("upload file: empty response")
+	}
+	return resp.FileInfos[0], nil
 }
 
 // Autocomplete returns users matching `query` for @-mention completion.

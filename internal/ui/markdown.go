@@ -5,7 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
+	emoji "github.com/kyokomi/emoji/v2"
 )
 
 var (
@@ -63,6 +64,8 @@ func renderInline(s string) string {
 		codes = append(codes, m[1:len(m)-1])
 		return mdCodeSentinel + strconv.Itoa(len(codes)-1) + "\x00"
 	})
+
+	s = emoji.Sprint(s)
 
 	// Inline images first, so the bracketed alt text isn't mistaken for
 	// other inline syntax.

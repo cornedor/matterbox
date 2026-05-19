@@ -10,15 +10,32 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/help"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/atotto/clipboard"
 	"github.com/mattermost/mattermost/server/public/model"
 
 	"matterbox/internal/mm"
 )
+
+// inputPromptFunc returns a PromptFunc for the input textarea that only
+// renders the given prompt string on the first visual line and pads
+// continuation lines with two spaces, keeping multi-line content
+// visually aligned. promptWidth (passed to SetPromptFunc) must equal
+// the rune width of the prompt — currently always "> " or "↳ ", both 2.
+func inputPromptFunc(prompt string) func(textarea.PromptInfo) string {
+	return func(info textarea.PromptInfo) string {
+		if info.LineNumber == 0 {
+			return prompt
+		}
+		return "  "
+	}
+}
 
 type focus int
 
@@ -27,10 +44,11 @@ const (
 	focusMessages
 	focusThread
 	focusInput
+	focusAttachments
 	focusTeams
 )
 
-const numFocus = 5
+const numFocus = 6
 
 // dmTeamID is a synthetic team identifier used to bucket DMs / group-DMs,
 // which carry an empty Channel.TeamId on the server.
@@ -75,6 +93,24 @@ type Model struct {
 	filterMode  bool
 	filterValue string // committed/live filter applied to channel list
 
+	// global channel switcher (ctrl+k). When switcherMode is true, the
+	// switcher owns every keystroke and an overlay popup is rendered in
+	// place of the main body.
+	switcher     textinput.Model
+	switcherMode bool
+	switcherIdx  int
+
+	// Persisted per-channel usage counters (loaded from
+	// ~/.config/matterbox/channel_stats.json). Used as a sort signal in
+	// the switcher so frequently-opened channels float to the top.
+	openStats map[string]channelStat
+
+	// lastActiveTeamID / lastActiveChannelID are the last team and
+	// channel recorded when the user explicitly opened a channel.
+	// Persisted to channel_stats.json and restored on startup.
+	lastActiveTeamID    string
+	lastActiveChannelID string
+
 	focus    focus
 	width    int
 	height   int
@@ -93,6 +129,14 @@ type Model struct {
 
 	mention mentionState
 
+	// Pending file attachments composed for the next outgoing post. Each
+	// chip carries its own spinner and upload context so uploads run
+	// concurrently and can be cancelled individually (e.g. when removed
+	// mid-upload). attachmentIdx is the cursor when focus == focusAttachments.
+	attachments   []pendingAttachment
+	attachmentIdx int
+	uploadCancel  map[string]context.CancelFunc
+
 	// Thread sidebar state. threadOpen toggles the panel; the rest
 	// describes which thread is being shown and the loaded posts.
 	threadOpen      bool
@@ -102,6 +146,9 @@ type Model struct {
 	threadIdx       int
 	threadLoading   bool
 	threadView      viewport.Model
+
+	keys keyMap
+	help help.Model
 }
 
 func New(client *mm.Client) Model {
@@ -109,34 +156,111 @@ func New(client *mm.Client) Model {
 	ti.Prompt = "/ "
 	ti.Placeholder = "filter…"
 	ti.CharLimit = 64
-	ti.Width = channelsWidth - 4
+	ti.SetWidth(channelsWidth - 4)
+
+	sw := textinput.New()
+	sw.Prompt = "> "
+	sw.Placeholder = "switch to channel…"
+	sw.CharLimit = 64
+	sw.SetWidth(switcherWidth - 6)
 
 	ta := textarea.New()
 	ta.Placeholder = "message…"
-	ta.Prompt = "> "
 	ta.CharLimit = 4000
 	ta.ShowLineNumbers = false
+	// v2's built-in DynamicHeight grows the textarea between MinHeight
+	// and MaxHeight rows as content is added/removed, so we no longer
+	// need a hand-rolled syncInputHeight.
+	ta.DynamicHeight = true
+	ta.MinHeight = 1
+	ta.MaxHeight = maxInputHeight
 	ta.SetHeight(1)
-	// Enter sends; alt+enter / ctrl+j / shift+enter (where supported) inserts a newline.
+	// PromptFunc only renders "> " on the first wrapped row of the input
+	// and pads continuation lines with two spaces so multi-line content
+	// reads cleanly. (The plain .Prompt field would prefix every visual
+	// row, which looks like multiple separate prompts when the textarea
+	// grows.) The default prompt is updated when a thread is opened
+	// (`m.input.SetPromptFunc(...)` in openThreadForPost).
+	ta.SetPromptFunc(2, inputPromptFunc("> "))
+	// Drop the default cursor-line highlight — it underlines/inverts the
+	// whole row the cursor is on, which renders as a stray horizontal
+	// bar above the typed content inside our bordered input box.
+	taStyles := ta.Styles()
+	taStyles.Focused.CursorLine = lipgloss.NewStyle()
+	taStyles.Blurred.CursorLine = lipgloss.NewStyle()
+	ta.SetStyles(taStyles)
+	// Enter sends; alt+enter / ctrl+j / shift+enter all insert a newline.
+	// v2's default kitty "disambiguate" flag makes shift+enter a distinct
+	// keystroke on kitty-protocol-capable terminals.
 	ta.KeyMap.InsertNewline = key.NewBinding(
 		key.WithKeys("alt+enter", "ctrl+j", "shift+enter"),
-		key.WithHelp("alt+enter", "newline"),
+		key.WithHelp("shift+↵", "newline"),
 	)
 
+	h := help.New()
+
+	stats, la := loadChannelStats()
+
 	return Model{
-		client:     client,
-		ctx:        context.Background(),
-		channels:   map[string][]*model.Channel{},
-		userNames:  map[string]string{},
-		focus:      focusChannels,
-		msgsView:   viewport.New(0, 0),
-		threadView: viewport.New(0, 0),
-		filter:     ti,
+		client:             client,
+		ctx:                context.Background(),
+		channels:           map[string][]*model.Channel{},
+		userNames:          map[string]string{},
+		focus:              focusChannels,
+		msgsView:           viewport.New(),
+		threadView:         viewport.New(),
+		filter:             ti,
+		switcher:           sw,
+		openStats:          stats,
+		lastActiveTeamID:   la.teamID(),
+		lastActiveChannelID: la.channelID(),
 		input:      ta,
-		unread:     map[string]int{},
-		mentions:   map[string]int{},
-		loading:    true,
-		status:     "loading…",
+		unread:       map[string]int{},
+		mentions:     map[string]int{},
+		uploadCancel: map[string]context.CancelFunc{},
+		loading:      true,
+		status:       "loading…",
+		keys:         newKeyMap(),
+		help:         h,
+	}
+}
+
+// ShortHelp returns the bindings shown on the footer's single-line help.
+// The selection depends on which pane has focus so the prompt always
+// matches the keys that will work right now.
+func (m Model) ShortHelp() []key.Binding {
+	k := m.keys
+	switch {
+	case m.switcherMode:
+		return []key.Binding{k.ApplyOpen, k.Up, k.Down, k.CancelEdit}
+	case m.filterMode:
+		return []key.Binding{k.ApplyOpen, k.CancelEdit}
+	case m.focus == focusInput:
+		return []key.Binding{k.Send, k.NewLine, k.Paste, k.LeaveInput, k.Tab}
+	case m.focus == focusChannels:
+		return []key.Binding{k.Tab, k.Up, k.Down, k.OpenChannel, k.Filter, k.ClearFilter, k.Switcher, k.Unread, k.Help, k.Quit}
+	case m.focus == focusMessages:
+		return []key.Binding{k.Tab, k.Up, k.Down, k.OpenThread, k.OpenAttach, k.CopyMD, k.Switcher, k.Unread, k.Help, k.Quit}
+	case m.focus == focusThread:
+		return []key.Binding{k.Tab, k.Up, k.Down, k.OpenAttach, k.CopyMD, k.CloseThread, k.Switcher, k.Unread, k.Help, k.Quit}
+	case m.focus == focusAttachments:
+		return []key.Binding{k.Left, k.Right, k.OpenAttach, k.AttachRemove, k.Tab, k.Help, k.Quit}
+	case m.focus == focusTeams:
+		return []key.Binding{k.Tab, k.SwitchTeam, k.LoadTeam, k.Switcher, k.Unread, k.Help, k.Quit}
+	}
+	return []key.Binding{k.Tab, k.Switcher, k.Unread, k.Help, k.Quit}
+}
+
+// FullHelp returns the bindings grouped into columns for the expanded
+// help view (toggled with `?`). Columns mirror the panes of the UI.
+func (m Model) FullHelp() [][]key.Binding {
+	k := m.keys
+	return [][]key.Binding{
+		{k.Tab, k.ShiftTab, k.Switcher, k.Unread, k.Help, k.Quit},
+		{k.Up, k.Down, k.Home, k.End, k.Left, k.Right},
+		{k.Filter, k.ClearFilter, k.OpenChannel, k.OpenThread, k.CloseThread},
+		{k.OpenAttach, k.CopyMD, k.Send, k.NewLine, k.LeaveInput},
+		{k.Paste, k.AttachRemove},
 	}
 }
 
@@ -314,9 +438,20 @@ func (m Model) cachedFilePath(f *model.FileInfo) (string, error) {
 	return filepath.Join(dir, fmt.Sprintf("%s_%s", f.Id, name)), nil
 }
 
-func (m Model) sendMessage(channelID, rootID, text string) tea.Cmd {
+func (m Model) copyPostMarkdown(p *model.Post) tea.Cmd {
 	return func() tea.Msg {
-		p, err := m.client.Send(m.ctx, channelID, rootID, text)
+		if err := clipboard.WriteAll(p.Message); err != nil {
+			return errMsg{err}
+		}
+		return copyClipboardMsg{}
+	}
+}
+
+type copyClipboardMsg struct{}
+
+func (m Model) sendMessage(channelID, rootID, text string, fileIDs []string) tea.Cmd {
+	return func() tea.Msg {
+		p, err := m.client.Send(m.ctx, channelID, rootID, text, fileIDs)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -394,7 +529,7 @@ func orderedThread(pl *model.PostList, rootID string) []*model.Post {
 // or WS-driven) will replace it with the canonical server version.
 // When rootID is non-empty, the stub is also appended to threadPosts so
 // the thread sidebar updates instantly.
-func (m *Model) appendOptimistic(channelID, rootID, text string) {
+func (m *Model) appendOptimistic(channelID, rootID, text string, fileIDs []string) {
 	if m.me == nil {
 		return
 	}
@@ -404,6 +539,7 @@ func (m *Model) appendOptimistic(channelID, rootID, text string) {
 		ChannelId: channelID,
 		RootId:    rootID,
 		Message:   text,
+		FileIds:   fileIDs,
 		CreateAt:  time.Now().UnixMilli(),
 	}
 	// Show in the main feed only when the target channel is what the
@@ -620,6 +756,37 @@ func (m *Model) switchToChannelHomeTeam(ch *model.Channel) {
 	}
 	for i, c := range m.channels[targetTeamID] {
 		if c.Id == ch.Id {
+			m.channelIdx = i
+			m.chanOff = 0
+			return
+		}
+	}
+}
+
+// restoreLastActive attempts to set teamIdx and channelIdx from a
+// previous session's persisted state. If the saved team or channel no
+// longer exists, the indices are left unchanged and the caller's existing
+// clamping logic kicks in. Does nothing for the synthetic Unread tab.
+func (m *Model) restoreLastActive() {
+	if m.lastActiveTeamID == "" || m.lastActiveChannelID == "" {
+		return
+	}
+	if m.lastActiveTeamID == unreadTeamID {
+		return
+	}
+	for i := 0; i <= m.maxTeamIdx(); i++ {
+		_, id, _ := m.tabAt(i)
+		if id == m.lastActiveTeamID {
+			m.teamIdx = i
+			break
+		}
+	}
+	chList, ok := m.channels[m.lastActiveTeamID]
+	if !ok {
+		return
+	}
+	for i, c := range chList {
+		if c.Id == m.lastActiveChannelID {
 			m.channelIdx = i
 			m.chanOff = 0
 			return

@@ -6,11 +6,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
 const channelsWidth = 26
+
+// maxInputHeight bounds how many rows the input textarea is allowed to
+// expand to as content grows. The textarea scrolls internally once the
+// content exceeds this — the messages pane keeps the remaining space.
+const maxInputHeight = 6
 
 var (
 	border       = lipgloss.NormalBorder()
@@ -22,12 +28,14 @@ var (
 	timeStyle     = lipgloss.NewStyle().Foreground(dimColor)
 	selectedRow   = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("8"))
 	unselectedRow = lipgloss.NewStyle()
-	tabActive     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("12")).Padding(0, 1)
-	tabInactive   = lipgloss.NewStyle().Foreground(dimColor).Padding(0, 1)
-	dmTabStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("5")).Padding(0, 1)
-	unreadTab     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("11")).Padding(0, 1) // yellow when there are unreads
-	mentionTab    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("9")).Padding(0, 1)  // red when there are mentions
-	footerStyle   = lipgloss.NewStyle().Foreground(dimColor)
+	// Tab styling adapted from charmbracelet/lipgloss tabs example.
+	inactiveTabBorder = tabBorderWithBottom("┴", "─", "┴")
+	activeTabBorder   = tabBorderWithBottom("┘", " ", "└")
+	tabBase           = lipgloss.NewStyle().Padding(0, 1)
+	dmTabColor        = lipgloss.Color("5")
+	unreadTabColor    = lipgloss.Color("11") // yellow when there are unreads
+	mentionTabColor   = lipgloss.Color("9")  // red when there are mentions
+	footerStyle       = lipgloss.NewStyle().Foreground(dimColor)
 	filterStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
 	unreadStyle  = lipgloss.NewStyle().Bold(true)
 	mentionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true) // red
@@ -36,8 +44,28 @@ var (
 	replyHintStyle   = lipgloss.NewStyle().Foreground(dimColor)                   // ↳ reply, ↪ N replies
 )
 
+// tabBorderWithBottom returns a rounded border with the bottom row
+// overridden to the given left/middle/right characters. Used to make
+// the lipgloss-style tabs join cleanly along their bottom rule.
+func tabBorderWithBottom(left, middle, right string) lipgloss.Border {
+	b := lipgloss.RoundedBorder()
+	b.BottomLeft = left
+	b.Bottom = middle
+	b.BottomRight = right
+	return b
+}
+
+// tabsHeight is the vertical space the team-tab strip consumes
+// (top border + label row + bottom rule).
+const tabsHeight = 3
+
 func (m *Model) resizeMessagesViewport() {
-	bodyH := m.height - 4
+	// Match View()'s body sizing: subtract the rendered footer height
+	// (1 line normally, several when full help is open) plus the tab strip.
+	// The extra -1 accounts for the body pane's bottom border row (top
+	// border is omitted so the pane connects to the tab strip).
+	footerH := lipgloss.Height(m.renderFooter())
+	bodyH := m.height - footerH - tabsHeight - 1
 	if bodyH < 5 {
 		bodyH = 5
 	}
@@ -57,19 +85,27 @@ func (m *Model) resizeMessagesViewport() {
 		}
 		msgsW = rightW - threadW
 	}
-	m.msgsView.Width = msgsW - 2
-	m.msgsView.Height = bodyH - 3 - 2
-	if m.msgsView.Height < 1 {
-		m.msgsView.Height = 1
+	m.msgsView.SetWidth(msgsW - 2)
+	attBarH := m.attachmentBarHeight(msgsW - 2)
+	// bodyH already excludes the tab strip + footer. The messages pane
+	// also has to make room for its bottom border (1), title row (1), the
+	// top-border row above the input (1), the input itself (variable),
+	// and any attachment chip strip. Everything left is the viewport.
+	mh := bodyH - 2 - 1 - 1 - m.input.Height() - attBarH
+	if mh < 1 {
+		mh = 1
 	}
-	m.threadView.Width = threadW - 4
-	if m.threadView.Width < 1 {
-		m.threadView.Width = 1
+	m.msgsView.SetHeight(mh)
+	tw := threadW - 4
+	if tw < 1 {
+		tw = 1
 	}
-	m.threadView.Height = bodyH - 3 - 2
-	if m.threadView.Height < 1 {
-		m.threadView.Height = 1
+	m.threadView.SetWidth(tw)
+	th := bodyH - 3 - 2
+	if th < 1 {
+		th = 1
 	}
+	m.threadView.SetHeight(th)
 	m.renderMessages()
 	m.renderThread()
 }
@@ -79,7 +115,7 @@ const threadPaneMinWidth = 24
 func (m *Model) resizeInput() {
 	if m.threadOpen {
 		// Input lives under the messages pane; size to that pane.
-		w := m.msgsView.Width
+		w := m.msgsView.Width()
 		if w < 10 {
 			w = 10
 		}
@@ -91,6 +127,26 @@ func (m *Model) resizeInput() {
 		w = 10
 	}
 	m.input.SetWidth(w)
+}
+
+// syncInputHeight grows / shrinks the input textarea to fit its current
+// content (1..maxInputHeight rows) and reflows the messages viewport
+// when the height changes. Safe to call after every keystroke; it
+// short-circuits when the height is already correct so renderMessages
+// doesn't churn for every character.
+func (m *Model) syncInputHeight() {
+	want := m.input.LineCount()
+	if want < 1 {
+		want = 1
+	}
+	if want > maxInputHeight {
+		want = maxInputHeight
+	}
+	if want == m.input.Height() {
+		return
+	}
+	m.input.SetHeight(want)
+	m.resizeMessagesViewport()
 }
 
 func (m *Model) renderMessages() {
@@ -133,8 +189,8 @@ func (m *Model) renderMessages() {
 	}
 	m.msgsView.SetContent(strings.Join(allLines, "\n"))
 
-	if h := m.msgsView.Height; h > 0 && selStart >= 0 {
-		off := m.msgsView.YOffset
+	if h := m.msgsView.Height(); h > 0 && selStart >= 0 {
+		off := m.msgsView.YOffset()
 		switch {
 		case selStart < off:
 			off = selStart
@@ -192,8 +248,8 @@ func (m *Model) renderThread() {
 	}
 	m.threadView.SetContent(strings.Join(allLines, "\n"))
 
-	if h := m.threadView.Height; h > 0 && selStart >= 0 {
-		off := m.threadView.YOffset
+	if h := m.threadView.Height(); h > 0 && selStart >= 0 {
+		off := m.threadView.YOffset()
 		switch {
 		case selStart < off:
 			off = selStart
@@ -227,7 +283,7 @@ func (m *Model) renderThreadPostLines(p *model.Post, isRoot bool) []string {
 	if body := renderMarkdown(p.Message); body != "" {
 		lines = append(lines, strings.Split(body, "\n")...)
 	}
-	if att := renderAttachments(p, m.threadView.Width); att != "" {
+	if att := renderAttachments(p, m.threadView.Width()); att != "" {
 		lines = append(lines, strings.Split(att, "\n")...)
 	}
 	return lines
@@ -256,7 +312,7 @@ func (m *Model) renderPostLines(p *model.Post) []string {
 	if body := renderMarkdown(p.Message); body != "" {
 		lines = append(lines, strings.Split(body, "\n")...)
 	}
-	if att := renderAttachments(p, m.msgsView.Width); att != "" {
+	if att := renderAttachments(p, m.msgsView.Width()); att != "" {
 		lines = append(lines, strings.Split(att, "\n")...)
 	}
 	return lines
@@ -335,12 +391,31 @@ func humanSize(n int64) string {
 	}
 }
 
-func (m Model) View() string {
+// View implements the v2 tea.Model interface. Content is built as a
+// styled string the same way it was in v1; AltScreen is set per-frame
+// (v2 replaces the v1 tea.WithAltScreen() startup option with this
+// per-View field).
+//
+// v2 always requests the kitty "disambiguate escape codes" flag, which
+// is enough to make shift+enter arrive as a distinct keypress on
+// capable terminals while leaving normal text input (including shifted
+// characters like '?' from shift+/) untouched.
+func (m Model) View() tea.View {
+	v := tea.NewView(m.viewContent())
+	v.AltScreen = true
+	return v
+}
+
+func (m Model) viewContent() string {
 	if m.width == 0 || m.height == 0 {
 		return "starting…"
 	}
 
-	bodyH := m.height - 2
+	// Render footer first so we know its height — full-help mode expands
+	// it from a single line to several, and the body has to shrink to fit.
+	footer := m.renderFooter()
+	footerH := lipgloss.Height(footer)
+	bodyH := m.height - footerH - tabsHeight
 	if bodyH < 5 {
 		bodyH = 5
 	}
@@ -368,15 +443,17 @@ func (m Model) View() string {
 		panes = append(panes, m.renderThreadPane(bodyH, threadW))
 	}
 	body := lipgloss.JoinHorizontal(lipgloss.Top, panes...)
+	if m.switcherMode {
+		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderSwitcher())
+	}
 
 	tabs := m.renderTeamTabs()
-	footer := m.renderFooter()
 
-	return lipgloss.JoinVertical(lipgloss.Left, body, tabs, footer)
+	return lipgloss.JoinVertical(lipgloss.Left, tabs, body, footer)
 }
 
 func (m Model) renderChannelsPane(height int) string {
-	innerH := height - 2 // borders
+	innerH := height - 1 // border (bottom only; top connects to tab strip)
 	if innerH < 1 {
 		innerH = 1
 	}
@@ -462,7 +539,7 @@ func (m Model) renderChannelsPane(height int) string {
 		rows = append(rows, "")
 	}
 
-	style := lipgloss.NewStyle().Border(border).Width(channelsWidth).Height(innerH)
+	style := lipgloss.NewStyle().Border(border).UnsetBorderTop().Width(channelsWidth).Height(innerH)
 	if m.focus == focusChannels {
 		style = style.BorderForeground(focusedColor)
 	} else {
@@ -472,7 +549,7 @@ func (m Model) renderChannelsPane(height int) string {
 }
 
 func (m Model) renderMessagesPane(height, width int) string {
-	innerH := height - 2
+	innerH := height - 1 // border (bottom only; top connects to tab strip)
 	if innerH < 1 {
 		innerH = 1
 	}
@@ -492,11 +569,11 @@ func (m Model) renderMessagesPane(height, width int) string {
 	popup := m.renderMentionPopup()
 	if popup != "" {
 		popupH := lipgloss.Height(popup)
-		h := m.msgsView.Height - popupH
+		h := m.msgsView.Height() - popupH
 		if h < 1 {
 			h = 1
 		}
-		m.msgsView.Height = h
+		m.msgsView.SetHeight(h)
 	}
 	msgsPart := m.msgsView.View()
 
@@ -514,11 +591,17 @@ func (m Model) renderMessagesPane(height, width int) string {
 	if popup != "" {
 		parts = append(parts, popup)
 	}
+	if bar := m.renderAttachmentBar(width - 2); bar != "" {
+		parts = append(parts, bar)
+	}
 	parts = append(parts, inputBox)
 	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
 
-	style := lipgloss.NewStyle().Border(border).Width(width - 2).Height(innerH)
-	if m.focus == focusMessages || m.focus == focusInput {
+	// lipgloss v2 changed Width() semantics: it now sets the OUTER box
+	// (border included) instead of the content area. The `width` we got
+	// is the intended outer width, so pass it directly.
+	style := lipgloss.NewStyle().Border(border).UnsetBorderTop().Width(width).Height(innerH)
+	if m.focus == focusMessages || m.focus == focusInput || m.focus == focusAttachments {
 		style = style.BorderForeground(focusedColor)
 	} else {
 		style = style.BorderForeground(dimColor)
@@ -526,8 +609,19 @@ func (m Model) renderMessagesPane(height, width int) string {
 	return style.Render(content)
 }
 
+// attachmentBarHeight returns the rendered height of the chip strip
+// (0 when empty). Used by resizeMessagesViewport so the messages
+// viewport shrinks to make room for chips.
+func (m Model) attachmentBarHeight(width int) int {
+	bar := m.renderAttachmentBar(width)
+	if bar == "" {
+		return 0
+	}
+	return lipgloss.Height(bar)
+}
+
 func (m Model) renderThreadPane(height, width int) string {
-	innerH := height - 2
+	innerH := height - 1 // border (bottom only; top connects to tab strip)
 	if innerH < 1 {
 		innerH = 1
 	}
@@ -546,7 +640,8 @@ func (m Model) renderThreadPane(height, width int) string {
 
 	content := lipgloss.JoinVertical(lipgloss.Left, titleStyle.Render(title), body)
 
-	style := lipgloss.NewStyle().Border(border).Width(width - 2).Height(innerH)
+	// v2 Width = outer width (see renderMessagesPane).
+	style := lipgloss.NewStyle().Border(border).UnsetBorderTop().Width(width).Height(innerH)
 	if m.focus == focusThread {
 		style = style.BorderForeground(focusedColor)
 	} else {
@@ -564,7 +659,9 @@ func replyWord(n int) string {
 
 func (m Model) renderTeamTabs() string {
 	if len(m.teams) == 0 && !m.hasDMs {
-		return footerStyle.Render(" (no teams) ")
+		// Reserve the same vertical space so body math stays consistent.
+		blank := strings.Repeat("\n", tabsHeight-1)
+		return footerStyle.Render(" (no teams) ") + blank
 	}
 	// Pre-compute distinct counts for the Unread tab badge.
 	unreadCh, mentionCh := 0, 0
@@ -578,8 +675,15 @@ func (m Model) renderTeamTabs() string {
 			mentionCh++
 		}
 	}
-	var parts []string
+
 	maxIdx := m.maxTeamIdx()
+	rendered := make([]string, 0, maxIdx+1)
+
+	activeColor := dimColor
+	if m.focus == focusTeams {
+		activeColor = focusedColor
+	}
+
 	for i := 0; i <= maxIdx; i++ {
 		kind, _, name := m.tabAt(i)
 		label := name
@@ -591,58 +695,112 @@ func (m Model) renderTeamTabs() string {
 				label = "Unread " + strconv.Itoa(unreadCh)
 			}
 		}
-		selected := i == m.teamIdx
-		switch {
-		case selected && m.focus == focusTeams:
-			parts = append(parts, tabActive.Render("[ "+label+" ]"))
-		case selected:
-			parts = append(parts, tabActive.Render(label))
-		case kind == tabDM:
-			parts = append(parts, dmTabStyle.Render(label))
-		case kind == tabUnread && mentionCh > 0:
-			parts = append(parts, mentionTab.Render(label))
-		case kind == tabUnread && unreadCh > 0:
-			parts = append(parts, unreadTab.Render(label))
-		default:
-			parts = append(parts, tabInactive.Render(label))
+
+		isFirst := i == 0
+		isActive := i == m.teamIdx
+
+		var style lipgloss.Style
+		if isActive {
+			style = tabBase.
+				Border(activeTabBorder, true).
+				BorderForeground(activeColor).
+				Foreground(activeColor).
+				Bold(true)
+		} else {
+			style = tabBase.
+				Border(inactiveTabBorder, true).
+				BorderForeground(dimColor)
+			switch {
+			case kind == tabDM:
+				style = style.Foreground(dmTabColor)
+			case kind == tabUnread && mentionCh > 0:
+				style = style.Foreground(mentionTabColor).Bold(true)
+			case kind == tabUnread && unreadCh > 0:
+				style = style.Foreground(unreadTabColor).Bold(true)
+			default:
+				style = style.Foreground(dimColor)
+			}
 		}
+
+		// Fix up the leftmost tab's bottom-left so the rule starts cleanly.
+		// The rightmost tab keeps its default ┴ / └ so it flows into the
+		// fill block's continuing horizontal rule.
+		b, _, _, _, _ := style.GetBorder()
+		switch {
+		case isFirst && isActive:
+			b.BottomLeft = "│"
+		case isFirst && !isActive:
+			b.BottomLeft = "├"
+		}
+		style = style.Border(b)
+
+		rendered = append(rendered, style.Render(label))
 	}
-	row := strings.Join(parts, " ")
-	if m.focus == focusTeams {
-		row += footerStyle.Render("  ←/→ switch, enter to load")
+
+	row := lipgloss.JoinHorizontal(lipgloss.Top, rendered...)
+
+	// Extend a horizontal rule across the remaining width so the tab
+	// bar reads as a single header strip instead of a floating widget.
+	if fill := m.width - lipgloss.Width(row); fill > 0 {
+		blank := strings.Repeat(" ", fill)
+		rule := lipgloss.NewStyle().Foreground(dimColor).Render(strings.Repeat("─", fill))
+		fillBlock := blank + "\n" + blank + "\n" + rule
+		row = lipgloss.JoinHorizontal(lipgloss.Top, row, fillBlock)
 	}
 	return row
 }
 
 func (m Model) renderFooter() string {
-	var left string
-	switch {
-	case m.filterMode:
-		left = "type to filter  enter: apply+open  esc: cancel"
-	case m.focus == focusInput:
-		if m.threadOpen {
-			left = "↳ replying in thread  enter: send  alt+enter: newline  esc: leave  tab: next"
-		} else {
-			left = "type to send  enter: send  alt+enter: newline  esc: leave  tab: next"
-		}
-	case m.focus == focusChannels:
-		left = "tab: focus  ↑↓ nav  enter: open  /: filter  esc: clear filter  q: quit"
-	case m.focus == focusMessages:
-		left = "tab: focus  ↑↓/jk select  enter: open thread  o: open attachment  q: quit"
-	case m.focus == focusThread:
-		left = "tab: focus  ↑↓/jk select  o: open attachment  esc: close thread  q: quit"
-	default:
-		left = "tab: focus  ↑↓/←→ nav  enter: open  q: quit"
-	}
 	right := m.status
 	if right == "" && m.me != nil {
 		right = m.me.Username
+	}
+
+	// Leave room for the right-hand status and a one-cell gutter so the
+	// help bubble can ellipsize cleanly if the bindings don't all fit.
+	avail := m.width - lipgloss.Width(right) - 1
+	if avail < 0 {
+		avail = 0
+	}
+	m.help.SetWidth(avail)
+
+	// Prefix the input mode with a quick hint about what typing does — the
+	// help bubble only renders bindings, but this state-mode context used
+	// to ride along in the old footer prompt.
+	var prefix string
+	switch {
+	case m.filterMode:
+		prefix = "type to filter  "
+	case m.focus == focusInput && m.threadOpen:
+		prefix = "↳ replying in thread  "
+	case m.focus == focusInput:
+		prefix = "type to send  "
+	}
+
+	left := footerStyle.Render(prefix) + m.help.View(m)
+	if m.help.ShowAll {
+		// Full help is multi-line; right-align the status on the last row.
+		gap := m.width - lipgloss.Width(lastLine(left)) - lipgloss.Width(right)
+		if gap < 1 {
+			gap = 1
+		}
+		return left + strings.Repeat(" ", gap) + footerStyle.Render(right)
 	}
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
 		gap = 1
 	}
-	return footerStyle.Render(left + strings.Repeat(" ", gap) + right)
+	return left + strings.Repeat(" ", gap) + footerStyle.Render(right)
+}
+
+// lastLine returns the final line of s (everything after the last "\n").
+// Used to right-align the status block when the help bubble renders
+// multiple rows in full-help mode.
+func lastLine(s string) string {
+	if i := strings.LastIndex(s, "\n"); i >= 0 {
+		return s[i+1:]
+	}
+	return s
 }
 
 func truncate(s string, n int) string {

@@ -6,8 +6,8 @@ import (
 	"time"
 	"unicode"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
@@ -162,6 +162,7 @@ func (m *Model) acceptMention() bool {
 	// value. Fine for the common single-line case; for a rare multi-line
 	// edit the cursor still lands in a sensible spot to keep typing.
 	m.input.SetValue(strings.Join(lines, "\n"))
+	m.syncInputHeight()
 	m.userNames[u.Id] = u.Username
 	m.closeMention()
 	return true
