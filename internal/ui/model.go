@@ -201,14 +201,19 @@ func New(client *mm.Client) Model {
 
 	stats, la := loadChannelStats()
 
+	msgsView := viewport.New()
+	msgsView.SoftWrap = true
+	threadView := viewport.New()
+	threadView.SoftWrap = true
+
 	return Model{
 		client:             client,
 		ctx:                context.Background(),
 		channels:           map[string][]*model.Channel{},
 		userNames:          map[string]string{},
 		focus:              focusChannels,
-		msgsView:           viewport.New(),
-		threadView:         viewport.New(),
+		msgsView:           msgsView,
+		threadView:         threadView,
 		filter:             ti,
 		switcher:           sw,
 		openStats:          stats,
