@@ -386,6 +386,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case indexResultMsg:
 		return m, m.applyIndexResult(msg)
 
+	case typingStartedMsg:
+		return m, m.applyTypingStarted(msg)
+
+	case typingTickMsg:
+		return m, m.applyTypingTick(msg)
+
 	case summaryGatheredMsg:
 		return m, m.applySummaryGathered(msg)
 
@@ -1311,11 +1317,17 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.ShiftTab):
 		return m.cycleFocus(-1)
 	case key.Matches(msg, m.keys.LeaveInput):
+		// While composing a new message, esc only leaves the input when
+		// the textarea is empty — a stray esc shouldn't yank focus away
+		// from a half-typed draft. Edit mode is exempt: there esc cancels
+		// the in-progress edit (dropping the prefilled text) and leaves,
+		// which is the more useful escape hatch even with text present.
+		editing := m.editingPostID != ""
+		if !editing && strings.TrimSpace(m.input.Value()) != "" {
+			break
+		}
 		m.closeMention()
-		// Cancelling an in-progress edit is the more useful semantic
-		// when in edit mode — drop the prefilled text and prompt
-		// before leaving the input.
-		if m.editingPostID != "" {
+		if editing {
 			m.cancelEdit()
 		}
 		m.input.Blur()

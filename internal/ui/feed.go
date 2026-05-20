@@ -70,6 +70,7 @@ func newFeedState() feedState {
 type feedTarget struct {
 	channelID    string
 	lastViewedAt int64
+	unreadCount  int // count-based "N new" total; caps how many posts the bubble shows
 	mention      bool
 }
 
@@ -134,6 +135,7 @@ func (m *Model) buildFeed() tea.Cmd {
 		targets = append(targets, feedTarget{
 			channelID:    c.Id,
 			lastViewedAt: lastViewed[c.Id],
+			unreadCount:  m.unread[c.Id],
 			mention:      m.mentions[c.Id] > 0,
 		})
 	}
@@ -147,16 +149,36 @@ func (m *Model) buildFeed() tea.Cmd {
 // used elsewhere in this package.
 func (m Model) fetchFeed(seq int, targets []feedTarget) tea.Cmd {
 	return func() tea.Msg {
+		// Refresh the read boundary from the server. m.members is captured
+		// once at startup and never updated, so its LastViewedAt drifts
+		// stale as channels are read this session — which would otherwise
+		// drag already-read messages into the bubbles. ViewChannel keeps the
+		// server side current, so a re-fetch here is authoritative.
+		var freshMembers model.ChannelMembersWithTeamData
+		lastViewed := map[string]int64{}
+		if m.me != nil {
+			if ms, err := m.client.ChannelMembers(m.ctx, m.me.Id); err == nil {
+				freshMembers = ms
+				for _, mb := range ms {
+					lastViewed[mb.ChannelId] = mb.LastViewedAt
+				}
+			}
+		}
+
 		entries := make([]feedEntry, 0, len(targets))
 		need := map[string]struct{}{}
 		var toPersist []*model.Post
 		for _, t := range targets {
+			lv := t.lastViewedAt
+			if v, ok := lastViewed[t.channelID]; ok {
+				lv = v
+			}
 			var (
 				pl  *model.PostList
 				err error
 			)
-			if t.lastViewedAt > 0 {
-				pl, err = m.client.PostsSince(m.ctx, t.channelID, t.lastViewedAt)
+			if lv > 0 {
+				pl, err = m.client.PostsSince(m.ctx, t.channelID, lv)
 			} else {
 				// Unknown read boundary — show the most recent page instead
 				// of pulling the channel's entire history.
@@ -165,13 +187,11 @@ func (m Model) fetchFeed(seq int, targets []feedTarget) tea.Cmd {
 			if err != nil || pl == nil {
 				continue
 			}
-			unread := unreadFromPostList(pl, t.lastViewedAt)
+			unread := unreadFromPostList(pl, lv)
 			if len(unread) == 0 {
 				continue
 			}
-			if len(unread) > feedUnreadMax {
-				unread = unread[len(unread)-feedUnreadMax:]
-			}
+			unread = capUnread(unread, t.unreadCount)
 			var ctxPosts []*model.Post
 			if m.store != nil {
 				ctxPosts, _ = m.store.BeforeInChannel(t.channelID, unread[0].CreateAt, feedContextLines)
@@ -212,8 +232,23 @@ func (m Model) fetchFeed(seq int, targets []feedTarget) tea.Cmd {
 		if m.store != nil && len(toPersist) > 0 {
 			_ = m.store.UpsertMany(toPersist)
 		}
-		return feedLoadedMsg{seq: seq, entries: entries, users: users}
+		return feedLoadedMsg{seq: seq, entries: entries, users: users, members: freshMembers}
 	}
+}
+
+// capUnread trims an oldest→newest unread slice to what a bubble may
+// show. It first bounds the slice to the count-based "N new" total
+// (keeping the newest), so the body can never contradict the header when
+// the read boundary is stale or zero; a non-positive count skips that
+// step. feedUnreadMax is then applied as an absolute ceiling.
+func capUnread(unread []*model.Post, unreadCount int) []*model.Post {
+	if unreadCount > 0 && len(unread) > unreadCount {
+		unread = unread[len(unread)-unreadCount:]
+	}
+	if len(unread) > feedUnreadMax {
+		unread = unread[len(unread)-feedUnreadMax:]
+	}
+	return unread
 }
 
 // unreadFromPostList flips a PostList into oldest→newest order and keeps
@@ -244,6 +279,12 @@ func unreadFromPostList(pl *model.PostList, lastViewedAt int64) []*model.Post {
 func (m Model) applyFeedResults(msg feedLoadedMsg) (tea.Model, tea.Cmd) {
 	if msg.seq != m.feed.seq {
 		return m, nil
+	}
+	// Adopt the boundary the worker fetched so the rest of the UI (and the
+	// next build) sees the same fresh read state instead of the frozen
+	// startup snapshot.
+	if len(msg.members) > 0 {
+		m.members = msg.members
 	}
 	for id, name := range msg.users {
 		m.userNames[id] = name

@@ -110,19 +110,25 @@ func (m *Model) resizeMessagesViewport() {
 		}
 		m.msgsView.SetHeight(mh)
 		attBarH := m.attachmentBarHeight(threadW - 2)
-		th := bodyH - 2 - 1 - 1 - m.input.Height() - attBarH
+		// The compose input lives in the thread pane. Cap its growth so the
+		// thread view keeps at least one row, then size the view to fill the
+		// space above it — the input stays pinned just above the bottom
+		// border instead of floating with blank rows beneath it.
+		m.capInputHeight(bodyH - 3 - attBarH)
+		th := bodyH - 2 - m.input.Height() - attBarH
 		if th < 1 {
 			th = 1
 		}
 		m.threadView.SetHeight(th)
 	} else {
 		attBarH := m.attachmentBarHeight(msgsW - 2)
-		// bodyH already excludes the tab strip + footer. The messages
-		// pane also has to make room for its bottom border (1), title
-		// row (1), the top-border row above the input (1), the input
-		// itself (variable), and any attachment chip strip. Everything
-		// left is the viewport.
-		mh := bodyH - 2 - 1 - 1 - m.input.Height() - attBarH
+		// bodyH already excludes the tab strip + footer. Reserve the title
+		// row (1) and the input's top-border row (1); cap the input so the
+		// viewport keeps at least one row even on a short terminal, then give
+		// the viewport every remaining row so the input sits flush above the
+		// bottom border (bottom-aligned) rather than floating with a gap.
+		m.capInputHeight(bodyH - 3 - attBarH)
+		mh := bodyH - 2 - m.input.Height() - attBarH
 		if mh < 1 {
 			mh = 1
 		}
@@ -181,24 +187,41 @@ func (m *Model) resizeInput() {
 	m.input.SetWidth(w)
 }
 
-// syncInputHeight grows / shrinks the input textarea to fit its current
-// content (1..maxInputHeight rows) and reflows the messages viewport
-// when the height changes. Safe to call after every keystroke; it
-// short-circuits when the height is already correct so renderMessages
-// doesn't churn for every character.
+// syncInputHeight reflows the messages viewport when the input textarea's
+// height has changed. The textarea sizes itself (1..maxInputHeight rows) via
+// v2's DynamicHeight, which counts *wrapped* visual rows — so this must not
+// re-derive the height from LineCount() (logical lines), or a soft-wrapped
+// line would be forced back to a single row and its first line would scroll
+// out of view. We only keep the messages pane sized to the space the input
+// leaves behind. Safe to call after every keystroke; it short-circuits when
+// the height is unchanged so renderMessages doesn't churn for every character.
 func (m *Model) syncInputHeight() {
-	want := m.input.LineCount()
-	if want < 1 {
-		want = 1
-	}
-	if want > maxInputHeight {
-		want = maxInputHeight
-	}
-	if want == m.input.Height() {
+	h := m.input.Height()
+	if h == m.lastInputHeight {
 		return
 	}
-	m.input.SetHeight(want)
+	m.lastInputHeight = h
 	m.resizeMessagesViewport()
+}
+
+// capInputHeight bounds how tall the compose textarea may grow to the space
+// actually available in its pane, clamped to [1, maxInputHeight]. Without
+// this the input would keep growing on a short terminal until it pushed the
+// footer — and then its own content — off-screen. DynamicHeight honours the
+// new MaxHeight (scrolling internally past it), and we re-clamp the current
+// height so the same resize that shrank the cap doesn't leave a stale taller
+// input behind.
+func (m *Model) capInputHeight(avail int) {
+	if avail < 1 {
+		avail = 1
+	}
+	if avail > maxInputHeight {
+		avail = maxInputHeight
+	}
+	m.input.MaxHeight = avail
+	if m.input.Height() > avail {
+		m.input.SetHeight(avail)
+	}
 }
 
 func (m *Model) renderMessages() {

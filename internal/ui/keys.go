@@ -247,7 +247,7 @@ func newKeyMap() keyMap {
 			key.WithHelp("/", "search channel"),
 		),
 		Leader: key.NewBinding(
-			key.WithKeys(","),
+			key.WithKeys(",", "ctrl+w"),
 			key.WithHelp(",", "go to…"),
 		),
 		Unread: key.NewBinding(

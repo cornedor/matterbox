@@ -340,3 +340,35 @@ func (c *Client) UsernamesByIDs(ctx context.Context, ids []string) (map[string]s
 	}
 	return v.(map[string]string), nil
 }
+
+// ChannelByName resolves a team-qualified channel to its record by URL
+// slug — e.g. team "eng", channel "general" for the channel that lives
+// at .../eng/channels/general. Used by the headless CLI to turn a
+// "team/channel" spec into a channel id in a single request.
+func (c *Client) ChannelByName(ctx context.Context, teamName, channelName string) (*model.Channel, error) {
+	ch, _, err := c.c.GetChannelByNameForTeamName(ctx, channelName, teamName, "")
+	if err != nil {
+		return nil, fmt.Errorf("get channel %s/%s: %w", teamName, channelName, err)
+	}
+	return ch, nil
+}
+
+// UserByUsername resolves a username (no leading @) to its user record.
+func (c *Client) UserByUsername(ctx context.Context, username string) (*model.User, error) {
+	u, _, err := c.c.GetUserByUsername(ctx, username, "")
+	if err != nil {
+		return nil, fmt.Errorf("get user %s: %w", username, err)
+	}
+	return u, nil
+}
+
+// DirectChannel returns the direct-message channel between two users,
+// creating it if it does not yet exist. The call is idempotent: an
+// existing DM is returned unchanged.
+func (c *Client) DirectChannel(ctx context.Context, userID1, userID2 string) (*model.Channel, error) {
+	ch, _, err := c.c.CreateDirectChannel(ctx, userID1, userID2)
+	if err != nil {
+		return nil, fmt.Errorf("create direct channel: %w", err)
+	}
+	return ch, nil
+}

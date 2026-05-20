@@ -38,6 +38,13 @@ func builtinCommands() []switcherCommand {
 			argPlaceholder: "30",
 			run:            runIndexChannel,
 		},
+		{
+			name:           "Typing animation",
+			desc:           "fake live-typing a message via a stream of edits (socket test)",
+			argPrompt:      "message: ",
+			argPlaceholder: "hello world",
+			run:            runTypingAnimation,
+		},
 	}
 }
 

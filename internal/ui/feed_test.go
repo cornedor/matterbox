@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -91,6 +93,57 @@ func TestUnreadFromPostListNoBoundary(t *testing.T) {
 	got := unreadFromPostList(pl, 0)
 	if len(got) != 2 || got[0].Id != "p1" || got[1].Id != "p2" {
 		t.Fatalf("got %v; want [p1 p2]", got)
+	}
+}
+
+func TestCapUnread(t *testing.T) {
+	mk := func(ids ...string) []*model.Post {
+		out := make([]*model.Post, len(ids))
+		for i, id := range ids {
+			out[i] = &model.Post{Id: id}
+		}
+		return out
+	}
+	ids := func(ps []*model.Post) []string {
+		out := make([]string, len(ps))
+		for i, p := range ps {
+			out[i] = p.Id
+		}
+		return out
+	}
+
+	// The regression: a stale/zero boundary surfaced more posts than the
+	// channel's count-based "N new" total. capUnread keeps only the newest
+	// `count`, so the body can't contradict the header.
+	got := capUnread(mk("a", "b", "c", "d", "e"), 2)
+	if want := []string{"d", "e"}; !slices.Equal(ids(got), want) {
+		t.Errorf("count cap: got %v; want %v", ids(got), want)
+	}
+
+	// A non-positive count means "unknown" — leave the slice to the
+	// feedUnreadMax ceiling instead of zeroing the bubble.
+	got = capUnread(mk("a", "b", "c"), 0)
+	if want := []string{"a", "b", "c"}; !slices.Equal(ids(got), want) {
+		t.Errorf("zero count: got %v; want %v", ids(got), want)
+	}
+
+	// A count at/above the slice length is a no-op.
+	got = capUnread(mk("a", "b"), 5)
+	if want := []string{"a", "b"}; !slices.Equal(ids(got), want) {
+		t.Errorf("count above len: got %v; want %v", ids(got), want)
+	}
+
+	// feedUnreadMax is the absolute ceiling even when the count is larger.
+	big := make([]string, feedUnreadMax+10)
+	for i := range big {
+		big[i] = strconv.Itoa(i)
+	}
+	got = capUnread(mk(big...), feedUnreadMax+5)
+	if len(got) != feedUnreadMax {
+		t.Errorf("feedUnreadMax ceiling: got %d posts; want %d", len(got), feedUnreadMax)
+	}
+	if got[len(got)-1].Id != big[len(big)-1] {
+		t.Errorf("feedUnreadMax ceiling kept the wrong tail: last = %s; want %s", got[len(got)-1].Id, big[len(big)-1])
 	}
 }
 

@@ -82,11 +82,14 @@ type searchResultsMsg struct {
 // feedLoadedMsg carries the assembled unread-feed entries from a
 // completed buildFeed run. Stale responses are dropped when seq no
 // longer matches m.feed.seq. users carries any newly-resolved sender
-// usernames so the bubbles render real names.
+// usernames so the bubbles render real names. members is the freshly
+// fetched channel-member snapshot (nil if the refresh failed) so the
+// model's read state stays current.
 type feedLoadedMsg struct {
 	seq     int
 	entries []feedEntry
 	users   map[string]string
+	members model.ChannelMembersWithTeamData
 }
 
 // summaryGatheredMsg carries the channel-path transcript assembled by the

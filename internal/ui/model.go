@@ -145,6 +145,10 @@ type Model struct {
 	// run is active at a time; subsequent triggers surface a hint.
 	indexer indexerState
 
+	// typing drives the "Typing animation" > command: a fake key-by-key
+	// reveal of a message implemented as a stream of EditPost calls.
+	typing typingAnim
+
 	// Persisted per-channel usage counters (loaded from
 	// ~/.config/matterbox/channel_stats.json). Used as a sort signal in
 	// the switcher so frequently-opened channels float to the top.
@@ -168,6 +172,10 @@ type Model struct {
 	msgsView viewport.Model
 
 	input textarea.Model
+	// lastInputHeight is the input height the messages pane was last
+	// reflowed for. syncInputHeight compares against it to reflow only
+	// when the textarea's DynamicHeight actually changed.
+	lastInputHeight int
 
 	loading bool
 	status  string
@@ -293,8 +301,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	ta.CharLimit = 4000
 	ta.ShowLineNumbers = false
 	// v2's built-in DynamicHeight grows the textarea between MinHeight
-	// and MaxHeight rows as content is added/removed, so we no longer
-	// need a hand-rolled syncInputHeight.
+	// and MaxHeight rows as content is added/removed (counting wrapped
+	// visual rows), so the textarea owns its own height — syncInputHeight
+	// only reflows the messages pane when that height changes.
 	ta.DynamicHeight = true
 	ta.MinHeight = 1
 	ta.MaxHeight = maxInputHeight
