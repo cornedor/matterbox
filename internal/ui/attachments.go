@@ -209,7 +209,7 @@ func (m *Model) clearAttachments() {
 
 // collectAttachmentFileIDs returns server file IDs ready to attach to
 // the next post. Only fully-uploaded chips contribute.
-func (m Model) collectAttachmentFileIDs() []string {
+func (m *Model) collectAttachmentFileIDs() []string {
 	var out []string
 	for _, att := range m.attachments {
 		if att.state == attUploaded && att.fileID != "" {
@@ -220,7 +220,7 @@ func (m Model) collectAttachmentFileIDs() []string {
 }
 
 // hasUploadingAttachments reports whether Send should wait.
-func (m Model) hasUploadingAttachments() bool {
+func (m *Model) hasUploadingAttachments() bool {
 	for _, att := range m.attachments {
 		if att.state == attUploading {
 			return true
@@ -253,7 +253,7 @@ func (m *Model) tickAttachmentSpinners(msg spinner.TickMsg) tea.Cmd {
 // renderAttachmentBar builds the chip strip shown above the textarea.
 // Returns "" when there are no attachments. Width caps how wide chip
 // rows can be before wrapping to a second row.
-func (m Model) renderAttachmentBar(width int) string {
+func (m *Model) renderAttachmentBar(width int) string {
 	if len(m.attachments) == 0 {
 		return ""
 	}

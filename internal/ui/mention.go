@@ -176,7 +176,7 @@ var mentionPopupStyle = lipgloss.NewStyle().
 	Padding(0, 1)
 
 // renderMentionPopup returns the dropdown or "" if it shouldn't show.
-func (m Model) renderMentionPopup() string {
+func (m *Model) renderMentionPopup() string {
 	if !m.mention.active || len(m.mention.items) == 0 {
 		return ""
 	}

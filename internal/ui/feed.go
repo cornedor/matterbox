@@ -1,0 +1,652 @@
+package ui
+
+import (
+	"sort"
+	"strconv"
+	"strings"
+
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/mattermost/mattermost/server/public/model"
+)
+
+// feedContextLines is how many already-read messages we show above the
+// "new" divider in each bubble, for context. Two matches the spec (and
+// the search tab's before-context).
+const feedContextLines = 2
+
+// feedUnreadCap bounds how many unread messages each bubble renders. A
+// very busy channel collapses the overflow into a "+N earlier unread"
+// row so one channel can't swamp the whole feed.
+const feedUnreadCap = 8
+
+// feedUnreadMax bounds how many unread posts we keep in memory / persist
+// per channel, regardless of how many the server returns. The header
+// count still reflects the server's true unread total (m.unread).
+const feedUnreadMax = 50
+
+// feedEntry is one bubble in the unread feed: a channel with unread
+// messages, plus a little already-read context above them. Posts are
+// oldest→newest. The channel itself is looked up by id at render time so
+// label/team changes are always reflected.
+type feedEntry struct {
+	channelID string
+	context   []*model.Post // already-read context (≤ feedContextLines)
+	unread    []*model.Post // unread posts, oldest→newest (≤ feedUnreadMax)
+	mention   bool          // had a mention at build time (border tint hint)
+}
+
+// lastActivity returns the create time of the newest unread post, used
+// to sort the most recently active channels to the top of the feed.
+func (e feedEntry) lastActivity() int64 {
+	if n := len(e.unread); n > 0 {
+		return e.unread[n-1].CreateAt
+	}
+	return 0
+}
+
+// feedState owns the combined-unread-feed UI on the synthetic Feed tab.
+type feedState struct {
+	view    viewport.Model
+	entries []feedEntry
+	idx     int  // selected bubble
+	loading bool // a build/refresh is in flight
+	built   bool // we've assembled the feed at least once this session
+	err     string
+	seq     int // bumps on every build; stale feedLoadedMsg are dropped
+}
+
+// newFeedState constructs the viewport used by the Feed tab. Called once
+// at startup from New().
+func newFeedState() feedState {
+	vp := viewport.New()
+	vp.SoftWrap = true
+	return feedState{view: vp}
+}
+
+// feedTarget is a snapshot of one unread channel taken on the UI
+// goroutine, handed to the worker so it never touches UI state.
+type feedTarget struct {
+	channelID    string
+	lastViewedAt int64
+	mention      bool
+}
+
+// onFeedTab reports whether the synthetic Feed tab is currently selected.
+func (m *Model) onFeedTab() bool {
+	kind, _, _ := m.tabAt(m.teamIdx)
+	return kind == tabFeed
+}
+
+// openFeedTab switches to the synthetic Feed tab and kicks off a build.
+// Idempotent — calling it while already on Feed just refreshes.
+func (m *Model) openFeedTab() tea.Cmd {
+	for i := 0; i <= m.maxTeamIdx(); i++ {
+		if kind, _, _ := m.tabAt(i); kind == tabFeed {
+			m.teamIdx = i
+			break
+		}
+	}
+	m.filterMode = false
+	m.filter.SetValue("")
+	m.filter.Blur()
+	m.input.Blur()
+	m.search.input.Blur()
+	m.focus = focusFeed
+	return m.buildFeed()
+}
+
+// maybeBuildFeedOnLand kicks off a feed build the first time the user
+// lands on the Feed tab (e.g. arrowing across the tab strip) so the pane
+// shows live unreads even before they focus into it. No-op off the Feed
+// tab or once a build is already running / done this session.
+func (m *Model) maybeBuildFeedOnLand() tea.Cmd {
+	if m.onFeedTab() && !m.feed.built && !m.feed.loading {
+		return m.buildFeed()
+	}
+	return nil
+}
+
+// lastViewedByChannel maps each known channel to its server-side
+// last-viewed timestamp, the boundary between read and unread posts.
+func (m Model) lastViewedByChannel() map[string]int64 {
+	out := make(map[string]int64, len(m.members))
+	for _, mb := range m.members {
+		out[mb.ChannelId] = mb.LastViewedAt
+	}
+	return out
+}
+
+// buildFeed snapshots the current unread channels and fires the worker
+// that fetches each channel's unread posts. Bumps the seq so any earlier
+// in-flight build is ignored when it lands.
+func (m *Model) buildFeed() tea.Cmd {
+	m.feed.seq++
+	m.feed.loading = true
+	m.feed.err = ""
+	m.renderFeedResults()
+
+	lastViewed := m.lastViewedByChannel()
+	chans := m.unreadChannels()
+	targets := make([]feedTarget, 0, len(chans))
+	for _, c := range chans {
+		targets = append(targets, feedTarget{
+			channelID:    c.Id,
+			lastViewedAt: lastViewed[c.Id],
+			mention:      m.mentions[c.Id] > 0,
+		})
+	}
+	return m.fetchFeed(m.feed.seq, targets)
+}
+
+// fetchFeed pulls each target channel's unread posts (and a little cached
+// context) on a worker goroutine and returns them as a feedLoadedMsg.
+// Value receiver so the closure captures a copy of m, mirroring
+// fetchPosts — reading m.userNames / m.store here is the same pattern
+// used elsewhere in this package.
+func (m Model) fetchFeed(seq int, targets []feedTarget) tea.Cmd {
+	return func() tea.Msg {
+		entries := make([]feedEntry, 0, len(targets))
+		need := map[string]struct{}{}
+		var toPersist []*model.Post
+		for _, t := range targets {
+			var (
+				pl  *model.PostList
+				err error
+			)
+			if t.lastViewedAt > 0 {
+				pl, err = m.client.PostsSince(m.ctx, t.channelID, t.lastViewedAt)
+			} else {
+				// Unknown read boundary — show the most recent page instead
+				// of pulling the channel's entire history.
+				pl, err = m.client.Posts(m.ctx, t.channelID, feedUnreadCap)
+			}
+			if err != nil || pl == nil {
+				continue
+			}
+			unread := unreadFromPostList(pl, t.lastViewedAt)
+			if len(unread) == 0 {
+				continue
+			}
+			if len(unread) > feedUnreadMax {
+				unread = unread[len(unread)-feedUnreadMax:]
+			}
+			var ctxPosts []*model.Post
+			if m.store != nil {
+				ctxPosts, _ = m.store.BeforeInChannel(t.channelID, unread[0].CreateAt, feedContextLines)
+			}
+			entries = append(entries, feedEntry{
+				channelID: t.channelID,
+				context:   ctxPosts,
+				unread:    unread,
+				mention:   t.mention,
+			})
+			toPersist = append(toPersist, unread...)
+			for _, p := range ctxPosts {
+				if _, have := m.userNames[p.UserId]; !have {
+					need[p.UserId] = struct{}{}
+				}
+			}
+			for _, p := range unread {
+				if _, have := m.userNames[p.UserId]; !have {
+					need[p.UserId] = struct{}{}
+				}
+			}
+		}
+
+		users := map[string]string{}
+		if len(need) > 0 {
+			ids := make([]string, 0, len(need))
+			for id := range need {
+				ids = append(ids, id)
+			}
+			if us, err := m.client.UsersByIDs(m.ctx, ids); err == nil {
+				for _, u := range us {
+					users[u.Id] = u.Username
+				}
+			}
+		}
+		// Grow the local corpus with whatever we fetched so a later
+		// channel-open paints warm and search can find these posts.
+		if m.store != nil && len(toPersist) > 0 {
+			_ = m.store.UpsertMany(toPersist)
+		}
+		return feedLoadedMsg{seq: seq, entries: entries, users: users}
+	}
+}
+
+// unreadFromPostList flips a PostList into oldest→newest order and keeps
+// only the genuine unread messages: non-deleted, non-system posts created
+// after the last-viewed boundary. A non-positive boundary keeps every
+// returned post (the caller already limited the page).
+func unreadFromPostList(pl *model.PostList, lastViewedAt int64) []*model.Post {
+	out := make([]*model.Post, 0, len(pl.Order))
+	for i := len(pl.Order) - 1; i >= 0; i-- {
+		p, ok := pl.Posts[pl.Order[i]]
+		if !ok || p == nil {
+			continue
+		}
+		if p.DeleteAt != 0 || p.IsSystemMessage() {
+			continue
+		}
+		if lastViewedAt > 0 && p.CreateAt <= lastViewedAt {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// applyFeedResults installs a completed build if it's still fresh, then
+// sorts the entries (mentions first, most-recent activity next) using the
+// current mention state.
+func (m Model) applyFeedResults(msg feedLoadedMsg) (tea.Model, tea.Cmd) {
+	if msg.seq != m.feed.seq {
+		return m, nil
+	}
+	for id, name := range msg.users {
+		m.userNames[id] = name
+	}
+	entries := msg.entries
+	sort.SliceStable(entries, func(i, j int) bool {
+		mi, mj := m.mentions[entries[i].channelID] > 0, m.mentions[entries[j].channelID] > 0
+		if mi != mj {
+			return mi
+		}
+		return entries[i].lastActivity() > entries[j].lastActivity()
+	})
+	m.feed.entries = entries
+	m.feed.loading = false
+	m.feed.built = true
+	if m.feed.idx >= len(entries) {
+		m.feed.idx = len(entries) - 1
+	}
+	if m.feed.idx < 0 {
+		m.feed.idx = 0
+	}
+	m.renderFeedResults()
+	return m, nil
+}
+
+// handleFeedKey owns the keystrokes routed to focus == focusFeed that
+// aren't already consumed by the global shortcuts (q / ? / u / tab).
+// Up/down select bubbles; enter opens the channel; m marks it read in
+// place; r refreshes; esc returns to the tab strip.
+func (m Model) handleFeedKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		m.focus = focusTeams
+		return m, nil
+	case "up", "ctrl+p", "k":
+		if m.feed.idx > 0 {
+			m.feed.idx--
+			m.renderFeedResults()
+		}
+		return m, nil
+	case "down", "ctrl+n", "j":
+		if m.feed.idx < len(m.feed.entries)-1 {
+			m.feed.idx++
+			m.renderFeedResults()
+		}
+		return m, nil
+	case "home", "g":
+		m.feed.idx = 0
+		m.renderFeedResults()
+		return m, nil
+	case "end", "G":
+		m.feed.idx = len(m.feed.entries) - 1
+		m.renderFeedResults()
+		return m, nil
+	case "pgup":
+		m.feed.view.ScrollUp(m.feed.view.Height() / 2)
+		return m, nil
+	case "pgdown":
+		m.feed.view.ScrollDown(m.feed.view.Height() / 2)
+		return m, nil
+	case "enter":
+		return m.openFeedEntry()
+	case "m":
+		return m.markFeedEntryRead()
+	case "r":
+		return m, m.buildFeed()
+	case "tab":
+		return m.cycleFocus(1)
+	case "shift+tab":
+		return m.cycleFocus(-1)
+	}
+	return m, nil
+}
+
+// openFeedEntry opens the selected bubble's channel (which marks it read,
+// as a normal channel open does), jumping to the first unread message.
+// The entry is dropped from the feed since it's no longer unread.
+func (m Model) openFeedEntry() (tea.Model, tea.Cmd) {
+	if m.feed.idx < 0 || m.feed.idx >= len(m.feed.entries) {
+		return m, nil
+	}
+	e := m.feed.entries[m.feed.idx]
+	ch := m.findChannel(e.channelID)
+	if ch == nil {
+		m.status = "channel not in the local list"
+		return m, nil
+	}
+	m.removeFeedEntry(e.channelID)
+	m.switchToChannelHomeTeam(ch)
+	m.filterValue = ""
+	m.filter.SetValue("")
+	m.focus = focusMessages
+	if len(e.unread) > 0 {
+		m.pendingJumpPostID = e.unread[0].Id
+	}
+	return m, tea.Batch(m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id))
+}
+
+// markFeedEntryRead clears the selected channel's unread/mention state on
+// the server and locally, and drops its bubble — without leaving the
+// feed.
+func (m Model) markFeedEntryRead() (tea.Model, tea.Cmd) {
+	if m.feed.idx < 0 || m.feed.idx >= len(m.feed.entries) {
+		return m, nil
+	}
+	e := m.feed.entries[m.feed.idx]
+	delete(m.unread, e.channelID)
+	delete(m.mentions, e.channelID)
+	m.removeFeedEntry(e.channelID)
+	m.status = "marked read"
+	m.renderFeedResults()
+	return m, m.markChannelViewed(e.channelID)
+}
+
+// removeFeedEntry drops the bubble for channelID and clamps the selection.
+func (m *Model) removeFeedEntry(channelID string) {
+	out := m.feed.entries[:0]
+	for _, e := range m.feed.entries {
+		if e.channelID != channelID {
+			out = append(out, e)
+		}
+	}
+	m.feed.entries = out
+	if m.feed.idx >= len(m.feed.entries) {
+		m.feed.idx = len(m.feed.entries) - 1
+	}
+	if m.feed.idx < 0 {
+		m.feed.idx = 0
+	}
+}
+
+// feedAppendPosted folds a live `posted` WS event for a background
+// channel into the feed so it updates without a manual refresh. No-op
+// until the feed has been built at least once.
+func (m *Model) feedAppendPosted(p *model.Post) {
+	if !m.feed.built || p == nil || p.Id == "" || p.DeleteAt != 0 || p.IsSystemMessage() {
+		return
+	}
+	for i := range m.feed.entries {
+		if m.feed.entries[i].channelID != p.ChannelId {
+			continue
+		}
+		for _, ex := range m.feed.entries[i].unread {
+			if ex.Id == p.Id {
+				return // already shown
+			}
+		}
+		u := append(m.feed.entries[i].unread, p)
+		if len(u) > feedUnreadMax {
+			u = u[len(u)-feedUnreadMax:]
+		}
+		m.feed.entries[i].unread = u
+		if m.onFeedTab() {
+			m.renderFeedResults()
+		}
+		return
+	}
+	// First unread in a channel that isn't in the feed yet — add a bubble
+	// at the top (newest activity).
+	var ctxPosts []*model.Post
+	if m.store != nil {
+		ctxPosts, _ = m.store.BeforeInChannel(p.ChannelId, p.CreateAt, feedContextLines)
+	}
+	entry := feedEntry{
+		channelID: p.ChannelId,
+		context:   ctxPosts,
+		unread:    []*model.Post{p},
+		mention:   m.mentions[p.ChannelId] > 0,
+	}
+	m.feed.entries = append([]feedEntry{entry}, m.feed.entries...)
+	if len(m.feed.entries) > 1 && m.feed.idx >= 0 {
+		m.feed.idx++ // keep the previously-selected bubble selected
+	}
+	if m.onFeedTab() {
+		m.renderFeedResults()
+	}
+}
+
+// feedRemovePost drops a deleted post from the feed, removing the whole
+// bubble if it leaves the channel with no unread left.
+func (m *Model) feedRemovePost(postID string) {
+	if !m.feed.built || postID == "" {
+		return
+	}
+	changed := false
+	for i := range m.feed.entries {
+		u := m.feed.entries[i].unread
+		for j, p := range u {
+			if p.Id == postID {
+				m.feed.entries[i].unread = append(u[:j], u[j+1:]...)
+				changed = true
+				break
+			}
+		}
+	}
+	if !changed {
+		return
+	}
+	out := m.feed.entries[:0]
+	for _, e := range m.feed.entries {
+		if len(e.unread) > 0 {
+			out = append(out, e)
+		}
+	}
+	m.feed.entries = out
+	if m.feed.idx >= len(m.feed.entries) {
+		m.feed.idx = len(m.feed.entries) - 1
+	}
+	if m.feed.idx < 0 {
+		m.feed.idx = 0
+	}
+	if m.onFeedTab() {
+		m.renderFeedResults()
+	}
+}
+
+// sizeFeedView keeps the feed viewport in sync with the body area. width
+// is the pane's outer width (border included); height is the pane's inner
+// content height (border already subtracted by the caller).
+func (m *Model) sizeFeedView(width, height int) {
+	innerW := width - 2 // strip the pane's left/right border
+	if innerW < 10 {
+		innerW = 10
+	}
+	// Header rows inside the pane: titleRow (1) + rule (1).
+	const headerRows = 2
+	bodyH := height - headerRows
+	if bodyH < 1 {
+		bodyH = 1
+	}
+	m.feed.view.SetWidth(innerW)
+	m.feed.view.SetHeight(bodyH)
+}
+
+// renderFeedResults populates the viewport with one bubble per unread
+// channel, scrolling the selected bubble into view. Mirrors
+// renderSearchResults.
+func (m *Model) renderFeedResults() {
+	if m.feed.err != "" {
+		m.feed.view.SetContent(
+			lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("  feed error: " + m.feed.err),
+		)
+		return
+	}
+	if len(m.feed.entries) == 0 {
+		hint := "  all caught up — nothing unread"
+		if m.feed.loading {
+			hint = "  gathering unread messages…"
+		}
+		m.feed.view.SetContent(lipgloss.NewStyle().Foreground(dimColor).Render(hint))
+		return
+	}
+
+	if m.feed.idx >= len(m.feed.entries) {
+		m.feed.idx = len(m.feed.entries) - 1
+	}
+	if m.feed.idx < 0 {
+		m.feed.idx = 0
+	}
+
+	innerW := m.feed.view.Width()
+	if innerW < 10 {
+		innerW = 10
+	}
+	var allLines []string
+	selStart, selEnd := -1, -1
+	for i, e := range m.feed.entries {
+		bubble := m.renderFeedBubble(innerW-2, e, i == m.feed.idx)
+		bubbleLines := strings.Split(bubble, "\n")
+		if i == m.feed.idx {
+			selStart = len(allLines)
+			selEnd = selStart + len(bubbleLines)
+		}
+		allLines = append(allLines, bubbleLines...)
+		allLines = append(allLines, "") // blank separator between bubbles
+	}
+	m.feed.view.SetContent(strings.Join(allLines, "\n"))
+
+	if h := m.feed.view.Height(); h > 0 && selStart >= 0 {
+		visStart := visualRowsBefore(allLines, selStart, m.feed.view.Width())
+		visEnd := visualRowsBefore(allLines, selEnd, m.feed.view.Width())
+		off := m.feed.view.YOffset()
+		switch {
+		case visStart < off:
+			off = visStart
+		case visEnd > off+h:
+			off = visEnd - h
+		}
+		if off < 0 {
+			off = 0
+		}
+		m.feed.view.SetYOffset(off)
+	}
+}
+
+// renderFeedBubble draws one unread channel as a bordered box: the
+// breadcrumb + unread count on the top border, up to feedContextLines of
+// already-read context (dim), a "new" divider, then the unread messages.
+// Mention channels get a red border (and sort first); the selected bubble
+// gets the focused border.
+func (m Model) renderFeedBubble(outerW int, e feedEntry, selected bool) string {
+	if outerW < 8 {
+		outerW = 8
+	}
+	inner := outerW - 2
+	contentW := inner - 2
+	if contentW < 1 {
+		contentW = 1
+	}
+
+	borderColor := dimColor
+	if m.mentions[e.channelID] > 0 {
+		borderColor = mentionTabColor // red, matching the mention vocabulary
+	}
+	if selected {
+		borderColor = focusedColor
+	}
+
+	header := "?"
+	if ch := m.findChannel(e.channelID); ch != nil {
+		header = m.channelBreadcrumb(ch)
+	}
+	n := m.unread[e.channelID]
+	if n <= 0 {
+		n = len(e.unread)
+	}
+	header += " · " + strconv.Itoa(n) + " new"
+	if mc := m.mentions[e.channelID]; mc > 0 {
+		header += " · " + plural(mc, "mention", "mentions")
+	}
+
+	var bodyLines []string
+	for _, p := range e.context {
+		bodyLines = append(bodyLines, m.renderHitLine(p, contentW, true, false))
+	}
+	bodyLines = append(bodyLines, feedDivider(contentW))
+
+	shown := e.unread
+	if len(shown) > feedUnreadCap {
+		hiddenOlder := len(shown) - feedUnreadCap
+		shown = shown[len(shown)-feedUnreadCap:]
+		bodyLines = append(bodyLines,
+			lipgloss.NewStyle().Foreground(dimColor).Render("↑ +"+strconv.Itoa(hiddenOlder)+" earlier unread"))
+	}
+	for _, p := range shown {
+		bodyLines = append(bodyLines, m.renderHitLine(p, contentW, false, false))
+	}
+	return bubbleBox(inner, header, bodyLines, borderColor)
+}
+
+// feedDivider renders the "new" separator drawn between the read context
+// and the unread messages inside a bubble.
+func feedDivider(width int) string {
+	style := lipgloss.NewStyle().Foreground(dimColor)
+	const label = "─ new "
+	if width <= lipgloss.Width(label) {
+		w := width
+		if w < 1 {
+			w = 1
+		}
+		return style.Render(strings.Repeat("─", w))
+	}
+	return style.Render(label + strings.Repeat("─", width-lipgloss.Width(label)))
+}
+
+// renderFeedPane composes the entire body of the Feed tab: title, a
+// separator rule, then the bubble viewport. Mirrors renderSearchPane
+// without the search input row.
+func (m Model) renderFeedPane(height, width int) string {
+	innerH := height - 1 // bottom border (top connects to the tab strip)
+	if innerH < 1 {
+		innerH = 1
+	}
+	if width < 10 {
+		width = 10
+	}
+
+	dim := lipgloss.NewStyle().Foreground(dimColor)
+	title := titleStyle.Render("Unread Feed")
+	var meta string
+	switch {
+	case m.feed.loading:
+		meta = dim.Render("  refreshing…")
+	case len(m.feed.entries) > 0:
+		meta = dim.Render("  " + plural(len(m.feed.entries), "channel", "channels") + "  ·  enter open · m mark read · r refresh")
+	}
+	titleRow := title + meta
+
+	rule := dim.Render(strings.Repeat("─", width-2))
+	body := m.feed.view.View()
+	rows := []string{titleRow, rule, body}
+
+	style := lipgloss.NewStyle().
+		Border(border).
+		UnsetBorderTop().
+		Width(width).
+		Height(innerH)
+	if m.focus == focusFeed {
+		style = style.BorderForeground(focusedColor)
+	} else {
+		style = style.BorderForeground(dimColor)
+	}
+	return style.Render(strings.Join(rows, "\n"))
+}

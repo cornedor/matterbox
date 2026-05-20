@@ -24,38 +24,84 @@ const switcherLimit = 12
 func (m Model) openSwitcher() (tea.Model, tea.Cmd) {
 	m.switcherMode = true
 	m.switcher.SetValue("")
+	m.switcher.Prompt = "> "
+	m.switcher.Placeholder = "switch to channel or > for commands…"
 	m.switcher.Focus()
 	m.switcherIdx = 0
+	m.switcherCmdPending = nil
 	return m, nil
 }
 
 func (m *Model) closeSwitcher() {
 	m.switcherMode = false
 	m.switcher.SetValue("")
+	m.switcher.Prompt = "> "
+	m.switcher.Placeholder = "switch to channel or > for commands…"
 	m.switcher.Blur()
 	m.switcherIdx = 0
+	m.switcherCmdPending = nil
 }
 
 // handleSwitcherKey owns every keystroke while the switcher is open.
+// Three sub-modes coexist behind the same popup: normal channel switch,
+// "> command" list, and a captive arg-prompt for a selected command.
 func (m Model) handleSwitcherKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
-	case "esc", "ctrl+k":
+	case "esc":
+		if m.inCommandArgMode() {
+			m.leaveCommandArgMode()
+			return m, nil
+		}
+		m.closeSwitcher()
+		return m, nil
+	case "ctrl+k":
 		m.closeSwitcher()
 		return m, nil
 	case "up", "ctrl+p":
+		if m.inCommandArgMode() {
+			// Captive arg-prompt: no list to navigate.
+			return m, nil
+		}
 		if m.switcherIdx > 0 {
 			m.switcherIdx--
 		}
 		return m, nil
 	case "down", "ctrl+n":
-		results := m.switcherResults()
-		if m.switcherIdx < len(results)-1 {
+		if m.inCommandArgMode() {
+			return m, nil
+		}
+		var max int
+		if m.inCommandMode() {
+			max = len(m.commandResults())
+		} else {
+			max = len(m.switcherResults())
+		}
+		if m.switcherIdx < max-1 {
 			m.switcherIdx++
 		}
 		return m, nil
 	case "enter":
+		if m.inCommandArgMode() {
+			cmd := *m.switcherCmdPending
+			arg := m.switcher.Value()
+			m.closeSwitcher()
+			return m, cmd.run(&m, arg)
+		}
+		if m.inCommandMode() {
+			results := m.commandResults()
+			if len(results) == 0 || m.switcherIdx >= len(results) {
+				return m, nil
+			}
+			sel := results[m.switcherIdx]
+			if sel.argPrompt == "" {
+				m.closeSwitcher()
+				return m, sel.run(&m, "")
+			}
+			m.enterCommandArgMode(sel)
+			return m, nil
+		}
 		results := m.switcherResults()
 		if len(results) == 0 || m.switcherIdx >= len(results) {
 			return m, nil
@@ -80,13 +126,17 @@ func (m Model) handleSwitcherKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.switcher.Value() != old {
 		m.switcherIdx = 0
 	}
+	// Keep the textinput's prompt in sync with the current mode so the
+	// visible characters are exactly what the user typed (no double
+	// "> " when in command mode).
+	m.syncSwitcherPrompt()
 	return m, cmd
 }
 
 // switcherResults returns up to switcherLimit channels matching the
 // current query across every bucket (teams + DMs + group-DMs).
 // Empty query lists everything (alphabetical).
-func (m Model) switcherResults() []*model.Channel {
+func (m *Model) switcherResults() []*model.Channel {
 	needle := strings.ToLower(strings.TrimSpace(m.switcher.Value()))
 	type match struct {
 		ch    *model.Channel
@@ -186,7 +236,7 @@ func fuzzyScore(haystack, needle string) (int, bool) {
 // teamHintForChannel returns a short label describing where the channel
 // lives, shown dim next to the match. "DM" for direct/group, the team's
 // display name otherwise.
-func (m Model) teamHintForChannel(ch *model.Channel) string {
+func (m *Model) teamHintForChannel(ch *model.Channel) string {
 	if ch.Type == model.ChannelTypeDirect || ch.Type == model.ChannelTypeGroup {
 		return "DM"
 	}
@@ -201,7 +251,7 @@ func (m Model) teamHintForChannel(ch *model.Channel) string {
 // renderSwitcher draws the centered popup: title, input row, separator,
 // then up to switcherLimit result rows with mention/unread badges and a
 // dim team-name suffix.
-func (m Model) renderSwitcher() string {
+func (m *Model) renderSwitcher() string {
 	w := switcherWidth
 	if cap := m.width - 4; cap > 0 && w > cap {
 		w = cap
@@ -214,6 +264,15 @@ func (m Model) renderSwitcher() string {
 		inner = 1
 	}
 
+	// Sub-modes have their own renderers; the channel switcher below is
+	// the default path.
+	if m.inCommandArgMode() {
+		return m.renderSwitcherArgPrompt(w, inner)
+	}
+	if m.inCommandMode() {
+		return m.renderSwitcherCommands(w, inner)
+	}
+
 	dim := lipgloss.NewStyle().Foreground(dimColor)
 	results := m.switcherResults()
 
@@ -224,7 +283,7 @@ func (m Model) renderSwitcher() string {
 	}
 
 	if len(results) == 0 {
-		rows = append(rows, dim.Render("  no matches"))
+		rows = append(rows, dim.Render("  no matches  (type > for commands)"))
 	} else {
 		for i, ch := range results {
 			label := m.channelLabel(ch)
@@ -250,6 +309,7 @@ func (m Model) renderSwitcher() string {
 			if reserved < inner {
 				labelText = truncate(label, inner-reserved)
 			}
+			selected := i == m.switcherIdx
 			switch {
 			case mentionN > 0:
 				labelText = mentionStyle.Render(labelText)
@@ -258,9 +318,16 @@ func (m Model) renderSwitcher() string {
 			}
 			line := "  " + labelText + badge
 			if teamSuffix != "" {
-				line += dim.Render(teamSuffix)
+				// On the selected row, leave the team suffix unstyled so the
+				// selectedRow foreground applies — dim grey on the highlight
+				// background is unreadable.
+				if selected {
+					line += teamSuffix
+				} else {
+					line += dim.Render(teamSuffix)
+				}
 			}
-			if i == m.switcherIdx {
+			if selected {
 				line = selectedRow.Width(inner).Render(line)
 			}
 			rows = append(rows, line)
@@ -269,6 +336,79 @@ func (m Model) renderSwitcher() string {
 
 	// lipgloss v2: Width() is the outer width (includes border + padding).
 	// We want the popup to render at outer = w, so pass it directly.
+	return lipgloss.NewStyle().
+		Border(border).
+		BorderForeground(focusedColor).
+		Padding(0, 1).
+		Width(w).
+		Render(strings.Join(rows, "\n"))
+}
+
+// renderSwitcherCommands renders the popup for "> command" mode: the
+// title flips to "Run command" and the result list is the registered
+// command catalogue (filtered by anything after the ">").
+func (m *Model) renderSwitcherCommands(w, inner int) string {
+	dim := lipgloss.NewStyle().Foreground(dimColor)
+	results := m.commandResults()
+
+	rows := []string{
+		titleStyle.Render("Run command"),
+		m.switcher.View(),
+		dim.Render(strings.Repeat("─", inner)),
+	}
+
+	if len(results) == 0 {
+		rows = append(rows, dim.Render("  no matching commands"))
+	} else {
+		for i, c := range results {
+			name := c.name
+			desc := c.desc
+			// Reserve "  " leading + "  " gap + desc.
+			reserved := 2
+			if desc != "" {
+				reserved += 2 + lipgloss.Width(desc)
+			}
+			if reserved < inner {
+				name = truncate(name, inner-reserved)
+			}
+			selected := i == m.switcherIdx
+			line := "  " + name
+			if desc != "" {
+				// On the selected row, skip the dim style so the selectedRow
+				// foreground applies — dim grey foreground on the highlight
+				// background is unreadable.
+				if selected {
+					line += "  " + desc
+				} else {
+					line += "  " + dim.Render(desc)
+				}
+			}
+			if selected {
+				line = selectedRow.Width(inner).Render(line)
+			}
+			rows = append(rows, line)
+		}
+	}
+
+	return lipgloss.NewStyle().
+		Border(border).
+		BorderForeground(focusedColor).
+		Padding(0, 1).
+		Width(w).
+		Render(strings.Join(rows, "\n"))
+}
+
+// renderSwitcherArgPrompt renders the captive argument-entry view that
+// appears after a command with an argPrompt is selected.
+func (m *Model) renderSwitcherArgPrompt(w, inner int) string {
+	dim := lipgloss.NewStyle().Foreground(dimColor)
+	title := titleStyle.Render(m.switcherCmdPending.name)
+	rows := []string{
+		title,
+		m.switcher.View(),
+		dim.Render(strings.Repeat("─", inner)),
+		dim.Render("  enter to run · esc to go back"),
+	}
 	return lipgloss.NewStyle().
 		Border(border).
 		BorderForeground(focusedColor).

@@ -1,7 +1,11 @@
 package ui
 
 import (
+	"context"
+
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/store"
 )
 
 type meLoadedMsg struct{ user *model.User }
@@ -11,6 +15,15 @@ type channelsLoadedMsg struct {
 	userNames map[string]string // pre-resolved usernames for DM partners
 }
 type postsLoadedMsg struct {
+	channelID string
+	posts     []*model.Post
+	users     map[string]string
+}
+
+// postsGapFilledMsg carries the posts created in `channelID` after the
+// newest post we had cached. Empty `posts` means the cache was already
+// current. Posts are oldest→newest.
+type postsGapFilledMsg struct {
 	channelID string
 	posts     []*model.Post
 	users     map[string]string
@@ -51,6 +64,65 @@ type attachmentOpenedMsg struct {
 	err  error
 }
 
+// searchDebounceMsg fires after searchDebounce; if seq still matches the
+// current state, the handler kicks off the actual store.Search call.
+type searchDebounceMsg struct{ seq int }
+
+// searchResultsMsg carries hits from a completed store.Search. Stale
+// responses are dropped when seq no longer matches m.search.seq. err is
+// the stringified database error if any (kept as a string so the msg
+// stays cheaply copyable across the bubbletea tick boundary).
+type searchResultsMsg struct {
+	seq   int
+	query string
+	hits  []store.SearchHit
+	err   string
+}
+
+// feedLoadedMsg carries the assembled unread-feed entries from a
+// completed buildFeed run. Stale responses are dropped when seq no
+// longer matches m.feed.seq. users carries any newly-resolved sender
+// usernames so the bubbles render real names.
+type feedLoadedMsg struct {
+	seq     int
+	entries []feedEntry
+	users   map[string]string
+}
+
+// summaryGatheredMsg carries the channel-path transcript assembled by the
+// worker. Stale responses are dropped when seq no longer matches
+// m.summary.seq. count is the number of messages included.
+type summaryGatheredMsg struct {
+	seq        int
+	transcript string
+	count      int
+	// latestMs is the create-time (unix-ms) of the channel's most recent
+	// real message, probed only when count == 0 so the empty-window result
+	// can tell the user how far back the last activity was.
+	latestMs int64
+	err      error
+}
+
+// summaryStreamOpenedMsg hands the UI the live chunk channel + cancel
+// handle for an opened streaming request. Dropped (and cancelled) when seq
+// no longer matches m.summary.seq.
+type summaryStreamOpenedMsg struct {
+	seq    int
+	ch     chan summaryChunkMsg
+	cancel context.CancelFunc
+}
+
+// summaryChunkMsg is one streamed delta (answer content and/or reasoning),
+// a terminal done marker, or a terminal error. Dropped when seq no longer
+// matches m.summary.seq.
+type summaryChunkMsg struct {
+	seq      int
+	content  string
+	thinking string
+	done     bool
+	err      error
+}
+
 // mentionDebounceMsg fires after mentionDebounce; if `seq` still matches
 // the current state, the handler kicks off fetchMentions.
 type mentionDebounceMsg struct{ seq int }
@@ -60,5 +132,15 @@ type mentionDebounceMsg struct{ seq int }
 type mentionUsersMsg struct {
 	seq   int
 	users []*model.User
+	err   error
+}
+
+// usersResolvedMsg carries the result of the background username fetch
+// kicked off by resolveUnknownSenders. `ids` is the exact set requested
+// (so the handler can clear them from inflightSenders on error); `users`
+// maps the ids that resolved to their username. On error `users` is nil.
+type usersResolvedMsg struct {
+	ids   []string
+	users map[string]string
 	err   error
 }

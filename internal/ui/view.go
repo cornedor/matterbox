@@ -2,12 +2,14 @@ package ui
 
 import (
 	"fmt"
+	"image/color"
 	"strconv"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
@@ -35,13 +37,16 @@ var (
 	dmTabColor        = lipgloss.Color("5")
 	unreadTabColor    = lipgloss.Color("11") // yellow when there are unreads
 	mentionTabColor   = lipgloss.Color("9")  // red when there are mentions
+	searchTabColor    = lipgloss.Color("6")  // cyan to set Search apart from teams
+	feedTabColor      = lipgloss.Color("10") // green to set the Feed tab apart
 	footerStyle       = lipgloss.NewStyle().Foreground(dimColor)
-	filterStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
-	unreadStyle  = lipgloss.NewStyle().Bold(true)
-	mentionStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true) // red
-	attachmentStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))         // cyan
-	selectedBarStyle = lipgloss.NewStyle().Foreground(focusedColor)               // selected-post left bar
-	replyHintStyle   = lipgloss.NewStyle().Foreground(dimColor)                   // ↳ reply, ↪ N replies
+	filterStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
+	unreadStyle       = lipgloss.NewStyle().Bold(true)
+	mentionStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true) // red
+	attachmentStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))            // cyan
+	selectedBarStyle  = lipgloss.NewStyle().Foreground(focusedColor)                   // selected-post left bar
+	replyHintStyle    = lipgloss.NewStyle().Foreground(dimColor)                       // ↳ reply, ↪ N replies
+	editedStyle       = lipgloss.NewStyle().Foreground(dimColor).Italic(true)          // right-aligned "edited" tag
 )
 
 // tabBorderWithBottom returns a rounded border with the bottom row
@@ -85,27 +90,61 @@ func (m *Model) resizeMessagesViewport() {
 		}
 		msgsW = rightW - threadW
 	}
+	// The scrollbar overlays the right border column (rendered by
+	// renderMessagesPane / renderThreadPane), so the viewport fills the
+	// inner pane width up to that column without reserving extra space.
 	m.msgsView.SetWidth(msgsW - 2)
-	attBarH := m.attachmentBarHeight(msgsW - 2)
-	// bodyH already excludes the tab strip + footer. The messages pane
-	// also has to make room for its bottom border (1), title row (1), the
-	// top-border row above the input (1), the input itself (variable),
-	// and any attachment chip strip. Everything left is the viewport.
-	mh := bodyH - 2 - 1 - 1 - m.input.Height() - attBarH
-	if mh < 1 {
-		mh = 1
-	}
-	m.msgsView.SetHeight(mh)
 	tw := threadW - 4
 	if tw < 1 {
 		tw = 1
 	}
 	m.threadView.SetWidth(tw)
-	th := bodyH - 3 - 2
-	if th < 1 {
-		th = 1
+	// When the thread sidebar is open the compose textarea moves into
+	// the thread pane; the messages pane only needs room for its title
+	// + viewport, while the thread pane has to make room for the input
+	// (and its attachment chip strip).
+	if m.threadOpen {
+		mh := bodyH - 3 - 2
+		if mh < 1 {
+			mh = 1
+		}
+		m.msgsView.SetHeight(mh)
+		attBarH := m.attachmentBarHeight(threadW - 2)
+		th := bodyH - 2 - 1 - 1 - m.input.Height() - attBarH
+		if th < 1 {
+			th = 1
+		}
+		m.threadView.SetHeight(th)
+	} else {
+		attBarH := m.attachmentBarHeight(msgsW - 2)
+		// bodyH already excludes the tab strip + footer. The messages
+		// pane also has to make room for its bottom border (1), title
+		// row (1), the top-border row above the input (1), the input
+		// itself (variable), and any attachment chip strip. Everything
+		// left is the viewport.
+		mh := bodyH - 2 - 1 - 1 - m.input.Height() - attBarH
+		if mh < 1 {
+			mh = 1
+		}
+		m.msgsView.SetHeight(mh)
+		th := bodyH - 3 - 2
+		if th < 1 {
+			th = 1
+		}
+		m.threadView.SetHeight(th)
 	}
-	m.threadView.SetHeight(th)
+	if m.historyMode {
+		m.sizeHistoryView()
+		m.renderHistory()
+	}
+	if m.summary.phase == summaryStreaming || m.summary.phase == summaryDone {
+		m.sizeSummaryView()
+		m.renderSummaryViewBody()
+	}
+	m.sizeSearchView(m.width, bodyH)
+	m.renderSearchResults()
+	m.sizeFeedView(m.width, bodyH)
+	m.renderFeedResults()
 	m.renderMessages()
 	m.renderThread()
 }
@@ -114,8 +153,21 @@ const threadPaneMinWidth = 24
 
 func (m *Model) resizeInput() {
 	if m.threadOpen {
-		// Input lives under the messages pane; size to that pane.
-		w := m.msgsView.Width()
+		// Input lives under the thread pane when it's open. Mirror the
+		// thread-width split used in resizeMessagesViewport so the
+		// textarea spans the same inner width as the chip strip above it.
+		rightW := m.width - channelsWidth - 2
+		if rightW < 10 {
+			rightW = 10
+		}
+		threadW := rightW / 2
+		if threadW < threadPaneMinWidth {
+			threadW = threadPaneMinWidth
+		}
+		if threadW > rightW-threadPaneMinWidth {
+			threadW = rightW - threadPaneMinWidth
+		}
+		w := threadW - 2
 		if w < 10 {
 			w = 10
 		}
@@ -173,15 +225,18 @@ func (m *Model) renderMessages() {
 		if i == m.postIdx {
 			selStart = len(allLines)
 			if decorate {
+				// Don't mutate the cached slice; copy before decorating.
+				decorated := make([]string, len(chunk))
 				for j, l := range chunk {
 					// Replace the two-space gutter with the bar so the
 					// selected post's lines stay at the same x-position.
 					if strings.HasPrefix(l, "  ") {
-						chunk[j] = bar + " " + l[2:]
+						decorated[j] = bar + " " + l[2:]
 					} else {
-						chunk[j] = bar + " " + l
+						decorated[j] = bar + " " + l
 					}
 				}
+				chunk = decorated
 			}
 			selEnd = selStart + len(chunk)
 		}
@@ -190,18 +245,27 @@ func (m *Model) renderMessages() {
 	m.msgsView.SetContent(strings.Join(allLines, "\n"))
 
 	if h := m.msgsView.Height(); h > 0 && selStart >= 0 {
+		// The viewport has SoftWrap on, so YOffset is measured in visual
+		// rows (post-wrap), not logical lines. Convert before deciding
+		// where to scroll, otherwise wrapped lines earlier in the
+		// buffer leave the selection short of the bottom.
+		visStart := visualRowsBefore(allLines, selStart, m.msgsView.Width())
+		visEnd := visualRowsBefore(allLines, selEnd, m.msgsView.Width())
 		off := m.msgsView.YOffset()
 		switch {
-		case selStart < off:
-			off = selStart
-		case selEnd > off+h:
-			off = selEnd - h
+		case m.anchorMsgSelTop:
+			off = visStart
+		case visStart < off:
+			off = visStart
+		case visEnd > off+h:
+			off = visEnd - h
 		}
 		if off < 0 {
 			off = 0
 		}
 		m.msgsView.SetYOffset(off)
 	}
+	m.anchorMsgSelTop = false
 }
 
 // renderThread populates the thread viewport with the loaded thread
@@ -234,13 +298,16 @@ func (m *Model) renderThread() {
 		if i == m.threadIdx {
 			selStart = len(allLines)
 			if decorate {
+				// Don't mutate the cached slice; copy before decorating.
+				decorated := make([]string, len(chunk))
 				for j, l := range chunk {
 					if strings.HasPrefix(l, "  ") {
-						chunk[j] = bar + " " + l[2:]
+						decorated[j] = bar + " " + l[2:]
 					} else {
-						chunk[j] = bar + " " + l
+						decorated[j] = bar + " " + l
 					}
 				}
+				chunk = decorated
 			}
 			selEnd = selStart + len(chunk)
 		}
@@ -249,12 +316,14 @@ func (m *Model) renderThread() {
 	m.threadView.SetContent(strings.Join(allLines, "\n"))
 
 	if h := m.threadView.Height(); h > 0 && selStart >= 0 {
+		visStart := visualRowsBefore(allLines, selStart, m.threadView.Width())
+		visEnd := visualRowsBefore(allLines, selEnd, m.threadView.Width())
 		off := m.threadView.YOffset()
 		switch {
-		case selStart < off:
-			off = selStart
-		case selEnd > off+h:
-			off = selEnd - h
+		case visStart < off:
+			off = visStart
+		case visEnd > off+h:
+			off = visEnd - h
 		}
 		if off < 0 {
 			off = 0
@@ -263,10 +332,175 @@ func (m *Model) renderThread() {
 	}
 }
 
+// wrapBodyLine wraps a single rendered line to fit within width while
+// preserving its two-space left gutter on wrapped continuation rows.
+// ANSI escape codes are preserved across the wrap. Lines without the
+// gutter (headers) or that already fit are returned as a single element.
+func wrapBodyLine(line string, width int) []string {
+	if width < 4 || lipgloss.Width(line) <= width {
+		return []string{line}
+	}
+	const indent = "  "
+	if !strings.HasPrefix(line, indent) {
+		return []string{line}
+	}
+	wrapped := ansi.Wrap(line[len(indent):], width-len(indent), "")
+	parts := strings.Split(wrapped, "\n")
+	for i, p := range parts {
+		parts[i] = indent + p
+	}
+	return parts
+}
+
+// visualRowsBefore returns the number of visual rows the first n lines
+// of `lines` take up when soft-wrapped at maxWidth — mirroring how
+// bubbles/viewport counts rows under SoftWrap. It is used to translate
+// logical line indices into the visual-row coordinate space that
+// YOffset operates in. Returns n unchanged when maxWidth is not yet
+// known (e.g. before the first resize), so callers fall back to the
+// pre-soft-wrap behaviour rather than collapsing scroll to 0.
+func visualRowsBefore(lines []string, n, maxWidth int) int {
+	if n <= 0 {
+		return 0
+	}
+	if n > len(lines) {
+		n = len(lines)
+	}
+	if maxWidth <= 0 {
+		return n
+	}
+	rows := 0
+	for i := 0; i < n; i++ {
+		w := lipgloss.Width(lines[i])
+		if w <= maxWidth {
+			rows++
+			continue
+		}
+		rows += (w + maxWidth - 1) / maxWidth
+	}
+	return rows
+}
+
+var scrollbarThumbStyle = lipgloss.NewStyle().Foreground(focusedColor)
+
+// renderRightBorder builds a 1-column wide string `outerH` rows tall
+// that serves as the merged right border + scrollbar for a bordered
+// pane rendered with .UnsetBorderRight(). The first outerH-1 rows are
+// the content-area rows, the last row is the bottom-right corner so it
+// aligns with the box's bottom border row.
+//
+// When showScrollbar is true and the viewport content overflows, a
+// proportional thumb is painted at the rows corresponding to the
+// viewport (mapped via vpTop / vpHeight). Otherwise every content row
+// renders as the regular border `│` in borderColor, so visually the
+// scrollbar is hidden — the pane looks like it has a normal right
+// border.
+func renderRightBorder(outerH, vpTop, vpHeight int, totalRows int, percent float64, borderColor color.Color, showScrollbar bool) string {
+	if outerH < 1 {
+		outerH = 1
+	}
+	borderStyle := lipgloss.NewStyle().Foreground(borderColor)
+	track := borderStyle.Render("│")
+	corner := borderStyle.Render("┘")
+
+	lines := make([]string, outerH)
+	for i := 0; i < outerH-1; i++ {
+		lines[i] = track
+	}
+	lines[outerH-1] = corner
+
+	if showScrollbar && vpHeight > 0 && totalRows > vpHeight {
+		thumb := vpHeight * vpHeight / totalRows
+		if thumb < 1 {
+			thumb = 1
+		}
+		if thumb > vpHeight {
+			thumb = vpHeight
+		}
+		avail := vpHeight - thumb
+		pos := int(float64(avail)*percent + 0.5)
+		if pos < 0 {
+			pos = 0
+		}
+		if pos > avail {
+			pos = avail
+		}
+		thumbCell := scrollbarThumbStyle.Render("█")
+		for i := pos; i < pos+thumb; i++ {
+			idx := vpTop + i
+			if idx >= 0 && idx < outerH-1 {
+				lines[idx] = thumbCell
+			}
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+// viewportVisualRows counts the visual rows of a soft-wrapped viewport's
+// current content. The viewport's TotalLineCount is in logical lines, so
+// we re-walk the lines here applying the same wrap math used elsewhere.
+func viewportVisualRows(content string, width int) int {
+	if content == "" {
+		return 0
+	}
+	lines := strings.Split(content, "\n")
+	return visualRowsBefore(lines, len(lines), width)
+}
+
+// withEditedTag right-aligns a dim "edited" tag on the same line as
+// the rendered header, padding with spaces to the available width.
+// Returns the header unchanged when the post wasn't edited or there's
+// no room left after the existing header content.
+//
+// We pad to width-2 rather than width because renderMessages prepends a
+// 2-col selection bar ("▎ ") to header lines of the focused post — if
+// we used the full width here, the bar would push the line 2 cols past
+// the viewport edge and "edited" would wrap to the next line.
+func withEditedTag(header string, p *model.Post, width int) string {
+	if p.EditAt == 0 || width <= 0 {
+		return header
+	}
+	const tag = "edited"
+	target := width - 2 // reserve room for the potential selection bar
+	used := lipgloss.Width(header)
+	// Need at least one space between the existing content and the tag.
+	if used+1+len(tag) > target {
+		return header
+	}
+	pad := target - used - len(tag)
+	return header + strings.Repeat(" ", pad) + editedStyle.Render(tag)
+}
+
+// formatPostTime returns a header timestamp for a post. Posts created
+// within the last 24 hours show only the time ("15:04"); older posts
+// include a short date in front so the user can tell at a glance how
+// far back they're reading. Cross-year posts include the year too so
+// "Jan 5 15:04" can't quietly mean either of two different Januaries.
+func formatPostTime(createAtMillis int64) string {
+	t := time.UnixMilli(createAtMillis).Local()
+	now := time.Now()
+	if now.Sub(t) < 24*time.Hour {
+		return t.Format("15:04")
+	}
+	if t.Year() != now.Year() {
+		return t.Format("Jan 2 2006 15:04")
+	}
+	return t.Format("Jan 2 15:04")
+}
+
 // renderThreadPostLines is the thread-sidebar variant of
 // renderPostLines: the root post gets no ↳/↪ hint (it IS the root),
 // replies omit the reply hint since context makes it obvious.
 func (m *Model) renderThreadPostLines(p *model.Post, isRoot bool) []string {
+	width := m.threadView.Width()
+	poll := isPoll(p)
+	var fp string
+	if !poll && p.Id != "" {
+		fp = m.postLineFingerprint(p, width, true, isRoot)
+		if cached, ok := m.cachedPostLines(p, fp); ok {
+			return cached
+		}
+	}
 	name := m.userNames[p.UserId]
 	if name == "" {
 		name = p.UserId
@@ -274,17 +508,34 @@ func (m *Model) renderThreadPostLines(p *model.Post, isRoot bool) []string {
 			name = name[:8]
 		}
 	}
-	ts := time.UnixMilli(p.CreateAt).Local().Format("15:04")
+	ts := formatPostTime(p.CreateAt)
 	header := userStyle.Render(name) + "  " + timeStyle.Render(ts)
 	if isRoot {
 		header += "  " + replyHintStyle.Render("· root")
 	}
+	header = withEditedTag(header, p, width)
 	lines := []string{header}
 	if body := renderMarkdown(p.Message); body != "" {
-		lines = append(lines, strings.Split(body, "\n")...)
+		for _, l := range strings.Split(body, "\n") {
+			lines = append(lines, wrapBodyLine(l, width)...)
+		}
 	}
-	if att := renderAttachments(p, m.threadView.Width()); att != "" {
-		lines = append(lines, strings.Split(att, "\n")...)
+	if poll {
+		selected := m.focus == focusThread && m.threadIdx >= 0 && m.threadIdx < len(m.threadPosts) && m.threadPosts[m.threadIdx] == p
+		for _, l := range m.renderPoll(p, width, selected) {
+			lines = append(lines, wrapBodyLine(l, width)...)
+		}
+	}
+	if att := renderAttachments(p, width); att != "" {
+		for _, l := range strings.Split(att, "\n") {
+			lines = append(lines, wrapBodyLine(l, width)...)
+		}
+	}
+	if rx := m.renderReactions(p); rx != "" {
+		lines = append(lines, wrapBodyLine(rx, width)...)
+	}
+	if !poll && p.Id != "" {
+		m.putPostLines(p.Id, fp, lines)
 	}
 	return lines
 }
@@ -294,6 +545,15 @@ func (m *Model) renderThreadPostLines(p *model.Post, isRoot bool) []string {
 // attachment. Existing styles already include a two-space left gutter
 // on body and attachment lines.
 func (m *Model) renderPostLines(p *model.Post) []string {
+	width := m.msgsView.Width()
+	poll := isPoll(p)
+	var fp string
+	if !poll && p.Id != "" {
+		fp = m.postLineFingerprint(p, width, false, false)
+		if cached, ok := m.cachedPostLines(p, fp); ok {
+			return cached
+		}
+	}
 	name := m.userNames[p.UserId]
 	if name == "" {
 		name = p.UserId
@@ -301,19 +561,36 @@ func (m *Model) renderPostLines(p *model.Post) []string {
 			name = name[:8]
 		}
 	}
-	ts := time.UnixMilli(p.CreateAt).Local().Format("15:04")
+	ts := formatPostTime(p.CreateAt)
 	header := userStyle.Render(name) + "  " + timeStyle.Render(ts)
 	if p.RootId != "" {
 		header = replyHintStyle.Render("↳ ") + header
 	} else if p.ReplyCount > 0 {
 		header += "  " + replyHintStyle.Render(fmt.Sprintf("↪ %d", p.ReplyCount))
 	}
+	header = withEditedTag(header, p, width)
 	lines := []string{header}
 	if body := renderMarkdown(p.Message); body != "" {
-		lines = append(lines, strings.Split(body, "\n")...)
+		for _, l := range strings.Split(body, "\n") {
+			lines = append(lines, wrapBodyLine(l, width)...)
+		}
 	}
-	if att := renderAttachments(p, m.msgsView.Width()); att != "" {
-		lines = append(lines, strings.Split(att, "\n")...)
+	if poll {
+		selected := m.focus == focusMessages && m.postIdx >= 0 && m.postIdx < len(m.posts) && m.posts[m.postIdx] == p
+		for _, l := range m.renderPoll(p, width, selected) {
+			lines = append(lines, wrapBodyLine(l, width)...)
+		}
+	}
+	if att := renderAttachments(p, width); att != "" {
+		for _, l := range strings.Split(att, "\n") {
+			lines = append(lines, wrapBodyLine(l, width)...)
+		}
+	}
+	if rx := m.renderReactions(p); rx != "" {
+		lines = append(lines, wrapBodyLine(rx, width)...)
+	}
+	if !poll && p.Id != "" {
+		m.putPostLines(p.Id, fp, lines)
 	}
 	return lines
 }
@@ -406,7 +683,7 @@ func (m Model) View() tea.View {
 	return v
 }
 
-func (m Model) viewContent() string {
+func (m *Model) viewContent() string {
 	if m.width == 0 || m.height == 0 {
 		return "starting…"
 	}
@@ -420,31 +697,53 @@ func (m Model) viewContent() string {
 		bodyH = 5
 	}
 
-	channelsPane := m.renderChannelsPane(bodyH)
-	rightW := m.width - channelsWidth
-	if rightW < 10 {
-		rightW = 10
-	}
-	msgsW := rightW
-	threadW := 0
-	if m.threadOpen {
-		threadW = rightW / 2
-		if threadW < threadPaneMinWidth {
-			threadW = threadPaneMinWidth
+	var body string
+	if m.onSearchTab() {
+		body = m.renderSearchPane(bodyH, m.width)
+	} else if m.onFeedTab() {
+		body = m.renderFeedPane(bodyH, m.width)
+	} else {
+		channelsPane := m.renderChannelsPane(bodyH)
+		rightW := m.width - channelsWidth
+		if rightW < 10 {
+			rightW = 10
 		}
-		if threadW > rightW-threadPaneMinWidth {
-			threadW = rightW - threadPaneMinWidth
+		msgsW := rightW
+		threadW := 0
+		if m.threadOpen {
+			threadW = rightW / 2
+			if threadW < threadPaneMinWidth {
+				threadW = threadPaneMinWidth
+			}
+			if threadW > rightW-threadPaneMinWidth {
+				threadW = rightW - threadPaneMinWidth
+			}
+			msgsW = rightW - threadW
 		}
-		msgsW = rightW - threadW
+		messagesPane := m.renderMessagesPane(bodyH, msgsW)
+		panes := []string{channelsPane, messagesPane}
+		if m.threadOpen {
+			panes = append(panes, m.renderThreadPane(bodyH, threadW))
+		}
+		body = lipgloss.JoinHorizontal(lipgloss.Top, panes...)
 	}
-	messagesPane := m.renderMessagesPane(bodyH, msgsW)
-	panes := []string{channelsPane, messagesPane}
-	if m.threadOpen {
-		panes = append(panes, m.renderThreadPane(bodyH, threadW))
-	}
-	body := lipgloss.JoinHorizontal(lipgloss.Top, panes...)
 	if m.switcherMode {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderSwitcher())
+	}
+	if m.historyMode {
+		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderHistoryPopup())
+	}
+	if m.deleteConfirmPostID != "" {
+		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderDeleteConfirm())
+	}
+	if m.reactionPickerPostID != "" {
+		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderReactionPicker())
+	}
+	if m.pollDialog.open {
+		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderPollDialog())
+	}
+	if m.summary.active() {
+		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderSummaryPopup())
 	}
 
 	tabs := m.renderTeamTabs()
@@ -452,8 +751,8 @@ func (m Model) viewContent() string {
 	return lipgloss.JoinVertical(lipgloss.Left, tabs, body, footer)
 }
 
-func (m Model) renderChannelsPane(height int) string {
-	innerH := height - 1 // border (bottom only; top connects to tab strip)
+func (m *Model) renderChannelsPane(height int) string {
+	innerH := height - 1 // bottom border row (top connects to tab strip)
 	if innerH < 1 {
 		innerH = 1
 	}
@@ -465,7 +764,7 @@ func (m Model) renderChannelsPane(height int) string {
 	if m.filterMode {
 		header = filterStyle.Render(m.filter.View())
 	} else if m.filterValue != "" {
-		header = filterStyle.Render("/ " + m.filterValue)
+		header = filterStyle.Render("f " + m.filterValue)
 	} else {
 		title := "Channels"
 		switch m.currentTeamID() {
@@ -548,8 +847,12 @@ func (m Model) renderChannelsPane(height int) string {
 	return style.Render(strings.Join(rows, "\n"))
 }
 
-func (m Model) renderMessagesPane(height, width int) string {
-	innerH := height - 1 // border (bottom only; top connects to tab strip)
+func (m *Model) renderMessagesPane(height, width int) string {
+	// renderChannelsPane pads its content to height rows, which overflows
+	// the inner area (height-1) and makes lipgloss extend the box by one
+	// row; that pane ends up `height` rows tall. We need to match that so
+	// the bottom borders align, hence Height(height) here (not height-1).
+	innerH := height
 	if innerH < 1 {
 		innerH = 1
 	}
@@ -575,44 +878,67 @@ func (m Model) renderMessagesPane(height, width int) string {
 		}
 		m.msgsView.SetHeight(h)
 	}
-	msgsPart := m.msgsView.View()
+	totalRows := viewportVisualRows(m.msgsView.GetContent(), m.msgsView.Width())
+	showScrollbar := totalRows > m.msgsView.Height() && m.msgsView.ScrollPercent() < 1.0
 
+	parts := []string{titleStyle.Render(title), m.msgsView.View()}
+	if popup != "" {
+		parts = append(parts, popup)
+	}
+	// The compose textarea + attachment chip strip live in whichever pane
+	// is currently accepting replies: the thread sidebar when it's open,
+	// the messages pane otherwise.
+	if !m.threadOpen {
+		if bar := m.renderAttachmentBar(width - 2); bar != "" {
+			parts = append(parts, bar)
+		}
+		parts = append(parts, m.renderInputBox(width-2))
+	}
+	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
+
+	highlighted := m.focus == focusMessages
+	if !m.threadOpen && (m.focus == focusInput || m.focus == focusAttachments) {
+		highlighted = true
+	}
+	borderColor := dimColor
+	if highlighted {
+		borderColor = focusedColor
+	}
+
+	// lipgloss v2 changed Width() semantics: it now sets the OUTER box
+	// (border included) instead of the content area. The right edge is
+	// painted by renderRightBorder (so the scrollbar can replace the
+	// regular `│` when scrolled), so we omit the right border here and
+	// pass width-1 — JoinHorizontal with the 1-col right border brings
+	// the total back to `width`.
+	style := lipgloss.NewStyle().Border(border).UnsetBorderTop().UnsetBorderRight().
+		Width(width - 1).Height(innerH).BorderForeground(borderColor)
+	box := style.Render(content)
+
+	// Title row is at index 0, viewport at index 1.
+	rightBorder := renderRightBorder(innerH, 1, m.msgsView.Height(), totalRows, m.msgsView.ScrollPercent(), borderColor, showScrollbar)
+	return lipgloss.JoinHorizontal(lipgloss.Top, box, rightBorder)
+}
+
+// renderInputBox renders the compose textarea with a top rule, sized to
+// fit `width` columns. Border colour mirrors focus. Used by both the
+// messages pane (thread closed) and the thread pane (thread open).
+func (m *Model) renderInputBox(width int) string {
 	inputBorder := dimColor
 	if m.focus == focusInput {
 		inputBorder = focusedColor
 	}
-	inputBox := lipgloss.NewStyle().
+	return lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder(), true, false, false, false).
 		BorderForeground(inputBorder).
-		Width(width - 2).
+		Width(width).
 		Render(m.input.View())
-
-	parts := []string{titleStyle.Render(title), msgsPart}
-	if popup != "" {
-		parts = append(parts, popup)
-	}
-	if bar := m.renderAttachmentBar(width - 2); bar != "" {
-		parts = append(parts, bar)
-	}
-	parts = append(parts, inputBox)
-	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
-
-	// lipgloss v2 changed Width() semantics: it now sets the OUTER box
-	// (border included) instead of the content area. The `width` we got
-	// is the intended outer width, so pass it directly.
-	style := lipgloss.NewStyle().Border(border).UnsetBorderTop().Width(width).Height(innerH)
-	if m.focus == focusMessages || m.focus == focusInput || m.focus == focusAttachments {
-		style = style.BorderForeground(focusedColor)
-	} else {
-		style = style.BorderForeground(dimColor)
-	}
-	return style.Render(content)
 }
 
 // attachmentBarHeight returns the rendered height of the chip strip
 // (0 when empty). Used by resizeMessagesViewport so the messages
 // viewport shrinks to make room for chips.
-func (m Model) attachmentBarHeight(width int) int {
+func (m *Model) attachmentBarHeight(width int) int {
 	bar := m.renderAttachmentBar(width)
 	if bar == "" {
 		return 0
@@ -620,8 +946,10 @@ func (m Model) attachmentBarHeight(width int) int {
 	return lipgloss.Height(bar)
 }
 
-func (m Model) renderThreadPane(height, width int) string {
-	innerH := height - 1 // border (bottom only; top connects to tab strip)
+func (m *Model) renderThreadPane(height, width int) string {
+	// Match renderChannelsPane's effective outer height (it overflows its
+	// padding by 1, extending the box) so bottom borders align.
+	innerH := height
 	if innerH < 1 {
 		innerH = 1
 	}
@@ -636,18 +964,29 @@ func (m Model) renderThreadPane(height, width int) string {
 		title = fmt.Sprintf("Thread · %d %s", n, replyWord(n))
 	}
 
-	body := m.threadView.View()
+	threadTotal := viewportVisualRows(m.threadView.GetContent(), m.threadView.Width())
+	showScrollbar := threadTotal > m.threadView.Height() && m.threadView.ScrollPercent() < 1.0
 
-	content := lipgloss.JoinVertical(lipgloss.Left, titleStyle.Render(title), body)
-
-	// v2 Width = outer width (see renderMessagesPane).
-	style := lipgloss.NewStyle().Border(border).UnsetBorderTop().Width(width).Height(innerH)
-	if m.focus == focusThread {
-		style = style.BorderForeground(focusedColor)
-	} else {
-		style = style.BorderForeground(dimColor)
+	parts := []string{titleStyle.Render(title), m.threadView.View()}
+	if bar := m.renderAttachmentBar(width - 2); bar != "" {
+		parts = append(parts, bar)
 	}
-	return style.Render(content)
+	parts = append(parts, m.renderInputBox(width-2))
+	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
+
+	borderColor := dimColor
+	if m.focus == focusThread || m.focus == focusInput || m.focus == focusAttachments {
+		borderColor = focusedColor
+	}
+
+	// Right edge handled by renderRightBorder so the scrollbar can
+	// overlay it (see renderMessagesPane for details).
+	style := lipgloss.NewStyle().Border(border).UnsetBorderTop().UnsetBorderRight().
+		Width(width - 1).Height(innerH).BorderForeground(borderColor)
+	box := style.Render(content)
+
+	rightBorder := renderRightBorder(innerH, 1, m.threadView.Height(), threadTotal, m.threadView.ScrollPercent(), borderColor, showScrollbar)
+	return lipgloss.JoinHorizontal(lipgloss.Top, box, rightBorder)
 }
 
 func replyWord(n int) string {
@@ -657,7 +996,7 @@ func replyWord(n int) string {
 	return "replies"
 }
 
-func (m Model) renderTeamTabs() string {
+func (m *Model) renderTeamTabs() string {
 	if len(m.teams) == 0 && !m.hasDMs {
 		// Reserve the same vertical space so body math stays consistent.
 		blank := strings.Repeat("\n", tabsHeight-1)
@@ -684,15 +1023,32 @@ func (m Model) renderTeamTabs() string {
 		activeColor = focusedColor
 	}
 
+	// teamNum tracks the 1-based position among real teams so each of the
+	// first nine gets a "[N]" hint matching its ",N" jump shortcut.
+	teamNum := 0
 	for i := 0; i <= maxIdx; i++ {
 		kind, _, name := m.tabAt(i)
 		label := name
+		if kind == tabTeam {
+			teamNum++
+			if teamNum <= 9 {
+				label = label + " [" + strconv.Itoa(teamNum) + "]"
+			}
+		}
 		if kind == tabUnread {
 			switch {
 			case mentionCh > 0:
 				label = "Unread " + strconv.Itoa(mentionCh) + "!"
 			case unreadCh > 0:
 				label = "Unread " + strconv.Itoa(unreadCh)
+			}
+		}
+		if kind == tabFeed {
+			switch {
+			case mentionCh > 0:
+				label = "Feed " + strconv.Itoa(mentionCh) + "!"
+			case unreadCh > 0:
+				label = "Feed " + strconv.Itoa(unreadCh)
 			}
 		}
 
@@ -713,6 +1069,14 @@ func (m Model) renderTeamTabs() string {
 			switch {
 			case kind == tabDM:
 				style = style.Foreground(dmTabColor)
+			case kind == tabSearch:
+				style = style.Foreground(searchTabColor)
+			case kind == tabFeed && mentionCh > 0:
+				style = style.Foreground(mentionTabColor).Bold(true)
+			case kind == tabFeed && unreadCh > 0:
+				style = style.Foreground(feedTabColor).Bold(true)
+			case kind == tabFeed:
+				style = style.Foreground(feedTabColor)
 			case kind == tabUnread && mentionCh > 0:
 				style = style.Foreground(mentionTabColor).Bold(true)
 			case kind == tabUnread && unreadCh > 0:
@@ -750,8 +1114,14 @@ func (m Model) renderTeamTabs() string {
 	return row
 }
 
-func (m Model) renderFooter() string {
+func (m *Model) renderFooter() string {
 	right := m.status
+	// While the indexer is running its progress takes over the right-
+	// hand status slot. Final / error states fall through to m.status
+	// after applyIndexResult sets it on completion.
+	if m.indexer.active {
+		right = m.indexerProgressStatus()
+	}
 	if right == "" && m.me != nil {
 		right = m.me.Username
 	}
@@ -769,8 +1139,12 @@ func (m Model) renderFooter() string {
 	// to ride along in the old footer prompt.
 	var prefix string
 	switch {
+	case m.leaderPending:
+		prefix = "go to  "
 	case m.filterMode:
 		prefix = "type to filter  "
+	case m.focus == focusInput && m.editingPostID != "":
+		prefix = "✎ editing message  "
 	case m.focus == focusInput && m.threadOpen:
 		prefix = "↳ replying in thread  "
 	case m.focus == focusInput:
