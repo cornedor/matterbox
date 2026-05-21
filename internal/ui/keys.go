@@ -57,6 +57,7 @@ type keyMap struct {
 	MoveTeamRight key.Binding
 
 	// Input / filter modes
+	Compose    key.Binding
 	Send       key.Binding
 	NewLine    key.Binding
 	LeaveInput key.Binding
@@ -213,6 +214,10 @@ func newKeyMap() keyMap {
 			key.WithHelp(">", "move team right"),
 		),
 
+		Compose: key.NewBinding(
+			key.WithKeys("i"),
+			key.WithHelp("i", "compose"),
+		),
 		Send: key.NewBinding(
 			key.WithKeys("enter"),
 			key.WithHelp("↵", "send"),

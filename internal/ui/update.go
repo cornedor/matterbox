@@ -200,7 +200,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// doesn't lag behind the user's action.
 		var cmd tea.Cmd
 		if msg.post != nil {
-			cmd = m.persistPosts(msg.post)
+			// Animation frames are throwaway: persisting each one would
+			// flood the local edit history and message cache.
+			if !m.animatingPost(msg.post.Id) {
+				cmd = m.persistPosts(msg.post)
+			}
 			for i, ex := range m.posts {
 				if ex.Id == msg.post.Id {
 					m.posts[i] = msg.post
@@ -381,6 +385,16 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, cmd)
 			}
 		}
+		if m.aiSearch.phase == aiSearchRunning {
+			sp, cmd := m.aiSearch.spinner.Update(msg)
+			m.aiSearch.spinner = sp
+			// The trace is baked into the viewport via SetContent, so re-render
+			// it each tick to advance the spinner glyph between tool steps.
+			m.renderSearchResults()
+			if cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
 		return m, tea.Batch(cmds...)
 
 	case indexResultMsg:
@@ -392,6 +406,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case typingTickMsg:
 		return m, m.applyTypingTick(msg)
 
+	case ballStartedMsg:
+		return m, m.applyBallStarted(msg)
+
+	case ballTickMsg:
+		return m, m.applyBallTick(msg)
+
 	case summaryGatheredMsg:
 		return m, m.applySummaryGathered(msg)
 
@@ -400,6 +420,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case summaryChunkMsg:
 		return m, m.applySummaryChunk(msg)
+
+	case aiSearchOpenedMsg:
+		return m, m.applyAISearchOpened(msg)
+
+	case aiSearchUpdateMsg:
+		return m, m.applyAISearchUpdate(msg)
 
 	case searchDebounceMsg:
 		return m.applySearchDebounce(msg)
@@ -571,7 +597,13 @@ func (m *Model) applyPostEdited(ev *model.WebSocketEvent) tea.Cmd {
 		return nil
 	}
 	m.invalidatePostLines(p.Id)
-	cmds := []tea.Cmd{m.persistPosts(p)}
+	// Skip persisting frames of a live animation (typing / bouncing
+	// ball) — the per-frame churn would otherwise spam the local edit
+	// history captured by the posts UPDATE trigger.
+	var cmds []tea.Cmd
+	if !m.animatingPost(p.Id) {
+		cmds = append(cmds, m.persistPosts(p))
+	}
 	if m.isCurrentChannel(p.ChannelId) {
 		for i, ex := range m.posts {
 			if ex.Id == p.Id {
@@ -882,6 +914,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, m.keys.Feed) { // U → combined unread feed
 		return m, m.openFeedTab()
 	}
+	if key.Matches(msg, m.keys.Compose) { // i → focus the composer
+		return m.focusComposer()
+	}
 
 	switch {
 	case msg.String() == "ctrl+c":
@@ -1146,18 +1181,27 @@ func (m Model) handleLeaderKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.renderMessages()
 		return m, nil
 	case "i":
-		if m.onSearchTab() || m.onFeedTab() {
-			return m, nil // no composer on these tabs
-		}
-		m.focus = focusInput
-		m.renderMessages()
-		return m, m.input.Focus()
+		return m.focusComposer()
 	case "d":
 		return m.gotoDMTab()
 	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 		return m.gotoTeam(int(msg.String()[0] - '0'))
 	}
 	return m, nil
+}
+
+// focusComposer moves focus to the message input so the user can type. It
+// is a no-op on the Search and Feed tabs, which have no composer. Bound to
+// the bare "i" key in any navigation focus and to the ",i" leader chord.
+// (Entering a channel deliberately does NOT call this — the user opts in to
+// typing rather than having the textarea swallow navigation shortcuts.)
+func (m Model) focusComposer() (tea.Model, tea.Cmd) {
+	if m.onSearchTab() || m.onFeedTab() {
+		return m, nil
+	}
+	m.focus = focusInput
+	m.renderMessages()
+	return m, m.input.Focus()
 }
 
 // gotoTab switches the active tab to index target, focuses its content,
@@ -1482,10 +1526,14 @@ func (m Model) handleChannelsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.filterValue = ""
 			m.filter.SetValue("")
 		}
-		m.focus = focusInput
+		// Stay in the channel sidebar after opening — the composer is no
+		// longer autofocused, so navigation keys keep working. Press "i"
+		// (or ",i") to start typing.
+		m.focus = focusChannels
+		m.input.Blur()
 		loadCmd := m.openChannelLoadCmd(ch.Id)
 		saveCmd := m.bumpChannelStat(ch.Id)
-		return m, tea.Batch(m.input.Focus(), loadCmd, saveCmd)
+		return m, tea.Batch(loadCmd, saveCmd)
 	}
 	return m, nil
 }

@@ -1,8 +1,12 @@
 package store
 
 import (
+	"database/sql"
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
 )
@@ -252,6 +256,87 @@ func TestSearchPrefixAndContext(t *testing.T) {
 	}
 }
 
+func TestSearchPorterStemming(t *testing.T) {
+	s := tempStore(t)
+	now := time.Now().UnixMilli()
+	if err := s.Upsert(mkPost("p1aaaaaaaaaaaaaaaaaaaaaaaa", "c1", "we connected to the new server", now)); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	// The Porter stemmer collapses "connection" and "connected" to a shared root
+	// ("connect"), so searching one inflection finds the other — which the
+	// forward-only prefix matching in ftsQuery ("connection"* never matches
+	// "connected") could not do.
+	hits, err := s.Search("connection", nil, 10, 0)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(hits) != 1 || hits[0].Match.Id != "p1aaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf(`want "connection" to match "connected" via porter; got %v`, hitIDs(hits))
+	}
+}
+
+func TestEnsureFTSTokenizerRebuild(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "old.db")
+
+	// Build a database carrying the pre-porter tokenizer, as an older matterbox
+	// would have left it, with one post already stored.
+	raw, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	const oldSchema = `
+CREATE TABLE posts (
+    id TEXT PRIMARY KEY, channel_id TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT '',
+    root_id TEXT NOT NULL DEFAULT '', create_at INTEGER NOT NULL, update_at INTEGER NOT NULL DEFAULT 0,
+    edit_at INTEGER NOT NULL DEFAULT 0, delete_at INTEGER NOT NULL DEFAULT 0,
+    message TEXT NOT NULL DEFAULT '', raw_json BLOB NOT NULL
+);
+CREATE VIRTUAL TABLE posts_fts USING fts5(
+    message, content='posts', content_rowid='rowid',
+    tokenize='unicode61 remove_diacritics 2'
+);`
+	if _, err := raw.Exec(oldSchema); err != nil {
+		t.Fatalf("old schema: %v", err)
+	}
+	p := mkPost("p1aaaaaaaaaaaaaaaaaaaaaaaa", "c1", "we connected to the new server", time.Now().UnixMilli())
+	rawJSON, _ := json.Marshal(p)
+	if _, err := raw.Exec(
+		`INSERT INTO posts (id, channel_id, create_at, update_at, message, raw_json) VALUES (?, ?, ?, ?, ?, ?)`,
+		p.Id, p.ChannelId, p.CreateAt, p.UpdateAt, p.Message, rawJSON,
+	); err != nil {
+		t.Fatalf("seed old post: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatalf("close raw: %v", err)
+	}
+
+	// Reopening through the store must migrate the tokenizer and rebuild the
+	// index from the content table.
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	var ddl string
+	if err := s.db.QueryRow(`SELECT sql FROM sqlite_master WHERE name='posts_fts'`).Scan(&ddl); err != nil {
+		t.Fatalf("read ddl: %v", err)
+	}
+	if !strings.Contains(ddl, ftsTokenizer) {
+		t.Fatalf("posts_fts not migrated to %q; ddl=%q", ftsTokenizer, ddl)
+	}
+	// A stemmed query that only works post-rebuild proves the existing row was
+	// re-indexed with the porter tokenizer, not just the table redefined.
+	hits, err := s.Search("connection", nil, 10, 0)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(hits) != 1 || hits[0].Match.Id != p.Id {
+		t.Fatalf("want rebuilt index to stem-match the old row; got %v", hitIDs(hits))
+	}
+}
+
 func TestSearchEmptyQuery(t *testing.T) {
 	s := tempStore(t)
 	if err := s.Upsert(mkPost("p1aaaaaaaaaaaaaaaaaaaaaaaa", "c1", "anything", 100)); err != nil {
@@ -297,6 +382,255 @@ func TestSearchChannelFilter(t *testing.T) {
 	if hits != nil {
 		t.Errorf("empty scope should return nil, got %d hits", len(hits))
 	}
+}
+
+func TestFtsSpec(t *testing.T) {
+	cases := []struct {
+		name string
+		spec SearchSpec
+		want string
+	}{
+		{"single any_of", SearchSpec{AnyOf: []string{"a"}}, `"a"*`},
+		{"any_of group", SearchSpec{AnyOf: []string{"a", "b"}}, `("a"* OR "b"*)`},
+		{"all_of and any_of", SearchSpec{AllOf: []string{"cms"}, AnyOf: []string{"x", "y"}}, `"cms"* AND ("x"* OR "y"*)`},
+		{"multiword item is a phrase", SearchSpec{AnyOf: []string{"headless cms"}}, `"headless cms"`},
+		{"explicit phrase", SearchSpec{Phrases: []string{"content management"}}, `"content management"`},
+		{"none_of excludes", SearchSpec{AnyOf: []string{"a"}, NoneOf: []string{"b"}}, `("a"*) NOT "b"*`},
+		{"none_of alone is dropped", SearchSpec{NoneOf: []string{"b"}}, ``},
+		{"empty", SearchSpec{}, ``},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ftsSpec(tc.spec); got != tc.want {
+				t.Errorf("ftsSpec(%+v) = %q; want %q", tc.spec, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestSearchSpec(t *testing.T) {
+	s := tempStore(t)
+	// None of these mention "Acme" — that name lives in the channel
+	// title, not the content. Authors and times vary so the metadata filters
+	// can be exercised too.
+	mk := func(id, ch, msg, author string, at int64) *model.Post {
+		return &model.Post{Id: id, ChannelId: ch, UserId: author, Message: msg, CreateAt: at, UpdateAt: at}
+	}
+	const (
+		p1 = "p1aaaaaaaaaaaaaaaaaaaaaaaa"
+		p2 = "p2aaaaaaaaaaaaaaaaaaaaaaaa"
+		p3 = "p3aaaaaaaaaaaaaaaaaaaaaaaa"
+		p4 = "p4aaaaaaaaaaaaaaaaaaaaaaaa"
+		p5 = "p5aaaaaaaaaaaaaaaaaaaaaaaa"
+	)
+	posts := []*model.Post{
+		mk(p1, "c1", "migrating to Storyblok as the new headless CMS", "u1", 100),
+		mk(p2, "c1", "Storyblok onboarding call next week", "u2", 200),
+		mk(p3, "c1", "we picked a new headless CMS", "u1", 300),
+		mk(p4, "c1", "quarterly revenue is up", "u2", 400),
+		mk(p5, "c2", "Storyblok works great with Next.js", "u1", 500),
+	}
+	if err := s.UpsertMany(posts); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	set := func(hits []SearchHit) map[string]bool {
+		m := map[string]bool{}
+		for _, h := range hits {
+			m[h.Match.Id] = true
+		}
+		return m
+	}
+
+	t.Run("any_of ORs and ranks by bm25", func(t *testing.T) {
+		hits, total, err := s.SearchSpec(SearchSpec{AnyOf: []string{"storyblok", "cms", "new"}}, 10, 0, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := set(hits)
+		for _, id := range []string{p1, p2, p3, p5} {
+			if !got[id] {
+				t.Errorf("want %s in results; got %v", id, hitIDs(hits))
+			}
+		}
+		if got[p4] {
+			t.Error("p4 shares no term and should be excluded")
+		}
+		if total != 4 {
+			t.Errorf("total = %d; want 4", total)
+		}
+		// Ranked by relevance, not recency: a multi-term match (p1/p3) leads,
+		// rather than the newest single-term match (p5) that recency would.
+		if len(hits) == 0 || (hits[0].Match.Id != p1 && hits[0].Match.Id != p3) {
+			t.Errorf("want a multi-term match (p1/p3) first by bm25; got %v", hitIDs(hits))
+		}
+	})
+
+	t.Run("all_of narrows a broad any_of", func(t *testing.T) {
+		hits, total, _ := s.SearchSpec(SearchSpec{AllOf: []string{"cms"}, AnyOf: []string{"storyblok", "new"}}, 10, 0, 0)
+		got := set(hits)
+		if !got[p1] || !got[p3] || got[p2] || got[p5] || total != 2 {
+			t.Errorf("all_of=cms: got %v (total %d); want {p1,p3}", hitIDs(hits), total)
+		}
+	})
+
+	t.Run("phrase matches exact wording only", func(t *testing.T) {
+		hits, total, _ := s.SearchSpec(SearchSpec{Phrases: []string{"headless cms"}}, 10, 0, 0)
+		got := set(hits)
+		if !got[p1] || !got[p3] || total != 2 {
+			t.Errorf(`phrase "headless cms": got %v (total %d); want {p1,p3}`, hitIDs(hits), total)
+		}
+		if h2, t2, _ := s.SearchSpec(SearchSpec{Phrases: []string{"cms headless"}}, 10, 0, 0); t2 != 0 || len(h2) != 0 {
+			t.Errorf("reversed phrase should not match; got %v", hitIDs(h2))
+		}
+	})
+
+	t.Run("none_of excludes", func(t *testing.T) {
+		hits, total, _ := s.SearchSpec(SearchSpec{AnyOf: []string{"storyblok"}, NoneOf: []string{"onboarding"}}, 10, 0, 0)
+		got := set(hits)
+		if got[p2] || !got[p1] || !got[p5] || total != 2 {
+			t.Errorf("none_of=onboarding: got %v (total %d); want {p1,p5}", hitIDs(hits), total)
+		}
+	})
+
+	t.Run("channel scope", func(t *testing.T) {
+		hits, total, _ := s.SearchSpec(SearchSpec{AnyOf: []string{"storyblok"}, ChannelIDs: []string{"c1"}}, 10, 0, 0)
+		got := set(hits)
+		if !got[p1] || !got[p2] || got[p5] || total != 2 {
+			t.Errorf("channel c1: got %v (total %d); want {p1,p2}", hitIDs(hits), total)
+		}
+	})
+
+	t.Run("author filter", func(t *testing.T) {
+		hits, total, _ := s.SearchSpec(SearchSpec{AnyOf: []string{"storyblok"}, AuthorIDs: []string{"u2"}}, 10, 0, 0)
+		got := set(hits)
+		if !got[p2] || got[p1] || got[p5] || total != 1 {
+			t.Errorf("author u2: got %v (total %d); want {p2}", hitIDs(hits), total)
+		}
+	})
+
+	t.Run("date bounds [after, before)", func(t *testing.T) {
+		hits, total, _ := s.SearchSpec(SearchSpec{AnyOf: []string{"storyblok"}, After: 150, Before: 450}, 10, 0, 0)
+		got := set(hits)
+		if !got[p2] || got[p1] || got[p5] || total != 1 {
+			t.Errorf("date [150,450): got %v (total %d); want {p2}", hitIDs(hits), total)
+		}
+	})
+
+	t.Run("total counts beyond the page limit", func(t *testing.T) {
+		hits, total, _ := s.SearchSpec(SearchSpec{AnyOf: []string{"storyblok", "cms", "new"}}, 2, 0, 0)
+		if len(hits) != 2 || total != 4 {
+			t.Errorf("limit 2: len(hits)=%d total=%d; want 2 and 4", len(hits), total)
+		}
+	})
+
+	t.Run("empty spec yields nothing", func(t *testing.T) {
+		hits, total, err := s.SearchSpec(SearchSpec{}, 10, 0, 0)
+		if err != nil || len(hits) != 0 || total != 0 {
+			t.Errorf("empty spec: hits=%d total=%d err=%v; want 0,0,nil", len(hits), total, err)
+		}
+	})
+
+	t.Run("scope resolved to no channels yields nothing", func(t *testing.T) {
+		hits, total, err := s.SearchSpec(SearchSpec{AnyOf: []string{"storyblok"}, ChannelIDs: []string{}}, 10, 0, 0)
+		if err != nil || len(hits) != 0 || total != 0 {
+			t.Errorf("empty channel scope: hits=%d total=%d err=%v; want 0,0,nil", len(hits), total, err)
+		}
+	})
+
+	t.Run("offset pages through results without overlap", func(t *testing.T) {
+		spec := SearchSpec{AnyOf: []string{"storyblok", "cms", "new"}} // 4 matches
+		page1, total, _ := s.SearchSpec(spec, 2, 0, 0)
+		page2, _, _ := s.SearchSpec(spec, 2, 2, 0)
+		if len(page1) != 2 || len(page2) != 2 {
+			t.Fatalf("want 2+2 across pages; got %d and %d", len(page1), len(page2))
+		}
+		seen := map[string]bool{}
+		for _, h := range append(page1, page2...) {
+			if seen[h.Match.Id] {
+				t.Errorf("id %s appeared on both pages", h.Match.Id)
+			}
+			seen[h.Match.Id] = true
+		}
+		for _, id := range []string{p1, p2, p3, p5} {
+			if !seen[id] {
+				t.Errorf("paging missed %s; saw %v", id, seen)
+			}
+		}
+		if empty, total2, _ := s.SearchSpec(spec, 2, 4, 0); len(empty) != 0 || total2 != total {
+			t.Errorf("offset past end: hits=%d total=%d; want 0 and %d", len(empty), total2, total)
+		}
+	})
+}
+
+func TestRankByRelevanceAndAge(t *testing.T) {
+	now := time.Now().UnixMilli()
+	const day = int64(86_400_000)
+	halfLife := 90 * 24 * time.Hour
+	// Pools are passed in bm25 order (best first), as searchFTS produces them.
+	mk := func(id string, ageDays int64) scoredPost {
+		return scoredPost{post: &model.Post{Id: id, CreateAt: now - ageDays*day}}
+	}
+
+	t.Run("close relevance favours recency", func(t *testing.T) {
+		// Adjacent relevance ranks, large age gap: the fresh one wins.
+		got := rankByRelevanceAndAge([]scoredPost{mk("old", 300), mk("new", 1)}, now, halfLife)
+		if len(got) != 2 || got[0].Id != "new" {
+			t.Errorf("want newer first; got %v", postIDs(got))
+		}
+	})
+
+	t.Run("strong relevance survives a small age gap", func(t *testing.T) {
+		// Top bm25 hit only slightly older than a fresh 2nd-ranked one: within a
+		// half-life the decay is mild, so the markedly stronger match stays on top.
+		got := rankByRelevanceAndAge([]scoredPost{mk("relevant", 20), mk("fresh", 1)}, now, halfLife)
+		if got[0].Id != "relevant" {
+			t.Errorf("want the stronger match first; got %v", postIDs(got))
+		}
+	})
+
+	t.Run("stale top match sinks below recent ones", func(t *testing.T) {
+		// Most relevant but many half-lives old: it should fall behind newer,
+		// only-slightly-weaker matches.
+		got := rankByRelevanceAndAge([]scoredPost{
+			mk("ancient", 365), // most relevant, oldest
+			mk("recentA", 3),
+			mk("recentB", 5),
+		}, now, halfLife)
+		if got[len(got)-1].Id != "ancient" {
+			t.Errorf("the stale top-bm25 hit should sink; got %v", postIDs(got))
+		}
+	})
+
+	t.Run("non-positive half-life disables decay (pure relevance)", func(t *testing.T) {
+		// Input is relevance-sorted, so a disabled decay preserves that order.
+		got := rankByRelevanceAndAge([]scoredPost{mk("a", 300), mk("b", 1), mk("c", 50)}, now, 0)
+		if got[0].Id != "a" || got[1].Id != "b" || got[2].Id != "c" {
+			t.Errorf("want input order preserved; got %v", postIDs(got))
+		}
+	})
+
+	t.Run("single match returned as-is", func(t *testing.T) {
+		got := rankByRelevanceAndAge([]scoredPost{mk("only", 50)}, now, halfLife)
+		if len(got) != 1 || got[0].Id != "only" {
+			t.Errorf("want [only]; got %v", postIDs(got))
+		}
+	})
+}
+
+func postIDs(posts []*model.Post) []string {
+	ids := make([]string, len(posts))
+	for i, p := range posts {
+		ids[i] = p.Id
+	}
+	return ids
+}
+
+func hitIDs(hits []SearchHit) []string {
+	ids := make([]string, 0, len(hits))
+	for _, h := range hits {
+		ids = append(ids, h.Match.Id)
+	}
+	return ids
 }
 
 func TestPostsAround(t *testing.T) {

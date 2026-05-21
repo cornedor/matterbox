@@ -89,14 +89,14 @@ type Model struct {
 	client *mm.Client
 	ctx    context.Context
 
-	me             *model.User
-	teams          []*model.Team
-	teamsLoaded    bool
+	me          *model.User
+	teams       []*model.Team
+	teamsLoaded bool
 	// teamOrder is the user's preferred left-to-right team-tab ordering,
 	// by URL name, loaded from config.yaml and re-saved after each in-app
 	// reorder. applyTeamOrder uses it to sort m.teams; teams not listed
 	// fall to the end alphabetically.
-	teamOrder []string
+	teamOrder      []string
 	hasDMs         bool
 	channels       map[string][]*model.Channel // teamID → channels (DMs under dmTeamID)
 	channelsLoaded bool
@@ -148,6 +148,10 @@ type Model struct {
 	// typing drives the "Typing animation" > command: a fake key-by-key
 	// reveal of a message implemented as a stream of EditPost calls.
 	typing typingAnim
+
+	// ball drives the "Bouncing ball" > command: a ball ricocheting
+	// inside a code-block box, animated by editing one post per frame.
+	ball ballAnim
 
 	// Persisted per-channel usage counters (loaded from
 	// ~/.config/matterbox/channel_stats.json). Used as a sort signal in
@@ -261,9 +265,19 @@ type Model struct {
 	// are snapshotted from config.yaml at New() time; summary holds the live
 	// modal state (duration picker, in-flight request, result popup).
 	summaryEndpoint string
+	summaryAPIKey   string
 	summaryModel    string
 	summaryPrompt   string
 	summary         summaryState
+
+	// Agentic search on the Search tab (a query ending in "?"). Reuses the
+	// summary endpoint+model; aiSearchPrompt frames the agent, aiSearchMaxSteps
+	// bounds its tool-call rounds, and aiSearchTimeout bounds the whole run.
+	// aiSearch holds the live run state (trace, in-flight request, final answer).
+	aiSearchPrompt   string
+	aiSearchMaxSteps int
+	aiSearchTimeout  time.Duration
+	aiSearch         aiSearchState
 
 	// Reaction-picker modal. While reactionPickerPostID is non-empty the
 	// modal owns every keystroke (digit selects + fires, ↑/↓+↵ navigate,
@@ -338,7 +352,12 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	if p, err := store.DefaultPath(); err == nil {
 		// Best-effort: silently degrade if the DB can't be opened. The
 		// app stays functional without the cache.
-		st, _ = store.Open(p)
+		var opts []store.Option
+		if cfg != nil && cfg.Search.RecencyHalfLifeDays > 0 {
+			opts = append(opts, store.WithRecencyHalfLife(
+				time.Duration(cfg.Search.RecencyHalfLifeDays*float64(24*time.Hour))))
+		}
+		st, _ = store.Open(p, opts...)
 	}
 
 	msgsView := viewport.New()
@@ -350,13 +369,20 @@ func New(client *mm.Client, cfg *config.Config) Model {
 
 	var reactions []string
 	var teamOrder []string
-	var summaryEndpoint, summaryModel, summaryPrompt string
+	var summaryEndpoint, summaryAPIKey, summaryModel, summaryPrompt string
+	var aiSearchPrompt string
+	var aiSearchMaxSteps int
+	var aiSearchTimeout time.Duration
 	if cfg != nil {
 		reactions = append([]string(nil), cfg.Reactions...)
 		teamOrder = append([]string(nil), cfg.TeamOrder...)
 		summaryEndpoint = cfg.Summary.Endpoint
+		summaryAPIKey = cfg.Summary.APIKey
 		summaryModel = cfg.Summary.Model
 		summaryPrompt = cfg.Summary.Prompt
+		aiSearchPrompt = cfg.AISearch.Prompt
+		aiSearchMaxSteps = cfg.AISearch.MaxSteps
+		aiSearchTimeout = time.Duration(cfg.AISearch.TimeoutMinutes) * time.Minute
 	}
 
 	return Model{
@@ -387,9 +413,14 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		reactionEmojis:      reactions,
 		teamOrder:           teamOrder,
 		summaryEndpoint:     summaryEndpoint,
+		summaryAPIKey:       summaryAPIKey,
 		summaryModel:        summaryModel,
 		summaryPrompt:       summaryPrompt,
 		summary:             newSummaryState(),
+		aiSearchPrompt:      aiSearchPrompt,
+		aiSearchMaxSteps:    aiSearchMaxSteps,
+		aiSearchTimeout:     aiSearchTimeout,
+		aiSearch:            newAISearchState(),
 	}
 }
 
@@ -427,11 +458,11 @@ func (m Model) ShortHelp() []key.Binding {
 	case m.focus == focusInput:
 		return []key.Binding{k.Send, k.NewLine, k.Paste, k.LeaveInput, k.Tab}
 	case m.focus == focusChannels:
-		return []key.Binding{k.Tab, k.Up, k.Down, k.OpenChannel, k.SearchHere, k.Filter, k.ClearFilter, k.Leader, k.Switcher, k.Unread, k.Feed, k.Help, k.Quit}
+		return []key.Binding{k.Tab, k.Up, k.Down, k.OpenChannel, k.Compose, k.SearchHere, k.Filter, k.ClearFilter, k.Leader, k.Switcher, k.Unread, k.Feed, k.Help, k.Quit}
 	case m.focus == focusMessages:
-		return []key.Binding{k.Tab, k.Up, k.Down, k.OpenThread, k.ReplyInThread, k.SearchHere, k.NextHit, k.PrevHit, k.OpenAttach, k.CopyMD, k.EditPost, k.DeletePost, k.React, k.ShowHistory, k.Leader, k.Switcher, k.Unread, k.Feed, k.Help, k.Quit}
+		return []key.Binding{k.Tab, k.Up, k.Down, k.Compose, k.OpenThread, k.ReplyInThread, k.SearchHere, k.NextHit, k.PrevHit, k.OpenAttach, k.CopyMD, k.EditPost, k.DeletePost, k.React, k.ShowHistory, k.Leader, k.Switcher, k.Unread, k.Feed, k.Help, k.Quit}
 	case m.focus == focusThread:
-		return []key.Binding{k.Tab, k.Up, k.Down, k.SearchHere, k.OpenAttach, k.CopyMD, k.EditPost, k.DeletePost, k.React, k.ShowHistory, k.CloseThread, k.Leader, k.Switcher, k.Unread, k.Help, k.Quit}
+		return []key.Binding{k.Tab, k.Up, k.Down, k.Compose, k.SearchHere, k.OpenAttach, k.CopyMD, k.EditPost, k.DeletePost, k.React, k.ShowHistory, k.CloseThread, k.Leader, k.Switcher, k.Unread, k.Help, k.Quit}
 	case m.focus == focusAttachments:
 		return []key.Binding{k.Left, k.Right, k.OpenAttach, k.AttachRemove, k.Tab, k.Leader, k.Help, k.Quit}
 	case m.focus == focusTeams:
@@ -455,7 +486,7 @@ func (m Model) FullHelp() [][]key.Binding {
 		{k.Tab, k.ShiftTab, k.Leader, k.Switcher, k.Search, k.SearchHere, k.Unread, k.Feed, k.Help, k.Quit},
 		{k.Up, k.Down, k.Home, k.End, k.Left, k.Right, k.PageDown, k.PageUp, k.NextHit, k.PrevHit},
 		{k.Filter, k.ClearFilter, k.OpenChannel, k.OpenThread, k.ReplyInThread, k.CloseThread},
-		{k.OpenAttach, k.CopyMD, k.EditPost, k.DeletePost, k.React, k.ShowHistory, k.Send, k.NewLine, k.LeaveInput},
+		{k.OpenAttach, k.CopyMD, k.EditPost, k.DeletePost, k.React, k.ShowHistory, k.Compose, k.Send, k.NewLine, k.LeaveInput},
 		{k.Paste, k.AttachRemove},
 	}
 }

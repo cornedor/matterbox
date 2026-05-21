@@ -60,6 +60,28 @@ func parseSearchQuery(s string) parsedQuery {
 	return p
 }
 
+// aiSearchQuery reports whether a raw search input is an AI question (it ends
+// in "?" and has real text before the "?"), returning the trimmed raw query
+// to hand to the agent. A query that is only modifiers or punctuation isn't
+// treated as an AI question.
+func aiSearchQuery(raw string) (string, bool) {
+	q := strings.TrimSpace(raw)
+	if !strings.HasSuffix(q, "?") {
+		return "", false
+	}
+	body := strings.TrimSpace(strings.TrimRight(q, "?"))
+	if parseSearchQuery(body).text == "" {
+		return "", false
+	}
+	return q, true
+}
+
+// isAIQuery is the boolean half of aiSearchQuery, for render-time hints.
+func isAIQuery(raw string) bool {
+	_, ok := aiSearchQuery(raw)
+	return ok
+}
+
 // searchContextLines is how many posts before / after the match we
 // include in each bubble. Two on each side matches the spec.
 const searchContextLines = 2
@@ -84,7 +106,7 @@ type searchState struct {
 func newSearchState(storeAvailable bool) searchState {
 	ti := textinput.New()
 	ti.Prompt = "🔎 "
-	ti.Placeholder = "search… (team:<name> in:<channel> optional)"
+	ti.Placeholder = "search… (end with ? to ask AI · team:/in: to narrow)"
 	ti.CharLimit = 256
 
 	vp := viewport.New()
@@ -362,6 +384,16 @@ func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c":
 		return m, tea.Quit
 	case "esc":
+		// First esc cancels/clears an AI run but keeps the typed question so
+		// it can be tweaked; a second esc then clears the input as usual.
+		if m.aiSearch.active() {
+			m.cancelAISearch()
+			m.search.hits = nil
+			m.search.query = ""
+			m.search.idx = 0
+			m.renderSearchResults()
+			return m, nil
+		}
 		if m.search.input.Value() != "" {
 			m.search.input.SetValue("")
 			m.search.hits = nil
@@ -391,6 +423,22 @@ func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "enter":
+		// While an AI run is in flight, enter is a no-op (it would restart it).
+		if m.aiSearch.phase == aiSearchRunning {
+			return m, nil
+		}
+		// After an AI run, enter navigates into the surfaced result bubbles
+		// rather than re-asking — the question text is still in the box.
+		if m.aiSearch.phase == aiSearchDone {
+			if m.search.idx >= 0 && m.search.idx < len(m.search.hits) {
+				return m.openHitChannel(m.search.hits[m.search.idx])
+			}
+			return m, nil
+		}
+		// A question (trailing "?") hands off to the agentic search.
+		if raw, ok := aiSearchQuery(m.search.input.Value()); ok {
+			return m, m.startAISearch(raw)
+		}
 		if m.search.onLoadMoreRow() {
 			return m.expandSearch()
 		}
@@ -419,6 +467,23 @@ func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	old := m.search.input.Value()
 	m.search.input, cmd = m.search.input.Update(msg)
 	if m.search.input.Value() != old {
+		// Editing the query drops back to plain search, tearing down any AI
+		// run or result still on screen.
+		if m.aiSearch.active() {
+			m.cancelAISearch()
+		}
+		if isAIQuery(m.search.input.Value()) {
+			// Question mode: don't run FTS over the half-typed question; wait
+			// for enter. Clear any stale FTS hits and prompt the user.
+			m.search.seq++ // invalidate any pending debounce tick
+			m.search.hits = nil
+			m.search.query = ""
+			m.search.idx = 0
+			m.search.err = ""
+			m.search.loading = false
+			m.renderSearchResults()
+			return m, cmd
+		}
 		debounceCmd := m.scheduleSearch()
 		return m, tea.Batch(cmd, debounceCmd)
 	}
@@ -628,6 +693,16 @@ func (m *Model) renderSearchResults() {
 		)
 		return
 	}
+	// An active AI run owns the viewport: the live trace while it works, then
+	// the answer banner + the hits it surfaced.
+	switch m.aiSearch.phase {
+	case aiSearchRunning:
+		m.search.view.SetContent(m.renderAIWorking())
+		return
+	case aiSearchDone:
+		m.renderAIResults()
+		return
+	}
 	if m.search.err != "" {
 		m.search.view.SetContent(
 			lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("  search error: " + m.search.err),
@@ -640,7 +715,9 @@ func (m *Model) renderSearchResults() {
 		parsed := parseSearchQuery(raw)
 		switch {
 		case strings.TrimSpace(raw) == "":
-			hint = "  type to search · narrow with team:<name> or in:<channel>"
+			hint = "  type to search · end with ? to ask the AI · team:/in: to narrow"
+		case isAIQuery(raw):
+			hint = "  press enter to ask the AI ✨  (drop the ? for a plain search)"
 		case parsed.text == "":
 			hint = "  add a search term — modifiers alone don't match anything"
 		case m.search.query == "":
@@ -673,26 +750,34 @@ func (m *Model) renderSearchResults() {
 	if m.search.idx < 0 {
 		m.search.idx = 0
 	}
+	m.setBubbleViewport(nil, m.search.hits, m.search.idx, m.search.hasMore())
+}
 
+// setBubbleViewport renders optional header lines (verbatim) followed by one
+// bubble per hit into the search viewport, scrolling the selected hit into
+// view. When showLoadMore is set, the load-more pseudo-row is appended and
+// selIdx == len(hits) selects it. Shared by plain FTS results and the AI
+// answer view (which passes its banner as the header).
+func (m *Model) setBubbleViewport(header []string, hits []store.SearchHit, selIdx int, showLoadMore bool) {
 	innerW := m.search.view.Width()
 	if innerW < 10 {
 		innerW = 10
 	}
-	var allLines []string
+	allLines := append([]string(nil), header...)
 	selStart, selEnd := -1, -1
-	for i, hit := range m.search.hits {
-		bubble := m.renderSearchBubble(innerW-2, hit, i == m.search.idx)
+	for i, hit := range hits {
+		bubble := m.renderSearchBubble(innerW-2, hit, i == selIdx)
 		bubbleLines := strings.Split(bubble, "\n")
-		if i == m.search.idx {
+		if i == selIdx {
 			selStart = len(allLines)
 			selEnd = selStart + len(bubbleLines)
 		}
 		allLines = append(allLines, bubbleLines...)
 		allLines = append(allLines, "") // blank separator between bubbles
 	}
-	if m.search.hasMore() {
-		row := m.renderLoadMoreRow(innerW-2, m.search.idx == len(m.search.hits))
-		if m.search.idx == len(m.search.hits) {
+	if showLoadMore {
+		row := m.renderLoadMoreRow(innerW-2, selIdx == len(hits))
+		if selIdx == len(hits) {
 			selStart = len(allLines)
 			selEnd = selStart + 1
 		}

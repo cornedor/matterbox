@@ -1,9 +1,36 @@
 package store
 
-// schemaSQL is run once per Open. Every statement is idempotent so a
-// migration is just "execute the latest schema" — no version table
-// needed for the current shape.
-const schemaSQL = `
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+)
+
+// ftsTokenizer is the FTS5 tokenizer for the message index. The leading
+// `porter` wraps `unicode61` with the Porter stemmer so morphological variants
+// collapse to a shared root in BOTH directions ("deployment" finds "deployed",
+// "running" finds "run") — something the forward-only prefix matching in
+// ftsQuery/ftsTerm could not do on its own. It is the single source of truth:
+// schemaSQL bakes it into new databases and ensureFTSTokenizer rebuilds older
+// ones when it changes.
+const ftsTokenizer = "porter unicode61 remove_diacritics 2"
+
+// ftsCreateSQL creates the FTS5 index over posts.message. Kept separate from
+// schemaSQL (and reused verbatim by ensureFTSTokenizer) so the tokenizer is
+// defined in exactly one place.
+const ftsCreateSQL = `
+CREATE VIRTUAL TABLE IF NOT EXISTS posts_fts USING fts5(
+    message,
+    content='posts',
+    content_rowid='rowid',
+    tokenize='` + ftsTokenizer + `'
+);
+`
+
+// postsSchemaSQL is the base table the FTS index and triggers depend on, so it
+// must run before ftsCreateSQL and triggersSQL.
+const postsSchemaSQL = `
 CREATE TABLE IF NOT EXISTS posts (
     id          TEXT PRIMARY KEY,
     channel_id  TEXT NOT NULL,
@@ -19,14 +46,11 @@ CREATE TABLE IF NOT EXISTS posts (
 
 CREATE INDEX IF NOT EXISTS idx_posts_channel_createat ON posts(channel_id, create_at);
 CREATE INDEX IF NOT EXISTS idx_posts_root              ON posts(root_id);
+`
 
-CREATE VIRTUAL TABLE IF NOT EXISTS posts_fts USING fts5(
-    message,
-    content='posts',
-    content_rowid='rowid',
-    tokenize='unicode61 remove_diacritics 2'
-);
-
+// triggersSQL keeps posts_fts in sync with posts and archives prior versions of
+// edited posts. Runs after posts_fts exists.
+const triggersSQL = `
 CREATE TRIGGER IF NOT EXISTS posts_ai AFTER INSERT ON posts BEGIN
     INSERT INTO posts_fts(rowid, message) VALUES (new.rowid, new.message);
 END;
@@ -74,7 +98,49 @@ BEGIN
 END;
 `
 
+// schemaSQL is run once per Open. Every statement is idempotent so a
+// migration is just "execute the latest schema" — no version table
+// needed for the current shape. Order matters: posts → posts_fts → triggers.
+const schemaSQL = postsSchemaSQL + ftsCreateSQL + triggersSQL
+
 func (s *Store) migrate() error {
-	_, err := s.db.Exec(schemaSQL)
-	return err
+	if _, err := s.db.Exec(schemaSQL); err != nil {
+		return err
+	}
+	return s.ensureFTSTokenizer()
+}
+
+// ensureFTSTokenizer rebuilds posts_fts when its on-disk tokenizer no longer
+// matches ftsTokenizer. `CREATE VIRTUAL TABLE IF NOT EXISTS` is a no-op on an
+// existing index, so changing the tokenizer (e.g. adding the Porter stemmer)
+// doesn't re-tokenize old content on its own — the index has to be dropped and
+// rebuilt from the content table. Detected by substring on the stored DDL, so
+// it runs exactly once per tokenizer change and is a no-op afterward.
+func (s *Store) ensureFTSTokenizer() error {
+	var ddl string
+	err := s.db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE type='table' AND name='posts_fts'`,
+	).Scan(&ddl)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil // not created yet (migrate just ran schemaSQL with the new one)
+	}
+	if err != nil {
+		return fmt.Errorf("inspect posts_fts: %w", err)
+	}
+	if strings.Contains(ddl, ftsTokenizer) {
+		return nil // already on the desired tokenizer
+	}
+	// 'rebuild' repopulates the index from the content table (posts.message)
+	// using the new tokenizer; the sync triggers reference posts_fts by name
+	// and keep working across the drop/recreate.
+	for _, q := range []string{
+		`DROP TABLE posts_fts;`,
+		ftsCreateSQL,
+		`INSERT INTO posts_fts(posts_fts) VALUES('rebuild');`,
+	} {
+		if _, err := s.db.Exec(q); err != nil {
+			return fmt.Errorf("rebuild posts_fts: %w", err)
+		}
+	}
+	return nil
 }

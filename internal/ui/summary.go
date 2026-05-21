@@ -535,32 +535,36 @@ func chatCompletionsURL(endpoint string) string {
 // the SSE-reading goroutine. It returns a summaryStreamOpenedMsg (with the
 // chunk channel + cancel handle) or a terminal summaryChunkMsg on failure.
 func (m Model) openSummaryStreamCmd(seq int, system, user string) tea.Cmd {
-	endpoint := m.summaryEndpoint
-	mdl := m.summaryModel
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), summaryHTTPTimeout)
-		reqBody := chatRequest{
-			Model: mdl,
-			Messages: []chatMessage{
-				{Role: "system", Content: system},
-				{Role: "user", Content: user},
-			},
-			Stream:      true,
-			Temperature: 0.3,
-		}
-		payload, err := json.Marshal(reqBody)
-		if err != nil {
-			cancel()
-			return summaryChunkMsg{seq: seq, done: true, err: fmt.Errorf("encode request: %w", err)}
-		}
-		url := chatCompletionsURL(endpoint)
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-		if err != nil {
-			cancel()
-			return summaryChunkMsg{seq: seq, done: true, err: fmt.Errorf("build request: %w", err)}
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "text/event-stream")
+		endpoint := m.summaryEndpoint
+		apiKey := m.summaryAPIKey
+		mdl := m.summaryModel
+		return func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), summaryHTTPTimeout)
+			reqBody := chatRequest{
+				Model: mdl,
+				Messages: []chatMessage{
+					{Role: "system", Content: system},
+					{Role: "user", Content: user},
+				},
+				Stream:      true,
+				Temperature: 0.3,
+			}
+			payload, err := json.Marshal(reqBody)
+			if err != nil {
+				cancel()
+				return summaryChunkMsg{seq: seq, done: true, err: fmt.Errorf("encode request: %w", err)}
+			}
+			url := chatCompletionsURL(endpoint)
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+			if err != nil {
+				cancel()
+				return summaryChunkMsg{seq: seq, done: true, err: fmt.Errorf("build request: %w", err)}
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "text/event-stream")
+			if apiKey != "" {
+				req.Header.Set("Authorization", "Bearer "+apiKey)
+			}
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {

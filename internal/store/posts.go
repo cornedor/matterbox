@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
 )
@@ -36,11 +39,88 @@ func ftsQuery(input string) string {
 	return strings.Join(parts, " ")
 }
 
+// ftsTerm renders one query item as a single FTS5 token. A one-word item
+// becomes a prefix term (`"word"*`, so `wor` matches `world`); a multi-word
+// item becomes an exact phrase (`"two words"`, no prefix) so that e.g.
+// `"headless cms"` matches the phrase rather than two independently-OR'd
+// words. Embedded double quotes are escaped per FTS5 string rules. Returns
+// "" for blank input.
+func ftsTerm(item string) string {
+	fields := strings.Fields(strings.TrimSpace(item))
+	switch len(fields) {
+	case 0:
+		return ""
+	case 1:
+		return `"` + strings.ReplaceAll(fields[0], `"`, `""`) + `"*`
+	default:
+		phrase := strings.ReplaceAll(strings.Join(fields, " "), `"`, `""`)
+		return `"` + phrase + `"`
+	}
+}
+
+// orGroup renders items as a parenthesised OR of their terms (`("a"* OR
+// "b"*)`), a bare term when only one survives, or "" when none do.
+func orGroup(items []string) string {
+	var terms []string
+	for _, it := range items {
+		if t := ftsTerm(it); t != "" {
+			terms = append(terms, t)
+		}
+	}
+	switch len(terms) {
+	case 0:
+		return ""
+	case 1:
+		return terms[0]
+	default:
+		return "(" + strings.Join(terms, " OR ") + ")"
+	}
+}
+
+// ftsSpec compiles a SearchSpec into one fully-parenthesised FTS5 expression:
+//
+//	(phrase AND all-of-terms… AND (any-of OR-group)) NOT (none-of OR-group)
+//
+// Positive clauses (phrases, all_of, the any_of group) are AND'd, so each is
+// required — adding one narrows the result. any_of contributes a single
+// OR-group: at least one of its members must match, which is the high-recall
+// starting point. none_of excludes any post containing one of its terms, but
+// is dropped when there is no positive clause (FTS5 NOT needs a left operand,
+// and "everything except X" is not a useful search). The query is ranked by
+// bm25 elsewhere, so the strongest matches still surface first. Returns ""
+// when no positive term remains, which the caller treats as "no query".
+func ftsSpec(spec SearchSpec) string {
+	var positive []string
+	for _, p := range spec.Phrases {
+		if t := ftsTerm(p); t != "" {
+			positive = append(positive, t)
+		}
+	}
+	for _, a := range spec.AllOf {
+		if t := ftsTerm(a); t != "" {
+			positive = append(positive, t)
+		}
+	}
+	if g := orGroup(spec.AnyOf); g != "" {
+		positive = append(positive, g)
+	}
+	if len(positive) == 0 {
+		return ""
+	}
+	expr := strings.Join(positive, " AND ")
+	if neg := orGroup(spec.NoneOf); neg != "" {
+		expr = "(" + expr + ") NOT " + neg
+	}
+	return expr
+}
+
 // Search runs an FTS5 query against the persisted message corpus and
-// returns up to limit hits, most-recent first. For each hit, contextN
-// posts before and after (in the same channel, ordered oldest→newest)
-// are included so the caller can render the match in context. Returns
-// nil with no error for an empty or all-whitespace query.
+// returns up to limit hits, ranked by relevance blended with an age decay
+// (see rankByRelevanceAndAge) so recent matches lead but a strong older one
+// still surfaces. For each hit, contextN posts before and after (in the same
+// channel, ordered oldest→newest) are included so the caller can render the
+// match in context. Returns nil with no error for an empty or all-whitespace
+// query.
 //
 // channelIDs is an optional scope: nil = search everywhere; non-nil
 // empty slice = "filter active but resolved to no channels" = no hits;
@@ -48,71 +128,313 @@ func ftsQuery(input string) string {
 // uses this to implement team:/in: modifiers, which it resolves against
 // its local channel metadata before issuing the query.
 func (s *Store) Search(query string, channelIDs []string, limit, contextN int) ([]SearchHit, error) {
-	if s == nil || limit <= 0 {
-		return nil, nil
+	hits, _, err := s.searchFTS(ftsQuery(query), searchFilter{channelIDs: channelIDs}, limit, 0, contextN, true)
+	return hits, err
+}
+
+// SearchSpec is a structured query that gives the caller precision/recall
+// control instead of a single keyword list. Its FTS5 levers (AllOf / AnyOf /
+// Phrases / NoneOf, compiled by ftsSpec) decide which posts match; the
+// metadata fields (ChannelIDs / AuthorIDs / After / Before) narrow that set
+// without touching the FTS index. The zero value matches nothing.
+type SearchSpec struct {
+	AllOf   []string // every item must appear (AND)      — precision
+	AnyOf   []string // at least one item must appear (OR) — recall
+	Phrases []string // exact phrase(s) that must appear
+	NoneOf  []string // posts containing any are excluded (NOT)
+
+	ChannelIDs []string // restrict to these channels (see Search for nil vs empty)
+	AuthorIDs  []string // restrict to these post authors
+	After      int64    // inclusive lower bound on create_at (unix-ms); 0 = none
+	Before     int64    // exclusive upper bound on create_at (unix-ms); 0 = none
+}
+
+// SearchSpec runs a structured query ranked by a blend of relevance (bm25) and
+// recency (see rankByRelevanceAndAge). It is the high-recall-but-tunable
+// path used by AI search: the agent starts broad with AnyOf and narrows with
+// AllOf / Phrases / NoneOf / metadata filters as the match count tells it to.
+// offset skips that many top-ranked hits so the caller can page past results
+// it has already seen. Returns the hits (up to limit, each with a contextN
+// window) plus total — the number of matching posts, saturated at
+// MatchCountCap — so the caller can tell a broad query from a tight one and
+// know whether more pages remain. limit / contextN behave as in Search.
+func (s *Store) SearchSpec(spec SearchSpec, limit, offset, contextN int) (hits []SearchHit, total int, err error) {
+	f := searchFilter{
+		channelIDs: spec.ChannelIDs,
+		authorIDs:  spec.AuthorIDs,
+		after:      spec.After,
+		before:     spec.Before,
 	}
-	fts := ftsQuery(query)
-	if fts == "" {
-		return nil, nil
-	}
-	if channelIDs != nil && len(channelIDs) == 0 {
-		// Scope resolved to zero channels — short-circuit before SQLite.
-		return nil, nil
-	}
-	var q string
-	args := []any{fts}
-	if len(channelIDs) > 0 {
-		placeholders := strings.Repeat("?,", len(channelIDs))
-		placeholders = placeholders[:len(placeholders)-1]
-		q = `
-SELECT p.raw_json
-FROM posts_fts f
-JOIN posts p ON p.rowid = f.rowid
-WHERE posts_fts MATCH ?
-  AND p.delete_at = 0
-  AND p.channel_id IN (` + placeholders + `)
-ORDER BY p.create_at DESC
-LIMIT ?`
-		for _, id := range channelIDs {
+	return s.searchFTS(ftsSpec(spec), f, limit, offset, contextN, true)
+}
+
+// MatchCountCap bounds the total match count returned by searchFTS: counting
+// stops here so an enormous result set never forces a full-table scan, and the
+// caller renders a saturated total as "MatchCountCap+".
+const MatchCountCap = 500
+
+// searchFilter narrows an FTS match by post metadata, applied as SQL WHERE
+// clauses on the posts table (not the FTS index). The zero value adds no
+// filter. channelIDs / authorIDs carry the nil-vs-empty distinction from
+// Search: nil = "no scope", non-nil-empty = "scope resolved to nothing" = no
+// hits.
+type searchFilter struct {
+	channelIDs []string
+	authorIDs  []string
+	after      int64
+	before     int64
+}
+
+// scopedOut reports a filter that can match nothing without touching SQLite:
+// an explicitly empty (non-nil) channel or author scope.
+func (f searchFilter) scopedOut() bool {
+	return (f.channelIDs != nil && len(f.channelIDs) == 0) ||
+		(f.authorIDs != nil && len(f.authorIDs) == 0)
+}
+
+// where appends the metadata predicates (beyond the FTS MATCH and the
+// delete_at guard) to b and their bind values to args, returning the extended
+// args. Shared by the hit query and the count query so the two always agree.
+func (f searchFilter) where(b *strings.Builder, args []any) []any {
+	if len(f.channelIDs) > 0 {
+		b.WriteString("\n  AND p.channel_id IN (" + inPlaceholders(len(f.channelIDs)) + ")")
+		for _, id := range f.channelIDs {
 			args = append(args, id)
 		}
-	} else {
-		q = `
-SELECT p.raw_json
-FROM posts_fts f
-JOIN posts p ON p.rowid = f.rowid
-WHERE posts_fts MATCH ?
-  AND p.delete_at = 0
-ORDER BY p.create_at DESC
-LIMIT ?`
 	}
-	args = append(args, limit)
-	rows, err := s.db.Query(q, args...)
+	if len(f.authorIDs) > 0 {
+		b.WriteString("\n  AND p.user_id IN (" + inPlaceholders(len(f.authorIDs)) + ")")
+		for _, id := range f.authorIDs {
+			args = append(args, id)
+		}
+	}
+	if f.after > 0 {
+		b.WriteString("\n  AND p.create_at >= ?")
+		args = append(args, f.after)
+	}
+	if f.before > 0 {
+		b.WriteString("\n  AND p.create_at < ?")
+		args = append(args, f.before)
+	}
+	return args
+}
+
+// inPlaceholders returns "?,?,…" with n placeholders for an IN (...) clause.
+func inPlaceholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strings.TrimSuffix(strings.Repeat("?,", n), ",")
+}
+
+// searchFTS is the shared engine behind Search and SearchSpec: it runs a
+// prebuilt FTS5 MATCH expression, optionally narrowed by f, pages by offset,
+// and attaches a context window to each returned hit. byRank blends relevance
+// and recency (rankByRelevanceAndAge) instead of the default
+// most-recent-first ordering. total is the match count capped at
+// MatchCountCap. An empty expression, a non-positive limit, or a scoped-out
+// filter all yield no hits without touching SQLite.
+func (s *Store) searchFTS(fts string, f searchFilter, limit, offset, contextN int, byRank bool) (hits []SearchHit, total int, err error) {
+	if s == nil || limit <= 0 || fts == "" || f.scopedOut() {
+		return nil, 0, nil
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	// Count first (capped) so the caller can report how broad the match is.
+	total, err = s.countFTS(fts, f)
 	if err != nil {
-		return nil, fmt.Errorf("query search: %w", err)
+		return nil, 0, err
+	}
+
+	var b strings.Builder
+	b.WriteString("\nSELECT p.raw_json")
+	if byRank {
+		b.WriteString(", bm25(posts_fts)")
+	}
+	b.WriteString(`
+FROM posts_fts
+JOIN posts p ON p.rowid = posts_fts.rowid
+WHERE posts_fts MATCH ?
+  AND p.delete_at = 0`)
+	args := f.where(&b, []any{fts})
+	if byRank {
+		// Pull a candidate pool by raw relevance, then re-rank it (with
+		// recency) and page in Go — so a recent, slightly-weaker match can
+		// surface above an older, stronger one. The pool spans offset so paging
+		// stays within one blended ordering.
+		b.WriteString("\nORDER BY bm25(posts_fts)") // smaller is more relevant
+		b.WriteString("\nLIMIT ?")
+		args = append(args, rankPoolSize(limit, offset))
+	} else {
+		b.WriteString("\nORDER BY p.create_at DESC")
+		b.WriteString("\nLIMIT ? OFFSET ?")
+		args = append(args, limit, offset)
+	}
+
+	rows, err := s.db.Query(b.String(), args...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("query search: %w", err)
 	}
 	defer rows.Close()
-	var matches []*model.Post
+	var pool []scoredPost
 	for rows.Next() {
 		var raw []byte
-		if err := rows.Scan(&raw); err != nil {
-			return nil, fmt.Errorf("scan search: %w", err)
+		var rank float64
+		if byRank {
+			if err := rows.Scan(&raw, &rank); err != nil {
+				return nil, 0, fmt.Errorf("scan search: %w", err)
+			}
+		} else if err := rows.Scan(&raw); err != nil {
+			return nil, 0, fmt.Errorf("scan search: %w", err)
 		}
 		var p model.Post
 		if err := json.Unmarshal(raw, &p); err != nil {
 			continue
 		}
-		matches = append(matches, &p)
+		pool = append(pool, scoredPost{post: &p, bm25: rank})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows: %w", err)
+		return nil, 0, fmt.Errorf("rows: %w", err)
 	}
+
+	var matches []*model.Post
+	if byRank {
+		matches = page(rankByRelevanceAndAge(pool, time.Now().UnixMilli(), s.recencyHalfLife), offset, limit)
+	} else {
+		matches = make([]*model.Post, len(pool))
+		for i, sp := range pool {
+			matches[i] = sp.post
+		}
+	}
+
 	out := make([]SearchHit, 0, len(matches))
 	for _, mp := range matches {
 		before, after, _ := s.contextWindow(mp.ChannelId, mp.CreateAt, mp.Id, contextN)
 		out = append(out, SearchHit{Match: mp, Before: before, After: after})
 	}
-	return out, nil
+	return out, total, nil
+}
+
+// page returns posts[offset:offset+limit], clamped to the slice bounds.
+func page(posts []*model.Post, offset, limit int) []*model.Post {
+	if offset >= len(posts) {
+		return nil
+	}
+	end := offset + limit
+	if end > len(posts) {
+		end = len(posts)
+	}
+	return posts[offset:end]
+}
+
+// scoredPost couples a matched post with its raw bm25 score (more negative is
+// more relevant) for the blended re-ranking.
+type scoredPost struct {
+	post *model.Post
+	bm25 float64
+}
+
+const (
+	// relevanceDamp shapes how a candidate's relevance weight falls off with its
+	// bm25 rank: weight = 1/(relevanceDamp+rank), so the top hit scores 1.0 and
+	// the leading hits are widely separated while the long tail compresses. That
+	// weight is then scaled by the age decay (see rankByRelevanceAndAge), so a
+	// result has to be both relevant and recent to rank high. A larger value
+	// flattens the relevance differences (letting recency dominate sooner).
+	relevanceDamp = 1.0
+
+	// rankPoolBase is the candidate pool re-ranked per page: large enough that
+	// a recent, only-moderately-relevant message can be lifted into view, but
+	// capped so ranking stays cheap and recent noise can't flood in.
+	rankPoolBase = 300
+)
+
+// rankPoolSize is how many bm25-ordered candidates to pull for one page: a
+// base pool big enough for recency fusion to matter, plus offset so paging
+// stays within a single fused ordering.
+func rankPoolSize(limit, offset int) int {
+	base := rankPoolBase
+	if limit > base {
+		base = limit
+	}
+	return offset + base
+}
+
+// rankByRelevanceAndAge re-ranks a bm25-ordered candidate pool by relevance
+// scaled by an absolute age decay, so recent matches outrank stale ones unless
+// an older message is markedly more relevant. The input is assumed already
+// sorted best-bm25-first, so a candidate's index IS its relevance rank, giving
+// it a weight of 1/(relevanceDamp+rank) — using the rank (not the raw bm25)
+// keeps an outlier score (e.g. a code snippet that repeats a term) from
+// dominating. That weight is multiplied by a half-life decay of the message's
+// age measured from now (unix-ms): the weight halves for every halfLife of age.
+// Because the decay is a function of absolute age, a three-month-old message is
+// discounted the same regardless of how many other matches exist — which is
+// what "older chat may be out of date" calls for, unlike a relative recency
+// rank. A non-positive halfLife disables the decay (pure relevance order).
+// Ties break newest-first.
+func rankByRelevanceAndAge(pool []scoredPost, now int64, halfLife time.Duration) []*model.Post {
+	if len(pool) <= 1 {
+		out := make([]*model.Post, len(pool))
+		for i, m := range pool {
+			out[i] = m.post
+		}
+		return out
+	}
+	hlMs := halfLife.Milliseconds()
+	decay := func(createAt int64) float64 {
+		if hlMs <= 0 {
+			return 1 // decay disabled → rank by relevance alone
+		}
+		ageMs := now - createAt
+		if ageMs <= 0 {
+			return 1 // future/just-now timestamps get no penalty
+		}
+		return math.Exp2(-float64(ageMs) / float64(hlMs))
+	}
+	score := func(i int) float64 {
+		return decay(pool[i].post.CreateAt) / (relevanceDamp + float64(i))
+	}
+	order := make([]int, len(pool))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool {
+		ia, ib := order[a], order[b]
+		if sa, sb := score(ia), score(ib); sa != sb {
+			return sa > sb
+		}
+		return pool[ia].post.CreateAt > pool[ib].post.CreateAt
+	})
+	out := make([]*model.Post, len(pool))
+	for i, idx := range order {
+		out[i] = pool[idx].post
+	}
+	return out
+}
+
+// countFTS returns the number of posts matching fts (after f), saturated at
+// MatchCountCap via a LIMIT'd subquery so a huge corpus can't turn this into a
+// full scan. It runs the same MATCH + WHERE as searchFTS so the two agree.
+func (s *Store) countFTS(fts string, f searchFilter) (int, error) {
+	var b strings.Builder
+	b.WriteString(`
+SELECT count(*) FROM (
+  SELECT 1
+  FROM posts_fts
+  JOIN posts p ON p.rowid = posts_fts.rowid
+  WHERE posts_fts MATCH ?
+    AND p.delete_at = 0`)
+	args := f.where(&b, []any{fts})
+	b.WriteString("\n  LIMIT ?\n)")
+	args = append(args, MatchCountCap)
+	var n int
+	if err := s.db.QueryRow(b.String(), args...).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count search: %w", err)
+	}
+	return n, nil
 }
 
 // contextWindow returns the limit newest posts older than the pivot

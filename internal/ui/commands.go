@@ -45,6 +45,13 @@ func builtinCommands() []switcherCommand {
 			argPlaceholder: "hello world",
 			run:            runTypingAnimation,
 		},
+		{
+			name:           "Bouncing ball",
+			desc:           "animate a ball inside a code-block box (socket test)",
+			argPrompt:      "duration(s) fps: ",
+			argPlaceholder: "8 30",
+			run:            runBouncingBall,
+		},
 	}
 }
 

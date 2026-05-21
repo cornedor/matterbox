@@ -126,6 +126,23 @@ type summaryChunkMsg struct {
 	err      error
 }
 
+// aiSearchOpenedMsg hands the UI the update channel + cancel handle for a
+// started agentic-search run. Dropped (and cancelled) when seq no longer
+// matches m.aiSearch.seq.
+type aiSearchOpenedMsg struct {
+	seq    int
+	ch     chan aiSearchUpdate
+	cancel context.CancelFunc
+}
+
+// aiSearchUpdateMsg carries one update from the search agent: a trace step or
+// the terminal answer/error. Dropped when seq no longer matches
+// m.aiSearch.seq.
+type aiSearchUpdateMsg struct {
+	seq int
+	u   aiSearchUpdate
+}
+
 // mentionDebounceMsg fires after mentionDebounce; if `seq` still matches
 // the current state, the handler kicks off fetchMentions.
 type mentionDebounceMsg struct{ seq int }

@@ -114,11 +114,15 @@ func (m Model) handleSwitcherKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.switchToChannelHomeTeam(ch)
 		m.filterValue = ""
 		m.filter.SetValue("")
-		m.focus = focusInput
+		// Land in the channel sidebar after switching — the composer is no
+		// longer autofocused, so navigation keys keep working. Press "i"
+		// (or ",i") to start typing.
+		m.focus = focusChannels
+		m.input.Blur()
 		m.posts = nil
 		m.status = "loading messages…"
 		m.renderMessages()
-		return m, tea.Batch(m.input.Focus(), m.fetchPosts(ch.Id), m.bumpChannelStat(ch.Id))
+		return m, tea.Batch(m.fetchPosts(ch.Id), m.bumpChannelStat(ch.Id))
 	}
 	old := m.switcher.Value()
 	var cmd tea.Cmd
