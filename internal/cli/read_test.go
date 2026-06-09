@@ -63,6 +63,53 @@ func TestUniqueUserIDs(t *testing.T) {
 	}
 }
 
+func TestFilterByCreateRange(t *testing.T) {
+	posts := []*model.Post{
+		{Id: "p1", CreateAt: 100},
+		{Id: "p2", CreateAt: 200},
+		{Id: "p3", CreateAt: 300},
+		{Id: "p4", CreateAt: 400},
+	}
+	ids := func(ps []*model.Post) string {
+		s := ""
+		for _, p := range ps {
+			s += p.Id
+		}
+		return s
+	}
+	cases := []struct {
+		name         string
+		since, until int64
+		want         string
+	}{
+		{"no bounds", 0, 0, "p1p2p3p4"},
+		{"since inclusive", 200, 0, "p2p3p4"},
+		{"until exclusive", 0, 300, "p1p2"},
+		{"both", 200, 400, "p2p3"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := ids(filterByCreateRange(posts, c.since, c.until)); got != c.want {
+				t.Errorf("filterByCreateRange(%d,%d) = %q, want %q", c.since, c.until, got, c.want)
+			}
+		})
+	}
+}
+
+func TestTailN(t *testing.T) {
+	posts := []*model.Post{{Id: "a"}, {Id: "b"}, {Id: "c"}}
+	if got := tailN(posts, 0); len(got) != 3 {
+		t.Errorf("n=0 should not cap: got %d", len(got))
+	}
+	if got := tailN(posts, 5); len(got) != 3 {
+		t.Errorf("n>len should not cap: got %d", len(got))
+	}
+	got := tailN(posts, 2)
+	if len(got) != 2 || got[0].Id != "b" || got[1].Id != "c" {
+		t.Errorf("tailN(2) = %v, want [b c]", got)
+	}
+}
+
 func TestFormatPosts(t *testing.T) {
 	posts := []*model.Post{
 		{UserId: "u1", Message: "hello", CreateAt: ms(t, "09:05")},

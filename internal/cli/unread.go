@@ -158,7 +158,7 @@ func runUnread(ctx context.Context, perChannel int, wait bool, timeout time.Dura
 	if err != nil {
 		return err
 	}
-	return printLiveMessage(ctx, client, out, ev, p, lbl.headerForEvent(p.ChannelId, ev))
+	return printLiveMessage(ctx, client, out, ev, p, lbl.headerForEvent(p.ChannelId, ev, p))
 }
 
 // gatherUnread turns the member records into per-channel unread groups: for
@@ -322,7 +322,10 @@ func (l labeler) header(channelID string) string {
 // headerForEvent labels a live-waited message. For DMs (or a channel we
 // don't have locally) the event's sender_name is the most reliable label,
 // since a caught-up wait won't have resolved DM partners.
-func (l labeler) headerForEvent(channelID string, ev *model.WebSocketEvent) string {
+func (l labeler) headerForEvent(channelID string, ev *model.WebSocketEvent, p *model.Post) string {
+	if ov := overrideName(p); ov != "" {
+		return "@" + ov
+	}
 	ch := l.channels[channelID]
 	if ch == nil || ch.Type == model.ChannelTypeDirect {
 		if sn, _ := ev.GetData()["sender_name"].(string); sn != "" {
