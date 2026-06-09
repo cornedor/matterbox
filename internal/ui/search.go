@@ -12,6 +12,8 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/mattermost/mattermost/server/public/model"
 
+	"matterbox/internal/embed"
+	"matterbox/internal/semindex"
 	"matterbox/internal/store"
 )
 
@@ -82,6 +84,18 @@ func isAIQuery(raw string) bool {
 	return ok
 }
 
+// semanticQuery reports whether a raw search input opted into semantic (hybrid)
+// search with a leading "~", returning the remainder (the "~" stripped). Unlike
+// the AI "?" trigger this fires live through the normal debounce path — the only
+// extra cost is one query-embedding call per debounced search.
+func semanticQuery(raw string) (string, bool) {
+	q := strings.TrimSpace(raw)
+	if rest, ok := strings.CutPrefix(q, "~"); ok {
+		return strings.TrimSpace(rest), true
+	}
+	return raw, false
+}
+
 // searchContextLines is how many posts before / after the match we
 // include in each bubble. Two on each side matches the spec.
 const searchContextLines = 2
@@ -106,7 +120,7 @@ type searchState struct {
 func newSearchState(storeAvailable bool) searchState {
 	ti := textinput.New()
 	ti.Prompt = "🔎 "
-	ti.Placeholder = "search… (end with ? to ask AI · team:/in: to narrow)"
+	ti.Placeholder = "search… (~ semantic · ? ask AI · team:/in: to narrow)"
 	ti.CharLimit = 256
 
 	vp := viewport.New()
@@ -184,11 +198,10 @@ func (m *Model) openSearchHere() tea.Cmd {
 // selected channel, suitable for prefilling the search box. Returns ""
 // when there's no resolvable current channel.
 func (m Model) searchScopePrefix() string {
-	vis := m.visibleChannels()
-	if m.channelIdx < 0 || m.channelIdx >= len(vis) {
+	ch := m.findChannel(m.openChannelID)
+	if ch == nil {
 		return ""
 	}
-	ch := vis[m.channelIdx]
 	in := m.searchInValue(ch)
 	if in == "" {
 		return ""
@@ -271,7 +284,10 @@ func (m Model) runSearch(seq int, query string, limit int) tea.Cmd {
 			return searchResultsMsg{seq: seq, query: query}
 		}
 	}
-	parsed := parseSearchQuery(query)
+	// A leading "~" requests semantic (hybrid) search; strip it before parsing
+	// modifiers so team:/in: still work, e.g. `~auth bug in:platform`.
+	body, semantic := semanticQuery(query)
+	parsed := parseSearchQuery(body)
 	if parsed.text == "" {
 		return func() tea.Msg {
 			return searchResultsMsg{seq: seq, query: query}
@@ -284,6 +300,26 @@ func (m Model) runSearch(seq int, query string, limit int) tea.Cmd {
 	if limit <= 0 {
 		limit = searchPageSize
 	}
+
+	// Semantic path: embed the query, then fuse keyword + vector rankings. Needs
+	// the embeddings client; without it (not configured) "~" silently falls back
+	// to keyword search on the stripped text.
+	if semantic && m.embedClient != nil {
+		client := m.embedClient
+		modelTag := semindex.ModelTag(m.embedModel, m.embedDim)
+		text := parsed.text
+		ctx := m.ctx
+		return func() tea.Msg {
+			qvec, err := client.EmbedOne(ctx, embed.QueryText(text))
+			if err != nil {
+				return searchResultsMsg{seq: seq, query: query,
+					err: "semantic search unavailable — is the embeddings server up? (see scripts/llama-embeddings.sh)"}
+			}
+			hits, _, err := st.SearchHybrid(text, qvec, modelTag, store.HybridScope{ChannelIDs: scope}, limit, 0, searchContextLines)
+			return searchResultsMsg{seq: seq, query: query, hits: hits, err: errString(err)}
+		}
+	}
+
 	return func() tea.Msg {
 		hits, err := st.Search(parsed.text, scope, limit, searchContextLines)
 		return searchResultsMsg{seq: seq, query: query, hits: hits, err: errString(err)}
@@ -380,6 +416,11 @@ func (m Model) channelMatchesIn(c *model.Channel, in string) bool {
 // clears the query (or returns to teams if already empty); typing
 // updates the input and triggers a debounced search.
 func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// A finished AI run installs its own keymap: up/down walk the answer box and
+	// the surfaced hits, and typing feeds the in-box follow-up field.
+	if m.aiSearch.phase == aiSearchDone {
+		return m.handleAIDoneKey(msg)
+	}
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
@@ -391,6 +432,9 @@ func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.search.hits = nil
 			m.search.query = ""
 			m.search.idx = 0
+			// A follow-up run blurs the main input in favour of the in-box
+			// follow-up field; restore it so typing works after cancelling.
+			m.search.input.Focus()
 			m.renderSearchResults()
 			return m, nil
 		}
@@ -422,17 +466,19 @@ func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.renderSearchResults()
 		}
 		return m, nil
+	case "left", "right":
+		// With an empty query the search box has nothing to edit, so ←/→
+		// keep switching tabs — you're never trapped after arrowing in.
+		// Once text is present they fall through to move the input cursor.
+		if m.search.input.Value() == "" {
+			if msg.String() == "left" {
+				return m.switchTeamTab(-1)
+			}
+			return m.switchTeamTab(1)
+		}
 	case "enter":
 		// While an AI run is in flight, enter is a no-op (it would restart it).
 		if m.aiSearch.phase == aiSearchRunning {
-			return m, nil
-		}
-		// After an AI run, enter navigates into the surfaced result bubbles
-		// rather than re-asking — the question text is still in the box.
-		if m.aiSearch.phase == aiSearchDone {
-			if m.search.idx >= 0 && m.search.idx < len(m.search.hits) {
-				return m.openHitChannel(m.search.hits[m.search.idx])
-			}
 			return m, nil
 		}
 		// A question (trailing "?") hands off to the agentic search.
@@ -488,6 +534,79 @@ func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmd, debounceCmd)
 	}
 	return m, cmd
+}
+
+// handleAIDoneKey owns keystrokes once an AI run has finished. The cursor lives
+// at idx -1 (the answer box, where the follow-up field is) or 0..n-1 (a hit
+// bubble). up/down move between them — so you can always walk back up to the
+// summary — enter either runs the follow-up or opens the selected hit, and any
+// other keypress edits the follow-up field while the answer box is selected.
+func (m Model) handleAIDoneKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+	case "esc":
+		// Tear the AI result down and return to plain search, keeping the typed
+		// question so it can be tweaked and re-asked.
+		m.cancelAISearch()
+		m.search.hits = nil
+		m.search.query = ""
+		m.search.idx = 0
+		m.search.input.Focus()
+		m.renderSearchResults()
+		return m, nil
+	case "up", "ctrl+p":
+		if m.search.idx > -1 {
+			m.search.idx--
+			var cmd tea.Cmd
+			if m.search.idx == -1 && m.aiSearch.err == nil {
+				cmd = m.aiSearch.followup.Focus() // back on the answer box
+			}
+			m.renderSearchResults()
+			return m, cmd
+		}
+		return m, nil
+	case "down", "ctrl+n":
+		// An errored run renders the banner only (no hit bubbles), so there's
+		// nothing below the answer box to move onto.
+		if m.aiSearch.err == nil && m.search.idx < len(m.search.hits)-1 {
+			if m.search.idx == -1 {
+				m.aiSearch.followup.Blur() // leaving the answer box for a hit
+			}
+			m.search.idx++
+			m.renderSearchResults()
+		}
+		return m, nil
+	case "enter":
+		if m.search.idx <= -1 {
+			return m, m.startAIFollowup()
+		}
+		if m.search.idx < len(m.search.hits) {
+			return m.openHitChannel(m.search.hits[m.search.idx])
+		}
+		return m, nil
+	case "pgup":
+		m.search.view.ScrollUp(m.search.view.Height() / 2)
+		return m, nil
+	case "pgdown":
+		m.search.view.ScrollDown(m.search.view.Height() / 2)
+		return m, nil
+	case "tab":
+		return m.cycleFocus(1)
+	case "shift+tab":
+		return m.cycleFocus(-1)
+	case "ctrl+v":
+		return m, readClipboard()
+	}
+	// Anything else edits the follow-up field, but only while the answer box is
+	// selected and the run succeeded (a failed run has no follow-up input).
+	if m.search.idx <= -1 && m.aiSearch.err == nil {
+		var cmd tea.Cmd
+		m.aiSearch.followup, cmd = m.aiSearch.followup.Update(msg)
+		m.renderSearchResults()
+		return m, cmd
+	}
+	return m, nil
 }
 
 // applySearchDebounce runs once a typing-debounce tick fires. If the
@@ -709,6 +828,17 @@ func (m *Model) renderSearchResults() {
 		)
 		return
 	}
+	// A search with no results yet but one in flight is "searching", not "no
+	// matches" — semantic search in particular embeds the query and scans the
+	// vectors, which can take a beat (longer while the backfill shares the GPU).
+	if m.search.loading && len(m.search.hits) == 0 {
+		msg := "  searching…"
+		if _, ok := semanticQuery(m.search.input.Value()); ok {
+			msg = "  searching… (embedding query + scanning vectors)"
+		}
+		m.search.view.SetContent(lipgloss.NewStyle().Foreground(dimColor).Render(msg))
+		return
+	}
 	if len(m.search.hits) == 0 {
 		var hint string
 		raw := m.search.input.Value()
@@ -765,6 +895,11 @@ func (m *Model) setBubbleViewport(header []string, hits []store.SearchHit, selId
 	}
 	allLines := append([]string(nil), header...)
 	selStart, selEnd := -1, -1
+	// A negative selIdx means "the header is selected" (the AI answer box): scroll
+	// the header block into view so the summary / follow-up box stays reachable.
+	if selIdx < 0 && len(header) > 0 {
+		selStart, selEnd = 0, len(header)
+	}
 	for i, hit := range hits {
 		bubble := m.renderSearchBubble(innerW-2, hit, i == selIdx)
 		bubbleLines := strings.Split(bubble, "\n")
@@ -924,13 +1059,7 @@ func (m Model) renderSearchBubble(outerW int, hit store.SearchHit, selected bool
 // suitable for the bubble interior. muted dims everything; match bolds
 // the message body. Long messages are truncated to width with an ellipsis.
 func (m Model) renderHitLine(p *model.Post, width int, muted, match bool) string {
-	name := m.userNames[p.UserId]
-	if name == "" {
-		name = p.UserId
-		if len(name) > 8 {
-			name = name[:8]
-		}
-	}
+	name := m.postAuthorName(p)
 	ts := formatPostTime(p.CreateAt)
 	// Compose: <name>  <hh:mm>  <message>
 	var nameStyle, timeStyle2, msgStyle lipgloss.Style

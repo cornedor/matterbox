@@ -7,15 +7,22 @@ import (
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
-// postLineCacheCap bounds the rendered-line cache. The cache is keyed by
-// post id; over the cap we just clear it (a chat-style workload reaches
-// the cap mostly during fast channel-switching, when the previously
-// cached lines aren't going to be revisited soon).
-const postLineCacheCap = 1024
+// postLineCacheCap bounds the rendered-line cache (entries keyed by post
+// id). Sized comfortably above the largest realistic working set — the
+// rendered message window (maxLoadedPosts) plus an open thread plus a few
+// channel switches — so steady-state scrolling never evicts. On overflow
+// (heavy channel hopping) evictPostLines drops a fraction rather than
+// clearing the whole map.
+const postLineCacheCap = 2048
 
 type postLineCacheEntry struct {
 	fp    string
 	lines []string
+	// rows is the number of soft-wrapped visual rows lines occupies at the
+	// fingerprinted width. Cached alongside the lines so renderMessages can
+	// sum prefix heights to locate the selection instead of re-measuring
+	// every visible line's width on each keystroke.
+	rows int
 }
 
 // postLineFingerprint encodes every input renderPostLines /
@@ -23,6 +30,25 @@ type postLineCacheEntry struct {
 // If two calls produce the same fingerprint, their output is identical and
 // the cached []string can be returned verbatim. Polls embed selection
 // state in their render, so callers skip the cache for poll posts.
+// postAuthorName returns the name to show for a post. A webhook/bot post
+// carries its own display name in Props["override_username"]; honour that
+// per-post rather than the per-user cache, since the same UserId can post
+// under multiple identities (a human and a bot running on their account).
+// Falls back to the cached username, then a truncated UserId.
+func (m *Model) postAuthorName(p *model.Post) string {
+	if ov, ok := p.GetProp("override_username").(string); ok && ov != "" {
+		return ov
+	}
+	name := m.userNames[p.UserId]
+	if name == "" {
+		name = p.UserId
+		if len(name) > 8 {
+			name = name[:8]
+		}
+	}
+	return name
+}
+
 func (m *Model) postLineFingerprint(p *model.Post, width int, isThread, isRoot bool) string {
 	var b strings.Builder
 	b.Grow(96)
@@ -47,7 +73,7 @@ func (m *Model) postLineFingerprint(p *model.Post, width int, isThread, isRoot b
 		b.WriteByte('M')
 	}
 	b.WriteByte('|')
-	b.WriteString(m.userNames[p.UserId])
+	b.WriteString(m.postAuthorName(p))
 	b.WriteByte('|')
 	if p.Metadata != nil {
 		for _, r := range p.Metadata.Reactions {
@@ -63,31 +89,46 @@ func (m *Model) postLineFingerprint(p *model.Post, width int, isThread, isRoot b
 	return b.String()
 }
 
-// cachedPostLines returns previously-rendered lines if the fingerprint
-// matches, or (nil, false) on a miss. Polls return (nil, false)
-// unconditionally — their output depends on the current selection.
-func (m *Model) cachedPostLines(p *model.Post, fp string) ([]string, bool) {
+// cachedPostLines returns previously-rendered lines and their visual-row
+// count if the fingerprint matches, or (nil, 0, false) on a miss. Polls
+// return false unconditionally — their output depends on the current
+// selection.
+func (m *Model) cachedPostLines(p *model.Post, fp string) ([]string, int, bool) {
 	if m.postLineCache == nil {
-		return nil, false
+		return nil, 0, false
 	}
 	e, ok := m.postLineCache[p.Id]
 	if !ok || e.fp != fp {
-		return nil, false
+		return nil, 0, false
 	}
-	return e.lines, true
+	return e.lines, e.rows, true
 }
 
-func (m *Model) putPostLines(postID, fp string, lines []string) {
+func (m *Model) putPostLines(postID, fp string, lines []string, rows int) {
 	if m.postLineCache == nil {
 		m.postLineCache = make(map[string]postLineCacheEntry, 128)
 	}
 	if len(m.postLineCache) >= postLineCacheCap {
-		// Cheap eviction: drop everything. The active viewport will
-		// repopulate on the next render pass; older entries weren't
-		// going to be visited soon anyway.
-		m.postLineCache = make(map[string]postLineCacheEntry, 128)
+		m.evictPostLines()
 	}
-	m.postLineCache[postID] = postLineCacheEntry{fp: fp, lines: lines}
+	m.postLineCache[postID] = postLineCacheEntry{fp: fp, lines: lines, rows: rows}
+}
+
+// evictPostLines drops roughly the oldest quarter of the cache when it
+// fills up. Go randomises map iteration order, so without per-entry access
+// timestamps we delete an arbitrary subset rather than the whole map: that
+// keeps ~75% of the working set warm instead of going fully cold on every
+// overflow. (The old "clear everything" behaviour made deep scroll-back
+// re-render every visible post's markdown on each keystroke once the
+// loaded history exceeded the cap.)
+func (m *Model) evictPostLines() {
+	target := postLineCacheCap * 3 / 4
+	for id := range m.postLineCache {
+		if len(m.postLineCache) <= target {
+			break
+		}
+		delete(m.postLineCache, id)
+	}
 }
 
 // invalidatePostLines clears the cache entry for one post. Used by WS

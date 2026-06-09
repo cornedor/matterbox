@@ -119,6 +119,11 @@ func (m Model) handleSwitcherKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// (or ",i") to start typing.
 		m.focus = focusChannels
 		m.input.Blur()
+		m.openChannelID = ch.Id
+		// New focus session: start a fresh mark-read dwell (this path
+		// doesn't go through openChannelLoadCmd).
+		m.viewGen++
+		m.viewSettled = false
 		m.posts = nil
 		m.status = "loading messages…"
 		m.renderMessages()
@@ -145,6 +150,7 @@ func (m *Model) switcherResults() []*model.Channel {
 	type match struct {
 		ch    *model.Channel
 		label string
+		band  int
 		score int
 	}
 	var matches []match
@@ -156,18 +162,15 @@ func (m *Model) switcherResults() []*model.Channel {
 			}
 			seen[c.Id] = true
 			label := m.channelLabel(c)
-			score, ok := fuzzyScore(strings.ToLower(label), needle)
+			band, score, ok := fuzzyScore(strings.ToLower(label), needle)
 			if !ok {
 				continue
 			}
-			matches = append(matches, match{ch: c, label: label, score: score})
+			matches = append(matches, match{ch: c, label: label, band: band, score: score})
 		}
 	}
 	// tier ranks attention (lower = higher priority): mentions, then
-	// plain unreads, then everything else. With an empty query every
-	// fuzzyScore is 0 so tier dominates — so a bare ctrl+k surfaces
-	// unread/mention channels first. With a typed query, score still
-	// decides; tier only breaks ties.
+	// plain unreads, then everything else.
 	tier := func(ch *model.Channel) int {
 		switch {
 		case m.mentions[ch.Id] > 0:
@@ -178,24 +181,37 @@ func (m *Model) switcherResults() []*model.Channel {
 			return 2
 		}
 	}
+	// Ordering keys, in priority order. The first three are the same
+	// attention/usage ranking a bare ctrl+k shows; the only change while
+	// filtering is that match quality is now coarse (band) instead of a
+	// fine score, so it stops dominating. That way typing a name still
+	// jumps to the strongest textual match, but among comparable matches
+	// the unread / most-used channel wins instead of whichever happened to
+	// match at an earlier position.
 	sort.SliceStable(matches, func(i, j int) bool {
 		a, b := matches[i], matches[j]
-		if a.score != b.score {
-			return a.score < b.score
+		// 1. Coarse match quality: exact > prefix > substring > subsequence.
+		if a.band != b.band {
+			return a.band < b.band
 		}
+		// 2. Attention: mentions, then unreads.
 		ta, tb := tier(a.ch), tier(b.ch)
 		if ta != tb {
 			return ta < tb
 		}
-		// Persisted usage: most-opened channels rank above never-opened
-		// ones within the same tier. Recency breaks count ties so a
-		// freshly-opened channel beats an equally-counted dormant one.
+		// 3. Persisted usage: most-opened channels rank above never-opened
+		// ones. Recency breaks count ties so a freshly-opened channel beats
+		// an equally-counted dormant one.
 		ca, cb := m.openStats[a.ch.Id], m.openStats[b.ch.Id]
 		if ca.OpenCount != cb.OpenCount {
 			return ca.OpenCount > cb.OpenCount
 		}
 		if ca.LastOpened != cb.LastOpened {
 			return ca.LastOpened > cb.LastOpened
+		}
+		// 4. Finer match position, then label, as a stable last resort.
+		if a.score != b.score {
+			return a.score < b.score
 		}
 		return strings.ToLower(a.label) < strings.ToLower(b.label)
 	})
@@ -209,16 +225,27 @@ func (m *Model) switcherResults() []*model.Channel {
 	return out
 }
 
-// fuzzyScore returns (score, ok) where lower scores rank higher. Empty
-// needle accepts everything with a neutral score. Substring matches
-// (preferred) score by earliest position + haystack length; subsequence
-// matches fall into a strictly worse band so substring hits always win.
-func fuzzyScore(haystack, needle string) (int, bool) {
+// fuzzyScore returns (band, score, ok). band is the coarse match-quality
+// tier (lower = better): 0 exact, 1 prefix, 2 interior substring, 3
+// subsequence. It's the primary ranking key so a stronger textual match
+// always wins. score is a finer within-band discriminator (lower = better):
+// earliest position + haystack length for substrings, gap count for
+// subsequences. An empty needle accepts everything in band 0 with a neutral
+// score, so a bare list is ordered entirely by attention/usage.
+func fuzzyScore(haystack, needle string) (band, score int, ok bool) {
 	if needle == "" {
-		return 0, true
+		return 0, 0, true
 	}
 	if i := strings.Index(haystack, needle); i >= 0 {
-		return i*2 + (len(haystack) - len(needle)), true
+		switch {
+		case len(haystack) == len(needle):
+			band = 0 // exact
+		case i == 0:
+			band = 1 // prefix
+		default:
+			band = 2 // interior substring
+		}
+		return band, i*2 + (len(haystack) - len(needle)), true
 	}
 	hr := []rune(haystack)
 	nr := []rune(needle)
@@ -230,11 +257,11 @@ func fuzzyScore(haystack, needle string) (int, bool) {
 			gaps++
 		}
 		if hi >= len(hr) {
-			return 0, false
+			return 0, 0, false
 		}
 		hi++
 	}
-	return 1000 + gaps, true
+	return 3, gaps, true
 }
 
 // teamHintForChannel returns a short label describing where the channel

@@ -44,6 +44,11 @@ func (la *lastActive) channelID() string {
 type channelStatsFile struct {
 	Stats      map[string]channelStat `json:"stats"`
 	LastActive *lastActive            `json:"last_active,omitempty"`
+	// LastChannelByTeam maps a persistent team bucket (real team or the
+	// synthetic DMs bucket) to the last channel explicitly opened there,
+	// so switching to a team reopens that channel instead of defaulting
+	// to the first one. Synthetic tabs (Unread/Search/Feed) are excluded.
+	LastChannelByTeam map[string]string `json:"last_channel_by_team,omitempty"`
 }
 
 func channelStatsPath() (string, error) {
@@ -61,28 +66,31 @@ func channelStatsPath() (string, error) {
 // loadChannelStats reads the persisted stats. Missing file / parse
 // errors are silently swallowed — usage tracking is a nice-to-have, not
 // load-bearing, and the user shouldn't see startup errors over it.
-func loadChannelStats() (map[string]channelStat, *lastActive) {
+func loadChannelStats() (map[string]channelStat, *lastActive, map[string]string) {
 	p, err := channelStatsPath()
 	if err != nil {
-		return map[string]channelStat{}, nil
+		return map[string]channelStat{}, nil, map[string]string{}
 	}
 	b, err := os.ReadFile(p)
 	if err != nil {
-		return map[string]channelStat{}, nil
+		return map[string]channelStat{}, nil, map[string]string{}
 	}
 	var f channelStatsFile
 	if err := json.Unmarshal(b, &f); err != nil {
-		return map[string]channelStat{}, nil
+		return map[string]channelStat{}, nil, map[string]string{}
 	}
 	if f.Stats == nil {
 		f.Stats = map[string]channelStat{}
 	}
-	return f.Stats, f.LastActive
+	if f.LastChannelByTeam == nil {
+		f.LastChannelByTeam = map[string]string{}
+	}
+	return f.Stats, f.LastActive, f.LastChannelByTeam
 }
 
 // writeChannelStats persists the given map atomically: write to a tmp
 // file in the same dir, then rename. Same-fs rename is atomic on Linux.
-func writeChannelStats(stats map[string]channelStat, la *lastActive) error {
+func writeChannelStats(stats map[string]channelStat, la *lastActive, lastByTeam map[string]string) error {
 	p, err := channelStatsPath()
 	if err != nil {
 		return err
@@ -90,7 +98,7 @@ func writeChannelStats(stats map[string]channelStat, la *lastActive) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(channelStatsFile{Stats: stats, LastActive: la}, "", "  ")
+	b, err := json.MarshalIndent(channelStatsFile{Stats: stats, LastActive: la, LastChannelByTeam: lastByTeam}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -126,18 +134,35 @@ func (m *Model) bumpChannelStat(channelID string) tea.Cmd {
 	s.LastOpened = time.Now().UnixMilli()
 	m.openStats[channelID] = s
 
-	m.lastActiveTeamID = m.currentTeamID()
+	teamID := m.currentTeamID()
+	m.lastActiveTeamID = teamID
 	m.lastActiveChannelID = channelID
 
-	// Snapshot the map so the background write isn't racing the live
-	// map while another bump happens.
+	// Remember the last channel opened per persistent team bucket so a
+	// later team switch can reopen it. The synthetic Unread/Search/Feed
+	// tabs aren't restorable, so don't pollute the map with them — by the
+	// time we reach here a channel opened from the Unread tab has already
+	// hopped to its home team (switchToChannelHomeTeam), so teamID is real.
+	if m.lastChannelByTeam == nil {
+		m.lastChannelByTeam = map[string]string{}
+	}
+	if isRestorableTeamID(teamID) {
+		m.lastChannelByTeam[teamID] = channelID
+	}
+
+	// Snapshot the maps so the background write isn't racing the live
+	// maps while another bump happens.
 	snapshot := make(map[string]channelStat, len(m.openStats))
 	for k, v := range m.openStats {
 		snapshot[k] = v
 	}
+	lastByTeam := make(map[string]string, len(m.lastChannelByTeam))
+	for k, v := range m.lastChannelByTeam {
+		lastByTeam[k] = v
+	}
 	la := &lastActive{TeamID: m.lastActiveTeamID, ChannelID: m.lastActiveChannelID}
 	return func() tea.Msg {
-		_ = writeChannelStats(snapshot, la)
+		_ = writeChannelStats(snapshot, la, lastByTeam)
 		return nil
 	}
 }

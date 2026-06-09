@@ -392,18 +392,14 @@ func (m *Model) openPollDialog(req model.OpenDialogRequest) bool {
 	st.inputs[0].Focus()
 	// Channel + team are needed in the submission request. When a thread
 	// is open and a poll lives inside it, the thread's channel is what
-	// the user just acted on — even when the sidebar's selected channel
-	// has since changed. Otherwise we fall back to the visible channel.
+	// the user just acted on. Otherwise the poll targets the open channel,
+	// not the sidebar cursor — those diverge once the selection moves.
 	if m.threadOpen && m.threadChannelID != "" {
 		st.channelID = m.threadChannelID
 		st.teamID = m.threadTeamID()
-	} else {
-		vis := m.visibleChannels()
-		if m.channelIdx < len(vis) {
-			ch := vis[m.channelIdx]
-			st.channelID = ch.Id
-			st.teamID = ch.TeamId
-		}
+	} else if ch := m.findChannel(m.openChannelID); ch != nil {
+		st.channelID = ch.Id
+		st.teamID = ch.TeamId
 	}
 	m.pollDialog = st
 	return true

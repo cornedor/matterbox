@@ -98,17 +98,6 @@ func (m *Model) openFeedTab() tea.Cmd {
 	return m.buildFeed()
 }
 
-// maybeBuildFeedOnLand kicks off a feed build the first time the user
-// lands on the Feed tab (e.g. arrowing across the tab strip) so the pane
-// shows live unreads even before they focus into it. No-op off the Feed
-// tab or once a build is already running / done this session.
-func (m *Model) maybeBuildFeedOnLand() tea.Cmd {
-	if m.onFeedTab() && !m.feed.built && !m.feed.loading {
-		return m.buildFeed()
-	}
-	return nil
-}
-
 // lastViewedByChannel maps each known channel to its server-side
 // last-viewed timestamp, the boundary between read and unread posts.
 func (m Model) lastViewedByChannel() map[string]int64 {
@@ -333,6 +322,10 @@ func (m Model) handleFeedKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.renderFeedResults()
 		}
 		return m, nil
+	case "left", "h":
+		return m.switchTeamTab(-1)
+	case "right", "l":
+		return m.switchTeamTab(1)
 	case "home", "g":
 		m.feed.idx = 0
 		m.renderFeedResults()

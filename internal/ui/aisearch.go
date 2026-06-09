@@ -12,10 +12,13 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/spinner"
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/mattermost/mattermost/server/public/model"
 
+	"matterbox/internal/embed"
+	"matterbox/internal/semindex"
 	"matterbox/internal/store"
 )
 
@@ -88,13 +91,27 @@ type aiSearchState struct {
 	tentative bool // answer is an unconfirmed best guess, not a confirmed one
 	spinner   spinner.Model
 
+	// history is the full chat transcript (system + user + assistant + tool
+	// turns) as it stood when the run finished, so a follow-up can continue the
+	// same conversation instead of starting cold. Empty until a run completes.
+	history []aiMessage
+	// followup is the "↳ ask a follow-up…" input rendered inside the answer box.
+	// It owns keystrokes while the answer box is the selected row (idx == -1).
+	followup textinput.Model
+
 	stream chan aiSearchUpdate
 	cancel context.CancelFunc
 	err    error
 }
 
-// newAISearchState builds a fresh, inactive state.
-func newAISearchState() aiSearchState { return aiSearchState{} }
+// newAISearchState builds a fresh, inactive state with an empty follow-up input.
+func newAISearchState() aiSearchState {
+	ti := textinput.New()
+	ti.Prompt = "↳ "
+	ti.Placeholder = "ask a follow-up…"
+	ti.CharLimit = 256
+	return aiSearchState{followup: ti}
+}
 
 // active reports whether AI search is running or showing a result, i.e.
 // whether it currently owns the Search viewport.
@@ -366,18 +383,24 @@ func aiSearchToolDefs() []aiTool {
 	return []aiTool{
 		{Type: "function", Function: aiFunctionDef{
 			Name: "search_messages",
-			Description: "Keyword search over the local message archive (not semantic — use words you'd expect IN the messages). Results are ranked by relevance and recency and reported with a match count, as: ref [Team › #channel] @author (date): text. " +
-				"Tune precision vs recall: start broad with 'any_of' (a post matching ANY of those words is a hit). If the count is large, NARROW by adding an 'all_of' term (every one must appear), a 'phrase' (exact wording), or a 'none_of' term (excluded). If you get 0, LOOSEN: drop an all_of/phrase term or add synonyms to any_of. " +
-				"If the matches shown look unrelated but the count says there are more, set 'offset' to page further into the SAME query (offset 10 = the next 10) instead of guessing new terms. " +
-				"Do NOT search for a project/team/channel name — it lives in the channel title, not the messages; use the 'channel'/'team' args or list_channels for that. Multi-word items in any_of/all_of/none_of are treated as exact phrases.",
+			Description: "Search the local message archive. Pick a 'mode':\n" +
+				"• keyword (default): exact-word full-text search. Best for specific tokens — names, error codes, ticket IDs, URLs, an exact phrase. Drive it with the any_of/all_of/phrase/none_of levers.\n" +
+				"• semantic: matches by MEANING using sentence embeddings, so it finds messages that share NO words with your query — paraphrases, synonyms, and even other languages (e.g. an English query finds Dutch messages). It compares the EMBEDDING of your 'query' against the embedding of every message and returns the closest. Example: query \"payment provider\" surfaces \"paypal\", \"creditcard lukte niet\", \"PSP down\". Use it when you know the TOPIC or idea but not the exact words people used. Put a short natural-language description in 'query'; the keyword levers are ignored.\n" +
+				"• hybrid: runs keyword AND semantic and fuses the rankings — keyword precision plus semantic recall. A strong default when you're unsure which words appear. Needs 'query' (and may also use the keyword levers).\n" +
+				"Results are ranked by relevance and reported with a match count as: ref [Team › #channel] @author (date): text.\n" +
+				"Keyword tuning: start broad with any_of (a post matching ANY term is a hit); if the count is large, NARROW with an all_of term, a phrase, or a none_of term; if 0, LOOSEN (drop a term, add synonyms). Semantic/hybrid tuning: rephrase 'query' or describe it differently; add a synonym; the result is recall-oriented so scan the top hits. " +
+				"If matches look unrelated but more exist, set 'offset' to page into the SAME query (10 = next 10). " +
+				"Do NOT search for a project/team/channel name — it lives in the channel title, not the messages; use 'channel'/'team' or list_channels. Multi-word any_of/all_of/none_of items are exact phrases.",
 			Parameters: json.RawMessage(`{"type":"object","properties":{` +
-				`"any_of":{"type":"array","items":{"type":"string"},"description":"Topic words + synonyms; a message matching at least one is a hit. The broad starting point, e.g. [\"storyblok\",\"contentful\",\"headless cms\"]."},` +
-				`"all_of":{"type":"array","items":{"type":"string"},"description":"Words that must ALL appear. Add one to narrow a broad result, e.g. [\"migration\"]."},` +
-				`"phrase":{"type":"string","description":"An exact phrase that must appear, e.g. \"content management system\"."},` +
-				`"none_of":{"type":"array","items":{"type":"string"},"description":"Exclude messages containing any of these words (denoise), e.g. [\"jira\"]."},` +
-				`"channel":{"type":"string","description":"Optional channel name to restrict to (bare name like 'frontend')."},` +
-				`"team":{"type":"string","description":"Optional team name to restrict to."},` +
-				`"author":{"type":"string","description":"Optional username to restrict to (the person who wrote the message)."},` +
+				`"mode":{"type":"string","enum":["keyword","semantic","hybrid"],"description":"keyword (default): exact words. semantic: by meaning (needs 'query'; finds paraphrases/synonyms/other languages). hybrid: both fused (needs 'query'). Use semantic/hybrid when you know the topic but not the exact wording."},` +
+				`"query":{"type":"string","description":"Natural-language description of what you're looking for, for mode semantic/hybrid, e.g. \"complaints about slow checkout\" or \"the deploy broke and was rolled back\"."},` +
+				`"any_of":{"type":"array","items":{"type":"string"},"description":"KEYWORD mode: topic words + synonyms; a message matching at least one is a hit. The broad starting point, e.g. [\"storyblok\",\"contentful\",\"headless cms\"]."},` +
+				`"all_of":{"type":"array","items":{"type":"string"},"description":"KEYWORD mode: words that must ALL appear. Add one to narrow a broad result, e.g. [\"migration\"]."},` +
+				`"phrase":{"type":"string","description":"KEYWORD mode: an exact phrase that must appear, e.g. \"content management system\"."},` +
+				`"none_of":{"type":"array","items":{"type":"string"},"description":"KEYWORD mode: exclude messages containing any of these words (denoise), e.g. [\"jira\"]."},` +
+				`"channel":{"type":"string","description":"Optional channel name to restrict to (bare name like 'frontend'). Works in every mode."},` +
+				`"team":{"type":"string","description":"Optional team name to restrict to. Works in every mode."},` +
+				`"author":{"type":"string","description":"Optional username to restrict to (the person who wrote the message). Works in every mode."},` +
 				`"after":{"type":"string","description":"Optional lower date bound, YYYY-MM-DD (only messages on/after this day)."},` +
 				`"before":{"type":"string","description":"Optional upper date bound, YYYY-MM-DD (only messages before this day)."},` +
 				`"offset":{"type":"integer","description":"Skip this many top results to page deeper into the same query (default 0; use 10, 20, … for further pages)."}` +
@@ -415,6 +438,14 @@ type aiSearchTools struct {
 	store   *store.Store
 	catalog searchCatalog
 	refs    *hitRefTable
+
+	// Semantic-search support for search_messages' mode=semantic|hybrid. nil
+	// embedClient (embeddings unconfigured) makes those modes fall back to
+	// keyword. ctx bounds the embedding call (it's the agent run's context).
+	embedClient *embed.Client
+	embedModel  string
+	embedDim    int
+	ctx         context.Context
 }
 
 // hitRef is the (channel, post) pair behind a short message ref.
@@ -461,6 +492,8 @@ const aiBroadMatchHint = 40
 // search; only the matched line is shown back to the model.
 func (t aiSearchTools) execSearch(args string) (string, aiTraceStep, []store.SearchHit) {
 	var in struct {
+		Mode    string   `json:"mode"`  // keyword (default) | semantic | hybrid
+		Query   string   `json:"query"` // natural-language query for semantic/hybrid
 		AnyOf   []string `json:"any_of"`
 		AllOf   []string `json:"all_of"`
 		Phrase  string   `json:"phrase"`
@@ -502,17 +535,46 @@ func (t aiSearchTools) execSearch(args string) (string, aiTraceStep, []store.Sea
 		}
 	}
 
+	// Mode picks the ranker: keyword (the structured FTS levers, default),
+	// semantic (embedding cosine over a natural-language query), or hybrid
+	// (both, rank-fused). semantic/hybrid need an embeddings client; without one
+	// they degrade to keyword.
+	mode := strings.ToLower(strings.TrimSpace(in.Mode))
+	if mode != "semantic" && mode != "hybrid" {
+		mode = "keyword"
+	}
+	semantic := mode == "semantic" || mode == "hybrid"
+	var note string
+	if semantic && t.embedClient == nil {
+		note += "(semantic search isn't configured — used keyword instead)\n"
+		mode, semantic = "keyword", false
+	}
+	// Text to embed for semantic/hybrid: the explicit natural-language query, or
+	// a best-effort fallback assembled from the keyword terms.
+	qtext := strings.TrimSpace(in.Query)
+	if qtext == "" {
+		qtext = synthesizeQuery(spec)
+	}
+
 	detail := summarizeSpec(spec)
+	if semantic {
+		detail = mode + ": " + qtext
+	}
 	if offset > 0 {
 		detail += fmt.Sprintf(" @%d", offset)
 	}
 	step := aiTraceStep{tool: "search", detail: detail}
-	if len(spec.AnyOf) == 0 && len(spec.AllOf) == 0 && len(spec.Phrases) == 0 {
+
+	hasTerms := len(spec.AnyOf) > 0 || len(spec.AllOf) > 0 || len(spec.Phrases) > 0
+	switch {
+	case semantic && qtext == "":
+		step.result = "no query"
+		return "No query. For mode \"semantic\"/\"hybrid\", put a natural-language description in 'query'.", step, nil
+	case !semantic && !hasTerms:
 		step.result = "no terms"
-		return "No search terms. Provide any_of (broad), all_of (required), and/or a phrase.", step, nil
+		return "No search terms. Provide any_of (broad), all_of (required), and/or a phrase — or set mode:\"semantic\" with a 'query'.", step, nil
 	}
 
-	var note string
 	scope, requested, matched := t.catalog.resolveScope(in.Team, in.Channel)
 	if requested {
 		step.scope = scopeLabel(in.Team, in.Channel)
@@ -554,7 +616,27 @@ func (t aiSearchTools) execSearch(args string) (string, aiTraceStep, []store.Sea
 		step.result = "no store"
 		return "The local message cache is unavailable, so search can't run.", step, nil
 	}
-	hits, total, err := t.store.SearchSpec(spec, aiSearchHitsPerCall, offset, searchContextLines)
+
+	var hits []store.SearchHit
+	var total int
+	var err error
+	if semantic {
+		qvec, eerr := t.embedClient.EmbedOne(t.ctx, embed.QueryText(qtext))
+		if eerr != nil {
+			step.result = "embed error"
+			return note + "Semantic search is unavailable (the embeddings server isn't responding). Retry with mode:\"keyword\".", step, nil
+		}
+		// Hybrid feeds the query to the keyword side too; pure semantic doesn't.
+		kw := ""
+		if mode == "hybrid" {
+			kw = qtext
+		}
+		sc := store.HybridScope{ChannelIDs: spec.ChannelIDs, AuthorIDs: spec.AuthorIDs, After: spec.After, Before: spec.Before}
+		tag := semindex.ModelTag(t.embedModel, t.embedDim)
+		hits, total, err = t.store.SearchHybrid(kw, qvec, tag, sc, aiSearchHitsPerCall, offset, searchContextLines)
+	} else {
+		hits, total, err = t.store.SearchSpec(spec, aiSearchHitsPerCall, offset, searchContextLines)
+	}
 	if err != nil {
 		step.result = "error"
 		return "Search failed: " + err.Error(), step, nil
@@ -564,7 +646,10 @@ func (t aiSearchTools) execSearch(args string) (string, aiTraceStep, []store.Sea
 		if offset > 0 {
 			return note + fmt.Sprintf("No more matches past offset %d (%s total). Go back to offset 0, or change the query.", offset, formatCount(total)), step, nil
 		}
-		return note + "0 matches. Loosen the query: drop an all_of term or the phrase, broaden any_of with more synonyms, or call list_channels to find where the topic lives and search there scoped.", step, nil
+		if semantic {
+			return note + "0 matches. Rephrase 'query' with different words, or try mode:\"keyword\"/\"hybrid\", or call list_channels to find where the topic lives and search there scoped.", step, nil
+		}
+		return note + "0 matches. Loosen the query: drop an all_of term or the phrase, broaden any_of with more synonyms, switch to mode:\"semantic\", or call list_channels to find where the topic lives and search there scoped.", step, nil
 	}
 
 	// Window currently shown, and whether more pages remain after it.
@@ -574,6 +659,11 @@ func (t aiSearchTools) execSearch(args string) (string, aiTraceStep, []store.Sea
 	var b strings.Builder
 	b.WriteString(note)
 	switch {
+	case semantic:
+		// Semantic results are the closest-by-meaning, already ranked — there's
+		// no meaningful "match count" to be "broad" about (everything has some
+		// similarity), so just present the top window.
+		fmt.Fprintf(&b, "Top semantic matches %d–%d (most similar first):\n", from, to)
 	case total > aiBroadMatchHint && offset == 0:
 		fmt.Fprintf(&b, "%s matches — broad. Narrow with an all_of term, a phrase, or a none_of term, or page on with offset. Showing %d–%d:\n", formatCount(total), from, to)
 	default:
@@ -634,6 +724,17 @@ func summarizeSpec(spec store.SearchSpec) string {
 		parts = append(parts, "-"+n)
 	}
 	return strings.Join(parts, " ")
+}
+
+// synthesizeQuery builds a natural-language-ish query from a spec's positive FTS
+// terms, for when the model asked for semantic/hybrid mode but didn't supply an
+// explicit 'query'. Order: phrases, then all_of, then any_of.
+func synthesizeQuery(spec store.SearchSpec) string {
+	var parts []string
+	parts = append(parts, spec.Phrases...)
+	parts = append(parts, spec.AllOf...)
+	parts = append(parts, spec.AnyOf...)
+	return strings.TrimSpace(strings.Join(parts, " "))
 }
 
 // parseSearchDate parses a YYYY-MM-DD date (local zone) into a unix-ms bound.
@@ -911,13 +1012,14 @@ type aiSearchUpdate struct {
 	done      bool
 	answer    string
 	hits      []store.SearchHit
-	tentative bool // answer is an unconfirmed best guess (step budget ran out)
+	tentative bool        // answer is an unconfirmed best guess (step budget ran out)
+	history   []aiMessage // full transcript on a terminal update, for follow-ups
 	err       error
 }
 
 // runAISearchLoop drives the bounded tool-call loop and pushes updates onto
 // ch. It closes ch on return and stops early if ctx is cancelled.
-func runAISearchLoop(ctx context.Context, endpoint, apiKey, mdl, system, query string, maxSteps int, tools aiSearchTools, ch chan<- aiSearchUpdate) {
+func runAISearchLoop(ctx context.Context, endpoint, apiKey, mdl string, messages []aiMessage, maxSteps int, tools aiSearchTools, ch chan<- aiSearchUpdate) {
 	defer close(ch)
 	send := func(u aiSearchUpdate) bool {
 		select {
@@ -929,10 +1031,6 @@ func runAISearchLoop(ctx context.Context, endpoint, apiKey, mdl, system, query s
 	}
 
 	toolDefs := aiSearchToolDefs()
-	messages := []aiMessage{
-		{Role: "system", Content: system},
-		{Role: "user", Content: query},
-	}
 	var collected []store.SearchHit
 	seenPost := map[string]struct{}{}
 	addHits := func(hits []store.SearchHit) {
@@ -954,21 +1052,23 @@ func runAISearchLoop(ctx context.Context, endpoint, apiKey, mdl, system, query s
 			if ctx.Err() != nil {
 				return // cancelled — the reader stopped caring
 			}
-			send(aiSearchUpdate{done: true, err: err, hits: collected})
+			send(aiSearchUpdate{done: true, err: err, hits: collected, history: messages})
 			return
 		}
 		if len(resp.Choices) == 0 {
-			send(aiSearchUpdate{done: true, err: errors.New("model returned no choices"), hits: collected})
+			send(aiSearchUpdate{done: true, err: errors.New("model returned no choices"), hits: collected, history: messages})
 			return
 		}
 		msg := resp.Choices[0].Message
 		if len(msg.ToolCalls) == 0 {
-			// The model answered in prose without calling finish — accept it.
+			// The model answered in prose without calling finish — accept it, and
+			// keep the assistant turn in the transcript so a follow-up continues it.
 			answer := strings.TrimSpace(msg.Content)
 			if answer == "" {
 				answer = "(the model returned an empty answer)"
 			}
-			send(aiSearchUpdate{done: true, answer: answer, hits: collected})
+			messages = append(messages, aiMessage{Role: "assistant", Content: msg.Content})
+			send(aiSearchUpdate{done: true, answer: answer, hits: collected, history: messages})
 			return
 		}
 
@@ -986,7 +1086,12 @@ func runAISearchLoop(ctx context.Context, endpoint, apiKey, mdl, system, query s
 				if answer == "" {
 					answer = "(no answer text provided)"
 				}
-				send(aiSearchUpdate{done: true, answer: answer, hits: collected})
+				// Close out the finish tool call and record the answer as an
+				// assistant turn so the transcript is a valid continuation point.
+				messages = append(messages,
+					aiMessage{Role: "tool", ToolCallID: tc.ID, Content: "Answer delivered to the user."},
+					aiMessage{Role: "assistant", Content: answer})
+				send(aiSearchUpdate{done: true, answer: answer, hits: collected, history: messages})
 				return
 			case "search_messages":
 				result, ts, hits := tools.execSearch(tc.Function.Arguments)
@@ -1024,17 +1129,22 @@ func runAISearchLoop(ctx context.Context, endpoint, apiKey, mdl, system, query s
 	// there's nothing to guess from, so keep the honest "ran out" note.
 	if len(collected) > 0 {
 		if guess, err := finalGuess(ctx, endpoint, apiKey, mdl, messages); err == nil {
-			send(aiSearchUpdate{done: true, answer: guess, hits: collected, tentative: true})
+			hist := append(messages[:len(messages):len(messages)],
+				aiMessage{Role: "user", Content: aiFinalGuessNudge},
+				aiMessage{Role: "assistant", Content: guess})
+			send(aiSearchUpdate{done: true, answer: guess, hits: collected, tentative: true, history: hist})
 			return
 		} else if ctx.Err() != nil {
 			return // cancelled while asking for the guess
 		}
-		send(aiSearchUpdate{done: true, hits: collected,
-			answer: "I gathered some possibly-relevant messages but ran out of search steps before confirming an answer — see the matches below."})
+		answer := "I gathered some possibly-relevant messages but ran out of search steps before confirming an answer — see the matches below."
+		send(aiSearchUpdate{done: true, hits: collected, answer: answer,
+			history: append(messages, aiMessage{Role: "assistant", Content: answer})})
 		return
 	}
-	send(aiSearchUpdate{done: true, hits: collected,
-		answer: "I ran out of search steps before reaching a confident answer."})
+	answer := "I ran out of search steps before reaching a confident answer."
+	send(aiSearchUpdate{done: true, hits: collected, answer: answer,
+		history: append(messages, aiMessage{Role: "assistant", Content: answer})})
 }
 
 // aiFinalGuessNudge is the message appended when the step budget is spent: it
@@ -1106,7 +1216,50 @@ func (m *Model) startAISearch(rawQuery string) tea.Cmd {
 
 	system := m.buildAISearchSystem()
 	catalog := m.buildSearchCatalog()
-	return tea.Batch(m.aiSearch.spinner.Tick, m.openAISearchCmd(m.aiSearch.seq, system, query, maxSteps, catalog))
+	messages := []aiMessage{
+		{Role: "system", Content: system},
+		{Role: "user", Content: query},
+	}
+	return tea.Batch(m.aiSearch.spinner.Tick, m.openAISearchCmd(m.aiSearch.seq, messages, maxSteps, catalog))
+}
+
+// startAIFollowup continues the finished run with the text in the follow-up box,
+// seeding the agent with the prior transcript so references like "that" resolve.
+// Returns nil (and does nothing) when there's no completed run or empty input.
+func (m *Model) startAIFollowup() tea.Cmd {
+	text := strings.TrimSpace(m.aiSearch.followup.Value())
+	if text == "" || m.aiSearch.phase != aiSearchDone || m.aiSearch.err != nil || len(m.aiSearch.history) == 0 {
+		return nil
+	}
+	maxSteps := m.aiSearchMaxSteps
+	if maxSteps <= 0 {
+		maxSteps = 32
+	}
+	// Seed = prior transcript + the new question. Copy the history so the
+	// append can't clobber the slice we still hold for a possible retry.
+	seed := append(m.aiSearch.history[:len(m.aiSearch.history):len(m.aiSearch.history)],
+		aiMessage{Role: "user", Content: text})
+
+	m.aiSearch.seq++
+	seq := m.aiSearch.seq
+	m.aiSearch.phase = aiSearchRunning
+	m.aiSearch.query = text
+	m.aiSearch.trace = nil
+	m.aiSearch.answer = ""
+	m.aiSearch.tentative = false
+	m.aiSearch.err = nil
+	m.aiSearch.followup.SetValue("")
+	m.aiSearch.followup.Blur()
+	m.beginAISearchSpinner()
+
+	// Clear the previous result set so the live trace owns the viewport again.
+	m.search.hits = nil
+	m.search.idx = -1
+	m.search.query = ""
+	m.renderSearchResults()
+
+	catalog := m.buildSearchCatalog()
+	return tea.Batch(m.aiSearch.spinner.Tick, m.openAISearchCmd(seq, seed, maxSteps, catalog))
 }
 
 // beginAISearchSpinner installs a fresh focused-colour dot spinner.
@@ -1138,11 +1291,14 @@ func (m Model) buildAISearchSystem() string {
 
 // openAISearchCmd starts the worker goroutine and hands the UI the update
 // channel + cancel handle.
-func (m Model) openAISearchCmd(seq int, system, query string, maxSteps int, catalog searchCatalog) tea.Cmd {
+func (m Model) openAISearchCmd(seq int, messages []aiMessage, maxSteps int, catalog searchCatalog) tea.Cmd {
 	endpoint := m.summaryEndpoint
 	apiKey := m.summaryAPIKey
 	mdl := m.summaryModel
 	st := m.store
+	ec := m.embedClient
+	em := m.embedModel
+	ed := m.embedDim
 	timeout := m.aiSearchTimeout
 	if timeout <= 0 {
 		timeout = aiSearchHTTPTimeout
@@ -1150,8 +1306,11 @@ func (m Model) openAISearchCmd(seq int, system, query string, maxSteps int, cata
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		ch := make(chan aiSearchUpdate, 8)
-		tools := aiSearchTools{store: st, catalog: catalog, refs: newHitRefTable()}
-		go runAISearchLoop(ctx, endpoint, apiKey, mdl, system, query, maxSteps, tools, ch)
+		tools := aiSearchTools{
+			store: st, catalog: catalog, refs: newHitRefTable(),
+			embedClient: ec, embedModel: em, embedDim: ed, ctx: ctx,
+		}
+		go runAISearchLoop(ctx, endpoint, apiKey, mdl, messages, maxSteps, tools, ch)
 		return aiSearchOpenedMsg{seq: seq, ch: ch, cancel: cancel}
 	}
 }
@@ -1197,14 +1356,24 @@ func (m *Model) applyAISearchUpdate(msg aiSearchUpdateMsg) tea.Cmd {
 	m.aiSearch.answer = u.answer
 	m.aiSearch.tentative = u.tentative
 	m.aiSearch.err = u.err
+	m.aiSearch.history = u.history
 	// Install the agent's hits as the search result set so the existing
 	// bubble navigation (up/down/enter to jump to a message) works on them.
 	m.search.hits = u.hits
 	m.search.query = m.aiSearch.query
-	m.search.idx = 0
+	// Land on the answer box (idx -1), not the first hit, so the summary is
+	// fully in view and the follow-up input is ready. up/down walks the hits.
+	m.search.idx = -1
 	m.search.view.GotoTop()
+	var cmd tea.Cmd
+	if u.err == nil {
+		// The answer box owns input now; hand the cursor to the follow-up field
+		// and take it off the main search box so there's only one caret.
+		m.search.input.Blur()
+		cmd = m.aiSearch.followup.Focus()
+	}
 	m.renderSearchResults()
-	return nil
+	return cmd
 }
 
 // finishAISearch releases the request and moves to the done phase.
@@ -1291,7 +1460,12 @@ func (m *Model) renderAIBanner(innerW int) []string {
 
 	header := "✨ AI answer"
 	body := m.aiSearch.answer
-	borderColor := focusedColor
+	// The answer box is "selected" when the cursor is above the first hit
+	// (idx -1); show that with the focused border, like a selected hit bubble.
+	borderColor := dimColor
+	if m.search.idx < 0 {
+		borderColor = focusedColor
+	}
 	switch {
 	case m.aiSearch.err != nil:
 		header = "✨ AI search — error"
@@ -1304,6 +1478,13 @@ func (m *Model) renderAIBanner(innerW int) []string {
 	}
 	wrapped := lipgloss.NewStyle().Width(contentW).Render(strings.TrimSpace(body))
 	bodyLines := strings.Split(wrapped, "\n")
+	// On a successful run, tack a follow-up input onto the bottom of the same
+	// box, under a separator rule, so the conversation can continue in place.
+	if m.aiSearch.err == nil {
+		sep := lipgloss.NewStyle().Foreground(dimColor).Render(strings.Repeat("─", contentW))
+		m.aiSearch.followup.SetWidth(contentW - 2)
+		bodyLines = append(bodyLines, sep, m.aiSearch.followup.View())
+	}
 	return strings.Split(bubbleBox(inner, header, bodyLines, borderColor), "\n")
 }
 
@@ -1321,13 +1502,16 @@ func (m *Model) renderAIResults() {
 		return
 	}
 	if len(m.search.hits) == 0 {
+		// No hits, but the answer box (with its follow-up input) is still the
+		// selected, scrollable header — keep idx pinned to it.
+		m.search.idx = -1
 		note := lipgloss.NewStyle().Foreground(dimColor).Render("  no matching messages to show")
-		m.search.view.SetContent(strings.Join(append(banner, "", note), "\n"))
-		m.search.view.GotoTop()
+		m.setBubbleViewport(append(banner, "", note), nil, -1, false)
 		return
 	}
-	if m.search.idx < 0 {
-		m.search.idx = 0
+	// idx -1 selects the answer box; 0..n-1 select hits. Clamp into that range.
+	if m.search.idx < -1 {
+		m.search.idx = -1
 	}
 	if m.search.idx >= len(m.search.hits) {
 		m.search.idx = len(m.search.hits) - 1

@@ -80,8 +80,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case postsLoadedMsg:
-		vis := m.visibleChannels()
-		if m.channelIdx >= len(vis) || vis[m.channelIdx].Id != msg.channelID {
+		if msg.channelID != m.openChannelID {
 			// Stale to the UI, but still worth persisting so the cache
 			// keeps growing for unfocused channels we briefly opened.
 			return m, m.persistPosts(msg.posts...)
@@ -90,8 +89,6 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for id, name := range msg.users {
 			m.userNames[id] = name
 		}
-		delete(m.unread, msg.channelID)
-		delete(m.mentions, msg.channelID)
 		m.loading = false
 		m.status = ""
 		m.postIdx = len(m.posts) - 1
@@ -99,8 +96,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// "select newest" position.
 		m.jumpToPendingPost()
 		m.renderMessages()
+		// Defer the mark-read (and badge clear) until the channel has been
+		// open for the configured dwell; a quick peek leaves it unread.
 		return m, tea.Batch(
-			m.markChannelViewed(msg.channelID),
+			m.scheduleMarkViewed(msg.channelID),
 			m.persistPosts(msg.posts...),
 		)
 
@@ -111,11 +110,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for id, name := range msg.users {
 			m.userNames[id] = name
 		}
-		// Only mutate the visible posts slice if the user is still on
-		// the same channel.
-		vis := m.visibleChannels()
-		stillFocused := m.channelIdx < len(vis) && vis[m.channelIdx].Id == msg.channelID
-		if !stillFocused {
+		// Only mutate the visible posts slice if the gap-fill is for the
+		// channel still open in the pane.
+		if msg.channelID != m.openChannelID {
 			return m, persistCmd
 		}
 		// Dedup by Id and append, mirroring applyPosted's selection logic.
@@ -142,9 +139,20 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.jumpToPendingPost()
 		m.renderMessages()
 		return m, tea.Batch(
-			m.markChannelViewed(msg.channelID),
+			m.scheduleMarkViewed(msg.channelID),
 			persistCmd,
 		)
+
+	case markViewedMsg:
+		// The dwell elapsed. Ignore if the user switched away or refocused
+		// the channel in the meantime (stale generation / different channel).
+		if msg.gen != m.viewGen || msg.channelID != m.openChannelID {
+			return m, nil
+		}
+		delete(m.unread, msg.channelID)
+		delete(m.mentions, msg.channelID)
+		m.viewSettled = true
+		return m, m.markChannelViewed(msg.channelID)
 
 	case errMsg:
 		m.loading = false
@@ -273,18 +281,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		// Scope autocomplete to the thread's channel/team when replying in
-		// a thread (which may not be the channel currently selected in the
-		// sidebar). Otherwise use the focused channel.
+		// a thread (which may not be the open channel). Otherwise scope to
+		// the open channel — what the composer actually targets — not the
+		// sidebar cursor.
 		var teamID, channelID string
 		if m.threadOpen && m.threadChannelID != "" {
 			channelID = m.threadChannelID
 			teamID = m.threadTeamID()
 		} else {
-			vis := m.visibleChannels()
-			if m.channelIdx >= len(vis) {
+			ch := m.findChannel(m.openChannelID)
+			if ch == nil {
 				return m, nil
 			}
-			ch := vis[m.channelIdx]
 			teamID = ch.TeamId
 			channelID = ch.Id
 		}
@@ -400,6 +408,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case indexResultMsg:
 		return m, m.applyIndexResult(msg)
 
+	case embedBatchMsg:
+		return m, m.applyEmbedBatch(msg)
+
+	case embedTickMsg:
+		return m, m.applyEmbedTick(msg)
+
 	case typingStartedMsg:
 		return m, m.applyTypingStarted(msg)
 
@@ -502,9 +516,17 @@ func (m *Model) applyPosted(ev *model.WebSocketEvent) tea.Cmd {
 		}
 		return tea.Batch(cmds...)
 	}
+	// sender_name is the override-aware label for *this* post; only fold it
+	// into the per-user cache when it isn't a webhook/bot override, otherwise
+	// a bot post would rename the human's historical messages (same UserId).
 	if sn, ok := ev.GetData()["sender_name"].(string); ok && sn != "" {
-		m.userNames[p.UserId] = strings.TrimPrefix(sn, "@")
+		if ov, _ := p.GetProp("override_username").(string); ov == "" {
+			m.userNames[p.UserId] = strings.TrimPrefix(sn, "@")
+		}
 	}
+	// Keep the DM sidebar ordered by most recent conversation as messages
+	// arrive live, not just at startup.
+	m.touchChannelActivity(p.ChannelId, p.CreateAt)
 
 	var cmds []tea.Cmd
 	// Persist every new post we can parse, even for unfocused channels —
@@ -535,9 +557,23 @@ func (m *Model) applyPosted(ev *model.WebSocketEvent) tea.Cmd {
 			m.posts = append(m.posts, p)
 			if wasAtBottom {
 				m.postIdx = len(m.posts) - 1
+				// Following live chat: bound the slice during a long session
+				// in a busy channel (oldest posts stay in the store, paged
+				// back in on scroll-up) and pin the new message to the
+				// bottom, since the head drop leaves the viewport offset
+				// stale. When the user is instead reading older history we
+				// leave the window untrimmed so their view doesn't shift.
+				m.trimPostWindowHead()
+				m.anchorMsgSelBottom = true
 			}
 			m.renderMessages()
-			cmds = append(cmds, m.markChannelViewed(p.ChannelId))
+			// Only mark read immediately once the open channel's dwell has
+			// elapsed. While it's still pending, the queued markViewedMsg
+			// will cover this post too, so a freshly-opened channel that
+			// receives a message within the dwell isn't marked read early.
+			if m.viewSettled {
+				cmds = append(cmds, m.markChannelViewed(p.ChannelId))
+			}
 			if needsFileInfoFetch(p) {
 				cmds = append(cmds, m.fetchFileInfos(p.Id))
 			}
@@ -683,9 +719,13 @@ func (m *Model) applyPostDeleted(ev *model.WebSocketEvent) tea.Cmd {
 	return persistCmd
 }
 
+// isCurrentChannel reports whether channelID is the channel the messages
+// pane is showing (the open channel), not merely the sidebar selection.
+// Navigation moves the cursor without opening, so optimistic append and
+// live post events must track m.openChannelID to keep flowing into the
+// visible transcript.
 func (m *Model) isCurrentChannel(channelID string) bool {
-	vis := m.visibleChannels()
-	return m.channelIdx < len(vis) && vis[m.channelIdx].Id == channelID
+	return channelID != "" && m.openChannelID == channelID
 }
 
 // parsePost extracts and unmarshals the JSON-encoded post embedded in
@@ -833,6 +873,14 @@ func (m Model) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmd, mentionCmd)
 	}
 	if m.focus == focusSearch {
+		// A finished AI run with the answer box selected pastes into the in-box
+		// follow-up field, not the main search input.
+		if m.aiSearch.phase == aiSearchDone && m.search.idx <= -1 && m.aiSearch.err == nil {
+			var cmd tea.Cmd
+			m.aiSearch.followup, cmd = m.aiSearch.followup.Update(msg)
+			m.renderSearchResults()
+			return m, cmd
+		}
 		old := m.search.input.Value()
 		var cmd tea.Cmd
 		m.search.input, cmd = m.search.input.Update(msg)
@@ -1160,7 +1208,14 @@ func (m Model) handleLeaderKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	m.leaderPending = false
 	switch msg.String() {
 	case "t":
-		m.focus = focusTeams
+		// The team bar is merged into the channel sidebar, so ",t" lands on
+		// the channel navigator (←/→ switch team there). On the Search/Feed
+		// tabs there's no sidebar, so fall back to the tab-strip focus.
+		if m.onSearchTab() || m.onFeedTab() {
+			m.focus = focusTeams
+		} else {
+			m.focus = focusChannels
+		}
 		m.input.Blur()
 		m.renderMessages()
 		return m, nil
@@ -1225,10 +1280,10 @@ func (m Model) gotoTab(target int) (tea.Model, tea.Cmd) {
 		return m, m.buildFeed()
 	}
 	m.focus = focusChannels
-	m.channelIdx = 0
 	m.chanOff = 0
 	vis := m.visibleChannels()
 	if len(vis) == 0 {
+		m.channelIdx = 0
 		m.posts = nil
 		m.renderMessages()
 		if m.currentTeamID() == unreadTeamID {
@@ -1238,8 +1293,22 @@ func (m Model) gotoTab(target int) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	ch := vis[0]
+	m.channelIdx = m.preferredChannelIdx(vis)
+	ch := vis[m.channelIdx]
 	return m, tea.Batch(m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id))
+}
+
+// switchTeamTab moves the active tab one step in `dir` (-1 left, +1 right),
+// landing focus in the destination via gotoTab: a channel tab opens its
+// preferred channel and keeps focus on the sidebar, while the Search/Feed
+// tabs focus their own body. Clamped at the ends. This is the ←/→ half of
+// the merged team-bar + channel-sidebar navigator (↑/↓ move channels).
+func (m Model) switchTeamTab(dir int) (tea.Model, tea.Cmd) {
+	target := m.teamIdx + dir
+	if target < 0 || target > m.maxTeamIdx() {
+		return m, nil
+	}
+	return m.gotoTab(target)
 }
 
 // gotoDMTab jumps to the synthetic DMs tab (",d"). No-op with a hint when
@@ -1293,6 +1362,13 @@ func (m Model) cycleFocus(step int) (tea.Model, tea.Cmd) {
 			continue
 		}
 		if m.focus == focusFeed && !onFeed {
+			continue
+		}
+		// The team bar is no longer its own Tab stop on channel tabs — it's
+		// merged into the channel sidebar (focusChannels owns ←/→ team
+		// switching). Keep it reachable only on the Search/Feed tabs, whose
+		// body panes can't host the tab switch themselves.
+		if m.focus == focusTeams && !onSearch && !onFeed {
 			continue
 		}
 		if onSearch && m.focus != focusTeams && m.focus != focusSearch {
@@ -1351,6 +1427,30 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// The `:`-emoji picker owns the same navigation/accept/dismiss keys when
+	// it's open, mirroring the @-mention popup above.
+	if m.emoji.active && len(m.emoji.items) > 0 {
+		switch msg.String() {
+		case "up", "ctrl+p":
+			if m.emoji.idx > 0 {
+				m.emoji.idx--
+			}
+			return m, nil
+		case "down", "ctrl+n":
+			if m.emoji.idx < len(m.emoji.items)-1 {
+				m.emoji.idx++
+			}
+			return m, nil
+		case "tab", "enter":
+			if m.acceptEmoji() {
+				return m, nil
+			}
+		case "esc":
+			m.closeEmoji()
+			return m, nil
+		}
+	}
+
 	switch {
 	case msg.String() == "ctrl+c":
 		return m, tea.Quit
@@ -1371,6 +1471,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			break
 		}
 		m.closeMention()
+		m.closeEmoji()
 		if editing {
 			m.cancelEdit()
 		}
@@ -1402,6 +1503,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.input.Reset()
 			m.syncInputHeight()
 			m.closeMention()
+			m.closeEmoji()
 			m.restoreInputPrompt()
 			m.status = "saving edit…"
 			return m, m.editPost(id, text)
@@ -1422,16 +1524,19 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			channelID = m.threadChannelID
 			rootID = m.threadRootID
 		} else {
-			vis := m.visibleChannels()
-			if m.channelIdx >= len(vis) {
+			// Target the open channel (what the pane shows), not the
+			// sidebar cursor — those diverge once you navigate the list
+			// without opening a new channel.
+			channelID = m.openChannelID
+			if channelID == "" {
 				return m, nil
 			}
-			channelID = vis[m.channelIdx].Id
 		}
 		fileIDs := m.collectAttachmentFileIDs()
 		m.input.Reset()
 		m.syncInputHeight()
 		m.closeMention()
+		m.closeEmoji()
 		m.appendOptimistic(channelID, rootID, text, fileIDs)
 		m.clearAttachments()
 		m.resizeMessagesViewport()
@@ -1449,6 +1554,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// state and reflow the input/messages split so newlines from
 	// shift+enter (or alt+enter / ctrl+j) make the input grow.
 	mentionCmd := m.updateMention()
+	m.updateEmoji()
 	m.syncInputHeight()
 	return m, tea.Batch(cmd, mentionCmd)
 }
@@ -1490,6 +1596,26 @@ func (m Model) handleFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleChannelsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// Team-bar half of the merged navigator: ←/→ switch team, <,> reorder.
+	// Handled before the channel-list ops below so they keep working even
+	// when the current tab has no channels (e.g. an empty Unread tab).
+	switch {
+	case key.Matches(msg, m.keys.Left):
+		return m.switchTeamTab(-1)
+	case key.Matches(msg, m.keys.Right):
+		return m.switchTeamTab(1)
+	case key.Matches(msg, m.keys.MoveTeamLeft):
+		if m.moveTeam(-1) {
+			return m, m.persistTeamOrder()
+		}
+		return m, nil
+	case key.Matches(msg, m.keys.MoveTeamRight):
+		if m.moveTeam(1) {
+			return m, m.persistTeamOrder()
+		}
+		return m, nil
+	}
+
 	vis := m.visibleChannels()
 	if len(vis) == 0 {
 		return m, nil
@@ -1580,6 +1706,9 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				// screen, with the just-loaded older posts appearing
 				// above it (reachable by continuing to scroll up).
 				m.anchorMsgSelTop = true
+				// Slide the window: drop the now-off-screen newest posts so
+				// the loaded slice stays bounded over a long scroll-back.
+				m.trimPostWindowTail()
 				m.renderMessages()
 			} else {
 				m.status = "no more cached messages"
@@ -1605,6 +1734,13 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.posts = append(m.posts, newer...)
 				m.postIdx = oldLen
 				m.status = ""
+				// Slide the window: drop the now-off-screen oldest posts so
+				// the loaded slice stays bounded over a long scroll-forward.
+				// Pin the selection to the bottom — the head drop shifted
+				// content up, leaving the viewport offset stale, so without
+				// this the "keep selection visible" logic would top-align it.
+				m.trimPostWindowHead()
+				m.anchorMsgSelBottom = true
 				m.renderMessages()
 			} else {
 				m.status = "no more cached messages"
@@ -1616,7 +1752,22 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.renderMessages()
 		return m, nil
 	case key.Matches(msg, m.keys.End):
+		// The window may have slid up while scrolling back (older posts
+		// paged in, the newest trimmed off), so the loaded tail isn't
+		// necessarily the channel's newest message. If the store has posts
+		// newer than what's loaded, reload the most recent page so End/G
+		// lands on the true newest rather than the bottom of the loaded
+		// slice.
+		if len(m.posts) > 0 {
+			last := m.posts[len(m.posts)-1]
+			if newer := m.loadNewerFromStore(last.ChannelId, last.CreateAt); len(newer) > 0 {
+				if latest := m.loadFromStore(last.ChannelId); len(latest) > 0 {
+					m.posts = latest
+				}
+			}
+		}
 		m.postIdx = len(m.posts) - 1
+		m.anchorMsgSelBottom = true
 		m.renderMessages()
 		return m, nil
 	case key.Matches(msg, m.keys.PageDown):
@@ -1836,15 +1987,25 @@ func (m Model) handleTeamsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case key.Matches(msg, m.keys.Left):
-		if m.teamIdx > 0 {
-			m.teamIdx--
-		}
-		return m, m.maybeBuildFeedOnLand()
+		return m.switchTeamTab(-1)
 	case key.Matches(msg, m.keys.Right):
-		if m.teamIdx < max {
-			m.teamIdx++
+		return m.switchTeamTab(1)
+	case key.Matches(msg, m.keys.Up), key.Matches(msg, m.keys.Down):
+		// ↑/↓ drop into the current tab's body list (search hits / feed
+		// bubbles), so the team strip and the list below it read as one
+		// navigator. Only the Search/Feed tabs are ever focused here —
+		// channel tabs land directly in focusChannels.
+		if m.onSearchTab() {
+			m.focus = focusSearch
+			cmd := m.search.input.Focus()
+			next, c2 := m.handleSearchKey(msg)
+			return next, tea.Batch(cmd, c2)
 		}
-		return m, m.maybeBuildFeedOnLand()
+		if m.onFeedTab() {
+			m.focus = focusFeed
+			return m.handleFeedKey(msg)
+		}
+		return m, nil
 	case key.Matches(msg, m.keys.LoadTeam):
 		if m.onSearchTab() {
 			m.focus = focusSearch
@@ -1856,12 +2017,12 @@ func (m Model) handleTeamsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.buildFeed()
 		}
 		m.focus = focusChannels
-		m.channelIdx = 0
 		m.chanOff = 0
 		m.filterValue = ""
 		m.filter.SetValue("")
 		vis := m.visibleChannels()
 		if len(vis) == 0 {
+			m.channelIdx = 0
 			m.posts = nil
 			m.renderMessages()
 			if m.currentTeamID() == unreadTeamID {
@@ -1871,6 +2032,7 @@ func (m Model) handleTeamsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		m.channelIdx = m.preferredChannelIdx(vis)
 		ch := vis[m.channelIdx]
 		return m, tea.Batch(m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id))
 	}

@@ -81,8 +81,9 @@ func TestSearchScopePrefix(t *testing.T) {
 			channels: map[string][]*model.Channel{
 				"t1": {{Id: "c1", TeamId: "t1", Type: model.ChannelTypeOpen, Name: "off-topic", DisplayName: "Off Topic"}},
 			},
-			teamIdx:    3,
-			channelIdx: 0,
+			teamIdx:       3,
+			channelIdx:    0,
+			openChannelID: "c1",
 		}
 		if got, want := m.searchScopePrefix(), "team:Engineering in:off-topic "; got != want {
 			t.Errorf("searchScopePrefix = %q; want %q", got, want)
@@ -95,8 +96,9 @@ func TestSearchScopePrefix(t *testing.T) {
 			channels: map[string][]*model.Channel{
 				"t1": {{Id: "c1", TeamId: "t1", Type: model.ChannelTypeOpen, Name: "general", DisplayName: "General"}},
 			},
-			teamIdx:    3,
-			channelIdx: 0,
+			teamIdx:       3,
+			channelIdx:    0,
+			openChannelID: "c1",
 		}
 		if got, want := m.searchScopePrefix(), `team:"My Team" in:general `; got != want {
 			t.Errorf("searchScopePrefix = %q; want %q", got, want)
@@ -111,8 +113,9 @@ func TestSearchScopePrefix(t *testing.T) {
 			channels: map[string][]*model.Channel{
 				dmTeamID: {{Id: "d1", Type: model.ChannelTypeDirect, Name: "meid__otherid"}},
 			},
-			teamIdx:    0,
-			channelIdx: 0,
+			teamIdx:       0,
+			channelIdx:    0,
+			openChannelID: "d1",
 		}
 		if got, want := m.searchScopePrefix(), "in:alice "; got != want {
 			t.Errorf("searchScopePrefix = %q; want %q", got, want)

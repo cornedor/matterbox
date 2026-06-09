@@ -241,12 +241,17 @@ func (m *Model) renderMessages() {
 	// otherwise the bar would mislead about what keys would act on.
 	decorate := m.focus == focusMessages
 	bar := selectedBarStyle.Render("▎")
+	width := m.msgsView.Width()
 	var allLines []string
-	selStart, selEnd := -1, -1
+	// The viewport has SoftWrap on, so YOffset is in visual rows
+	// (post-wrap). Accumulate each post's cached visual-row count as we go
+	// so we can place the selection without re-measuring every line on
+	// each keystroke (visAcc is the running visual-row offset).
+	selVisStart, selVisRows, visAcc := -1, 0, 0
 	for i, p := range m.posts {
-		chunk := m.renderPostLines(p)
+		chunk, rows := m.renderPostLines(p)
 		if i == m.postIdx {
-			selStart = len(allLines)
+			selVisStart = visAcc
 			if decorate {
 				// Don't mutate the cached slice; copy before decorating.
 				decorated := make([]string, len(chunk))
@@ -260,24 +265,27 @@ func (m *Model) renderMessages() {
 					}
 				}
 				chunk = decorated
+				// The bar widens non-gutter (header) lines by two cells, so
+				// recount the decorated chunk rather than trust the cached
+				// undecorated row count.
+				rows = postVisualRows(chunk, width)
 			}
-			selEnd = selStart + len(chunk)
+			selVisRows = rows
 		}
 		allLines = append(allLines, chunk...)
+		visAcc += rows
 	}
 	m.msgsView.SetContent(strings.Join(allLines, "\n"))
 
-	if h := m.msgsView.Height(); h > 0 && selStart >= 0 {
-		// The viewport has SoftWrap on, so YOffset is measured in visual
-		// rows (post-wrap), not logical lines. Convert before deciding
-		// where to scroll, otherwise wrapped lines earlier in the
-		// buffer leave the selection short of the bottom.
-		visStart := visualRowsBefore(allLines, selStart, m.msgsView.Width())
-		visEnd := visualRowsBefore(allLines, selEnd, m.msgsView.Width())
+	if h := m.msgsView.Height(); h > 0 && selVisStart >= 0 {
+		visStart := selVisStart
+		visEnd := selVisStart + selVisRows
 		off := m.msgsView.YOffset()
 		switch {
 		case m.anchorMsgSelTop:
 			off = visStart
+		case m.anchorMsgSelBottom:
+			off = visEnd - h
 		case visStart < off:
 			off = visStart
 		case visEnd > off+h:
@@ -289,6 +297,7 @@ func (m *Model) renderMessages() {
 		m.msgsView.SetYOffset(off)
 	}
 	m.anchorMsgSelTop = false
+	m.anchorMsgSelBottom = false
 }
 
 // renderThread populates the thread viewport with the loaded thread
@@ -314,12 +323,13 @@ func (m *Model) renderThread() {
 	}
 	decorate := m.focus == focusThread
 	bar := selectedBarStyle.Render("▎")
+	width := m.threadView.Width()
 	var allLines []string
-	selStart, selEnd := -1, -1
+	selVisStart, selVisRows, visAcc := -1, 0, 0
 	for i, p := range m.threadPosts {
-		chunk := m.renderThreadPostLines(p, i == 0)
+		chunk, rows := m.renderThreadPostLines(p, i == 0)
 		if i == m.threadIdx {
-			selStart = len(allLines)
+			selVisStart = visAcc
 			if decorate {
 				// Don't mutate the cached slice; copy before decorating.
 				decorated := make([]string, len(chunk))
@@ -331,16 +341,18 @@ func (m *Model) renderThread() {
 					}
 				}
 				chunk = decorated
+				rows = postVisualRows(chunk, width)
 			}
-			selEnd = selStart + len(chunk)
+			selVisRows = rows
 		}
 		allLines = append(allLines, chunk...)
+		visAcc += rows
 	}
 	m.threadView.SetContent(strings.Join(allLines, "\n"))
 
-	if h := m.threadView.Height(); h > 0 && selStart >= 0 {
-		visStart := visualRowsBefore(allLines, selStart, m.threadView.Width())
-		visEnd := visualRowsBefore(allLines, selEnd, m.threadView.Width())
+	if h := m.threadView.Height(); h > 0 && selVisStart >= 0 {
+		visStart := selVisStart
+		visEnd := selVisStart + selVisRows
 		off := m.threadView.YOffset()
 		switch {
 		case visStart < off:
@@ -402,6 +414,14 @@ func visualRowsBefore(lines []string, n, maxWidth int) int {
 		rows += (w + maxWidth - 1) / maxWidth
 	}
 	return rows
+}
+
+// postVisualRows is visualRowsBefore over a whole post chunk: the number
+// of soft-wrapped visual rows its lines occupy at the given width. Cached
+// per post (postLineCacheEntry.rows) so renderMessages can sum prefix
+// heights without re-measuring every line's width on each keystroke.
+func postVisualRows(lines []string, width int) int {
+	return visualRowsBefore(lines, len(lines), width)
 }
 
 var scrollbarThumbStyle = lipgloss.NewStyle().Foreground(focusedColor)
@@ -514,23 +534,17 @@ func formatPostTime(createAtMillis int64) string {
 // renderThreadPostLines is the thread-sidebar variant of
 // renderPostLines: the root post gets no ↳/↪ hint (it IS the root),
 // replies omit the reply hint since context makes it obvious.
-func (m *Model) renderThreadPostLines(p *model.Post, isRoot bool) []string {
+func (m *Model) renderThreadPostLines(p *model.Post, isRoot bool) ([]string, int) {
 	width := m.threadView.Width()
 	poll := isPoll(p)
 	var fp string
 	if !poll && p.Id != "" {
 		fp = m.postLineFingerprint(p, width, true, isRoot)
-		if cached, ok := m.cachedPostLines(p, fp); ok {
-			return cached
+		if cached, rows, ok := m.cachedPostLines(p, fp); ok {
+			return cached, rows
 		}
 	}
-	name := m.userNames[p.UserId]
-	if name == "" {
-		name = p.UserId
-		if len(name) > 8 {
-			name = name[:8]
-		}
-	}
+	name := m.postAuthorName(p)
 	ts := formatPostTime(p.CreateAt)
 	header := userStyle.Render(name) + "  " + timeStyle.Render(ts)
 	if isRoot {
@@ -557,33 +571,28 @@ func (m *Model) renderThreadPostLines(p *model.Post, isRoot bool) []string {
 	if rx := m.renderReactions(p); rx != "" {
 		lines = append(lines, wrapBodyLine(rx, width)...)
 	}
+	rows := postVisualRows(lines, width)
 	if !poll && p.Id != "" {
-		m.putPostLines(p.Id, fp, lines)
+		m.putPostLines(p.Id, fp, lines, rows)
 	}
-	return lines
+	return lines, rows
 }
 
 // renderPostLines returns one rendered line per visual row of a post:
 // the header line, the (possibly multi-line) body, and one line per
 // attachment. Existing styles already include a two-space left gutter
 // on body and attachment lines.
-func (m *Model) renderPostLines(p *model.Post) []string {
+func (m *Model) renderPostLines(p *model.Post) ([]string, int) {
 	width := m.msgsView.Width()
 	poll := isPoll(p)
 	var fp string
 	if !poll && p.Id != "" {
 		fp = m.postLineFingerprint(p, width, false, false)
-		if cached, ok := m.cachedPostLines(p, fp); ok {
-			return cached
+		if cached, rows, ok := m.cachedPostLines(p, fp); ok {
+			return cached, rows
 		}
 	}
-	name := m.userNames[p.UserId]
-	if name == "" {
-		name = p.UserId
-		if len(name) > 8 {
-			name = name[:8]
-		}
-	}
+	name := m.postAuthorName(p)
 	ts := formatPostTime(p.CreateAt)
 	header := userStyle.Render(name) + "  " + timeStyle.Render(ts)
 	if p.RootId != "" {
@@ -612,10 +621,11 @@ func (m *Model) renderPostLines(p *model.Post) []string {
 	if rx := m.renderReactions(p); rx != "" {
 		lines = append(lines, wrapBodyLine(rx, width)...)
 	}
+	rows := postVisualRows(lines, width)
 	if !poll && p.Id != "" {
-		m.putPostLines(p.Id, fp, lines)
+		m.putPostLines(p.Id, fp, lines, rows)
 	}
-	return lines
+	return lines, rows
 }
 
 // normalizeFilename strips zero-width hint characters that some terminals
@@ -883,16 +893,23 @@ func (m *Model) renderMessagesPane(height, width int) string {
 		width = 10
 	}
 
-	vis := m.visibleChannels()
+	// Title reflects the open channel (what m.posts holds), not the
+	// sidebar cursor — they diverge when the selection moves without
+	// opening a new channel.
 	title := "Messages"
-	if m.channelIdx < len(vis) {
-		title = m.channelLabel(vis[m.channelIdx])
+	if ch := m.findChannel(m.openChannelID); ch != nil {
+		title = m.channelLabel(ch)
 	}
 
 	// Shrink the messages viewport (on this local copy of m) to make
-	// room for the @-mention popup when it's open. The mutation is
-	// scoped to this render call — no side effect on the real model.
+	// room for the @-mention / :emoji popup when it's open. The mutation
+	// is scoped to this render call — no side effect on the real model.
+	// Only one trigger is ever active at a time, so prefer whichever has
+	// candidates.
 	popup := m.renderMentionPopup()
+	if popup == "" {
+		popup = m.renderEmojiPopup()
+	}
 	if popup != "" {
 		popupH := lipgloss.Height(popup)
 		h := m.msgsView.Height() - popupH
@@ -1039,12 +1056,28 @@ func (m *Model) renderTeamTabs() string {
 	}
 
 	maxIdx := m.maxTeamIdx()
-	rendered := make([]string, 0, maxIdx+1)
 
+	// The team bar lights up whenever the left navigator has focus — the
+	// channel sidebar, the team strip itself, or the Search/Feed body. They
+	// all share ←/→ tab switching, so the active tab tracks the navigator.
 	activeColor := dimColor
-	if m.focus == focusTeams {
+	switch m.focus {
+	case focusTeams, focusChannels, focusSearch, focusFeed:
 		activeColor = focusedColor
 	}
+
+	// Tabs split into a sticky synthetic prefix (DMs/Unread/Feed/Search,
+	// always shown) and a scrollable team suffix. teamTabs collects the
+	// latter so a window can be chosen around the active team when they
+	// don't all fit; activeTeamPos is the active team's index within it.
+	var sticky []string
+	stickyW := 0
+	type teamTab struct {
+		s string
+		w int
+	}
+	var teamTabs []teamTab
+	activeTeamPos := -1
 
 	// teamNum tracks the 1-based position among real teams so each of the
 	// first nine gets a "[N]" hint matching its ",N" jump shortcut.
@@ -1121,10 +1154,39 @@ func (m *Model) renderTeamTabs() string {
 		}
 		style = style.Border(b)
 
-		rendered = append(rendered, style.Render(label))
+		rendered := style.Render(label)
+		if kind == tabTeam {
+			if isActive {
+				activeTeamPos = len(teamTabs)
+			}
+			teamTabs = append(teamTabs, teamTab{s: rendered, w: lipgloss.Width(rendered)})
+		} else {
+			sticky = append(sticky, rendered)
+			stickyW += lipgloss.Width(rendered)
+		}
 	}
 
-	row := lipgloss.JoinHorizontal(lipgloss.Top, rendered...)
+	// Choose which team tabs are visible. Sticky tabs always show; the team
+	// suffix scrolls horizontally to keep the active team on screen.
+	widths := make([]int, len(teamTabs))
+	for i, t := range teamTabs {
+		widths[i] = t.w
+	}
+	start, end, leftClip, rightClip := teamTabWindow(widths, activeTeamPos, m.width-stickyW)
+
+	pieces := make([]string, 0, len(sticky)+(end-start)+2)
+	pieces = append(pieces, sticky...)
+	if leftClip {
+		pieces = append(pieces, scrollArrow("‹"))
+	}
+	for i := start; i < end; i++ {
+		pieces = append(pieces, teamTabs[i].s)
+	}
+	if rightClip {
+		pieces = append(pieces, scrollArrow("›"))
+	}
+
+	row := lipgloss.JoinHorizontal(lipgloss.Top, pieces...)
 
 	// Extend a horizontal rule across the remaining width so the tab
 	// bar reads as a single header strip instead of a floating widget.
@@ -1135,6 +1197,58 @@ func (m *Model) renderTeamTabs() string {
 		row = lipgloss.JoinHorizontal(lipgloss.Top, row, fillBlock)
 	}
 	return row
+}
+
+// teamTabWindow picks the visible [start,end) slice of the scrollable team
+// tabs (widths in column order) that keeps the active team on screen within
+// `avail` columns. activePos is the active team's index, or -1 when a sticky
+// tab is active (then teams page from the left). When everything fits the
+// full range is returned with no clipping; otherwise a column is reserved
+// for each scroll arrow and the active team is pinned toward the right edge
+// (fill leftward, then extend right) — the horizontal analogue of the
+// channel list's bottom-pin. leftClip/rightClip report hidden tabs per side.
+func teamTabWindow(widths []int, activePos, avail int) (start, end int, leftClip, rightClip bool) {
+	n := len(widths)
+	if n == 0 || avail < 1 {
+		return 0, 0, false, false
+	}
+	total := 0
+	for _, w := range widths {
+		total += w
+	}
+	if total <= avail {
+		return 0, n, false, false
+	}
+	// Reserve a column for each potential arrow so the strip never overflows.
+	budget := avail - 2
+	if budget < 1 {
+		budget = 1
+	}
+	anchor := activePos
+	if anchor < 0 || anchor >= n {
+		anchor = 0
+	}
+	w := widths[anchor]
+	start = anchor
+	for start > 0 && w+widths[start-1] <= budget {
+		w += widths[start-1]
+		start--
+	}
+	end = anchor + 1
+	for end < n && w+widths[end] <= budget {
+		w += widths[end]
+		end++
+	}
+	return start, end, start > 0, end < n
+}
+
+// scrollArrow renders a one-column, tab-height marker showing the team
+// strip is clipped in that direction. Its bottom cell continues the tab
+// strip's horizontal rule so the arrow sits flush in the bar.
+func scrollArrow(glyph string) string {
+	arrow := lipgloss.NewStyle().Foreground(focusedColor).Render(glyph)
+	rule := lipgloss.NewStyle().Foreground(dimColor).Render("─")
+	return " \n" + arrow + "\n" + rule
 }
 
 func (m *Model) renderFooter() string {
@@ -1210,9 +1324,19 @@ func truncate(s string, n int) string {
 	if n <= 1 {
 		return "…"
 	}
-	r := []rune(s)
-	if len(r) <= n-1 {
-		return s
+	// Cut by display width, not rune count: wide runes (emoji, CJK) occupy
+	// two cells, so slicing n-1 runes can exceed n cells and overflow the
+	// pane, making lipgloss wrap the row onto a second line.
+	budget := n - 1 // reserve one cell for the ellipsis
+	var b strings.Builder
+	w := 0
+	for _, r := range s {
+		rw := lipgloss.Width(string(r))
+		if w+rw > budget {
+			break
+		}
+		b.WriteRune(r)
+		w += rw
 	}
-	return string(r[:n-1]) + "…"
+	return b.String() + "…"
 }

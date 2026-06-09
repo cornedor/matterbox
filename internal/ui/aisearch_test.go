@@ -183,7 +183,11 @@ func TestAISearchLoopE2E(t *testing.T) {
 	ch := make(chan aiSearchUpdate, 8)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	go runAISearchLoop(ctx, endpoint, "", mdl, system, "what is the new CMS Acme uses?", 6, tools, ch)
+	messages := []aiMessage{
+		{Role: "system", Content: system},
+		{Role: "user", Content: "what is the new CMS Acme uses?"},
+	}
+	go runAISearchLoop(ctx, endpoint, "", mdl, messages, 6, tools, ch)
 
 	var answer string
 	var hits []store.SearchHit

@@ -70,12 +70,11 @@ func (m *Model) addAttachments(payloads []clipboardPayload) tea.Cmd {
 		m.uploadCancel = map[string]context.CancelFunc{}
 	}
 
-	vis := m.visibleChannels()
-	if m.channelIdx >= len(vis) {
-		m.status = "no channel selected"
+	channelID := m.openChannelID
+	if channelID == "" {
+		m.status = "no channel open"
 		return nil
 	}
-	channelID := vis[m.channelIdx].Id
 
 	var cmds []tea.Cmd
 	dropped := 0

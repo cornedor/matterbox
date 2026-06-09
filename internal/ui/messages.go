@@ -28,6 +28,16 @@ type postsGapFilledMsg struct {
 	posts     []*model.Post
 	users     map[string]string
 }
+// markViewedMsg fires after a channel has been open for the configured
+// dwell. gen is the viewGen captured when the tick was scheduled; the
+// handler ignores the message if the generation (or open channel) has
+// since changed — i.e. the user switched or refocused before the dwell
+// elapsed. See Model.scheduleMarkViewed.
+type markViewedMsg struct {
+	channelID string
+	gen       int
+}
+
 type errMsg struct{ err error }
 
 type wsConnectedMsg struct{ ws *model.WebSocketClient }

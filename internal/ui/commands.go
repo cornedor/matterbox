@@ -110,11 +110,10 @@ func (m Model) commandResults() []switcherCommand {
 // indexTargetChannel returns the channel ID and label of the currently-
 // focused channel (i.e. the one open when ctrl+k was pressed).
 func (m Model) indexTargetChannel() (string, string) {
-	vis := m.visibleChannels()
-	if m.channelIdx < 0 || m.channelIdx >= len(vis) {
+	c := m.findChannel(m.openChannelID)
+	if c == nil {
 		return "", ""
 	}
-	c := vis[m.channelIdx]
 	return c.Id, m.channelLabel(c)
 }
 

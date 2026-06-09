@@ -21,7 +21,9 @@ import (
 	"github.com/mattermost/mattermost/server/public/model"
 
 	"matterbox/internal/config"
+	"matterbox/internal/embed"
 	"matterbox/internal/mm"
+	"matterbox/internal/semindex"
 	"matterbox/internal/store"
 )
 
@@ -108,6 +110,28 @@ type Model struct {
 	channelIdx int
 	chanOff    int
 
+	// openChannelID is the channel whose messages m.posts holds — i.e.
+	// what the messages pane is actually showing. It is distinct from the
+	// sidebar cursor (m.channelIdx), which navigation moves without
+	// opening. Sending, the pane title, optimistic append and live updates
+	// all key off this, not the cursor, so moving the selection while a
+	// conversation is open never retargets the open panel.
+	openChannelID string
+
+	// markReadDelay is how long the open channel must stay open before it's
+	// marked read (server + badges). Snapshotted from config at New(); 0 means
+	// mark read immediately on open (the original behaviour).
+	markReadDelay time.Duration
+	// viewGen is bumped on every channel open. A scheduled mark-read tick
+	// captures the generation it was queued under and only fires if it still
+	// matches — so switching (or refocusing) before the dwell elapses drops the
+	// stale tick, and reopening the same channel starts a fresh full dwell.
+	viewGen int
+	// viewSettled is true once the open channel's dwell has elapsed and it has
+	// been marked read. While false, live posts arriving in the channel do not
+	// mark it read early — the pending dwell tick covers them.
+	viewSettled bool
+
 	posts   []*model.Post
 	postIdx int // index of the selected post in m.posts
 
@@ -119,6 +143,13 @@ type Model struct {
 	// where the previous top of content used to be, keeping the view
 	// stable from the user's perspective. Cleared on each render.
 	anchorMsgSelTop bool
+
+	// anchorMsgSelBottom is the mirror of anchorMsgSelTop: the next
+	// renderMessages call pins the selected post to the *bottom* of the
+	// viewport. Used by the paths that page in / append newer posts and by
+	// End/G, where the viewport offset would otherwise be stale after a
+	// trimPostWindowHead drop shifted the content up. Cleared on each render.
+	anchorMsgSelBottom bool
 
 	// channel filter
 	filter      textinput.Model
@@ -145,6 +176,12 @@ type Model struct {
 	// run is active at a time; subsequent triggers surface a hint.
 	indexer indexerState
 
+	// embedder is the background semantic-index loop: it embeds not-yet-
+	// embedded cached messages (and new arrivals) into post_vectors while the
+	// app runs. Optional — disabled when there's no store/embeddings config or
+	// auto_index is off — and self-healing when the embeddings server is down.
+	embedder embedderState
+
 	// typing drives the "Typing animation" > command: a fake key-by-key
 	// reveal of a message implemented as a stream of EditPost calls.
 	typing typingAnim
@@ -170,6 +207,12 @@ type Model struct {
 	lastActiveTeamID    string
 	lastActiveChannelID string
 
+	// lastChannelByTeam maps a persistent team bucket (real team or the
+	// synthetic DMs bucket) to the last channel opened there, so switching
+	// to a team reopens that channel instead of the first one. Persisted to
+	// channel_stats.json alongside lastActive; synthetic tabs are excluded.
+	lastChannelByTeam map[string]string
+
 	focus    focus
 	width    int
 	height   int
@@ -191,6 +234,7 @@ type Model struct {
 	mentions map[string]int
 
 	mention mentionState
+	emoji   emojiState
 
 	// Pending file attachments composed for the next outgoing post. Each
 	// chip carries its own spinner and upload context so uploads run
@@ -279,6 +323,17 @@ type Model struct {
 	aiSearchTimeout  time.Duration
 	aiSearch         aiSearchState
 
+	// Semantic-search indexing. embedClient talks to the embeddings server;
+	// embedModel/embedDim identify the model (and Matryoshka truncation) the
+	// vectors are written under; embedBatch is the per-request post count. All
+	// snapshotted from config at New() time. The embedder loop (embedindex.go)
+	// builds a semindex.Indexer from these per batch; step-4 search reuses
+	// embedClient to embed the query.
+	embedClient *embed.Client
+	embedModel  string
+	embedDim    int
+	embedBatch  int
+
 	// Reaction-picker modal. While reactionPickerPostID is non-empty the
 	// modal owns every keystroke (digit selects + fires, ↑/↓+↵ navigate,
 	// esc cancels). reactionPickerIdx is the cursor position within
@@ -346,7 +401,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 
 	h := help.New()
 
-	stats, la := loadChannelStats()
+	stats, la, lastByTeam := loadChannelStats()
 
 	var st *store.Store
 	if p, err := store.DefaultPath(); err == nil {
@@ -373,6 +428,11 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	var aiSearchPrompt string
 	var aiSearchMaxSteps int
 	var aiSearchTimeout time.Duration
+	var embedClient *embed.Client
+	var embedModel string
+	var embedDim int
+	embedAuto := false
+	markReadDelay := defaultMarkReadDelay
 	if cfg != nil {
 		reactions = append([]string(nil), cfg.Reactions...)
 		teamOrder = append([]string(nil), cfg.TeamOrder...)
@@ -383,7 +443,20 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		aiSearchPrompt = cfg.AISearch.Prompt
 		aiSearchMaxSteps = cfg.AISearch.MaxSteps
 		aiSearchTimeout = time.Duration(cfg.AISearch.TimeoutMinutes) * time.Minute
+		if ec := cfg.Embeddings; ec.Endpoint != "" && ec.Model != "" {
+			embedClient = embed.New(ec.Endpoint, ec.APIKey, ec.Model, ec.Dim)
+			embedModel = ec.Model
+			embedDim = ec.Dim
+			embedAuto = ec.AutoIndex == nil || *ec.AutoIndex
+		}
+		if cfg.MarkReadDelaySeconds != nil {
+			markReadDelay = time.Duration(*cfg.MarkReadDelaySeconds) * time.Second
+		}
 	}
+	// The background indexer runs only when there's a store to write to, a
+	// client to call, and the user hasn't disabled it. A down server is fine —
+	// the loop just backs off (see embedindex.go).
+	embedderEnabled := st != nil && embedClient != nil && embedAuto
 
 	return Model{
 		client:              client,
@@ -400,6 +473,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		store:               st,
 		lastActiveTeamID:    la.teamID(),
 		lastActiveChannelID: la.channelID(),
+		lastChannelByTeam:   lastByTeam,
 		input:               ta,
 		unread:              map[string]int{},
 		mentions:            map[string]int{},
@@ -421,8 +495,18 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		aiSearchMaxSteps:    aiSearchMaxSteps,
 		aiSearchTimeout:     aiSearchTimeout,
 		aiSearch:            newAISearchState(),
+		embedClient:         embedClient,
+		embedModel:          embedModel,
+		embedDim:            embedDim,
+		embedBatch:          semindex.DefaultBatch,
+		embedder:            embedderState{enabled: embedderEnabled},
+		markReadDelay:       markReadDelay,
 	}
 }
+
+// defaultMarkReadDelay mirrors config.defaultMarkReadDelaySeconds and is the
+// fallback dwell used when no config is supplied (e.g. in tests).
+const defaultMarkReadDelay = 5 * time.Second
 
 // leaderHints are the synthetic bindings shown in the footer while the
 // "," leader chord is pending, so the user sees the available jump
@@ -458,7 +542,7 @@ func (m Model) ShortHelp() []key.Binding {
 	case m.focus == focusInput:
 		return []key.Binding{k.Send, k.NewLine, k.Paste, k.LeaveInput, k.Tab}
 	case m.focus == focusChannels:
-		return []key.Binding{k.Tab, k.Up, k.Down, k.OpenChannel, k.Compose, k.SearchHere, k.Filter, k.ClearFilter, k.Leader, k.Switcher, k.Unread, k.Feed, k.Help, k.Quit}
+		return []key.Binding{k.Tab, k.Up, k.Down, k.SwitchTeam, k.OpenChannel, k.Compose, k.SearchHere, k.Filter, k.ClearFilter, k.Leader, k.Switcher, k.Unread, k.Feed, k.Help, k.Quit}
 	case m.focus == focusMessages:
 		return []key.Binding{k.Tab, k.Up, k.Down, k.Compose, k.OpenThread, k.ReplyInThread, k.SearchHere, k.NextHit, k.PrevHit, k.OpenAttach, k.CopyMD, k.EditPost, k.DeletePost, k.React, k.ShowHistory, k.Leader, k.Switcher, k.Unread, k.Feed, k.Help, k.Quit}
 	case m.focus == focusThread:
@@ -492,7 +576,7 @@ func (m Model) FullHelp() [][]key.Binding {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.fetchMe(), m.connectWS())
+	return tea.Batch(m.fetchMe(), m.connectWS(), m.startEmbedder())
 }
 
 func (m Model) connectWS() tea.Cmd {
@@ -527,6 +611,25 @@ func (m Model) markChannelViewed(channelID string) tea.Cmd {
 		_ = m.client.ViewChannel(m.ctx, userID, channelID)
 		return nil
 	}
+}
+
+// scheduleMarkViewed defers marking channelID read until it has been open
+// for m.markReadDelay, so a quick peek doesn't clear unread. It returns a
+// tick carrying the current viewGen; the markViewedMsg handler only acts if
+// that generation (and the open channel) still match when it fires. A
+// non-positive delay means "immediately" — clear the badges now and mark
+// read without a tick (the original behaviour, opt-in via config 0).
+func (m *Model) scheduleMarkViewed(channelID string) tea.Cmd {
+	if m.markReadDelay <= 0 {
+		delete(m.unread, channelID)
+		delete(m.mentions, channelID)
+		m.viewSettled = true
+		return m.markChannelViewed(channelID)
+	}
+	gen := m.viewGen
+	return tea.Tick(m.markReadDelay, func(time.Time) tea.Msg {
+		return markViewedMsg{channelID: channelID, gen: gen}
+	})
 }
 
 // applyUnreadFromMembers seeds m.unread / m.mentions from the
@@ -1020,6 +1123,51 @@ func (m Model) loadNewerFromStore(channelID string, afterCreateAt int64) []*mode
 	return posts
 }
 
+// maxLoadedPosts bounds how many posts renderMessages keeps live at once.
+// Paging past either end of the rendered window (the Up-at-top /
+// Down-at-bottom handlers) loads olderPageSize more from the cache and
+// trims the same count off the far end, so the window slides instead of
+// growing for the whole session. renderMessages is O(loaded posts), so
+// capping the slice keeps per-keystroke cost flat no matter how far back
+// the user reads; trimmed posts stay in the SQLite store and page back in
+// when the user reverses direction.
+const maxLoadedPosts = 400
+
+// trimPostWindowTail drops posts off the newest end of m.posts once the
+// loaded window exceeds maxLoadedPosts. Called after prepending older
+// posts (scrolling up), where the selection sits near the top so the
+// trimmed tail is safely off-screen. Never drops the selected post or an
+// unpersisted optimistic stub (empty Id) — those can't be recovered from
+// the store.
+func (m *Model) trimPostWindowTail() {
+	for len(m.posts) > maxLoadedPosts {
+		last := len(m.posts) - 1
+		if last <= m.postIdx || m.posts[last].Id == "" {
+			return
+		}
+		m.posts = m.posts[:last]
+	}
+}
+
+// trimPostWindowHead drops posts off the oldest end of m.posts once the
+// loaded window exceeds maxLoadedPosts, shifting postIdx to keep the
+// selection pinned to the same post. Called after appending newer posts
+// (scrolling down), where the selection sits near the bottom so the
+// trimmed head is safely off-screen.
+func (m *Model) trimPostWindowHead() {
+	drop := len(m.posts) - maxLoadedPosts
+	if drop > m.postIdx {
+		drop = m.postIdx // never drop the selected post or past it
+	}
+	if drop <= 0 {
+		return
+	}
+	// Copy into a fresh slice so the trimmed prefix's backing storage is
+	// released rather than retained behind the re-slice.
+	m.posts = append([]*model.Post(nil), m.posts[drop:]...)
+	m.postIdx -= drop
+}
+
 // fetchPostsAfter pulls every post created after afterPostID in the
 // channel. Use this when reopening a channel whose history is already
 // in the cache: paint cached → call this → append the gap.
@@ -1097,16 +1245,17 @@ func (m Model) persistDelete(id string) tea.Cmd {
 // fetchPosts Cmd. Callers tea.Batch the returned Cmd with any unrelated
 // work (focus changes, stat bumps, etc.).
 func (m *Model) openChannelLoadCmd(channelID string) tea.Cmd {
+	m.openChannelID = channelID
+	// New focus session: start a fresh dwell. The badges are intentionally
+	// left intact until the dwell elapses (see scheduleMarkViewed), so a
+	// quick peek doesn't clear unread.
+	m.viewGen++
+	m.viewSettled = false
 	if cached := m.loadFromStore(channelID); len(cached) > 0 {
 		m.posts = cached
 		m.postIdx = len(m.posts) - 1
 		m.status = ""
 		m.loading = false
-		// Mirror postsLoadedMsg's badge-clearing so the sidebar doesn't
-		// keep showing unread/mention counts on the channel the user
-		// just opened while the gap-fill is in flight.
-		delete(m.unread, channelID)
-		delete(m.mentions, channelID)
 		// If a search hit queued a jump to a specific post and it's in the
 		// cached page, position the cursor on it before painting.
 		m.jumpToPendingPost()
@@ -1224,15 +1373,41 @@ func (m *Model) switchToChannelHomeTeam(ch *model.Channel) {
 	}
 }
 
+// isRestorableTeamID reports whether a team ID names a persistent bucket
+// whose last-open channel is worth remembering and restoring. The synthetic
+// Unread/Search/Feed tabs are computed on the fly, so they're excluded; real
+// teams and the DMs bucket qualify.
+func isRestorableTeamID(id string) bool {
+	switch id {
+	case "", unreadTeamID, searchTeamID, feedTeamID:
+		return false
+	}
+	return true
+}
+
+// preferredChannelIdx returns the index in vis of the channel last opened in
+// the focused team (from lastChannelByTeam), so switching to a team reopens
+// where the user left off. Falls back to 0 when there's no remembered
+// channel or it's no longer in the visible list.
+func (m Model) preferredChannelIdx(vis []*model.Channel) int {
+	id := m.lastChannelByTeam[m.currentTeamID()]
+	if id == "" {
+		return 0
+	}
+	for i, c := range vis {
+		if c.Id == id {
+			return i
+		}
+	}
+	return 0
+}
+
 // restoreLastActive attempts to set teamIdx and channelIdx from a
 // previous session's persisted state. If the saved team or channel no
 // longer exists, the indices are left unchanged and the caller's existing
 // clamping logic kicks in. Does nothing for the synthetic Unread tab.
 func (m *Model) restoreLastActive() {
-	if m.lastActiveTeamID == "" || m.lastActiveChannelID == "" {
-		return
-	}
-	if m.lastActiveTeamID == unreadTeamID || m.lastActiveTeamID == searchTeamID || m.lastActiveTeamID == feedTeamID {
+	if m.lastActiveChannelID == "" || !isRestorableTeamID(m.lastActiveTeamID) {
 		return
 	}
 	for i := 0; i <= m.maxTeamIdx(); i++ {
@@ -1349,12 +1524,70 @@ func (m *Model) bucketChannels(chs []*model.Channel) {
 	}
 	for k, list := range m.channels {
 		list := list
-		sort.SliceStable(list, func(i, j int) bool {
-			return strings.ToLower(m.channelLabel(list[i])) < strings.ToLower(m.channelLabel(list[j]))
-		})
+		if k == dmTeamID {
+			// DMs sort by most recently chatted in, newest first;
+			// fall back to label for channels with no posts yet.
+			sort.SliceStable(list, func(i, j int) bool {
+				ai, aj := list[i].LastPostAt, list[j].LastPostAt
+				if ai != aj {
+					return ai > aj
+				}
+				return strings.ToLower(m.channelLabel(list[i])) < strings.ToLower(m.channelLabel(list[j]))
+			})
+		} else {
+			sort.SliceStable(list, func(i, j int) bool {
+				return strings.ToLower(m.channelLabel(list[i])) < strings.ToLower(m.channelLabel(list[j]))
+			})
+		}
 		m.channels[k] = list
 	}
 	_, m.hasDMs = m.channels[dmTeamID]
+}
+
+// sortDMBucket re-orders the DM bucket by most recent activity (newest
+// first), matching bucketChannels. Called when a live post bumps a DM's
+// LastPostAt so the sidebar stays "recently chatted in" within a session.
+func (m *Model) sortDMBucket() {
+	list := m.channels[dmTeamID]
+	if len(list) < 2 {
+		return
+	}
+	sort.SliceStable(list, func(i, j int) bool {
+		ai, aj := list[i].LastPostAt, list[j].LastPostAt
+		if ai != aj {
+			return ai > aj
+		}
+		return strings.ToLower(m.channelLabel(list[i])) < strings.ToLower(m.channelLabel(list[j]))
+	})
+}
+
+// touchChannelActivity bumps a channel's LastPostAt to at least ts and, if
+// it's a DM/group, re-sorts the DM bucket so the sidebar reflects the most
+// recent conversation. No-op if the channel isn't known locally.
+func (m *Model) touchChannelActivity(channelID string, ts int64) {
+	c := m.findChannel(channelID)
+	if c == nil || ts <= c.LastPostAt {
+		return
+	}
+	c.LastPostAt = ts
+	if c.Type != model.ChannelTypeDirect && c.Type != model.ChannelTypeGroup && c.TeamId != "" {
+		return
+	}
+	// Re-sorting shifts what sits under the positional cursor, so pin the
+	// cursor to the channel it currently points at across the sort.
+	var cursorID string
+	if vis := m.visibleChannels(); m.channelIdx >= 0 && m.channelIdx < len(vis) {
+		cursorID = vis[m.channelIdx].Id
+	}
+	m.sortDMBucket()
+	if cursorID != "" {
+		for i, ch := range m.visibleChannels() {
+			if ch.Id == cursorID {
+				m.channelIdx = i
+				break
+			}
+		}
+	}
 }
 
 // applyTeamOrder sorts m.teams to match the user's saved team_order:
