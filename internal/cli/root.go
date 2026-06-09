@@ -40,7 +40,7 @@ func newRootCmd() *cobra.Command {
 		Short: "A terminal client for Mattermost",
 		Long: "matterbox is a TUI Mattermost client.\n\n" +
 			"Run with no arguments to open the interactive UI, or use a subcommand\n" +
-			"(send, read, unread, digest, whoami, embed) to work with messages\n" +
+			"(send, read, unread, search, digest, whoami, embed) to work with messages\n" +
 			"non-interactively for scripting.",
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -51,7 +51,7 @@ func newRootCmd() *cobra.Command {
 	}
 	root.Flags().StringVar(&pprofAddr, "pprof", "",
 		"if set (e.g. localhost:6060), serve net/http/pprof on this address")
-	root.AddCommand(newSendCmd(), newReadCmd(), newUnreadCmd(), newDigestCmd(), newWhoamiCmd(), newEmbedCmd())
+	root.AddCommand(newSendCmd(), newReadCmd(), newUnreadCmd(), newSearchCmd(), newDigestCmd(), newWhoamiCmd(), newEmbedCmd())
 	return root
 }
 
