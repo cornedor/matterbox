@@ -96,6 +96,30 @@ func TestFilterByCreateRange(t *testing.T) {
 	}
 }
 
+func TestFilterByAuthor(t *testing.T) {
+	posts := []*model.Post{
+		{Id: "p1", UserId: "alice"},
+		{Id: "p2", UserId: "bob"},
+		{Id: "p3", UserId: "alice"},
+	}
+	ids := func(ps []*model.Post) string {
+		s := ""
+		for _, p := range ps {
+			s += p.Id
+		}
+		return s
+	}
+	if got := ids(filterByAuthor(posts, "alice")); got != "p1p3" {
+		t.Errorf("filterByAuthor(alice) = %q, want p1p3", got)
+	}
+	if got := ids(filterByAuthor(posts, "")); got != "p1p2p3" {
+		t.Errorf("empty author should not filter: got %q", got)
+	}
+	if got := filterByAuthor(posts, "nobody"); len(got) != 0 {
+		t.Errorf("unknown author should match nothing: got %v", got)
+	}
+}
+
 func TestTailN(t *testing.T) {
 	posts := []*model.Post{{Id: "a"}, {Id: "b"}, {Id: "c"}}
 	if got := tailN(posts, 0); len(got) != 3 {

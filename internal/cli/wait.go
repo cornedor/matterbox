@@ -16,12 +16,15 @@ import (
 // awaitMessage blocks on the websocket until a posted event with
 // create_at > since arrives, and returns the event plus the decoded post.
 // channelID scopes the wait to one channel; an empty channelID matches a
-// new message in any channel. A non-zero timeout caps the wait; 0 waits
-// forever. The websocket closing before a message arrives is an error.
+// new message in any channel. authorID, when non-empty, further restricts
+// the wait to messages from that user (so `read --from @x --wait` blocks
+// for x's next message); "" matches any author. A non-zero timeout caps the
+// wait; 0 waits forever. The websocket closing before a message arrives is
+// an error.
 //
 // It only selects events off the channel — the connection itself is owned
 // by the caller — so it's exercised in tests with a hand-fed EventChannel.
-func awaitMessage(ctx context.Context, wsc *model.WebSocketClient, channelID string, since int64, timeout time.Duration) (*model.WebSocketEvent, *model.Post, error) {
+func awaitMessage(ctx context.Context, wsc *model.WebSocketClient, channelID string, since int64, timeout time.Duration, authorID string) (*model.WebSocketEvent, *model.Post, error) {
 	var timeoutCh <-chan time.Time
 	if timeout > 0 {
 		t := time.NewTimer(timeout)
@@ -34,7 +37,7 @@ func awaitMessage(ctx context.Context, wsc *model.WebSocketClient, channelID str
 			if !ok {
 				return nil, nil, fmt.Errorf("websocket closed before a new message arrived")
 			}
-			if p := newMessageFromEvent(ev, channelID, since); p != nil {
+			if p := newMessageFromEvent(ev, channelID, since, authorID); p != nil {
 				return ev, p, nil
 			}
 		case <-timeoutCh:
@@ -47,9 +50,9 @@ func awaitMessage(ctx context.Context, wsc *model.WebSocketClient, channelID str
 
 // newMessageFromEvent returns the post to print if ev is a brand-new
 // message created after since, or nil to skip the event. channelID scopes
-// to one channel; "" matches any. Pure, so the gap/dedupe logic is
-// unit-testable.
-func newMessageFromEvent(ev *model.WebSocketEvent, channelID string, since int64) *model.Post {
+// to one channel ("" matches any); authorID scopes to one sender ("" matches
+// any). Pure, so the gap/dedupe/scope logic is unit-testable.
+func newMessageFromEvent(ev *model.WebSocketEvent, channelID string, since int64, authorID string) *model.Post {
 	if ev == nil || ev.EventType() != model.WebsocketEventPosted {
 		return nil
 	}
@@ -60,6 +63,9 @@ func newMessageFromEvent(ev *model.WebSocketEvent, channelID string, since int64
 	}
 	p := postFromEvent(ev)
 	if p == nil || p.CreateAt <= since {
+		return nil
+	}
+	if authorID != "" && p.UserId != authorID {
 		return nil
 	}
 	return p

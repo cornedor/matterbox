@@ -170,7 +170,7 @@ func runUnread(ctx context.Context, perChannel int, wait bool, timeout time.Dura
 	} else {
 		fmt.Fprintln(os.Stderr, "matterbox: caught up — waiting for a new message…")
 	}
-	ev, p, err := awaitMessage(ctx, wsc, "", since, timeout)
+	ev, p, err := awaitMessage(ctx, wsc, "", since, timeout, "")
 	if err != nil {
 		return err
 	}

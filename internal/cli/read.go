@@ -21,6 +21,7 @@ func newReadCmd() *cobra.Command {
 		limit    int
 		since    string
 		until    string
+		from     string
 		wait     bool
 		timeout  time.Duration
 		asJSONFn func() (bool, error)
@@ -37,6 +38,9 @@ func newReadCmd() *cobra.Command {
 			"shown by default (no silent --limit truncation across day boundaries);\n" +
 			"pass --limit to cap it. Without --since, --until just filters the most\n" +
 			"recent --limit messages.\n\n" +
+			"--from @user keeps only that author's messages (most useful with --since,\n" +
+			"e.g. what did alice say this week); with --wait it blocks for that\n" +
+			"author's next message specifically.\n\n" +
 			"With --wait, after printing history the command opens a websocket and\n" +
 			"blocks until at least one new message arrives, prints it, and exits —\n" +
 			"so it never returns empty-handed:\n\n" +
@@ -63,12 +67,13 @@ func newReadCmd() *cobra.Command {
 			if sinceMs > 0 && !cmd.Flags().Changed("limit") {
 				limit = 0
 			}
-			return runRead(cmd.Context(), args[0], limit, sinceMs, untilMs, wait, timeout, asJSON, cmd.OutOrStdout())
+			return runRead(cmd.Context(), args[0], limit, sinceMs, untilMs, from, wait, timeout, asJSON, cmd.OutOrStdout())
 		},
 	}
 	cmd.Flags().IntVarP(&limit, "limit", "n", defaultReadLimit, "number of recent messages to show (0 = no cap)")
 	cmd.Flags().StringVar(&since, "since", "", "only messages at or after this time (e.g. yesterday, 7d, 2026-06-08)")
 	cmd.Flags().StringVar(&until, "until", "", "only messages before this time (exclusive)")
+	cmd.Flags().StringVarP(&from, "from", "f", "", "only messages from this author (@user)")
 	cmd.Flags().BoolVarP(&wait, "wait", "w", false,
 		"after printing history, block on the websocket until a new message arrives, then exit")
 	cmd.Flags().DurationVar(&timeout, "timeout", 0,
@@ -77,7 +82,7 @@ func newReadCmd() *cobra.Command {
 	return cmd
 }
 
-func runRead(ctx context.Context, spec string, limit int, sinceMs, untilMs int64, wait bool, timeout time.Duration, asJSON bool, out io.Writer) error {
+func runRead(ctx context.Context, spec string, limit int, sinceMs, untilMs int64, from string, wait bool, timeout time.Duration, asJSON bool, out io.Writer) error {
 	// limit <= 0 means "no cap"; only the unbounded recent read needs a
 	// default fetch size to stand in for it.
 	dateMode := sinceMs > 0 || untilMs > 0
@@ -95,6 +100,16 @@ func runRead(ctx context.Context, spec string, limit int, sinceMs, untilMs int64
 	ch, err := resolveChannel(ctx, client, me, spec)
 	if err != nil {
 		return err
+	}
+	// --from restricts to one author, resolved up front so an unknown user
+	// fails before we fetch anything.
+	var authorID string
+	if from != "" {
+		u, uerr := client.UserByUsername(ctx, strings.TrimPrefix(from, "@"))
+		if uerr != nil {
+			return fmt.Errorf("no user %q: %w", from, uerr)
+		}
+		authorID = u.Id
 	}
 
 	// In --wait mode, connect the socket BEFORE fetching history so a
@@ -126,6 +141,11 @@ func runRead(ctx context.Context, spec string, limit int, sinceMs, untilMs int64
 		return err
 	}
 	posts := filterByCreateRange(orderedPosts(pl), sinceMs, untilMs)
+	// Filter by author before the tail cap, so --limit counts that author's
+	// messages rather than the channel's.
+	if authorID != "" {
+		posts = filterByAuthor(posts, authorID)
+	}
 	posts = tailN(posts, limit)
 	names, err := client.UsernamesByIDs(ctx, uniqueUserIDs(posts))
 	if err != nil {
@@ -151,7 +171,7 @@ func runRead(ctx context.Context, spec string, limit int, sinceMs, untilMs int64
 	if since == 0 {
 		since = time.Now().UnixMilli()
 	}
-	ev, p, err := awaitMessage(ctx, wsc, ch.Id, since, timeout)
+	ev, p, err := awaitMessage(ctx, wsc, ch.Id, since, timeout, authorID)
 	if err != nil {
 		return err
 	}
@@ -194,6 +214,21 @@ func filterByCreateRange(posts []*model.Post, sinceMs, untilMs int64) []*model.P
 			continue
 		}
 		out = append(out, p)
+	}
+	return out
+}
+
+// filterByAuthor keeps only posts written by authorID, preserving order. An
+// empty authorID is treated as "no filter" and returns posts unchanged.
+func filterByAuthor(posts []*model.Post, authorID string) []*model.Post {
+	if authorID == "" {
+		return posts
+	}
+	out := make([]*model.Post, 0, len(posts))
+	for _, p := range posts {
+		if p.UserId == authorID {
+			out = append(out, p)
+		}
 	}
 	return out
 }

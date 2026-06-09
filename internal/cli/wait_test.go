@@ -29,41 +29,55 @@ func TestNewMessageFromEvent(t *testing.T) {
 
 	t.Run("new message in channel is returned", func(t *testing.T) {
 		ev := postedEvent(t, ch, &model.Post{Id: "p1", Message: "hi", CreateAt: since + 1})
-		if got := newMessageFromEvent(ev, ch, since); got == nil || got.Id != "p1" {
+		if got := newMessageFromEvent(ev, ch, since, ""); got == nil || got.Id != "p1" {
 			t.Fatalf("got %+v, want post p1", got)
 		}
 	})
 
 	t.Run("post at or before cutoff is skipped (dedupe gap)", func(t *testing.T) {
 		ev := postedEvent(t, ch, &model.Post{Id: "old", CreateAt: since})
-		if got := newMessageFromEvent(ev, ch, since); got != nil {
+		if got := newMessageFromEvent(ev, ch, since, ""); got != nil {
 			t.Errorf("got %+v, want nil for create_at == since", got)
 		}
 	})
 
 	t.Run("other channel is skipped when scoped", func(t *testing.T) {
 		ev := postedEvent(t, "other", &model.Post{Id: "p2", CreateAt: since + 1})
-		if got := newMessageFromEvent(ev, ch, since); got != nil {
+		if got := newMessageFromEvent(ev, ch, since, ""); got != nil {
 			t.Errorf("got %+v, want nil for a different channel", got)
 		}
 	})
 
 	t.Run("any channel matches when channelID empty", func(t *testing.T) {
 		ev := postedEvent(t, "other", &model.Post{Id: "p3", CreateAt: since + 1})
-		if got := newMessageFromEvent(ev, "", since); got == nil || got.Id != "p3" {
+		if got := newMessageFromEvent(ev, "", since, ""); got == nil || got.Id != "p3" {
 			t.Fatalf("got %+v, want post p3 for empty channelID", got)
+		}
+	})
+
+	t.Run("other author is skipped when scoped", func(t *testing.T) {
+		ev := postedEvent(t, ch, &model.Post{Id: "p4", UserId: "bob", CreateAt: since + 1})
+		if got := newMessageFromEvent(ev, ch, since, "alice"); got != nil {
+			t.Errorf("got %+v, want nil for a different author", got)
+		}
+	})
+
+	t.Run("matching author passes when scoped", func(t *testing.T) {
+		ev := postedEvent(t, ch, &model.Post{Id: "p5", UserId: "alice", CreateAt: since + 1})
+		if got := newMessageFromEvent(ev, ch, since, "alice"); got == nil || got.Id != "p5" {
+			t.Fatalf("got %+v, want post p5 for matching author", got)
 		}
 	})
 
 	t.Run("non-posted event is skipped", func(t *testing.T) {
 		ev := model.NewWebSocketEvent(model.WebsocketEventTyping, "", ch, "", nil, "")
-		if got := newMessageFromEvent(ev, ch, since); got != nil {
+		if got := newMessageFromEvent(ev, ch, since, ""); got != nil {
 			t.Errorf("got %+v, want nil for a typing event", got)
 		}
 	})
 
 	t.Run("nil event is skipped", func(t *testing.T) {
-		if got := newMessageFromEvent(nil, ch, since); got != nil {
+		if got := newMessageFromEvent(nil, ch, since, ""); got != nil {
 			t.Errorf("got %+v, want nil for nil event", got)
 		}
 	})
@@ -92,7 +106,7 @@ func TestAwaitMessage(t *testing.T) {
 		wsc.EventChannel <- postedEvent(t, "other", &model.Post{Id: "skip", CreateAt: since + 1})
 		wsc.EventChannel <- postedEvent(t, ch, &model.Post{Id: "want", CreateAt: since + 1})
 
-		_, p, err := awaitMessage(context.Background(), wsc, ch, since, time.Second)
+		_, p, err := awaitMessage(context.Background(), wsc, ch, since, time.Second, "")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -101,9 +115,23 @@ func TestAwaitMessage(t *testing.T) {
 		}
 	})
 
+	t.Run("skips other authors until the scoped one posts", func(t *testing.T) {
+		wsc := &model.WebSocketClient{EventChannel: make(chan *model.WebSocketEvent, 4)}
+		wsc.EventChannel <- postedEvent(t, ch, &model.Post{Id: "bob", UserId: "bob", CreateAt: since + 1})
+		wsc.EventChannel <- postedEvent(t, ch, &model.Post{Id: "alice", UserId: "alice", CreateAt: since + 2})
+
+		_, p, err := awaitMessage(context.Background(), wsc, ch, since, time.Second, "alice")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if p.Id != "alice" {
+			t.Errorf("got post %q, want alice's message", p.Id)
+		}
+	})
+
 	t.Run("times out", func(t *testing.T) {
 		wsc := &model.WebSocketClient{EventChannel: make(chan *model.WebSocketEvent)}
-		_, _, err := awaitMessage(context.Background(), wsc, ch, since, 20*time.Millisecond)
+		_, _, err := awaitMessage(context.Background(), wsc, ch, since, 20*time.Millisecond, "")
 		if err == nil || !strings.Contains(err.Error(), "timed out") {
 			t.Fatalf("err = %v, want a timeout error", err)
 		}
@@ -112,7 +140,7 @@ func TestAwaitMessage(t *testing.T) {
 	t.Run("errors when the socket closes", func(t *testing.T) {
 		wsc := &model.WebSocketClient{EventChannel: make(chan *model.WebSocketEvent)}
 		close(wsc.EventChannel)
-		_, _, err := awaitMessage(context.Background(), wsc, ch, since, 0)
+		_, _, err := awaitMessage(context.Background(), wsc, ch, since, 0, "")
 		if err == nil || !strings.Contains(err.Error(), "closed") {
 			t.Fatalf("err = %v, want a closed-socket error", err)
 		}
@@ -122,7 +150,7 @@ func TestAwaitMessage(t *testing.T) {
 		wsc := &model.WebSocketClient{EventChannel: make(chan *model.WebSocketEvent)}
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		if _, _, err := awaitMessage(ctx, wsc, ch, since, 0); err == nil {
+		if _, _, err := awaitMessage(ctx, wsc, ch, since, 0, ""); err == nil {
 			t.Fatal("expected context cancellation error, got nil")
 		}
 	})
