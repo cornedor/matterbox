@@ -18,11 +18,12 @@ const defaultReadLimit = 30
 
 func newReadCmd() *cobra.Command {
 	var (
-		limit   int
-		since   string
-		until   string
-		wait    bool
-		timeout time.Duration
+		limit    int
+		since    string
+		until    string
+		wait     bool
+		timeout  time.Duration
+		asJSONFn func() (bool, error)
 	)
 	cmd := &cobra.Command{
 		Use:   "read <channel>",
@@ -49,6 +50,10 @@ func newReadCmd() *cobra.Command {
 			if timeout > 0 && !wait {
 				return fmt.Errorf("--timeout requires --wait")
 			}
+			asJSON, err := asJSONFn()
+			if err != nil {
+				return err
+			}
 			sinceMs, untilMs, err := parseSinceUntil(since, until, time.Now(), time.Local)
 			if err != nil {
 				return err
@@ -58,7 +63,7 @@ func newReadCmd() *cobra.Command {
 			if sinceMs > 0 && !cmd.Flags().Changed("limit") {
 				limit = 0
 			}
-			return runRead(cmd.Context(), args[0], limit, sinceMs, untilMs, wait, timeout, cmd.OutOrStdout())
+			return runRead(cmd.Context(), args[0], limit, sinceMs, untilMs, wait, timeout, asJSON, cmd.OutOrStdout())
 		},
 	}
 	cmd.Flags().IntVarP(&limit, "limit", "n", defaultReadLimit, "number of recent messages to show (0 = no cap)")
@@ -68,10 +73,11 @@ func newReadCmd() *cobra.Command {
 		"after printing history, block on the websocket until a new message arrives, then exit")
 	cmd.Flags().DurationVar(&timeout, "timeout", 0,
 		"with --wait, give up after this duration (e.g. 30s, 5m); 0 waits forever")
+	asJSONFn = addOutputFlags(cmd)
 	return cmd
 }
 
-func runRead(ctx context.Context, spec string, limit int, sinceMs, untilMs int64, wait bool, timeout time.Duration, out io.Writer) error {
+func runRead(ctx context.Context, spec string, limit int, sinceMs, untilMs int64, wait bool, timeout time.Duration, asJSON bool, out io.Writer) error {
 	// limit <= 0 means "no cap"; only the unbounded recent read needs a
 	// default fetch size to stand in for it.
 	dateMode := sinceMs > 0 || untilMs > 0
@@ -125,7 +131,14 @@ func runRead(ctx context.Context, spec string, limit int, sinceMs, untilMs int64
 	if err != nil {
 		return err
 	}
-	if _, err := io.WriteString(out, formatPosts(posts, names)); err != nil {
+	// read is single-channel, so every line's channel is the address the user
+	// gave — no need to fetch teams just to label it.
+	lbl := channelLabeler(func(string) string { return spec })
+	if asJSON {
+		if err := writeJSONPosts(out, lbl, names, posts); err != nil {
+			return err
+		}
+	} else if _, err := io.WriteString(out, formatPosts(posts, names)); err != nil {
 		return err
 	}
 
@@ -142,7 +155,7 @@ func runRead(ctx context.Context, spec string, limit int, sinceMs, untilMs int64
 	if err != nil {
 		return err
 	}
-	return printLiveMessage(ctx, client, out, ev, p, "")
+	return printLiveMessage(ctx, client, out, ev, p, "", asJSON, lbl)
 }
 
 // orderedPosts flattens a PostList into chronological (oldest→newest)

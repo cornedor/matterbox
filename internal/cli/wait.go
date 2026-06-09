@@ -92,12 +92,17 @@ func eventNames(ctx context.Context, client *mm.Client, ev *model.WebSocketEvent
 	return nil
 }
 
-// printLiveMessage renders one freshly-arrived post to out, optionally
-// prefixed with a channel header line (used by `unread --wait`, which can
-// surface a message from any channel; `read --wait` passes an empty
-// header since the channel is already known).
-func printLiveMessage(ctx context.Context, client *mm.Client, out io.Writer, ev *model.WebSocketEvent, p *model.Post, header string) error {
-	body := formatPosts([]*model.Post{p}, eventNames(ctx, client, ev, p))
+// printLiveMessage renders one freshly-arrived post to out. In text mode it is
+// optionally prefixed with a channel header line (used by `unread --wait`,
+// which can surface a message from any channel; `read --wait` passes an empty
+// header since the channel is already known). In JSON mode it emits the same
+// single-line shape as the batch output, labelling the channel via lbl.
+func printLiveMessage(ctx context.Context, client *mm.Client, out io.Writer, ev *model.WebSocketEvent, p *model.Post, header string, asJSON bool, lbl channelLabeler) error {
+	names := eventNames(ctx, client, ev, p)
+	if asJSON {
+		return writeJSONPosts(out, lbl, names, []*model.Post{p})
+	}
+	body := formatPosts([]*model.Post{p}, names)
 	if header != "" {
 		body = header + "\n" + body
 	}

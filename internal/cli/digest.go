@@ -16,9 +16,10 @@ import (
 
 func newDigestCmd() *cobra.Command {
 	var (
-		since string
-		until string
-		limit int
+		since    string
+		until    string
+		limit    int
+		asJSONFn func() (bool, error)
 	)
 	cmd := &cobra.Command{
 		Use:     "digest",
@@ -45,16 +46,21 @@ func newDigestCmd() *cobra.Command {
 			if sinceMs == 0 { // no --since → default to the start of today
 				sinceMs = startOfDay(now, time.Local).UnixMilli()
 			}
-			return runDigest(cmd.Context(), sinceMs, untilMs, limit, cmd.OutOrStdout())
+			asJSON, err := asJSONFn()
+			if err != nil {
+				return err
+			}
+			return runDigest(cmd.Context(), sinceMs, untilMs, limit, asJSON, cmd.OutOrStdout())
 		},
 	}
 	cmd.Flags().StringVar(&since, "since", "", "start of the range (default: start of today)")
 	cmd.Flags().StringVar(&until, "until", "", "end of the range, exclusive (default: now)")
 	cmd.Flags().IntVarP(&limit, "limit", "n", 0, "cap the number of messages shown, keeping the most recent (0 = all)")
+	asJSONFn = addOutputFlags(cmd)
 	return cmd
 }
 
-func runDigest(ctx context.Context, sinceMs, untilMs int64, limit int, out io.Writer) error {
+func runDigest(ctx context.Context, sinceMs, untilMs int64, limit int, asJSON bool, out io.Writer) error {
 	_, client, err := dial()
 	if err != nil {
 		return err
@@ -103,6 +109,9 @@ func runDigest(ctx context.Context, sinceMs, untilMs int64, limit int, out io.Wr
 	names[me.Id] = me.Username // render our own posts by name, not @unknown
 	lbl := labeler{meID: me.Id, teamSlug: teamSlug, channels: chByID, names: names}
 
+	if asJSON {
+		return writeJSONPosts(out, lbl.header, names, posts)
+	}
 	printDigest(out, lbl, names, posts)
 	return nil
 }

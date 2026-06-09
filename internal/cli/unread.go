@@ -25,6 +25,7 @@ func newUnreadCmd() *cobra.Command {
 		perChannel int
 		wait       bool
 		timeout    time.Duration
+		asJSONFn   func() (bool, error)
 	)
 	cmd := &cobra.Command{
 		Use:   "unread",
@@ -44,7 +45,11 @@ func newUnreadCmd() *cobra.Command {
 			if timeout > 0 && !wait {
 				return fmt.Errorf("--timeout requires --wait")
 			}
-			return runUnread(cmd.Context(), perChannel, wait, timeout, cmd.OutOrStdout())
+			asJSON, err := asJSONFn()
+			if err != nil {
+				return err
+			}
+			return runUnread(cmd.Context(), perChannel, wait, timeout, asJSON, cmd.OutOrStdout())
 		},
 	}
 	cmd.Flags().IntVarP(&perChannel, "limit", "n", 0,
@@ -53,6 +58,7 @@ func newUnreadCmd() *cobra.Command {
 		"after printing, block on the websocket until a new message arrives, then exit")
 	cmd.Flags().DurationVar(&timeout, "timeout", 0,
 		"with --wait, give up after this duration (e.g. 30s, 15m); 0 waits forever")
+	asJSONFn = addOutputFlags(cmd)
 	return cmd
 }
 
@@ -73,7 +79,7 @@ func (g unreadGroup) lastActivity() int64 {
 	return 0
 }
 
-func runUnread(ctx context.Context, perChannel int, wait bool, timeout time.Duration, out io.Writer) error {
+func runUnread(ctx context.Context, perChannel int, wait bool, timeout time.Duration, asJSON bool, out io.Writer) error {
 	_, client, err := dial()
 	if err != nil {
 		return err
@@ -129,9 +135,19 @@ func runUnread(ctx context.Context, perChannel int, wait bool, timeout time.Dura
 	}
 	lbl := labeler{meID: me.Id, teamSlug: teamSlug, channels: chByID, names: names}
 
-	if len(groups) > 0 {
+	switch {
+	case len(groups) > 0 && asJSON:
+		// JSON Lines drops the per-channel header/count rows; each line already
+		// carries its channel, and the grouping is just create-order within a
+		// channel anyway.
+		for _, g := range groups {
+			if err := writeJSONPosts(out, lbl.header, names, g.posts); err != nil {
+				return err
+			}
+		}
+	case len(groups) > 0:
 		printUnread(out, lbl, groups, names)
-	} else if !wait {
+	case !wait:
 		fmt.Fprintln(os.Stderr, "matterbox: nothing unread")
 	}
 
@@ -158,7 +174,11 @@ func runUnread(ctx context.Context, perChannel int, wait bool, timeout time.Dura
 	if err != nil {
 		return err
 	}
-	return printLiveMessage(ctx, client, out, ev, p, lbl.headerForEvent(p.ChannelId, ev, p))
+	// A caught-up wait won't have the DM partner resolved, so label the live
+	// message from the event (sender_name) for both the text header and the
+	// JSON channel field.
+	liveLbl := channelLabeler(func(cid string) string { return lbl.headerForEvent(cid, ev, p) })
+	return printLiveMessage(ctx, client, out, ev, p, lbl.headerForEvent(p.ChannelId, ev, p), asJSON, liveLbl)
 }
 
 // gatherUnread turns the member records into per-channel unread groups: for
