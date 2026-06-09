@@ -311,7 +311,7 @@ WHERE posts_fts MATCH ?
 
 	out := make([]SearchHit, 0, len(matches))
 	for _, mp := range matches {
-		before, after, _ := s.contextWindow(mp.ChannelId, mp.CreateAt, mp.Id, contextN)
+		before, after, _ := s.contextWindow(mp.ChannelId, mp.CreateAt, contextN)
 		out = append(out, SearchHit{Match: mp, Before: before, After: after})
 	}
 	return out, total, nil
@@ -437,36 +437,43 @@ SELECT count(*) FROM (
 	return n, nil
 }
 
+// contextWindowSQL fetches the `limit` posts just before and just after a pivot
+// in one statement (see contextWindow). Pure create_at range comparisons keep it
+// on a clean index range-seek: an earlier version added an
+// `OR (create_at = ? AND id < ?)` tiebreak to order posts sharing an exact
+// millisecond, but that forced a MULTI-INDEX OR + temp-btree sort that ran ~40ms
+// per call (≈1s for a 30-hit page). The tradeoff of dropping it — a post sharing
+// the pivot's exact create_at is omitted from the window — is negligible for a
+// context preview and ~1000× faster.
+const contextWindowSQL = `
+SELECT raw_json, side FROM (
+    SELECT raw_json, 'B' AS side
+    FROM posts
+    WHERE channel_id = ? AND delete_at = 0 AND create_at < ?
+    ORDER BY create_at DESC
+    LIMIT ?
+)
+UNION ALL
+SELECT raw_json, side FROM (
+    SELECT raw_json, 'A' AS side
+    FROM posts
+    WHERE channel_id = ? AND delete_at = 0 AND create_at > ?
+    ORDER BY create_at ASC
+    LIMIT ?
+)`
+
 // contextWindow returns the limit newest posts older than the pivot
 // (oldest→newest) and the limit oldest posts newer than the pivot
 // (oldest→newest), both in the same channel. It's a one-statement
 // equivalent of two contextPosts calls, halving the per-search-hit
 // statement count — which is the hot path during interactive search.
-func (s *Store) contextWindow(channelID string, createAt int64, postID string, limit int) (before, after []*model.Post, err error) {
+func (s *Store) contextWindow(channelID string, createAt int64, limit int) (before, after []*model.Post, err error) {
 	if s == nil || limit <= 0 || channelID == "" {
 		return nil, nil, nil
 	}
-	const q = `
-SELECT raw_json, side FROM (
-    SELECT raw_json, create_at, id, 'B' AS side
-    FROM posts
-    WHERE channel_id = ? AND delete_at = 0 AND id != ?
-      AND (create_at < ? OR (create_at = ? AND id < ?))
-    ORDER BY create_at DESC, id DESC
-    LIMIT ?
-)
-UNION ALL
-SELECT raw_json, side FROM (
-    SELECT raw_json, create_at, id, 'A' AS side
-    FROM posts
-    WHERE channel_id = ? AND delete_at = 0 AND id != ?
-      AND (create_at > ? OR (create_at = ? AND id > ?))
-    ORDER BY create_at ASC, id ASC
-    LIMIT ?
-)`
-	rows, err := s.db.Query(q,
-		channelID, postID, createAt, createAt, postID, limit,
-		channelID, postID, createAt, createAt, postID, limit,
+	rows, err := s.db.Query(contextWindowSQL,
+		channelID, createAt, limit,
+		channelID, createAt, limit,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("query context window: %w", err)
@@ -797,6 +804,70 @@ SELECT raw_json FROM (
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("rows: %w", err)
 	}
+	return out, nil
+}
+
+// AuthoredBetween returns up to limit non-deleted posts written by authorID
+// whose create_at falls in [after, before), ordered oldest→newest. A zero
+// after or before disables that bound; a non-positive limit returns every
+// match in the range. When limit caps the result, the most recent `limit`
+// posts are kept (a wide range degrades to recent activity rather than the
+// oldest sliver). System posts (Type != "") are dropped after decode — the
+// posts table has no type column, so it can't be a SQL predicate.
+//
+// This is the empty-MATCH counterpart to SearchSpec, which bails on a blank
+// FTS expression. `matterbox digest` lists one's own posts across channels
+// for a time window with no keyword, so it can't route through searchFTS.
+func (s *Store) AuthoredBetween(authorID string, after, before int64, limit int) ([]*model.Post, error) {
+	if s == nil || authorID == "" {
+		return nil, nil
+	}
+	var b strings.Builder
+	b.WriteString("SELECT raw_json FROM posts\nWHERE user_id = ? AND delete_at = 0")
+	args := []any{authorID}
+	if after > 0 {
+		b.WriteString("\n  AND create_at >= ?")
+		args = append(args, after)
+	}
+	if before > 0 {
+		b.WriteString("\n  AND create_at < ?")
+		args = append(args, before)
+	}
+	// With a cap, pull the newest `limit` (DESC + LIMIT); we re-sort
+	// ascending in Go below so system-post skipping can't disturb the order.
+	if limit > 0 {
+		b.WriteString("\nORDER BY create_at DESC\nLIMIT ?")
+		args = append(args, limit)
+	}
+	rows, err := s.db.Query(b.String(), args...)
+	if err != nil {
+		return nil, fmt.Errorf("query authored: %w", err)
+	}
+	defer rows.Close()
+	var out []*model.Post
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		var p model.Post
+		if err := json.Unmarshal(raw, &p); err != nil {
+			continue
+		}
+		if p.Type != "" {
+			continue // system message (join/leave/header change/…)
+		}
+		out = append(out, &p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows: %w", err)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].CreateAt != out[j].CreateAt {
+			return out[i].CreateAt < out[j].CreateAt
+		}
+		return out[i].Id < out[j].Id
+	})
 	return out, nil
 }
 

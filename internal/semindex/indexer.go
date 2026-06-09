@@ -1,0 +1,217 @@
+// Package semindex orchestrates embedding matterbox's stored messages for
+// semantic search. It is the glue between the embeddings transport (internal/
+// embed) and the message store (internal/store): pull posts that lack a vector,
+// ask the server to embed them, write the vectors back. Both the TUI's
+// background indexer and the `matterbox embed` CLI command drive it, so the
+// embed-a-batch logic lives here exactly once.
+package semindex
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"matterbox/internal/embed"
+	"matterbox/internal/store"
+)
+
+// DefaultBatch is the number of posts embedded per server round-trip when the
+// caller doesn't specify one. Small enough to stay well inside EmbeddingGemma's
+// batch token budget (see scripts/llama-embeddings.sh), large enough that the
+// per-request overhead is amortised.
+const DefaultBatch = 64
+
+// maxChunkRunes bounds a single embedding input. EmbeddingGemma's context is a
+// hard 2048 tokens (its trained length — the server rejects longer inputs and
+// raising -c can't lift it). A long message is split into chunks of at most this
+// many runes; each chunk's vector is then mean-pooled into one vector for the
+// post (see RunOnce). 1500 runes is comfortably under 2048 tokens for ordinary
+// text (the observed density is well below 1 token/rune) while leaving headroom
+// for denser content and the document prefix. Splitting (not truncating) keeps
+// the tail of a long paste searchable, and guarantees every post gets a vector
+// so it's never re-queued forever.
+const maxChunkRunes = 1500
+
+// Indexer embeds missing posts under a single model identity. It holds no
+// mutable state, so the same value can be reused across batches and is safe to
+// rebuild cheaply per call. A nil store or client makes every method a no-op.
+type Indexer struct {
+	store  *store.Store
+	client *embed.Client
+	tag    string // per-vector model identity (see ModelTag)
+	batch  int
+}
+
+// New builds an Indexer. model is the configured embedding model id and dim its
+// truncation (0 = native); together they form the stored ModelTag so that
+// changing either re-embeds the corpus rather than mixing vector spaces. A
+// non-positive batch falls back to DefaultBatch.
+func New(st *store.Store, client *embed.Client, model string, dim, batch int) *Indexer {
+	if batch <= 0 {
+		batch = DefaultBatch
+	}
+	return &Indexer{store: st, client: client, tag: ModelTag(model, dim), batch: batch}
+}
+
+// ModelTag is the model identity stored alongside each vector. Folding the
+// truncation dim into the tag means a config change to either the model or the
+// dim makes the existing vectors "not ours", so PostsMissingVectors re-pends
+// everything and the store never ends up comparing vectors of different lengths.
+func ModelTag(model string, dim int) string {
+	if dim > 0 {
+		return fmt.Sprintf("%s@%d", model, dim)
+	}
+	return model
+}
+
+// Tag returns the model identity this indexer writes under.
+func (ix *Indexer) Tag() string {
+	if ix == nil {
+		return ""
+	}
+	return ix.tag
+}
+
+// RunOnce embeds up to one batch of not-yet-embedded posts (newest first) and
+// returns how many it wrote and whether more remain. (0, false, nil) means the
+// corpus is fully embedded. An error from the embeddings server is returned
+// verbatim so the caller can decide to back off — the server is optional and
+// may simply be down, which is not fatal to matterbox.
+func (ix *Indexer) RunOnce(ctx context.Context) (n int, more bool, err error) {
+	if ix == nil || ix.store == nil || ix.client == nil {
+		return 0, false, nil
+	}
+	pending, err := ix.store.PostsMissingVectors(ix.tag, ix.batch)
+	if err != nil {
+		return 0, false, fmt.Errorf("find pending: %w", err)
+	}
+	if len(pending) == 0 {
+		return 0, false, nil
+	}
+	// Flatten posts into chunk inputs, remembering which post each chunk
+	// belongs to, so a long message can span several inputs and still resolve
+	// to a single stored vector.
+	var inputs []string
+	var owner []int // owner[k] = index into pending of input k's post
+	for i, p := range pending {
+		for _, c := range chunks(p.Message) {
+			inputs = append(inputs, embed.DocumentText(c))
+			owner = append(owner, i)
+		}
+	}
+	vecs, err := ix.embedAll(ctx, inputs)
+	if err != nil {
+		return 0, false, err
+	}
+	if len(vecs) != len(inputs) {
+		return 0, false, fmt.Errorf("embed: got %d vectors for %d inputs", len(vecs), len(inputs))
+	}
+	// Mean-pool each post's chunk vectors. The store L2-normalizes on write, so
+	// summing (rather than averaging) is enough — the direction is the mean.
+	sums := make([][]float32, len(pending))
+	for k, v := range vecs {
+		o := owner[k]
+		if sums[o] == nil {
+			sums[o] = make([]float32, len(v))
+		}
+		for j := range v {
+			sums[o][j] += v[j]
+		}
+	}
+	items := make([]store.VectorInput, len(pending))
+	for i := range pending {
+		items[i] = store.VectorInput{PostID: pending[i].ID, Vec: sums[i]}
+	}
+	if err := ix.store.UpsertVectors(items, ix.tag, time.Now().UnixMilli()); err != nil {
+		return 0, false, fmt.Errorf("store vectors: %w", err)
+	}
+	// A full batch implies there may be more; a short batch means we drained the
+	// queue. Worst case the next RunOnce returns (0, false) — one cheap query.
+	return len(pending), len(pending) == ix.batch, nil
+}
+
+// Backfill runs batches until the corpus is fully embedded, ctx is cancelled, or
+// a batch errors. progress (optional) is called with the cumulative count after
+// each non-empty batch so a CLI can show a running tally. On ctx cancellation it
+// returns the partial total and ctx.Err(); already-embedded batches are durably
+// committed, so a re-run resumes where this left off.
+func (ix *Indexer) Backfill(ctx context.Context, progress func(total int)) (int, error) {
+	total := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return total, err
+		}
+		n, more, err := ix.RunOnce(ctx)
+		if err != nil {
+			return total, err
+		}
+		total += n
+		if n > 0 && progress != nil {
+			progress(total)
+		}
+		if !more {
+			return total, nil
+		}
+	}
+}
+
+// maxRequestRunes bounds the total text in one /v1/embeddings call so a batch
+// of long posts can't exceed the server's logical batch size (-b/-ub tokens).
+// Comfortably under that budget at any realistic token density; a single chunk
+// (≤ maxChunkRunes) always fits, so even one oversized input is sent on its own.
+const maxRequestRunes = 6000
+
+// embedAll embeds inputs in size-bounded sub-requests and concatenates the
+// results in order, so the returned slice still aligns one-to-one with inputs.
+// Splitting by total runes keeps each call within the server's batch budget
+// regardless of how many long messages land in one indexing batch.
+func (ix *Indexer) embedAll(ctx context.Context, inputs []string) ([][]float32, error) {
+	var out [][]float32
+	for i := 0; i < len(inputs); {
+		j, runes := i, 0
+		for j < len(inputs) {
+			r := len([]rune(inputs[j]))
+			if j > i && runes+r > maxRequestRunes {
+				break
+			}
+			runes += r
+			j++
+		}
+		vecs, err := ix.client.Embed(ctx, inputs[i:j])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, vecs...)
+		i = j
+	}
+	return out, nil
+}
+
+// chunks splits a message into pieces of at most maxChunkRunes runes, trimmed,
+// so each stays inside the model's context window. A short message yields one
+// chunk; an over-long one is divided on rune boundaries (never mid-character).
+// An empty/whitespace message yields no chunks — but callers only pass posts
+// that PostsMissingVectors already filtered to non-empty text.
+func chunks(msg string) []string {
+	msg = strings.TrimSpace(msg)
+	if msg == "" {
+		return nil
+	}
+	r := []rune(msg)
+	if len(r) <= maxChunkRunes {
+		return []string{msg}
+	}
+	var out []string
+	for len(r) > 0 {
+		n := maxChunkRunes
+		if n > len(r) {
+			n = len(r)
+		}
+		if c := strings.TrimSpace(string(r[:n])); c != "" {
+			out = append(out, c)
+		}
+		r = r[n:]
+	}
+	return out
+}

@@ -617,6 +617,98 @@ func TestRankByRelevanceAndAge(t *testing.T) {
 	})
 }
 
+func TestAuthoredBetween(t *testing.T) {
+	s := tempStore(t)
+	mk := func(id, ch, author, msg string, at int64) *model.Post {
+		return &model.Post{Id: id, ChannelId: ch, UserId: author, Message: msg, CreateAt: at, UpdateAt: at}
+	}
+	const (
+		a1 = "a1aaaaaaaaaaaaaaaaaaaaaaaa"
+		a2 = "a2aaaaaaaaaaaaaaaaaaaaaaaa"
+		a3 = "a3aaaaaaaaaaaaaaaaaaaaaaaa"
+		a4 = "a4aaaaaaaaaaaaaaaaaaaaaaaa"
+		b1 = "b1aaaaaaaaaaaaaaaaaaaaaaaa"
+		sy = "syaaaaaaaaaaaaaaaaaaaaaaaa"
+	)
+	sysPost := mk(sy, "c1", "me", "me joined", 250)
+	sysPost.Type = model.PostTypeJoinChannel
+	posts := []*model.Post{
+		mk(a1, "c1", "me", "first", 100),
+		mk(a2, "c2", "me", "second", 200),
+		sysPost, // system post by me — must be skipped
+		mk(a3, "c1", "me", "third", 300),
+		mk(a4, "c2", "me", "fourth", 400),
+		mk(b1, "c1", "other", "not mine", 250),
+	}
+	if err := s.UpsertMany(posts); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	ids := func(ps []*model.Post) []string {
+		out := make([]string, len(ps))
+		for i, p := range ps {
+			out[i] = p.Id
+		}
+		return out
+	}
+	eq := func(t *testing.T, got []*model.Post, want ...string) {
+		t.Helper()
+		g := ids(got)
+		if len(g) != len(want) {
+			t.Fatalf("got %v, want %v", g, want)
+		}
+		for i := range want {
+			if g[i] != want[i] {
+				t.Fatalf("got %v, want %v", g, want)
+			}
+		}
+	}
+
+	t.Run("author scope, no bounds, oldest first, system skipped", func(t *testing.T) {
+		got, err := s.AuthoredBetween("me", 0, 0, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		eq(t, got, a1, a2, a3, a4)
+	})
+
+	t.Run("since is inclusive, until exclusive", func(t *testing.T) {
+		got, err := s.AuthoredBetween("me", 200, 400, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		eq(t, got, a2, a3) // 200 included, 400 excluded
+	})
+
+	t.Run("limit keeps the most recent, still oldest-first", func(t *testing.T) {
+		got, err := s.AuthoredBetween("me", 0, 0, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		eq(t, got, a3, a4) // newest two (300,400) re-sorted ascending
+	})
+
+	t.Run("unknown author yields nothing", func(t *testing.T) {
+		got, err := s.AuthoredBetween("nobody", 0, 0, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 0 {
+			t.Fatalf("want none, got %v", ids(got))
+		}
+	})
+
+	t.Run("empty author yields nothing", func(t *testing.T) {
+		got, err := s.AuthoredBetween("", 0, 0, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != nil {
+			t.Fatalf("want nil, got %v", ids(got))
+		}
+	})
+}
+
 func postIDs(posts []*model.Post) []string {
 	ids := make([]string, len(posts))
 	for i, p := range posts {

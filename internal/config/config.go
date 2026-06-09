@@ -33,8 +33,20 @@ type Config struct {
 	// in "?" is handed to the model, which calls tools to find the relevant
 	// messages. It reuses the Summary endpoint + model (same local server).
 	AISearch AISearchConfig `yaml:"ai_search"`
+	// Embeddings configures semantic search: a separate OpenAI-compatible
+	// /v1/embeddings server (an embedding model, not the chat model) whose
+	// vectors are stored alongside the FTS5 index and fused with keyword
+	// ranking. Distinct from Summary because embeddings need their own model
+	// loaded with --embeddings; see scripts/llama-embeddings.sh.
+	Embeddings EmbeddingsConfig `yaml:"embeddings"`
 	// Search tunes ranking for both the Search tab and AI search.
 	Search SearchConfig `yaml:"search"`
+	// MarkReadDelaySeconds is how long a channel must stay open before it is
+	// marked read (on the server and in the sidebar/feed badges). A quick peek
+	// shorter than this leaves the channel unread. Pointer so an absent key
+	// defaults to defaultMarkReadDelaySeconds while an explicit 0 means "mark
+	// read immediately" (the original behaviour). See internal/ui.
+	MarkReadDelaySeconds *int `yaml:"mark_read_delay_seconds"`
 }
 
 // SearchConfig tunes local message search ranking. Defaults in fillDefaults.
@@ -86,6 +98,36 @@ type AISearchConfig struct {
 	TimeoutMinutes int `yaml:"timeout_minutes"`
 }
 
+// EmbeddingsConfig holds the settings for semantic search. Defaults in
+// fillDefaults target a second local llama.cpp instance (separate port from the
+// chat server) launched with --embeddings.
+type EmbeddingsConfig struct {
+	// Endpoint is the base URL of the OpenAI-compatible embeddings server. The
+	// client appends "/v1/embeddings" (a trailing "/v1" is accepted too).
+	// Defaults to a different port than Summary.Endpoint because an embedding
+	// model and a chat model are separate llama.cpp instances.
+	Endpoint string `yaml:"endpoint"`
+	// APIKey is the optional Bearer token (not needed for a local server).
+	APIKey string `yaml:"api_key"`
+	// Model is the embedding model id sent in each request. EmbeddingGemma is
+	// the default: it pairs with the Gemma chat model and supports Matryoshka
+	// truncation (see Dim).
+	Model string `yaml:"model"`
+	// Dim truncates each embedding to its first Dim components (then
+	// renormalizes) before storing — a Matryoshka model stays meaningful at a
+	// smaller size, cutting the on-disk vector to Dim bytes. 0 keeps the model's
+	// native dimensionality.
+	Dim int `yaml:"dim"`
+	// AutoIndex enables the TUI's background indexer, which embeds not-yet-
+	// embedded messages while you use the app (newest first, plus new messages
+	// as they arrive). Pointer so an absent key defaults to true while an
+	// explicit `false` keeps it off — e.g. to reserve the GPU for the chat model
+	// and only embed via the `matterbox embed` command. Either way matterbox
+	// runs fine when the embeddings server is down (semantic search just
+	// degrades to keyword).
+	AutoIndex *bool `yaml:"auto_index"`
+}
+
 // defaultServerURL is the URL used when config.yaml is missing or has
 // no server_url. It preserves the original hard-coded behaviour from
 // before this file existed.
@@ -106,10 +148,26 @@ const (
 		"Skip greetings and small talk. If little of substance was discussed, say so in one line."
 )
 
+// Embeddings defaults. The endpoint is a SEPARATE port from the summary/chat
+// server (127.0.0.1:8321) because semantic search needs an embedding model
+// loaded with --embeddings — its own llama.cpp instance. EmbeddingGemma is a
+// Matryoshka model, so the default Dim truncates 768→256 to quarter the on-disk
+// vector size at little quality cost.
+const (
+	defaultEmbeddingsEndpoint = "http://127.0.0.1:8322"
+	defaultEmbeddingsModel    = "embeddinggemma-300m-qat-Q8_0.gguf"
+	defaultEmbeddingsDim      = 256
+)
+
 // defaultSearchRecencyHalfLifeDays mirrors store.defaultRecencyHalfLife (90
 // days): old enough to keep strong older matches reachable, recent-biased
 // enough that stale chat sinks. Kept here so the config is self-documenting.
 const defaultSearchRecencyHalfLifeDays = 90
+
+// defaultMarkReadDelaySeconds is the dwell a channel must stay open before
+// it's marked read. Long enough that an accidental peek doesn't clear
+// unread, short enough not to feel laggy when you actually read it.
+const defaultMarkReadDelaySeconds = 5
 
 // AI-search defaults. The agent runs against the same local server as the
 // summarizer (Summary.Endpoint / Summary.Model).
@@ -119,24 +177,11 @@ const (
 	defaultAISearchPrompt         = "You are a search agent embedded in a Mattermost chat client. The user describes what they're looking for; you find the actual messages by calling the provided tools, then call finish.\n\n" +
 		"Rules:\n" +
 		"- Always use the tools to find real messages. Never answer from your own knowledge or invent content.\n" +
-		"- search_messages is KEYWORD search, not semantic — use concrete words you'd expect in the messages, not a rephrased question.\n" +
-		"- Search by TOPIC, not by subject name. A project, team, or channel name (e.g. \"Acme\") usually appears only in the channel title, NOT inside the messages — so never put it in your search terms. Use it to find the channel instead: call list_channels, or pass it as the 'channel'/'team' argument.\n" +
-		"- Start broad, then react to the match count the tool reports: put a few topic words and synonyms in 'any_of'. If there are too many matches, NARROW by adding an 'all_of' term, a 'phrase', or a 'none_of' term. If there are zero, don't pile on more words — LOOSEN: drop an all_of/phrase term, or call list_channels to find where the topic lives and search there.\n" +
+		"- search_messages has three modes. mode:\"keyword\" (default) matches exact words — best for specific terms, names, error codes, or IDs. mode:\"semantic\" matches by MEANING from a natural-language 'query' — it finds paraphrases, synonyms, and other languages (this chat mixes Dutch and English), so reach for it when you know the topic but not the exact words people used. mode:\"hybrid\" fuses both. If a keyword search returns 0 or only weak hits, retry the same idea with mode:\"semantic\".\n" +
+		"- Search by TOPIC, not by subject name. A project, team, or channel name (e.g. \"Acme\") usually appears only in the channel title, NOT inside the messages — so never put it in your search terms or 'query'. Use it to find the channel instead: call list_channels, or pass it as the 'channel'/'team' argument.\n" +
+		"- In keyword mode, start broad: put a few topic words and synonyms in 'any_of'. If there are too many matches, NARROW with an 'all_of' term, a 'phrase', or a 'none_of' term. If there are zero, LOOSEN — drop an all_of/phrase term, add synonyms, or switch to mode:\"semantic\". In semantic/hybrid mode, put a short natural-language description in 'query' and rephrase it if the hits are off.\n" +
 		"- If the shown matches look unrelated but the count says there are more, page deeper with 'offset' (10, 20, …) before changing the query.\n" +
 		"- Use read_around on a promising hit (by its mN ref) to confirm context before answering.\n" +
-		"- Keep going until you have solid evidence, but use only a handful of tool calls.\n" +
-		"- When you can answer, call finish with a one- or two-sentence answer that names the channel(s) where the information was found. If you found nothing relevant, say so plainly."
-
-	// legacyAISearchPromptV1 is the first shipped default. It instructed the
-	// model to dump many keywords into a single OR'd 'queries' array — a
-	// parameter that no longer exists. fillDefaults upgrades any config still
-	// carrying it verbatim to defaultAISearchPrompt (see Load for the rewrite).
-	legacyAISearchPromptV1 = "You are a search agent embedded in a Mattermost chat client. The user describes what they're looking for; you find the actual messages by calling the provided tools, then call finish.\n\n" +
-		"Rules:\n" +
-		"- Always use the tools to find real messages. Never answer from your own knowledge or invent content.\n" +
-		"- Search by TOPIC, not by subject name. A project, team, or channel name (e.g. \"Acme\") usually appears only in the channel title, NOT inside the messages — so never put it in your search terms. Use it to find the channel instead: call list_channels, or pass it as the 'channel'/'team' argument.\n" +
-		"- In search_messages, list MANY keywords at once in 'queries': the topic words from the request, likely product/tool names, and synonyms/rephrasings. Terms are matched with OR and ranked by relevance, so breadth is free — more terms means better recall, and the strongest matches still come first.\n" +
-		"- If results are weak, call list_channels to discover where the topic lives (it matches channel names and purposes), then search again scoped to a likely channel.\n" +
 		"- Keep going until you have solid evidence, but use only a handful of tool calls.\n" +
 		"- When you can answer, call finish with a one- or two-sentence answer that names the channel(s) where the information was found. If you found nothing relevant, say so plainly."
 )
@@ -198,12 +243,9 @@ func Load() (*Config, error) {
 	// and rewrite the file once so the discovered model + prompt show up as
 	// editable defaults. Best-effort: a failed rewrite only means the file
 	// keeps working off in-memory defaults.
-	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Search == (SearchConfig{})
-	// An existing config may still carry the obsolete v1 search prompt; rewrite
-	// the file so the upgraded prompt is persisted, not just patched in memory.
-	migrated := cfg.AISearch.Prompt == legacyAISearchPromptV1
+	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil
 	cfg.fillDefaults()
-	if addDefaults || migrated {
+	if addDefaults {
 		if werr := writeConfig(p, cfg); werr != nil {
 			fmt.Fprintf(os.Stderr, "matterbox: could not add LLM defaults to %s: %v\n", p, werr)
 		}
@@ -227,9 +269,7 @@ func (c *Config) fillDefaults() {
 	if c.Summary.Prompt == "" {
 		c.Summary.Prompt = defaultSummaryPrompt
 	}
-	// Empty (new config) or carrying the obsolete v1 prompt (which references
-	// the removed 'queries' param) → install the current default.
-	if c.AISearch.Prompt == "" || c.AISearch.Prompt == legacyAISearchPromptV1 {
+	if c.AISearch.Prompt == "" {
 		c.AISearch.Prompt = defaultAISearchPrompt
 	}
 	if c.AISearch.MaxSteps <= 0 {
@@ -238,8 +278,25 @@ func (c *Config) fillDefaults() {
 	if c.AISearch.TimeoutMinutes <= 0 {
 		c.AISearch.TimeoutMinutes = defaultAISearchTimeoutMinutes
 	}
+	if c.Embeddings.Endpoint == "" {
+		c.Embeddings.Endpoint = defaultEmbeddingsEndpoint
+	}
+	if c.Embeddings.Model == "" {
+		c.Embeddings.Model = defaultEmbeddingsModel
+	}
+	if c.Embeddings.Dim <= 0 {
+		c.Embeddings.Dim = defaultEmbeddingsDim
+	}
+	if c.Embeddings.AutoIndex == nil {
+		t := true
+		c.Embeddings.AutoIndex = &t
+	}
 	if c.Search.RecencyHalfLifeDays <= 0 {
 		c.Search.RecencyHalfLifeDays = defaultSearchRecencyHalfLifeDays
+	}
+	if c.MarkReadDelaySeconds == nil {
+		d := defaultMarkReadDelaySeconds
+		c.MarkReadDelaySeconds = &d
 	}
 }
 
@@ -282,8 +339,16 @@ func writeConfig(p string, cfg *Config) error {
 		"#             Reuses the summary endpoint+model; prompt frames the agent,\n" +
 		"#             max_steps caps the tool-call rounds, timeout_minutes bounds\n" +
 		"#             the whole run.\n" +
+		"# embeddings: semantic search. A SEPARATE OpenAI-compatible server from\n" +
+		"#             summary (its own port + an embedding model loaded with\n" +
+		"#             --embeddings; see scripts/llama-embeddings.sh). model is\n" +
+		"#             sent verbatim; dim truncates each vector (Matryoshka) to\n" +
+		"#             that many dimensions before storing; auto_index toggles the\n" +
+		"#             background indexer (false = embed only via `matterbox embed`).\n" +
 		"# search:     ranking for the Search tab and AI search. recency_half_life_days\n" +
 		"#             halves a match's relevance weight per that many days of age\n" +
-		"#             (lower = stronger recency bias; default 90).\n"
+		"#             (lower = stronger recency bias; default 90).\n" +
+		"# mark_read_delay_seconds: how long a channel must stay open before it's\n" +
+		"#             marked read (default 5). 0 marks read immediately on open.\n"
 	return os.WriteFile(p, append([]byte(header), body...), 0o644)
 }

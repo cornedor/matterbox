@@ -98,10 +98,36 @@ BEGIN
 END;
 `
 
+// vectorsSchemaSQL backs semantic search: one embedding per post, stored as a
+// quantized BLOB (see encodeVector — int8, unit-normalized, so the column is
+// dim bytes wide and a dot product approximates cosine similarity). The vector
+// math runs in pure Go (sqlite-vec is a C extension the modernc driver can't
+// load); at a personal archive's scale a brute-force / FTS-prefiltered scan is
+// well under a millisecond, so no ANN index is needed. model is recorded so a
+// change of embedding model can re-embed only what's stale; dim is redundant
+// with len(vec) but kept explicit to guard against mixing vector spaces.
+const vectorsSchemaSQL = `
+CREATE TABLE IF NOT EXISTS post_vectors (
+    post_id    TEXT PRIMARY KEY,
+    vec        BLOB NOT NULL,
+    dim        INTEGER NOT NULL,
+    model      TEXT NOT NULL,
+    created_at INTEGER NOT NULL    -- unix-ms when matterbox embedded this post
+);
+CREATE INDEX IF NOT EXISTS idx_post_vectors_model ON post_vectors(model);
+
+-- Drop a post's embedding when the post itself is deleted, so the table can't
+-- accumulate orphans. (FTS has its own delete trigger; this is the vector twin.)
+CREATE TRIGGER IF NOT EXISTS posts_delete_vector AFTER DELETE ON posts BEGIN
+    DELETE FROM post_vectors WHERE post_id = old.id;
+END;
+`
+
 // schemaSQL is run once per Open. Every statement is idempotent so a
 // migration is just "execute the latest schema" — no version table
-// needed for the current shape. Order matters: posts → posts_fts → triggers.
-const schemaSQL = postsSchemaSQL + ftsCreateSQL + triggersSQL
+// needed for the current shape. Order matters: posts → posts_fts → triggers,
+// then post_vectors (its delete trigger references posts).
+const schemaSQL = postsSchemaSQL + ftsCreateSQL + triggersSQL + vectorsSchemaSQL
 
 func (s *Store) migrate() error {
 	if _, err := s.db.Exec(schemaSQL); err != nil {
