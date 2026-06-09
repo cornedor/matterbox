@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/spf13/cobra"
+
+	"matterbox/internal/mm"
 )
 
 // defaultReadLimit is how many recent posts `read` shows when --limit is
@@ -22,16 +25,21 @@ func newReadCmd() *cobra.Command {
 		since    string
 		until    string
 		from     string
+		thread   string
 		wait     bool
 		timeout  time.Duration
 		asJSONFn func() (bool, error)
 	)
 	cmd := &cobra.Command{
-		Use:   "read <channel>",
-		Short: "Print recent messages from a channel",
+		Use:   "read [channel]",
+		Short: "Print recent messages from a channel (or a full thread)",
 		Long: "Print the most recent messages from a channel, oldest first.\n\n" +
 			"The channel is team/channel (e.g. eng/general) or @user for a direct\n" +
 			"message. System messages (joins, leaves, …) are omitted.\n\n" +
+			"--thread <root_id> prints a whole thread (root + every reply) in order\n" +
+			"instead of the channel tail; the channel argument is then optional. The\n" +
+			"windowing flags (--since/--until/--limit/--from/--wait) don't apply to a\n" +
+			"thread read.\n\n" +
 			"--since / --until bound the messages by time (now, today, yesterday,\n" +
 			"7d, 2h, or 2006-01-02). --until is exclusive, so a single day is\n" +
 			"--since 2026-06-08 --until 2026-06-09. With --since the whole window is\n" +
@@ -48,9 +56,20 @@ func newReadCmd() *cobra.Command {
 			"  matterbox read @alice --limit 50\n" +
 			"  matterbox read eng/general --since yesterday\n" +
 			"  matterbox read eng/general --since 2026-06-08 --until 2026-06-09\n" +
-			"  matterbox read eng/general --wait --timeout 5m",
-		Args: cobra.ExactArgs(1),
+			"  matterbox read eng/general --wait --timeout 5m\n" +
+			"  matterbox read --thread 7f3k…  (whole thread)",
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			var spec string
+			if len(args) == 1 {
+				spec = args[0]
+			}
+			if thread == "" && spec == "" {
+				return fmt.Errorf("a channel (team/channel or @user) is required unless --thread is given")
+			}
+			if thread != "" && wait {
+				return fmt.Errorf("--thread cannot be combined with --wait")
+			}
 			if timeout > 0 && !wait {
 				return fmt.Errorf("--timeout requires --wait")
 			}
@@ -67,13 +86,14 @@ func newReadCmd() *cobra.Command {
 			if sinceMs > 0 && !cmd.Flags().Changed("limit") {
 				limit = 0
 			}
-			return runRead(cmd.Context(), args[0], limit, sinceMs, untilMs, from, wait, timeout, asJSON, cmd.OutOrStdout())
+			return runRead(cmd.Context(), spec, limit, sinceMs, untilMs, from, thread, wait, timeout, asJSON, cmd.OutOrStdout())
 		},
 	}
 	cmd.Flags().IntVarP(&limit, "limit", "n", defaultReadLimit, "number of recent messages to show (0 = no cap)")
 	cmd.Flags().StringVar(&since, "since", "", "only messages at or after this time (e.g. yesterday, 7d, 2026-06-08)")
 	cmd.Flags().StringVar(&until, "until", "", "only messages before this time (exclusive)")
 	cmd.Flags().StringVarP(&from, "from", "f", "", "only messages from this author (@user)")
+	cmd.Flags().StringVar(&thread, "thread", "", "print the full thread with this root post id (channel arg optional)")
 	cmd.Flags().BoolVarP(&wait, "wait", "w", false,
 		"after printing history, block on the websocket until a new message arrives, then exit")
 	cmd.Flags().DurationVar(&timeout, "timeout", 0,
@@ -82,7 +102,7 @@ func newReadCmd() *cobra.Command {
 	return cmd
 }
 
-func runRead(ctx context.Context, spec string, limit int, sinceMs, untilMs int64, from string, wait bool, timeout time.Duration, asJSON bool, out io.Writer) error {
+func runRead(ctx context.Context, spec string, limit int, sinceMs, untilMs int64, from, threadID string, wait bool, timeout time.Duration, asJSON bool, out io.Writer) error {
 	// limit <= 0 means "no cap"; only the unbounded recent read needs a
 	// default fetch size to stand in for it.
 	dateMode := sinceMs > 0 || untilMs > 0
@@ -92,6 +112,11 @@ func runRead(ctx context.Context, spec string, limit int, sinceMs, untilMs int64
 	_, client, err := dial()
 	if err != nil {
 		return err
+	}
+	if threadID != "" {
+		// A thread is fetched by post id alone; the channel arg is just an
+		// optional label. No Me()/channel resolution needed.
+		return runReadThread(ctx, client, spec, threadID, asJSON, out)
 	}
 	me, err := client.Me(ctx)
 	if err != nil {
@@ -176,6 +201,38 @@ func runRead(ctx context.Context, spec string, limit int, sinceMs, untilMs int64
 		return err
 	}
 	return printLiveMessage(ctx, client, out, ev, p, "", asJSON, lbl)
+}
+
+// runReadThread prints a whole thread (root + every reply) in chronological
+// order. The thread is identified by its root post id alone, so no channel
+// resolution is needed; spec, when given, is only used to label each line's
+// channel (otherwise the post's channel id stands in).
+func runReadThread(ctx context.Context, client *mm.Client, spec, threadID string, asJSON bool, out io.Writer) error {
+	pl, err := client.Thread(ctx, threadID)
+	if err != nil {
+		return err
+	}
+	posts := orderedPosts(pl)
+	if len(posts) == 0 {
+		fmt.Fprintln(os.Stderr, "matterbox: empty or unknown thread")
+		return nil
+	}
+	names, err := client.UsernamesByIDs(ctx, uniqueUserIDs(posts))
+	if err != nil {
+		return err
+	}
+	lbl := channelLabeler(func(cid string) string {
+		if spec != "" {
+			return spec
+		}
+		return cid
+	})
+	if asJSON {
+		return writeJSONPosts(out, lbl, names, posts)
+	}
+	// A thread can span days, so stamp dates (like digest) rather than time-only.
+	_, err = io.WriteString(out, formatPostsLayout(posts, names, "Jan 2 15:04"))
+	return err
 }
 
 // orderedPosts flattens a PostList into chronological (oldest→newest)

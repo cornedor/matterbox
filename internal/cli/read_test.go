@@ -1,12 +1,40 @@
 package cli
 
 import (
+	"io"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
 )
+
+// TestReadArgsValidation covers the RunE guards that fire before any network
+// call, so they're exercisable without a server.
+func TestReadArgsValidation(t *testing.T) {
+	run := func(args ...string) error {
+		cmd := newReadCmd()
+		cmd.SetArgs(args)
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		return cmd.Execute()
+	}
+	t.Run("no channel and no --thread errors", func(t *testing.T) {
+		if err := run(); err == nil || !strings.Contains(err.Error(), "channel") {
+			t.Fatalf("err = %v, want a channel-required error", err)
+		}
+	})
+	t.Run("--thread with --wait errors", func(t *testing.T) {
+		if err := run("--thread", "abc", "--wait"); err == nil || !strings.Contains(err.Error(), "wait") {
+			t.Fatalf("err = %v, want a thread/wait conflict error", err)
+		}
+	})
+	t.Run("--timeout without --wait errors", func(t *testing.T) {
+		if err := run("eng/general", "--timeout", "5s"); err == nil || !strings.Contains(err.Error(), "timeout") {
+			t.Fatalf("err = %v, want a timeout-requires-wait error", err)
+		}
+	})
+}
 
 // ms returns the unix-ms timestamp for an HH:MM local time today, so the
 // formatted "[15:04]" column is deterministic regardless of the test's
