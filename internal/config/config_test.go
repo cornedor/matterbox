@@ -34,3 +34,27 @@ func TestAISearchTimeoutParse(t *testing.T) {
 		t.Errorf("fillDefaults clobbered explicit timeout: got %d", c.AISearch.TimeoutMinutes)
 	}
 }
+
+// TestCtrlArrowNavDefault: an absent keybindings section defaults ctrl+arrow
+// nav to enabled (non-nil true), so existing users keep the arrow aliases.
+func TestCtrlArrowNavDefault(t *testing.T) {
+	c := &Config{}
+	c.fillDefaults()
+	if c.Keybindings.CtrlArrowNav == nil || !*c.Keybindings.CtrlArrowNav {
+		t.Errorf("default ctrl_arrow_nav = %v; want non-nil true", c.Keybindings.CtrlArrowNav)
+	}
+}
+
+// TestCtrlArrowNavParse pins the yaml key and confirms an explicit false
+// survives fillDefaults (the pointer lets us tell "absent" from "off").
+func TestCtrlArrowNavParse(t *testing.T) {
+	const y = "keybindings:\n  ctrl_arrow_nav: false\n"
+	var c Config
+	if err := yaml.Unmarshal([]byte(y), &c); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	c.fillDefaults()
+	if c.Keybindings.CtrlArrowNav == nil || *c.Keybindings.CtrlArrowNav {
+		t.Errorf("fillDefaults clobbered explicit false: got %v", c.Keybindings.CtrlArrowNav)
+	}
+}

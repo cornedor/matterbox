@@ -855,11 +855,10 @@ func (m *Model) renderChannelsPane(height int) string {
 			suffix = labelText
 		}
 		row := "  " + suffix
+		// The sidebar isn't focusable; always mark the current channel so the
+		// user can see where ctrl-nav (and the open transcript) is pointing.
 		if i == m.channelIdx {
-			row = "> " + suffix
-			if m.focus == focusChannels {
-				row = selectedRow.Width(channelsWidth - 2).Render(row)
-			}
+			row = selectedRow.Width(channelsWidth - 2).Render("> " + suffix)
 		}
 		rows = append(rows, row)
 	}
@@ -874,12 +873,9 @@ func (m *Model) renderChannelsPane(height int) string {
 		rows = append(rows, "")
 	}
 
-	style := lipgloss.NewStyle().Border(border).UnsetBorderTop().Width(channelsWidth).Height(innerH)
-	if m.focus == focusChannels {
-		style = style.BorderForeground(focusedColor)
-	} else {
-		style = style.BorderForeground(dimColor)
-	}
+	// Border stays dim: the pane is a ctrl-driven selector, never a Tab focus.
+	style := lipgloss.NewStyle().Border(border).UnsetBorderTop().
+		Width(channelsWidth).Height(innerH).BorderForeground(dimColor)
 	return style.Render(strings.Join(rows, "\n"))
 }
 
@@ -1060,14 +1056,9 @@ func (m *Model) renderTeamTabs() string {
 
 	maxIdx := m.maxTeamIdx()
 
-	// The team bar lights up whenever the left navigator has focus — the
-	// channel sidebar, the team strip itself, or the Search/Feed body. They
-	// all share ←/→ tab switching, so the active tab tracks the navigator.
-	activeColor := dimColor
-	switch m.focus {
-	case focusTeams, focusChannels, focusSearch, focusFeed:
-		activeColor = focusedColor
-	}
+	// The tab strip is always navigable (ctrl-←/→ from any focus), so the
+	// active tab is always highlighted rather than tracking a focus.
+	activeColor := focusedColor
 
 	// Tabs split into a sticky synthetic prefix (DMs/Unread/Feed/Search,
 	// always shown) and a scrollable team suffix. teamTabs collects the

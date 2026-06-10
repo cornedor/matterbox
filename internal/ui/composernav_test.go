@@ -18,7 +18,7 @@ func keyPress(code rune) tea.KeyPressMsg {
 // the ↑/↓ composer-jump handlers can read the cursor row and focus the input.
 func composerModel(posts []*model.Post, postIdx int) Model {
 	m := pagingModel(posts, postIdx)
-	m.keys = newKeyMap()
+	m.keys = newKeyMap(true)
 	ta := textarea.New()
 	ta.SetWidth(40)
 	m.input = ta

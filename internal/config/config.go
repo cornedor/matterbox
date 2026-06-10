@@ -47,6 +47,18 @@ type Config struct {
 	// defaults to defaultMarkReadDelaySeconds while an explicit 0 means "mark
 	// read immediately" (the original behaviour). See internal/ui.
 	MarkReadDelaySeconds *int `yaml:"mark_read_delay_seconds"`
+	// Keybindings holds optional keymap tweaks. See internal/ui.
+	Keybindings KeybindingsConfig `yaml:"keybindings"`
+}
+
+// KeybindingsConfig holds optional keymap tweaks. Defaults in fillDefaults.
+type KeybindingsConfig struct {
+	// CtrlArrowNav enables ctrl+←/→/↑/↓ as aliases for the ctrl+h/j/k/l
+	// sidebar navigation (switch team / channel from any focus). Pointer so an
+	// absent key defaults to true while an explicit false is honoured: turning
+	// it off frees ctrl+arrows for the composer's word-jump, leaving channel/
+	// team navigation on the ctrl+vim keys only.
+	CtrlArrowNav *bool `yaml:"ctrl_arrow_nav"`
 }
 
 // SearchConfig tunes local message search ranking. Defaults in fillDefaults.
@@ -248,7 +260,7 @@ func Load() (*Config, error) {
 	// and rewrite the file once so the discovered model + prompt show up as
 	// editable defaults. Best-effort: a failed rewrite only means the file
 	// keeps working off in-memory defaults.
-	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil
+	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.Keybindings.CtrlArrowNav == nil
 	cfg.fillDefaults()
 	if addDefaults {
 		if werr := writeConfig(p, cfg); werr != nil {
@@ -302,6 +314,10 @@ func (c *Config) fillDefaults() {
 	if c.MarkReadDelaySeconds == nil {
 		d := defaultMarkReadDelaySeconds
 		c.MarkReadDelaySeconds = &d
+	}
+	if c.Keybindings.CtrlArrowNav == nil {
+		t := true
+		c.Keybindings.CtrlArrowNav = &t
 	}
 }
 

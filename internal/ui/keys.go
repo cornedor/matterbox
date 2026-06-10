@@ -18,6 +18,13 @@ type keyMap struct {
 	Home  key.Binding
 	End   key.Binding
 
+	// Global sidebar navigation (works from any reading pane). ctrl+arrows
+	// and ctrl+vim keys switch team/channel and open the target immediately.
+	NavTeamPrev key.Binding
+	NavTeamNext key.Binding
+	NavChanPrev key.Binding
+	NavChanNext key.Binding
+
 	// Channels
 	Filter      key.Binding
 	ClearFilter key.Binding
@@ -75,7 +82,24 @@ type keyMap struct {
 	Quit       key.Binding
 }
 
-func newKeyMap() keyMap {
+// newKeyMap builds the keymap. ctrlArrowNav toggles the ctrl+arrow aliases for
+// sidebar navigation: when false, only the ctrl+vim keys (ctrl+h/j/k/l) move
+// teams/channels, leaving ctrl+arrows free for the composer's word-jump.
+func newKeyMap(ctrlArrowNav bool) keyMap {
+	// Sidebar-nav keys: ctrl+vim letters are always bound; the ctrl+arrow
+	// aliases are prepended (and shown in help) only when enabled.
+	teamPrev, teamNext := []string{"ctrl+h"}, []string{"ctrl+l"}
+	chanPrev, chanNext := []string{"ctrl+k"}, []string{"ctrl+j"}
+	teamPrevHelp, teamNextHelp := "ctrl+h", "ctrl+l"
+	chanPrevHelp, chanNextHelp := "ctrl+k", "ctrl+j"
+	if ctrlArrowNav {
+		teamPrev = append([]string{"ctrl+left"}, teamPrev...)
+		teamNext = append([]string{"ctrl+right"}, teamNext...)
+		chanPrev = append([]string{"ctrl+up"}, chanPrev...)
+		chanNext = append([]string{"ctrl+down"}, chanNext...)
+		teamPrevHelp, teamNextHelp = "ctrl+←/h", "ctrl+→/l"
+		chanPrevHelp, chanNextHelp = "ctrl+↑/k", "ctrl+↓/j"
+	}
 	return keyMap{
 		Tab: key.NewBinding(
 			key.WithKeys("tab"),
@@ -109,6 +133,23 @@ func newKeyMap() keyMap {
 		End: key.NewBinding(
 			key.WithKeys("end", "G"),
 			key.WithHelp("G", "bottom"),
+		),
+
+		NavTeamPrev: key.NewBinding(
+			key.WithKeys(teamPrev...),
+			key.WithHelp(teamPrevHelp, "prev team"),
+		),
+		NavTeamNext: key.NewBinding(
+			key.WithKeys(teamNext...),
+			key.WithHelp(teamNextHelp, "next team"),
+		),
+		NavChanPrev: key.NewBinding(
+			key.WithKeys(chanPrev...),
+			key.WithHelp(chanPrevHelp, "prev channel"),
+		),
+		NavChanNext: key.NewBinding(
+			key.WithKeys(chanNext...),
+			key.WithHelp(chanNextHelp, "next channel"),
 		),
 
 		Filter: key.NewBinding(
@@ -240,8 +281,8 @@ func newKeyMap() keyMap {
 		),
 
 		Switcher: key.NewBinding(
-			key.WithKeys("ctrl+k"),
-			key.WithHelp("ctrl+k", "switch channel"),
+			key.WithKeys("ctrl+p"),
+			key.WithHelp("ctrl+p", "switch channel"),
 		),
 		Search: key.NewBinding(
 			key.WithKeys("F"),

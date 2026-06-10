@@ -1039,12 +1039,33 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.switcherMode {
 		return m.handleSwitcherKey(msg)
 	}
-	// ctrl+k opens the switcher from anywhere — even inside the input or
-	// the filter, where the regular handlers below would otherwise eat it
-	// (textarea binds ctrl+k to delete-to-end-of-line by default).
-	if key.Matches(msg, m.keys.Switcher) && msg.String() != "ctrl+c" {
+	// ctrl+p opens the switcher from anywhere — even inside the input or the
+	// filter. (ctrl+k used to do this; it's now "prev channel" in the global
+	// sidebar navigation below, so the switcher moved to ctrl+p.) The
+	// @-mention / :emoji popups bind ctrl+p to "move selection up", so don't
+	// steal it while one of those is open in the composer.
+	popupOpen := m.focus == focusInput && (m.mention.active || m.emoji.active)
+	if key.Matches(msg, m.keys.Switcher) && msg.String() != "ctrl+c" && !popupOpen {
 		return m.openSwitcher()
 	}
+
+	// Global sidebar navigation: ctrl+arrows / ctrl+vim keys switch team
+	// (←/→) and channel (↑/↓) and open the target immediately, from ANY focus
+	// — including while typing in the composer, filter, or search box. The
+	// sidebar is no longer a focus you tab into; this is the only way to move
+	// it. Checked before the typing guards so the inputs don't eat it; the
+	// open path leaves the composer text alone, so a draft survives the jump.
+	switch {
+	case key.Matches(msg, m.keys.NavTeamPrev):
+		return m.navTeam(-1)
+	case key.Matches(msg, m.keys.NavTeamNext):
+		return m.navTeam(1)
+	case key.Matches(msg, m.keys.NavChanPrev):
+		return m.navChannel(-1)
+	case key.Matches(msg, m.keys.NavChanNext):
+		return m.navChannel(1)
+	}
+
 	// Filter mode and input mode each own most keys while active; check
 	// before the navigation shortcuts so plain letters ("," / "f" / "F" /
 	// "U" / "q" / "/") don't leak through while the user is typing.
@@ -1060,8 +1081,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleSearchKey(msg)
 	}
 
-	// Below here we're in a navigation focus (channels / messages / thread
-	// / attachments / teams / feed), so plain-character shortcuts are safe.
+	// Below here we're in a content focus (messages / thread / attachments /
+	// teams / feed), so plain-character shortcuts are safe. The "," leader
+	// chord, F (global search), and U (unread feed) are dispatched here.
 	// The "," leader chord, F (global search), and U (unread feed) are
 	// dispatched here rather than globally for exactly that reason.
 	if m.leaderPending {
@@ -1085,10 +1107,6 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case msg.String() == "ctrl+c":
 		return m, tea.Quit
 	case key.Matches(msg, m.keys.Quit):
-		if m.focus == focusChannels && m.filterValue != "" {
-			// Don't quit while a filter is applied; let user clear with esc.
-			return m, nil
-		}
 		return m, tea.Quit
 
 	case key.Matches(msg, m.keys.Help):
@@ -1108,13 +1126,27 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// "/" searches the current channel's messages (prefilled scope).
 		return m, m.openSearchHere()
 	case key.Matches(msg, m.keys.Filter):
-		// "f" filters the channel-list sidebar (the relocated old "/").
-		if m.focus == focusChannels {
+		// "f" filters the channel-list sidebar. The sidebar is no longer a
+		// focus, so this works from any content pane on a channel/DM/Unread
+		// tab; the Search/Feed tabs have no channel list to filter.
+		if !m.onSearchTab() && !m.onFeedTab() {
 			m.filterMode = true
 			m.filter.SetValue(m.filterValue)
 			m.filter.Focus()
 			return m, nil
 		}
+	case key.Matches(msg, m.keys.MoveTeamLeft):
+		// Team reorder is a sidebar action, now reachable from any content
+		// focus (the sidebar can't be focused to host it anymore).
+		if m.moveTeam(-1) {
+			return m, m.persistTeamOrder()
+		}
+		return m, nil
+	case key.Matches(msg, m.keys.MoveTeamRight):
+		if m.moveTeam(1) {
+			return m, m.persistTeamOrder()
+		}
+		return m, nil
 	case msg.String() == "esc":
 		if m.filterValue != "" {
 			m.filterValue = ""
@@ -1130,8 +1162,6 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch m.focus {
-	case focusChannels:
-		return m.handleChannelsKey(msg)
 	case focusMessages:
 		return m.handleMessagesKey(msg)
 	case focusThread:
@@ -1296,7 +1326,7 @@ func (m Model) jumpToUnread() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.teamIdx = target
-	m.focus = focusChannels
+	m.focus = focusMessages
 	m.channelIdx = 0
 	m.chanOff = 0
 	m.filterMode = false
@@ -1322,24 +1352,14 @@ func (m Model) handleLeaderKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	m.leaderPending = false
 	switch msg.String() {
 	case "t":
-		// The team bar is merged into the channel sidebar, so ",t" lands on
-		// the channel navigator (←/→ switch team there). On the Search/Feed
-		// tabs there's no sidebar, so fall back to the tab-strip focus.
+		// The sidebar isn't focusable — teams/channels move with ctrl-nav from
+		// anywhere. On the Search/Feed tabs ",t" still drops onto the tab strip
+		// (their body's "up a level"); on channel tabs it's a no-op.
 		if m.onSearchTab() || m.onFeedTab() {
 			m.focus = focusTeams
-		} else {
-			m.focus = focusChannels
+			m.input.Blur()
+			m.renderMessages()
 		}
-		m.input.Blur()
-		m.renderMessages()
-		return m, nil
-	case "c":
-		if m.onSearchTab() || m.onFeedTab() {
-			return m, nil // no channel sidebar on these tabs
-		}
-		m.focus = focusChannels
-		m.input.Blur()
-		m.renderMessages()
 		return m, nil
 	case "m":
 		if m.onSearchTab() || m.onFeedTab() {
@@ -1393,7 +1413,9 @@ func (m Model) gotoTab(target int) (tea.Model, tea.Cmd) {
 		m.focus = focusFeed
 		return m, m.buildFeed()
 	}
-	m.focus = focusChannels
+	// Channel/DM/Unread tab: land in the messages pane (the sidebar is not a
+	// focus) and open the preferred channel.
+	m.focus = focusMessages
 	m.chanOff = 0
 	vis := m.visibleChannels()
 	if len(vis) == 0 {
@@ -1412,17 +1434,63 @@ func (m Model) gotoTab(target int) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id))
 }
 
-// switchTeamTab moves the active tab one step in `dir` (-1 left, +1 right),
-// landing focus in the destination via gotoTab: a channel tab opens its
-// preferred channel and keeps focus on the sidebar, while the Search/Feed
-// tabs focus their own body. Clamped at the ends. This is the ←/→ half of
-// the merged team-bar + channel-sidebar navigator (↑/↓ move channels).
+// switchTeamTab moves the active tab one step in `dir` (-1 left, +1 right) via
+// gotoTab: a channel tab opens its preferred channel into the messages pane,
+// while the Search/Feed tabs focus their own body. Clamped at the ends.
 func (m Model) switchTeamTab(dir int) (tea.Model, tea.Cmd) {
 	target := m.teamIdx + dir
 	if target < 0 || target > m.maxTeamIdx() {
 		return m, nil
 	}
 	return m.gotoTab(target)
+}
+
+// navTeam is the global (any-focus) team switch driven by ctrl+←/→ and
+// ctrl+h/l. It steps one tab in `dir`, opening the destination's preferred
+// channel via gotoTab (which lands focus in the messages pane for channel
+// tabs, or the body for Search/Feed). Clamped at the ends (no wrap).
+func (m Model) navTeam(dir int) (tea.Model, tea.Cmd) {
+	return m.switchTeamTab(dir)
+}
+
+// navChannel is the global (any-focus) channel switch driven by ctrl+↑/↓ and
+// ctrl+k/j. It moves the sidebar selection one row in `dir` within the current
+// tab's visible channels and opens that channel immediately, leaving focus
+// untouched so the user keeps reading. chanOff self-corrects at render. No-op
+// when the list is empty or the target is already open.
+func (m Model) navChannel(dir int) (tea.Model, tea.Cmd) {
+	vis := m.visibleChannels()
+	if len(vis) == 0 {
+		return m, nil
+	}
+	idx := m.channelIdx
+	if idx >= len(vis) {
+		idx = len(vis) - 1
+	}
+	if idx < 0 {
+		idx = 0
+	}
+	idx += dir
+	if idx < 0 {
+		idx = 0
+	}
+	if idx > len(vis)-1 {
+		idx = len(vis) - 1
+	}
+	m.channelIdx = idx
+	ch := vis[idx]
+	if ch.Id == m.openChannelID {
+		return m, nil
+	}
+	// Mirror the enter-open Unread-tab hop: opening from the virtual Unread
+	// tab moves to the channel's home team so isCurrentChannel keeps tracking
+	// it after its unread clears and it drops off the Unread list.
+	if m.currentTeamID() == unreadTeamID {
+		m.switchToChannelHomeTeam(ch)
+		m.filterValue = ""
+		m.filter.SetValue("")
+	}
+	return m, tea.Batch(m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id))
 }
 
 // gotoDMTab jumps to the synthetic DMs tab (",d"). No-op with a hint when
@@ -1458,14 +1526,19 @@ func (m Model) gotoTeam(n int) (tea.Model, tea.Cmd) {
 
 // cycleFocus advances the active focus by `step` (typically +1 / -1)
 // and syncs the input's bubble-level focus so its cursor blinks only
-// while focused. focusThread is skipped when the sidebar is closed.
-// On the synthetic Search tab focus is constrained to {Teams, Search};
-// otherwise focusSearch is skipped.
+// while focused. The channel sidebar is no longer a Tab stop — teams and
+// channels move with ctrl-nav from any focus — so focusChannels is always
+// skipped. focusThread is skipped when the sidebar is closed; on the Search/
+// Feed tabs focus is constrained to {Teams, Search/Feed}.
 func (m Model) cycleFocus(step int) (tea.Model, tea.Cmd) {
 	onSearch := m.onSearchTab()
 	onFeed := m.onFeedTab()
 	for i := 0; i < numFocus; i++ {
 		m.focus = focus((int(m.focus) + step + numFocus) % numFocus)
+		// The channel sidebar can't be focused anymore; it's driven by ctrl-nav.
+		if m.focus == focusChannels {
+			continue
+		}
 		if m.focus == focusThread && !m.threadOpen {
 			continue
 		}
@@ -1478,10 +1551,8 @@ func (m Model) cycleFocus(step int) (tea.Model, tea.Cmd) {
 		if m.focus == focusFeed && !onFeed {
 			continue
 		}
-		// The team bar is no longer its own Tab stop on channel tabs — it's
-		// merged into the channel sidebar (focusChannels owns ←/→ team
-		// switching). Keep it reachable only on the Search/Feed tabs, whose
-		// body panes can't host the tab switch themselves.
+		// The team strip is its own Tab stop only on the Search/Feed tabs,
+		// whose body panes can't host the ←/→ tab switch themselves.
 		if m.focus == focusTeams && !onSearch && !onFeed {
 			continue
 		}
@@ -1702,6 +1773,11 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmd, mentionCmd)
 }
 
+// handleFilterKey owns keystrokes while the channel filter is open (f). The
+// filter is a one-shot channel finder: type to narrow, ↑/↓ to move the
+// highlight, enter to open the selection (and drop the filter), esc to
+// cancel. The sidebar is no longer a focus, so opening lands in the messages
+// pane.
 func (m Model) handleFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.CancelEdit):
@@ -1711,22 +1787,57 @@ func (m Model) handleFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.filter.Blur()
 		m.channelIdx = 0
 		m.chanOff = 0
+		m.focus = focusMessages
 		return m, nil
 	case key.Matches(msg, m.keys.ApplyOpen):
 		m.filterMode = false
 		m.filter.Blur()
-		// Keep current filter applied. Selecting the highlighted channel:
+		m.focus = focusMessages
+		m.input.Blur()
 		vis := m.visibleChannels()
-		if len(vis) > 0 && m.channelIdx < len(vis) {
-			ch := vis[m.channelIdx]
-			return m, tea.Batch(m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id))
+		if len(vis) == 0 || m.channelIdx >= len(vis) {
+			m.filterValue = ""
+			m.filter.SetValue("")
+			return m, nil
+		}
+		ch := vis[m.channelIdx]
+		// Opening from the virtual Unread tab hops to the channel's home team
+		// so isCurrentChannel keeps tracking it once its unread clears.
+		if m.currentTeamID() == unreadTeamID {
+			m.switchToChannelHomeTeam(ch)
+		}
+		// One-shot: drop the filter so the sidebar shows the full list again,
+		// then re-point the selection at the channel we just opened (its index
+		// in the filtered list no longer matches the unfiltered one).
+		m.filterValue = ""
+		m.filter.SetValue("")
+		m.chanOff = 0
+		for i, c := range m.visibleChannels() {
+			if c.Id == ch.Id {
+				m.channelIdx = i
+				break
+			}
+		}
+		return m, tea.Batch(m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id))
+	case msg.String() == "up", msg.String() == "down":
+		// Arrow through the filtered list while still typing. We deliberately
+		// don't accept j/k here — the user may be typing those into the filter.
+		vis := m.visibleChannels()
+		if len(vis) > 0 {
+			if m.channelIdx >= len(vis) {
+				m.channelIdx = len(vis) - 1
+			}
+			if m.channelIdx < 0 {
+				m.channelIdx = 0
+			}
+			if msg.String() == "up" && m.channelIdx > 0 {
+				m.channelIdx--
+			}
+			if msg.String() == "down" && m.channelIdx < len(vis)-1 {
+				m.channelIdx++
+			}
 		}
 		return m, nil
-	case msg.String() == "up", msg.String() == "down":
-		// Allow arrow-key navigation of the filtered list while still
-		// typing. We deliberately don't accept j/k here — the user may be
-		// typing those characters into the filter.
-		return m.handleChannelsKey(msg)
 	}
 	var cmd tea.Cmd
 	m.filter, cmd = m.filter.Update(msg)
@@ -1736,80 +1847,6 @@ func (m Model) handleFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.chanOff = 0
 	}
 	return m, cmd
-}
-
-func (m Model) handleChannelsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	// Team-bar half of the merged navigator: ←/→ switch team, <,> reorder.
-	// Handled before the channel-list ops below so they keep working even
-	// when the current tab has no channels (e.g. an empty Unread tab).
-	switch {
-	case key.Matches(msg, m.keys.Left):
-		return m.switchTeamTab(-1)
-	case key.Matches(msg, m.keys.Right):
-		return m.switchTeamTab(1)
-	case key.Matches(msg, m.keys.MoveTeamLeft):
-		if m.moveTeam(-1) {
-			return m, m.persistTeamOrder()
-		}
-		return m, nil
-	case key.Matches(msg, m.keys.MoveTeamRight):
-		if m.moveTeam(1) {
-			return m, m.persistTeamOrder()
-		}
-		return m, nil
-	}
-
-	vis := m.visibleChannels()
-	if len(vis) == 0 {
-		return m, nil
-	}
-	// visibleChannels can shrink under a stale channelIdx — e.g. opening
-	// the last entry on the Unread tab clears that channel's unread, and
-	// arrow-navigating back to Unread doesn't reset the selection.
-	if m.channelIdx >= len(vis) {
-		m.channelIdx = len(vis) - 1
-	}
-	if m.channelIdx < 0 {
-		m.channelIdx = 0
-	}
-	switch {
-	case key.Matches(msg, m.keys.Up):
-		if m.channelIdx > 0 {
-			m.channelIdx--
-		}
-	case key.Matches(msg, m.keys.Down):
-		if m.channelIdx < len(vis)-1 {
-			m.channelIdx++
-		}
-	case key.Matches(msg, m.keys.Home):
-		m.channelIdx = 0
-	case key.Matches(msg, m.keys.End):
-		m.channelIdx = len(vis) - 1
-	case key.Matches(msg, m.keys.OpenChannel):
-		ch := vis[m.channelIdx]
-		// Already open? A second enter means "take me in to type" — focus the
-		// composer (matching ctrl+k and "i"). No reload; it's already loaded.
-		if ch.Id == m.openChannelID {
-			return m.focusComposer()
-		}
-		// When opening from the virtual Unread tab, hop to the channel's
-		// home team so isCurrentChannel keeps tracking the open channel
-		// after its unread count clears and it leaves the Unread list.
-		if m.currentTeamID() == unreadTeamID {
-			m.switchToChannelHomeTeam(ch)
-			m.filterValue = ""
-			m.filter.SetValue("")
-		}
-		// Stay in the channel sidebar after opening — the composer is no
-		// longer autofocused, so navigation keys keep working. Press "i"
-		// (or ",i") to start typing.
-		m.focus = focusChannels
-		m.input.Blur()
-		loadCmd := m.openChannelLoadCmd(ch.Id)
-		saveCmd := m.bumpChannelStat(ch.Id)
-		return m, tea.Batch(loadCmd, saveCmd)
-	}
-	return m, nil
 }
 
 // messagesPageStep is how many posts PageDown / PageUp move the selection.
@@ -2150,8 +2187,8 @@ func (m Model) handleTeamsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Up), key.Matches(msg, m.keys.Down):
 		// ↑/↓ drop into the current tab's body list (search hits / feed
 		// bubbles), so the team strip and the list below it read as one
-		// navigator. Only the Search/Feed tabs are ever focused here —
-		// channel tabs land directly in focusChannels.
+		// navigator. focusTeams only ever happens on the Search/Feed tabs —
+		// channel tabs land directly in the messages pane.
 		if m.onSearchTab() {
 			m.focus = focusSearch
 			cmd := m.search.input.Focus()
@@ -2173,7 +2210,7 @@ func (m Model) handleTeamsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.focus = focusFeed
 			return m, m.buildFeed()
 		}
-		m.focus = focusChannels
+		m.focus = focusMessages
 		m.chanOff = 0
 		m.filterValue = ""
 		m.filter.SetValue("")

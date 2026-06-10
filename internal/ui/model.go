@@ -441,7 +441,11 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	var embedDim int
 	embedAuto := false
 	markReadDelay := defaultMarkReadDelay
+	ctrlArrowNav := true
 	if cfg != nil {
+		if cfg.Keybindings.CtrlArrowNav != nil {
+			ctrlArrowNav = *cfg.Keybindings.CtrlArrowNav
+		}
 		reactions = append([]string(nil), cfg.Reactions...)
 		teamOrder = append([]string(nil), cfg.TeamOrder...)
 		summaryEndpoint = cfg.Summary.Endpoint
@@ -471,7 +475,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		ctx:                 context.Background(),
 		channels:            map[string][]*model.Channel{},
 		userNames:           map[string]string{},
-		focus:               focusChannels,
+		focus:               focusMessages,
 		msgsView:            msgsView,
 		threadView:          threadView,
 		historyView:         historyView,
@@ -488,7 +492,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		uploadCancel:        map[string]context.CancelFunc{},
 		loading:             true,
 		status:              "loading…",
-		keys:                newKeyMap(),
+		keys:                newKeyMap(ctrlArrowNav),
 		help:                h,
 		search:              newSearchState(st != nil),
 		feed:                newFeedState(),
@@ -525,8 +529,6 @@ func leaderHints() []key.Binding {
 		return key.NewBinding(key.WithKeys(k), key.WithHelp(k, h))
 	}
 	return []key.Binding{
-		nb("t", "team bar"),
-		nb("c", "channels"),
 		nb("m", "messages"),
 		nb("i", "compose"),
 		nb("d", "DMs"),
@@ -549,10 +551,8 @@ func (m Model) ShortHelp() []key.Binding {
 		return []key.Binding{k.ApplyOpen, k.CancelEdit}
 	case m.focus == focusInput:
 		return []key.Binding{k.Send, k.NewLine, k.Paste, k.LeaveInput, k.Tab}
-	case m.focus == focusChannels:
-		return []key.Binding{k.Tab, k.Up, k.Down, k.SwitchTeam, k.OpenChannel, k.Compose, k.SearchHere, k.Filter, k.ClearFilter, k.Leader, k.Switcher, k.Unread, k.Feed, k.Help, k.Quit}
 	case m.focus == focusMessages:
-		return []key.Binding{k.Tab, k.Up, k.Down, k.Compose, k.OpenThread, k.ReplyInThread, k.SearchHere, k.NextHit, k.PrevHit, k.OpenAttach, k.CopyMD, k.EditPost, k.DeletePost, k.React, k.ShowHistory, k.Leader, k.Switcher, k.Unread, k.Feed, k.Help, k.Quit}
+		return []key.Binding{k.Tab, k.Up, k.Down, k.NavChanNext, k.NavTeamNext, k.Compose, k.OpenThread, k.ReplyInThread, k.SearchHere, k.Filter, k.NextHit, k.PrevHit, k.OpenAttach, k.CopyMD, k.EditPost, k.DeletePost, k.React, k.ShowHistory, k.Leader, k.Switcher, k.Unread, k.Feed, k.Help, k.Quit}
 	case m.focus == focusThread:
 		return []key.Binding{k.Tab, k.Up, k.Down, k.Compose, k.SearchHere, k.OpenAttach, k.CopyMD, k.EditPost, k.DeletePost, k.React, k.ShowHistory, k.CloseThread, k.Leader, k.Switcher, k.Unread, k.Help, k.Quit}
 	case m.focus == focusAttachments:
@@ -577,6 +577,7 @@ func (m Model) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{k.Tab, k.ShiftTab, k.Leader, k.Switcher, k.Search, k.SearchHere, k.Unread, k.Feed, k.Help, k.Quit},
 		{k.Up, k.Down, k.Home, k.End, k.Left, k.Right, k.PageDown, k.PageUp, k.NextHit, k.PrevHit},
+		{k.NavChanPrev, k.NavChanNext, k.NavTeamPrev, k.NavTeamNext},
 		{k.Filter, k.ClearFilter, k.OpenChannel, k.OpenThread, k.ReplyInThread, k.CloseThread},
 		{k.OpenAttach, k.CopyMD, k.EditPost, k.DeletePost, k.React, k.ShowHistory, k.Compose, k.Send, k.NewLine, k.LeaveInput},
 		{k.Paste, k.AttachRemove},
