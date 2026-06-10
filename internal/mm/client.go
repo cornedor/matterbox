@@ -120,13 +120,24 @@ func (c *Client) PostsSince(ctx context.Context, channelID string, since int64) 
 
 // ChannelMembers returns every channel-member record for the user
 // across all teams, including msg/mention counters needed for the
-// initial unread/mention badges.
+// initial unread/mention badges. The server caps per_page at 200
+// regardless of what we ask, so a member-heavy account (hundreds of
+// channels) needs paging — otherwise the records past the first 200 are
+// silently dropped and channels there never get an unread badge.
 func (c *Client) ChannelMembers(ctx context.Context, userID string) (model.ChannelMembersWithTeamData, error) {
-	m, _, err := c.c.GetChannelMembersWithTeamData(ctx, userID, 0, 500)
-	if err != nil {
-		return nil, fmt.Errorf("get channel members: %w", err)
+	const perPage = 200
+	var all model.ChannelMembersWithTeamData
+	for page := 0; ; page++ {
+		batch, _, err := c.c.GetChannelMembersWithTeamData(ctx, userID, page, perPage)
+		if err != nil {
+			return nil, fmt.Errorf("get channel members: %w", err)
+		}
+		all = append(all, batch...)
+		if len(batch) < perPage {
+			break
+		}
 	}
-	return m, nil
+	return all, nil
 }
 
 // ViewChannel marks the channel as read for the user (updates

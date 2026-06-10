@@ -193,8 +193,12 @@ func gatherUnread(ctx context.Context, client *mm.Client, chByID map[string]*mod
 		if ch == nil {
 			continue
 		}
-		unread := int(ch.TotalMsgCount - mb.MsgCount)
-		mention := int(mb.MentionCount)
+		// Root counters, not the legacy non-root ones: collapsed reply
+		// threads (Mattermost's default) freezes TotalMsgCount/MsgCount so
+		// their difference stays ~0 even with real unread. The root counts
+		// are what the server and sidebar treat as authoritative.
+		unread := int(ch.TotalMsgCountRoot - mb.MsgCountRoot)
+		mention := int(mb.MentionCountRoot)
 		if unread <= 0 && mention <= 0 {
 			continue
 		}

@@ -580,10 +580,16 @@ func (m *Model) applyPosted(ev *model.WebSocketEvent) tea.Cmd {
 		}
 	} else if !m.isThreadPost(p) {
 		// Not in the focused channel and not part of the open thread →
-		// it's a background channel update.
-		m.unread[p.ChannelId]++
-		if m.me != nil && wsMentions(ev)[m.me.Id] {
-			m.mentions[p.ChannelId]++
+		// it's a background channel update. Only root posts bump the
+		// channel's unread/mention badge: under collapsed reply threads
+		// (which the unread seed in applyUnreadFromMembers assumes) replies
+		// surface in the thread view, not as channel-unread. Counting them
+		// here would drift the live badge away from the server's root count.
+		if p.RootId == "" {
+			m.unread[p.ChannelId]++
+			if m.me != nil && wsMentions(ev)[m.me.Id] {
+				m.mentions[p.ChannelId]++
+			}
 		}
 		// Keep the unread feed live without a manual refresh.
 		m.feedAppendPosted(p)

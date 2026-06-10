@@ -660,14 +660,20 @@ func (m *Model) applyUnreadFromMembers() {
 		if !ok {
 			continue
 		}
-		unread := ch.TotalMsgCount - mb.MsgCount
+		// Use the *root* counters. This server (like modern Mattermost
+		// defaults) runs collapsed reply threads, which freezes the legacy
+		// non-root TotalMsgCount/MsgCount — they track each other and so
+		// TotalMsgCount-MsgCount stays ~0 even with genuine unread, hiding
+		// every channel. The root counters are the live ones the Mattermost
+		// sidebar itself uses, so they match what the user sees there.
+		unread := ch.TotalMsgCountRoot - mb.MsgCountRoot
 		if unread > 0 {
 			m.unread[mb.ChannelId] = int(unread)
 		} else {
 			delete(m.unread, mb.ChannelId)
 		}
-		if mb.MentionCount > 0 {
-			m.mentions[mb.ChannelId] = int(mb.MentionCount)
+		if mb.MentionCountRoot > 0 {
+			m.mentions[mb.ChannelId] = int(mb.MentionCountRoot)
 		} else {
 			delete(m.mentions, mb.ChannelId)
 		}
