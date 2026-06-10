@@ -23,7 +23,13 @@ func tokenPath() (string, error) {
 	return filepath.Join(dir, "matterbox", "mm_token.json"), nil
 }
 
-// ReadToken loads the saved Mattermost session token written by mm_login.py.
+// TokenPath returns the path of the saved token file. Exposed so the
+// `login` command can show the user where the token lives.
+func TokenPath() (string, error) {
+	return tokenPath()
+}
+
+// ReadToken loads the saved Mattermost session token written by `matterbox login`.
 func ReadToken() (string, error) {
 	p, err := tokenPath()
 	if err != nil {
@@ -32,7 +38,7 @@ func ReadToken() (string, error) {
 	b, err := os.ReadFile(p)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", fmt.Errorf("no token at %s — run `python mm_login.py` first", p)
+			return "", fmt.Errorf("no token at %s — run `matterbox login` first", p)
 		}
 		return "", fmt.Errorf("read token file: %w", err)
 	}
@@ -41,7 +47,40 @@ func ReadToken() (string, error) {
 		return "", fmt.Errorf("parse token file: %w", err)
 	}
 	if tf.Token == "" {
-		return "", fmt.Errorf("token file %s has empty token — re-run `python mm_login.py`", p)
+		return "", fmt.Errorf("token file %s has empty token — run `matterbox login`", p)
 	}
 	return tf.Token, nil
+}
+
+// SaveToken writes the Mattermost session token to the token file,
+// creating the matterbox config dir if needed. Any existing token is
+// overwritten. The file is written 0600 since it holds a credential.
+func SaveToken(token string) error {
+	p, err := tokenPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return fmt.Errorf("create config dir: %w", err)
+	}
+	b, err := json.MarshalIndent(tokenFile{Token: token}, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(p, append(b, '\n'), 0o600); err != nil {
+		return fmt.Errorf("write token file: %w", err)
+	}
+	return nil
+}
+
+// ClearToken removes the saved token file. A missing file is not an error.
+func ClearToken() error {
+	p, err := tokenPath()
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove token file: %w", err)
+	}
+	return nil
 }

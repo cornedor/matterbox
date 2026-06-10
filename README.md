@@ -55,15 +55,24 @@ go build -o matterbox .
    server_url: https://mattermost.example.com
    ```
 
-2. **Authenticate.** `mm_login.py` opens a browser for GitLab SSO login and saves
+2. **Authenticate.** `matterbox login` opens your browser for GitLab SSO and saves
    the session token to `~/.config/matterbox/mm_token.json`:
 
    ```sh
-   python mm_login.py --url https://mattermost.example.com
+   matterbox login
    ```
 
+   It uses Mattermost's native-login endpoint, which hands the token back via an
+   `mmauth://` link once you authorize. On **Linux** matterbox registers itself as
+   the `mmauth://` handler, so your browser offers to "open Matterbox Login Handler"
+   and the token is captured automatically. On other platforms (or if you decline),
+   right-click the **link** on the success page, choose **Copy Link Address**, and
+   paste it at the prompt.
+
+   `matterbox login --show` prints where the token is stored; `--clear` removes it.
+
    (Alternatively, drop any valid Mattermost session/access token into that file as
-   `{"token": "..."}`.)
+   `{"token": "..."}` — or paste a raw token at the `login` prompt.)
 
 3. **Run it.**
 

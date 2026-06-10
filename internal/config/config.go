@@ -128,10 +128,15 @@ type EmbeddingsConfig struct {
 	AutoIndex *bool `yaml:"auto_index"`
 }
 
+// PlaceholderServerURL is the stand-in server_url written into a fresh
+// config when none is set. Commands that need a real server (e.g. `login`)
+// treat a server_url still equal to this as "not configured yet".
+const PlaceholderServerURL = "https://mattermost.example.com"
+
 // defaultServerURL is a placeholder used when config.yaml is missing or
 // has no server_url set. Point it at your own Mattermost instance by
 // setting server_url in config.yaml.
-const defaultServerURL = "https://mattermost.example.com"
+const defaultServerURL = PlaceholderServerURL
 
 // Summary defaults. The model is the one that was available on the local
 // server (http://127.0.0.1:8321) at build time; override it in config.yaml

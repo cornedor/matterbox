@@ -2,8 +2,9 @@
 #
 # Targets:
 #   make            build ./matterbox
-#   make install    build, copy to ~/.local/bin, install shell completion
-#   make uninstall  remove the binary and completion files
+#   make install    build, copy to ~/.local/bin, install shell completion,
+#                    and (on Linux) register the mmauth:// login handler
+#   make uninstall  remove the binary, completion files, and login handler
 #   make test/vet/fmt/clean/run  the usual dev helpers
 #
 # Override the install location with PREFIX, e.g.  make install PREFIX=~/apps
@@ -21,6 +22,13 @@ ZSH_COMPDIR  := $(HOME)/.local/share/zsh/site-functions
 BASH_COMPDIR := $(HOME)/.local/share/bash-completion/completions
 FISH_COMPDIR := $(HOME)/.config/fish/completions
 
+# Linux mmauth:// login handler (freedesktop x-scheme-handler). The path
+# must match registerMmauthHandler() in internal/cli/login_linux.go so
+# uninstall can remove it directly (the binary may already be gone).
+XDG_DATA_HOME ?= $(HOME)/.local/share
+DESKTOP_DIR  := $(XDG_DATA_HOME)/applications
+DESKTOP_FILE := $(DESKTOP_DIR)/matterbox-mmauth.desktop
+
 .DEFAULT_GOAL := build
 
 .PHONY: build
@@ -28,10 +36,17 @@ build: ## Build the matterbox binary into the repo root
 	$(GO) build -o $(BINARY) $(PKG)
 
 .PHONY: install
-install: build install-completion ## Install binary + completion for the current user
+install: build install-completion ## Install binary + completion (+ login handler on Linux)
 	@install -d "$(BINDIR)"
 	@install -m 0755 "$(BINARY)" "$(BINDIR)/$(BINARY)"
 	@echo "installed $(BINDIR)/$(BINARY)"
+	@if [ "$$(uname -s)" = "Linux" ]; then \
+		if "$(BINDIR)/$(BINARY)" register-handler >/dev/null 2>&1; then \
+			echo "registered mmauth:// login handler (auto-captures the token in 'matterbox login')"; \
+		else \
+			echo "note: could not register mmauth:// handler — 'matterbox login' will register it on first run"; \
+		fi; \
+	fi
 	@case ":$$PATH:" in \
 		*":$(BINDIR):"*) ;; \
 		*) echo "note: $(BINDIR) is not on your PATH — add it to use '$(BINARY)' directly";; \
@@ -70,10 +85,15 @@ install-completion: build ## Generate + install shell completion for the current
 	esac
 
 .PHONY: uninstall
-uninstall: ## Remove the installed binary and completion files
+uninstall: ## Remove the installed binary, completion files, and login handler
 	@rm -f "$(BINDIR)/$(BINARY)" && echo "removed $(BINDIR)/$(BINARY)" || true
 	@rm -f "$(ZSH_COMPDIR)/_$(BINARY)" "$(BASH_COMPDIR)/$(BINARY)" "$(FISH_COMPDIR)/$(BINARY).fish" 2>/dev/null || true
 	@echo "removed completion scripts (the fpath line in ~/.zshrc, if added, is left for you to remove)"
+	@if [ -f "$(DESKTOP_FILE)" ]; then \
+		rm -f "$(DESKTOP_FILE)"; \
+		command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$(DESKTOP_DIR)" 2>/dev/null || true; \
+		echo "removed mmauth:// login handler"; \
+	fi
 
 .PHONY: test
 test: ## Run the test suite

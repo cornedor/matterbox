@@ -263,7 +263,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.status = "error: " + msg.err.Error()
 		if isUnauthorized(msg.err) {
-			m.status = "auth failed — re-run `python mm_login.py` to refresh the token"
+			m.status = "auth failed — run `matterbox login` to refresh the token"
 		}
 		return m, nil
 
