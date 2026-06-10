@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+	emoji "github.com/kyokomi/emoji/v2"
+	"github.com/mattermost/mattermost/server/public/model"
 )
 
 // switcherCommand is a > command listed inside the ctrl+k modal when
@@ -30,6 +32,38 @@ func builtinCommands() []switcherCommand {
 			// No argPrompt: the command opens its own duration picker (or, on
 			// the Feed tab, summarizes all unread messages straight away).
 			run: runSummarize,
+		},
+		{
+			name: "Status: online",
+			desc: "set your presence to online",
+			run:  runSetPresence(model.StatusOnline),
+		},
+		{
+			name: "Status: away",
+			desc: "set your presence to away",
+			run:  runSetPresence(model.StatusAway),
+		},
+		{
+			name: "Status: dnd (do not disturb)",
+			desc: "set your presence to do not disturb",
+			run:  runSetPresence(model.StatusDnd),
+		},
+		{
+			name: "Status: offline",
+			desc: "appear offline to others",
+			run:  runSetPresence(model.StatusOffline),
+		},
+		{
+			name:           "Set custom status",
+			desc:           "emoji + text shown next to your name",
+			argPrompt:      "custom status: ",
+			argPlaceholder: ":palm_tree: on vacation  (empty clears)",
+			run:            runSetCustomStatus,
+		},
+		{
+			name: "Clear custom status",
+			desc: "remove your custom status emoji + text",
+			run:  runClearCustomStatus,
 		},
 		{
 			name:           "Index this channel until X days ago",
@@ -67,6 +101,80 @@ func runIndexChannel(m *Model, arg string) tea.Cmd {
 		return nil
 	}
 	return m.startIndexer(channelID, label, days)
+}
+
+// runSetPresence returns a command runner that sets the user's own
+// presence. The footer dot is updated optimistically; the server's
+// status_change WS event confirms (or corrects) shortly after.
+func runSetPresence(status string) func(*Model, string) tea.Cmd {
+	return func(m *Model, _ string) tea.Cmd {
+		if m.me == nil {
+			m.status = "status: user not loaded yet"
+			return nil
+		}
+		m.statuses[m.me.Id] = status
+		m.status = "presence → " + status
+		id := m.me.Id
+		client, ctx := m.client, m.ctx
+		return func() tea.Msg {
+			if err := client.UpdateStatus(ctx, id, status); err != nil {
+				return errMsg{err}
+			}
+			return nil
+		}
+	}
+}
+
+// parseCustomStatusArg splits an optional leading :shortcode: emoji off
+// the custom-status text. No emoji prefix falls back to speech_balloon,
+// matching the web app's default.
+func parseCustomStatusArg(arg string) (emojiName, text string) {
+	if strings.HasPrefix(arg, ":") {
+		if end := strings.Index(arg[1:], ":"); end > 0 {
+			return arg[1 : end+1], strings.TrimSpace(arg[end+2:])
+		}
+	}
+	return "speech_balloon", arg
+}
+
+func runSetCustomStatus(m *Model, arg string) tea.Cmd {
+	arg = strings.TrimSpace(arg)
+	if arg == "" {
+		return runClearCustomStatus(m, "")
+	}
+	if m.me == nil {
+		m.status = "status: user not loaded yet"
+		return nil
+	}
+	emojiName, text := parseCustomStatusArg(arg)
+	cs := model.CustomStatus{Emoji: emojiName, Text: text}
+	m.customStatuses[m.me.Id] = cs
+	m.status = "custom status: " + strings.TrimSpace(emoji.Sprint(":"+emojiName+":")+" "+text)
+	id := m.me.Id
+	client, ctx := m.client, m.ctx
+	return func() tea.Msg {
+		if err := client.UpdateCustomStatus(ctx, id, &cs); err != nil {
+			return errMsg{err}
+		}
+		return nil
+	}
+}
+
+func runClearCustomStatus(m *Model, _ string) tea.Cmd {
+	if m.me == nil {
+		m.status = "status: user not loaded yet"
+		return nil
+	}
+	delete(m.customStatuses, m.me.Id)
+	m.status = "custom status cleared"
+	id := m.me.Id
+	client, ctx := m.client, m.ctx
+	return func() tea.Msg {
+		if err := client.ClearCustomStatus(ctx, id); err != nil {
+			return errMsg{err}
+		}
+		return nil
+	}
 }
 
 // inCommandMode reports whether the switcher value has the > prefix.

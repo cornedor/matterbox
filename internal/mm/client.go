@@ -335,6 +335,36 @@ func (c *Client) UsersStatuses(ctx context.Context, ids []string) (map[string]st
 	return out, nil
 }
 
+// UpdateStatus sets the logged-in user's own presence to one of
+// "online"/"away"/"dnd"/"offline". The server records API-set presence
+// as manual, so it sticks until changed rather than flipping back to
+// online on the next activity.
+func (c *Client) UpdateStatus(ctx context.Context, userID, status string) error {
+	_, _, err := c.c.UpdateUserStatus(ctx, userID, &model.Status{UserId: userID, Status: status})
+	if err != nil {
+		return fmt.Errorf("update status: %w", err)
+	}
+	return nil
+}
+
+// UpdateCustomStatus sets the user's custom status (emoji shortcode, no
+// surrounding colons, plus free text). Other clients learn about it via
+// the server's user_updated WS broadcast.
+func (c *Client) UpdateCustomStatus(ctx context.Context, userID string, cs *model.CustomStatus) error {
+	if _, _, err := c.c.UpdateUserCustomStatus(ctx, userID, cs); err != nil {
+		return fmt.Errorf("update custom status: %w", err)
+	}
+	return nil
+}
+
+// ClearCustomStatus removes the user's custom status.
+func (c *Client) ClearCustomStatus(ctx context.Context, userID string) error {
+	if _, err := c.c.RemoveUserCustomStatus(ctx, userID); err != nil {
+		return fmt.Errorf("clear custom status: %w", err)
+	}
+	return nil
+}
+
 // UsernamesByIDs resolves the given user ids to their usernames, keyed
 // userID → username. Ids that don't resolve (deleted/unknown users) are
 // simply absent from the result. Concurrent calls for the same set of
