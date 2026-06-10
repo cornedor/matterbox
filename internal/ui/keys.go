@@ -152,7 +152,7 @@ func newKeyMap() keyMap {
 		),
 		OpenAttach: key.NewBinding(
 			key.WithKeys("o"),
-			key.WithHelp("o", "open attachment"),
+			key.WithHelp("o", "open attachment/link"),
 		),
 		CopyMD: key.NewBinding(
 			key.WithKeys("y"),

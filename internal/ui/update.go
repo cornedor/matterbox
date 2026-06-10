@@ -1014,6 +1014,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.reactionPickerPostID != "" {
 		return m.handleReactionPickerKey(msg)
 	}
+	// Open-target picker modal owns every keystroke while open.
+	if m.openPickerActive() {
+		return m.handleOpenPickerKey(msg)
+	}
 	// Poll-dialog modal (e.g. matterpoll "Add Option") owns every
 	// keystroke while open.
 	if m.pollDialog.open {
@@ -1220,14 +1224,7 @@ func (m Model) handleThreadKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.status = "no message selected"
 			return m, nil
 		}
-		opens := collectOpenables(m.threadPosts[m.threadIdx])
-		if len(opens) == 0 {
-			m.status = "nothing to open on this message"
-			return m, nil
-		}
-		o := opens[0]
-		m.status = "opening " + o.name + "…"
-		return m, m.openOpenable(o)
+		return m.openFromPost(m.threadPosts[m.threadIdx])
 	case key.Matches(msg, m.keys.CopyMD):
 		if m.threadIdx < 0 || m.threadIdx >= len(m.threadPosts) {
 			m.status = "no message selected"
@@ -1992,14 +1989,7 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.status = "no message selected"
 			return m, nil
 		}
-		opens := collectOpenables(m.posts[m.postIdx])
-		if len(opens) == 0 {
-			m.status = "nothing to open on this message"
-			return m, nil
-		}
-		o := opens[0]
-		m.status = "opening " + o.name + "…"
-		return m, m.openOpenable(o)
+		return m.openFromPost(m.posts[m.postIdx])
 	case key.Matches(msg, m.keys.CopyMD):
 		if m.postIdx < 0 || m.postIdx >= len(m.posts) {
 			m.status = "no message selected"

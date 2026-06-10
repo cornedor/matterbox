@@ -772,6 +772,9 @@ func (m *Model) viewContent() string {
 	if m.reactionPickerPostID != "" {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderReactionPicker())
 	}
+	if m.openPickerActive() {
+		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderOpenPicker())
+	}
 	if m.pollDialog.open {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderPollDialog())
 	}

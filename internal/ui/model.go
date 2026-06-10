@@ -341,6 +341,14 @@ type Model struct {
 	reactionPickerPostID string
 	reactionPickerIdx    int
 
+	// Open-target picker modal. When a post has more than one openable
+	// target (attachments + links), `o` raises this list instead of
+	// guessing. While openPickerItems is non-empty the modal owns every
+	// keystroke (digit opens + fires, ↑/↓+↵ navigate, esc cancels);
+	// openPickerIdx is the cursor within openPickerItems.
+	openPickerItems []openable
+	openPickerIdx   int
+
 	keys keyMap
 	help help.Model
 
@@ -704,24 +712,44 @@ type openable struct {
 
 // collectOpenables enumerates everything in a post that `o` can act on:
 // uploaded attachments first (in metadata order), then inline
-// ![alt](url) image links (in message order).
+// ![alt](url) images, [text](url) links, and bare URLs (in message
+// order). URLs are deduped by target so an image and the link it
+// desugars to — or a bare URL repeated as a markdown link — only show
+// up once.
 func collectOpenables(p *model.Post) []openable {
 	var out []openable
+	seen := map[string]bool{}
+	add := func(name, url string) {
+		if url == "" || seen[url] {
+			return
+		}
+		seen[url] = true
+		if name == "" {
+			name = url
+		}
+		out = append(out, openable{name: name, url: url})
+	}
 	if p.Metadata != nil {
 		for _, f := range p.Metadata.Files {
 			out = append(out, openable{name: f.Name, file: f})
 		}
 	}
+	// Inline images: ![alt](url).
 	for _, sub := range mdImageRe.FindAllStringSubmatch(p.Message, -1) {
-		alt, url := sub[1], sub[2]
-		if url == "" {
-			continue
-		}
-		name := alt
-		if name == "" {
-			name = url
-		}
-		out = append(out, openable{name: name, url: url})
+		add(sub[1], sub[2])
+	}
+	// Markdown links: [text](url). The image form ![alt](url) also matches
+	// here (the leading "!" isn't part of the pattern), but its target is
+	// already in `seen`, so the duplicate is dropped.
+	for _, sub := range mdLinkRe.FindAllStringSubmatch(p.Message, -1) {
+		add(sub[1], sub[2])
+	}
+	// Bare URLs not already captured as an image/link target. Trailing
+	// sentence punctuation (and markdown's closing paren) is trimmed so we
+	// open the URL, not the URL plus a stray ")".
+	for _, raw := range mdURLRe.FindAllString(p.Message, -1) {
+		clean, _ := trimTrailingURLPunct(raw)
+		add("", clean)
 	}
 	return out
 }
