@@ -10,6 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	emoji "github.com/kyokomi/emoji/v2"
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
@@ -19,6 +20,18 @@ const channelsWidth = 26
 // expand to as content grows. The textarea scrolls internally once the
 // content exceeds this — the messages pane keeps the remaining space.
 const maxInputHeight = 6
+
+// Presence + custom-status glyphs. The sidebar/footer use the medium pair
+// (filled •, hollow ◦); the header uses the larger, more readable pair
+// (filled ●, hollow ○). Filled = online/away/dnd (coloured); hollow = offline
+// (grey). customDot is the low-key "has a custom status" hint in the sidebar.
+const (
+	statusDot       = "•"
+	statusHollowDot = "◦"
+	headerStatusDot = "●"
+	headerHollowDot = "○"
+	customDot       = "◦"
+)
 
 var (
 	border       = lipgloss.NormalBorder()
@@ -43,10 +56,18 @@ var (
 	filterStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
 	unreadStyle       = lipgloss.NewStyle().Bold(true)
 	mentionStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Bold(true) // red
-	attachmentStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))            // cyan
-	selectedBarStyle  = lipgloss.NewStyle().Foreground(focusedColor)                   // selected-post left bar
-	replyHintStyle    = lipgloss.NewStyle().Foreground(dimColor)                       // ↳ reply, ↪ N replies
-	editedStyle       = lipgloss.NewStyle().Foreground(dimColor).Italic(true)          // right-aligned "edited" tag
+
+	// Presence-dot colours, the grey offline/hollow dot, and the dim
+	// custom-status hint.
+	statusOnlineStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("2"))   // green
+	statusAwayStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))   // yellow
+	statusDndStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))   // red
+	offlineStatusStyle = lipgloss.NewStyle().Foreground(dimColor)              // grey hollow dot
+	customStatusStyle  = lipgloss.NewStyle().Foreground(dimColor)              // dim hollow dot
+	attachmentStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))   // cyan
+	selectedBarStyle   = lipgloss.NewStyle().Foreground(focusedColor)          // selected-post left bar
+	replyHintStyle     = lipgloss.NewStyle().Foreground(dimColor)              // ↳ reply, ↪ N replies
+	editedStyle        = lipgloss.NewStyle().Foreground(dimColor).Italic(true) // right-aligned "edited" tag
 )
 
 // tabBorderWithBottom returns a rounded border with the bottom row
@@ -787,6 +808,67 @@ func (m *Model) viewContent() string {
 	return lipgloss.JoinVertical(lipgloss.Left, tabs, body, footer)
 }
 
+// statusGlyph maps a presence string to a glyph + style: the filled glyph in
+// the status colour for online/away/dnd, or the hollow glyph in grey for
+// offline/unknown. The caller supplies the glyph pair so the sidebar/footer
+// (medium) and header (large) can size it differently.
+func statusGlyph(status, filled, hollow string) (string, lipgloss.Style) {
+	switch status {
+	case model.StatusOnline:
+		return filled, statusOnlineStyle
+	case model.StatusAway:
+		return filled, statusAwayStyle
+	case model.StatusDnd:
+		return filled, statusDndStyle
+	default:
+		return hollow, offlineStatusStyle
+	}
+}
+
+// dmStatusDot returns the presence glyph + style for a DM channel's partner.
+// ok is false only for non-DM channels and unresolvable partners; offline
+// partners get the grey hollow dot.
+func (m Model) dmStatusDot(c *model.Channel, filled, hollow string) (string, lipgloss.Style, bool) {
+	id := m.dmPartnerID(c)
+	if id == "" {
+		return "", lipgloss.Style{}, false
+	}
+	glyph, st := statusGlyph(m.statuses[id], filled, hollow)
+	return glyph, st, true
+}
+
+// myStatusDot returns the logged-in user's own presence glyph + style for the
+// footer. ok is false until the current user is known.
+func (m Model) myStatusDot(filled, hollow string) (string, lipgloss.Style, bool) {
+	if m.me == nil {
+		return "", lipgloss.Style{}, false
+	}
+	glyph, st := statusGlyph(m.statuses[m.me.Id], filled, hollow)
+	return glyph, st, true
+}
+
+// dmCustomStatus returns a DM partner's custom status when the feature is
+// enabled, the partner has one set, and it hasn't expired. ok is false
+// otherwise.
+func (m Model) dmCustomStatus(c *model.Channel) (model.CustomStatus, bool) {
+	if !m.showCustomStatus {
+		return model.CustomStatus{}, false
+	}
+	id := m.dmPartnerID(c)
+	if id == "" {
+		return model.CustomStatus{}, false
+	}
+	cs, ok := m.customStatuses[id]
+	if !ok {
+		return model.CustomStatus{}, false
+	}
+	// A zero ExpiresAt means "no expiry"; otherwise drop it once past due.
+	if !cs.ExpiresAt.IsZero() && !cs.ExpiresAt.After(time.Now()) {
+		return model.CustomStatus{}, false
+	}
+	return cs, true
+}
+
 func (m *Model) renderChannelsPane(height int) string {
 	innerH := height - 1 // bottom border row (top connects to tab strip)
 	if innerH < 1 {
@@ -845,18 +927,32 @@ func (m *Model) renderChannelsPane(height int) string {
 			badgeText = " " + strconv.Itoa(unreadN)
 			badgeStyle = unreadStyle
 		}
-		labelText := truncate(m.channelLabel(ch), channelsWidth-4-lipgloss.Width(badgeText))
+		// Custom-status hint: a dim hollow dot after the name (DMs only). It
+		// eats into the label-truncation budget so the row width is unchanged.
+		mark := ""
+		if _, ok := m.dmCustomStatus(ch); ok {
+			mark = " " + customStatusStyle.Render(customDot)
+		}
+		labelText := truncate(m.channelLabel(ch), channelsWidth-4-lipgloss.Width(badgeText)-lipgloss.Width(mark))
 		switch {
 		case mentionN > 0:
-			suffix = mentionStyle.Render(labelText) + badgeStyle.Render(badgeText)
+			suffix = mentionStyle.Render(labelText) + mark + badgeStyle.Render(badgeText)
 		case unreadN > 0:
-			suffix = unreadStyle.Render(labelText) + badgeStyle.Render(badgeText)
+			suffix = unreadStyle.Render(labelText) + mark + badgeStyle.Render(badgeText)
 		default:
-			suffix = labelText
+			suffix = labelText + mark
 		}
-		row := "  " + suffix
+		// Presence dot in the left gutter (DMs only): filled+coloured when
+		// active, grey hollow when offline. The dot is 1 cell, so the
+		// two-column gutter and the truncation math above are unaffected.
+		gutter := "  "
+		if glyph, st, ok := m.dmStatusDot(ch, statusDot, statusHollowDot); ok {
+			gutter = st.Render(glyph) + " "
+		}
+		row := gutter + suffix
 		// The sidebar isn't focusable; always mark the current channel so the
 		// user can see where ctrl-nav (and the open transcript) is pointing.
+		// The "> " cursor overlays the presence dot on the selected row.
 		if i == m.channelIdx {
 			row = selectedRow.Width(channelsWidth - 2).Render("> " + suffix)
 		}
@@ -896,8 +992,26 @@ func (m *Model) renderMessagesPane(height, width int) string {
 	// sidebar cursor — they diverge when the selection moves without
 	// opening a new channel.
 	title := "Messages"
+	titleRendered := ""
 	if ch := m.findChannel(m.openChannelID); ch != nil {
 		title = m.channelLabel(ch)
+		titleRendered = titleStyle.Render(title)
+		// Presence dot after the username (the larger glyph reads better
+		// here), then the full custom status (emoji + text) when set.
+		if glyph, st, ok := m.dmStatusDot(ch, headerStatusDot, headerHollowDot); ok {
+			titleRendered += " " + st.Render(glyph)
+		}
+		if cs, ok := m.dmCustomStatus(ch); ok {
+			if cs.Emoji != "" {
+				titleRendered += " " + emoji.Sprint(":"+cs.Emoji+":")
+			}
+			if cs.Text != "" {
+				titleRendered += " " + cs.Text
+			}
+		}
+	}
+	if titleRendered == "" {
+		titleRendered = titleStyle.Render(title)
 	}
 
 	// Shrink the messages viewport (on this local copy of m) to make
@@ -920,7 +1034,9 @@ func (m *Model) renderMessagesPane(height, width int) string {
 	totalRows := viewportVisualRows(m.msgsView.GetContent(), m.msgsView.Width())
 	showScrollbar := totalRows > m.msgsView.Height() && m.msgsView.ScrollPercent() < 1.0
 
-	parts := []string{titleStyle.Render(title), m.msgsView.View()}
+	// Clamp the header to the pane's inner width so a long custom status can't
+	// wrap to a second row (which would offset the scrollbar's row math).
+	parts := []string{ansi.Truncate(titleRendered, width-2, "…"), m.msgsView.View()}
 	if popup != "" {
 		parts = append(parts, popup)
 	}
@@ -1253,13 +1369,21 @@ func (m *Model) renderFooter() string {
 	if m.indexer.active {
 		right = m.indexerProgressStatus()
 	}
+	// rightDot is my own presence dot, shown just left of my username (and
+	// only when the right slot is my username, not while a status/indexer
+	// message occupies it). Rendered separately so its colour survives
+	// footerStyle's dim wrap.
+	rightDot := ""
 	if right == "" && m.me != nil {
 		right = m.me.Username
+		if glyph, st, ok := m.myStatusDot(statusDot, statusHollowDot); ok {
+			rightDot = st.Render(glyph) + " "
+		}
 	}
 
 	// Leave room for the right-hand status and a one-cell gutter so the
 	// help bubble can ellipsize cleanly if the bindings don't all fit.
-	avail := m.width - lipgloss.Width(right) - 1
+	avail := m.width - lipgloss.Width(right) - lipgloss.Width(rightDot) - 1
 	if avail < 0 {
 		avail = 0
 	}
@@ -1285,17 +1409,17 @@ func (m *Model) renderFooter() string {
 	left := footerStyle.Render(prefix) + m.help.View(m)
 	if m.help.ShowAll {
 		// Full help is multi-line; right-align the status on the last row.
-		gap := m.width - lipgloss.Width(lastLine(left)) - lipgloss.Width(right)
+		gap := m.width - lipgloss.Width(lastLine(left)) - lipgloss.Width(right) - lipgloss.Width(rightDot)
 		if gap < 1 {
 			gap = 1
 		}
-		return left + strings.Repeat(" ", gap) + footerStyle.Render(right)
+		return left + strings.Repeat(" ", gap) + rightDot + footerStyle.Render(right)
 	}
-	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
+	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - lipgloss.Width(rightDot)
 	if gap < 1 {
 		gap = 1
 	}
-	return left + strings.Repeat(" ", gap) + footerStyle.Render(right)
+	return left + strings.Repeat(" ", gap) + rightDot + footerStyle.Render(right)
 }
 
 // lastLine returns the final line of s (everything after the last "\n").

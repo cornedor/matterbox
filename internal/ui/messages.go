@@ -11,9 +11,20 @@ import (
 type meLoadedMsg struct{ user *model.User }
 type teamsLoadedMsg struct{ teams []*model.Team }
 type channelsLoadedMsg struct {
-	channels  []*model.Channel
-	userNames map[string]string // pre-resolved usernames for DM partners
+	channels       []*model.Channel
+	userNames      map[string]string             // pre-resolved usernames for DM partners
+	customStatuses map[string]model.CustomStatus // DM partners' custom statuses (captured with the name fetch)
 }
+
+// statusesLoadedMsg carries a batch of DM partner presence (userID → status:
+// online/away/dnd; offline/unknown absent) from fetchStatuses. A nil/empty
+// map (e.g. a swallowed poll error) merges nothing, leaving the last-known
+// dots in place.
+type statusesLoadedMsg struct{ statuses map[string]string }
+
+// statusPollMsg fires on the recurring presence-poll tick; its handler kicks
+// off the next fetchStatuses and reschedules the tick (a single chain).
+type statusPollMsg struct{}
 type postsLoadedMsg struct {
 	channelID string
 	posts     []*model.Post
@@ -54,6 +65,7 @@ type newerPostsMsg struct {
 	users        map[string]string
 	atChannelEnd bool
 }
+
 // markViewedMsg fires after a channel has been open for the configured
 // dwell. gen is the viewGen captured when the tick was scheduled; the
 // handler ignores the message if the generation (or open channel) has

@@ -68,10 +68,36 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for id, name := range msg.userNames {
 			m.userNames[id] = name
 		}
+		for id, cs := range msg.customStatuses {
+			m.customStatuses[id] = cs
+		}
 		m.bucketChannels(msg.channels)
 		m.channelsLoaded = true
 		m.applyUnreadFromMembers()
-		return m, m.maybeFetchInitialPosts()
+		cmds := []tea.Cmd{m.maybeFetchInitialPosts()}
+		// Start the single presence-poll chain now that DM partners are known.
+		if !m.statusPollStarted {
+			m.statusPollStarted = true
+			cmds = append(cmds,
+				m.fetchStatuses(),
+				tea.Tick(statusPollInterval, func(time.Time) tea.Msg { return statusPollMsg{} }),
+			)
+		}
+		return m, tea.Batch(cmds...)
+
+	case statusesLoadedMsg:
+		for id, st := range msg.statuses {
+			m.statuses[id] = st
+		}
+		return m, nil
+
+	case statusPollMsg:
+		// The tick reschedules itself and drives each fetch — decoupled from
+		// the fetch result so there's never more than one timer chain.
+		return m, tea.Batch(
+			m.fetchStatuses(),
+			tea.Tick(statusPollInterval, func(time.Time) tea.Msg { return statusPollMsg{} }),
+		)
 
 	case membersLoadedMsg:
 		m.members = msg.members
@@ -273,7 +299,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if strings.HasPrefix(m.status, "websocket") || strings.HasPrefix(m.status, "reconnecting") {
 			m.status = ""
 		}
-		return m, waitWSEvent(m.ws)
+		// Resync presence after a (re)connect — a one-off fetch, no new tick.
+		return m, tea.Batch(waitWSEvent(m.ws), m.fetchStatuses())
 
 	case wsEventMsg:
 		cmd := m.handleWSEvent(msg.ev)
@@ -594,6 +621,10 @@ func (m *Model) handleWSEvent(ev *model.WebSocketEvent) tea.Cmd {
 		return m.applyReactionEvent(ev, true)
 	case model.WebsocketEventReactionRemoved:
 		return m.applyReactionEvent(ev, false)
+	case model.WebsocketEventStatusChange:
+		return m.applyStatusChange(ev)
+	case model.WebsocketEventUserUpdated:
+		return m.applyUserUpdated(ev)
 	case model.WebsocketEventOpenDialog:
 		m.applyOpenDialog(ev)
 		return nil
@@ -851,6 +882,77 @@ func parsePost(ev *model.WebSocketEvent) *model.Post {
 		return nil
 	}
 	return &p
+}
+
+// applyStatusChange folds a presence update into m.statuses. Only the three
+// "active" states are kept; offline/ooo (or anything else) clears the entry so
+// the dot disappears. No command — the next render picks up the change.
+func (m *Model) applyStatusChange(ev *model.WebSocketEvent) tea.Cmd {
+	st, _ := ev.GetData()["status"].(string)
+	id, _ := ev.GetData()["user_id"].(string)
+	if id == "" {
+		if b := ev.GetBroadcast(); b != nil {
+			id = b.UserId
+		}
+	}
+	if id == "" {
+		return nil
+	}
+	switch st {
+	case model.StatusOnline, model.StatusAway, model.StatusDnd:
+		m.statuses[id] = st
+	default:
+		delete(m.statuses, id)
+	}
+	return nil
+}
+
+// applyUserUpdated refreshes a user's cached username and custom status from a
+// user_updated event. It only touches users we already track (DM partners /
+// seen senders) so the caches don't grow for unrelated profile churn.
+func (m *Model) applyUserUpdated(ev *model.WebSocketEvent) tea.Cmd {
+	u := userFromEvent(ev)
+	if u == nil || u.Id == "" {
+		return nil
+	}
+	if _, known := m.userNames[u.Id]; !known {
+		return nil
+	}
+	if u.Username != "" {
+		m.userNames[u.Id] = u.Username
+	}
+	if cs := u.GetCustomStatus(); cs != nil && (cs.Emoji != "" || cs.Text != "") {
+		m.customStatuses[u.Id] = *cs
+	} else {
+		delete(m.customStatuses, u.Id)
+	}
+	return nil
+}
+
+// userFromEvent extracts the model.User carried in an event's "user" field.
+// Mattermost may encode it either as a JSON string (like "post") or as a
+// nested object depending on the broadcast path, so handle both.
+func userFromEvent(ev *model.WebSocketEvent) *model.User {
+	v, ok := ev.GetData()["user"]
+	if !ok {
+		return nil
+	}
+	var raw []byte
+	switch t := v.(type) {
+	case string:
+		raw = []byte(t)
+	default:
+		b, err := json.Marshal(t)
+		if err != nil {
+			return nil
+		}
+		raw = b
+	}
+	var u model.User
+	if err := json.Unmarshal(raw, &u); err != nil {
+		return nil
+	}
+	return &u
 }
 
 // wsMentions returns the set of user IDs explicitly mentioned in the

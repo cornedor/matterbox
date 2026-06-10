@@ -316,6 +316,25 @@ func (c *Client) UsersByIDs(ctx context.Context, ids []string) ([]*model.User, e
 	return u, nil
 }
 
+// UsersStatuses resolves the given user ids to their presence, keyed
+// userID → status (one of "online"/"away"/"dnd"/"offline"). This is the
+// lightweight presence endpoint — it carries no profile/custom-status data,
+// so it's cheap to poll. Ids that don't resolve are simply absent.
+func (c *Client) UsersStatuses(ctx context.Context, ids []string) (map[string]string, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	ss, _, err := c.c.GetUsersStatusesByIds(ctx, ids)
+	if err != nil {
+		return nil, fmt.Errorf("get statuses: %w", err)
+	}
+	out := make(map[string]string, len(ss))
+	for _, s := range ss {
+		out[s.UserId] = s.Status
+	}
+	return out, nil
+}
+
 // UsernamesByIDs resolves the given user ids to their usernames, keyed
 // userID → username. Ids that don't resolve (deleted/unknown users) are
 // simply absent from the result. Concurrent calls for the same set of

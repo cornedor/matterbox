@@ -106,6 +106,17 @@ type Model struct {
 	membersLoaded  bool
 	userNames      map[string]string // userID → username
 
+	// Presence + custom status for DM partners. statuses is the live
+	// presence (online/away/dnd; offline/unknown absent) refreshed by the
+	// poll + status_change WS events. customStatuses holds the emoji/text a
+	// user set, captured with the DM-name fetch and refreshed via
+	// user_updated WS events. showCustomStatus snapshots the config flag;
+	// statusPollStarted guards against starting more than one poll timer.
+	statuses          map[string]string
+	customStatuses    map[string]model.CustomStatus
+	showCustomStatus  bool
+	statusPollStarted bool
+
 	teamIdx    int
 	channelIdx int
 	chanOff    int
@@ -441,6 +452,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	var embedDim int
 	embedAuto := false
 	markReadDelay := defaultMarkReadDelay
+	showCustomStatus := true
 	navModifier := "ctrl"
 	if cfg != nil {
 		switch {
@@ -468,6 +480,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		if cfg.MarkReadDelaySeconds != nil {
 			markReadDelay = time.Duration(*cfg.MarkReadDelaySeconds) * time.Second
 		}
+		if cfg.CustomStatus != nil {
+			showCustomStatus = *cfg.CustomStatus
+		}
 	}
 	// Unless the sidebar nav uses the ctrl modifier itself, ctrl+←/→ never
 	// reach the global dispatch, so let them word-jump in the composer (the
@@ -493,6 +508,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		ctx:                 context.Background(),
 		channels:            map[string][]*model.Channel{},
 		userNames:           map[string]string{},
+		statuses:            map[string]string{},
+		customStatuses:      map[string]model.CustomStatus{},
+		showCustomStatus:    showCustomStatus,
 		focus:               focusMessages,
 		msgsView:            msgsView,
 		threadView:          threadView,
@@ -537,6 +555,12 @@ func New(client *mm.Client, cfg *config.Config) Model {
 // defaultMarkReadDelay mirrors config.defaultMarkReadDelaySeconds and is the
 // fallback dwell used when no config is supplied (e.g. in tests).
 const defaultMarkReadDelay = 5 * time.Second
+
+// statusPollInterval is how often DM partner presence is re-fetched in a
+// single batched request — the same cadence the official Mattermost web
+// client uses. Live status_change WS events update presence between polls;
+// the poll is the backstop for events that never arrive.
+const statusPollInterval = 60 * time.Second
 
 // leaderHints are the synthetic bindings shown in the footer while the
 // "," leader chord is pending, so the user sees the available jump
@@ -995,6 +1019,7 @@ func (m Model) fetchAllChannels(userID string) tea.Cmd {
 			}
 		}
 		names := map[string]string{}
+		custom := map[string]model.CustomStatus{}
 		if len(need) > 0 {
 			ids := make([]string, 0, len(need))
 			for id := range need {
@@ -1006,9 +1031,36 @@ func (m Model) fetchAllChannels(userID string) tea.Cmd {
 			}
 			for _, u := range us {
 				names[u.Id] = u.Username
+				// Custom status rides along on the user object we already
+				// fetch for DM names — no extra request.
+				if cs := u.GetCustomStatus(); cs != nil && (cs.Emoji != "" || cs.Text != "") {
+					custom[u.Id] = *cs
+				}
 			}
 		}
-		return channelsLoadedMsg{channels: chs, userNames: names}
+		return channelsLoadedMsg{channels: chs, userNames: names, customStatuses: custom}
+	}
+}
+
+// fetchStatuses fetches presence for every DM partner in one batched
+// request. Returns nil when there are no DM partners (nothing to poll).
+// Errors are swallowed: presence is best-effort, so a failed poll leaves the
+// last-known dots in place rather than clobbering the status line.
+func (m Model) fetchStatuses() tea.Cmd {
+	ids := m.dmPartnerIDs()
+	// Include my own id so the footer can show my presence too.
+	if m.me != nil {
+		ids = append(ids, m.me.Id)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	return func() tea.Msg {
+		statuses, err := m.client.UsersStatuses(m.ctx, ids)
+		if err != nil {
+			return statusesLoadedMsg{}
+		}
+		return statusesLoadedMsg{statuses: statuses}
 	}
 }
 
@@ -1637,17 +1689,44 @@ func (m Model) threadTeamID() string {
 	return ""
 }
 
+// dmPartnerID returns the *other* user's id in a direct-message channel —
+// the participant who isn't the logged-in user. It returns "" for non-DM
+// channels and for the note-to-self DM. DM channel names are "userID1__userID2".
+func (m Model) dmPartnerID(c *model.Channel) string {
+	if c == nil || c.Type != model.ChannelTypeDirect {
+		return ""
+	}
+	for _, id := range strings.Split(c.Name, "__") {
+		if id != "" && (m.me == nil || id != m.me.Id) {
+			return id
+		}
+	}
+	return ""
+}
+
+// dmPartnerIDs returns the deduped set of DM partner user ids across every
+// direct-message channel, for the batched presence fetch/poll.
+func (m Model) dmPartnerIDs() []string {
+	seen := map[string]struct{}{}
+	var ids []string
+	for _, c := range m.channels[dmTeamID] {
+		id := m.dmPartnerID(c)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; !ok {
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
 // channelLabel renders the per-row label, resolving DM partner usernames.
 func (m Model) channelLabel(c *model.Channel) string {
 	switch c.Type {
 	case model.ChannelTypeDirect:
-		other := ""
-		for _, id := range strings.Split(c.Name, "__") {
-			if id != "" && (m.me == nil || id != m.me.Id) {
-				other = id
-				break
-			}
-		}
+		other := m.dmPartnerID(c)
 		if other == "" && m.me != nil {
 			return "@" + m.me.Username + " (you)"
 		}

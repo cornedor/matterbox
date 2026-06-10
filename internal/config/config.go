@@ -47,6 +47,12 @@ type Config struct {
 	// defaults to defaultMarkReadDelaySeconds while an explicit 0 means "mark
 	// read immediately" (the original behaviour). See internal/ui.
 	MarkReadDelaySeconds *int `yaml:"mark_read_delay_seconds"`
+	// CustomStatus toggles showing DM partners' custom statuses (the emoji +
+	// text a user sets, e.g. "🌴 On vacation"): the full text in the messages
+	// header and a small hint glyph in the sidebar. Pointer so an absent key
+	// defaults to true; an explicit false hides the custom-status glyph and
+	// text everywhere, leaving only the presence dots. See internal/ui.
+	CustomStatus *bool `yaml:"custom_status"`
 	// Keybindings holds optional keymap tweaks. See internal/ui.
 	Keybindings KeybindingsConfig `yaml:"keybindings"`
 }
@@ -325,6 +331,10 @@ func (c *Config) fillDefaults() {
 		d := defaultMarkReadDelaySeconds
 		c.MarkReadDelaySeconds = &d
 	}
+	if c.CustomStatus == nil {
+		t := true
+		c.CustomStatus = &t
+	}
 	if c.Keybindings.NavModifier == "" {
 		// Default to the ctrl modifier, but honour a pre-NavModifier config's
 		// ctrl_arrow_nav: false by migrating it to "none".
@@ -388,6 +398,8 @@ func writeConfig(p string, cfg *Config) error {
 		"#             (lower = stronger recency bias; default 90).\n" +
 		"# mark_read_delay_seconds: how long a channel must stay open before it's\n" +
 		"#             marked read (default 5). 0 marks read immediately on open.\n" +
+		"# custom_status: show DM partners' custom statuses (default true); false\n" +
+		"#             shows presence dots only.\n" +
 		"# keybindings: nav_modifier sets the modifier for arrow-key team/channel\n" +
 		"#             navigation: ctrl (default), alt, shift, super (the ⌘/Windows\n" +
 		"#             key; also \"cmd\"), meta, hyper, or none. ctrl+h/j/k/l always\n" +
