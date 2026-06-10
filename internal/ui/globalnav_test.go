@@ -3,6 +3,7 @@ package ui
 import (
 	"testing"
 
+	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
@@ -209,6 +210,30 @@ func TestCtrlArrowNavDisabled(t *testing.T) {
 	got2 := out2.(Model)
 	if got2.openChannelID != "c2" {
 		t.Fatalf("ctrl+j should still navigate with arrows off; opened %q want c2", got2.openChannelID)
+	}
+}
+
+// TestComposerCtrlLeftWordJumpWhenNavOff: with ctrl-arrow nav disabled, ctrl+←
+// isn't swallowed by the nav dispatch and reaches the composer, where it
+// word-jumps the cursor back (mirroring New()'s textarea keymap tweak).
+func TestComposerCtrlLeftWordJumpWhenNavOff(t *testing.T) {
+	m := navModel()
+	m.keys = newKeyMap(false)
+	// Mirror New()'s composer setup when ctrl-arrow nav is off.
+	m.input.KeyMap.WordBackward = key.NewBinding(key.WithKeys("alt+left", "alt+b", "ctrl+left"))
+	m.focus = focusInput
+	m.input.Focus()
+	m.input.SetValue("one two three")
+
+	before := m.input.LineInfo().ColumnOffset
+	out, _ := m.handleKey(ctrlKey(tea.KeyLeft))
+	got := out.(Model)
+	after := got.input.LineInfo().ColumnOffset
+	if before == 0 {
+		t.Fatalf("precondition: cursor expected at end of value, got column 0")
+	}
+	if after >= before {
+		t.Fatalf("ctrl+← did not word-jump in the composer (nav off): column %d -> %d", before, after)
 	}
 }
 

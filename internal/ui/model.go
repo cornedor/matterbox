@@ -465,6 +465,20 @@ func New(client *mm.Client, cfg *config.Config) Model {
 			markReadDelay = time.Duration(*cfg.MarkReadDelaySeconds) * time.Second
 		}
 	}
+	// When ctrl+arrow sidebar nav is disabled, ctrl+←/→ never reach the global
+	// dispatch, so let them word-jump in the composer (the textarea otherwise
+	// only binds alt+←/→ for that — ctrl+arrows would do nothing). Keep the
+	// alt+ defaults too.
+	if !ctrlArrowNav {
+		ta.KeyMap.WordBackward = key.NewBinding(
+			key.WithKeys("alt+left", "alt+b", "ctrl+left"),
+			key.WithHelp("ctrl+←", "word backward"),
+		)
+		ta.KeyMap.WordForward = key.NewBinding(
+			key.WithKeys("alt+right", "alt+f", "ctrl+right"),
+			key.WithHelp("ctrl+→", "word forward"),
+		)
+	}
 	// The background indexer runs only when there's a store to write to, a
 	// client to call, and the user hasn't disabled it. A down server is fine —
 	// the loop just backs off (see embedindex.go).
