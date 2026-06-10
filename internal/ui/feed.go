@@ -176,11 +176,18 @@ func (m Model) fetchFeed(seq int, targets []feedTarget) tea.Cmd {
 			if err != nil || pl == nil {
 				continue
 			}
-			unread := unreadFromPostList(pl, lv)
-			if len(unread) == 0 {
+			full := unreadFromPostList(pl, lv)
+			if len(full) == 0 {
 				continue
 			}
-			unread = capUnread(unread, t.unreadCount)
+			// Persist the whole since-boundary page, not just the capped
+			// slice the bubble shows. Dropping the older rows we already
+			// fetched is exactly what leaves an interior cache gap for a
+			// busy unread channel — the messages exist on screen briefly
+			// but never reach the store, so a later channel-open can't
+			// repaint them and search can't find them.
+			toPersist = append(toPersist, full...)
+			unread := capUnread(full, t.unreadCount)
 			var ctxPosts []*model.Post
 			if m.store != nil {
 				ctxPosts, _ = m.store.BeforeInChannel(t.channelID, unread[0].CreateAt, feedContextLines)
@@ -191,7 +198,6 @@ func (m Model) fetchFeed(seq int, targets []feedTarget) tea.Cmd {
 				unread:    unread,
 				mention:   t.mention,
 			})
-			toPersist = append(toPersist, unread...)
 			for _, p := range ctxPosts {
 				if _, have := m.userNames[p.UserId]; !have {
 					need[p.UserId] = struct{}{}

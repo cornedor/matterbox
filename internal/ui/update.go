@@ -115,23 +115,35 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.channelID != m.openChannelID {
 			return m, persistCmd
 		}
-		// Dedup by Id and append, mirroring applyPosted's selection logic.
-		known := make(map[string]struct{}, len(m.posts))
-		for _, p := range m.posts {
-			if p.Id != "" {
-				known[p.Id] = struct{}{}
-			}
+		// Merge the fetched page into the visible slice by create_at,
+		// deduping by Id. A plain append only handles posts newer than
+		// everything loaded; the merge also inserts posts that fall
+		// *between* loaded ones, which is what fills an interior cache gap
+		// (a message posted while offline, hidden beneath a newer live
+		// post). Preserve the selection across the re-sort: pin to the new
+		// bottom if the user was following live, else keep the same post.
+		selID := ""
+		if m.postIdx >= 0 && m.postIdx < len(m.posts) {
+			selID = m.posts[m.postIdx].Id
 		}
 		wasAtBottom := m.postIdx >= len(m.posts)-1
-		for _, p := range msg.posts {
-			if _, dup := known[p.Id]; dup {
-				continue
-			}
-			known[p.Id] = struct{}{}
-			m.posts = append(m.posts, p)
-		}
-		if wasAtBottom {
+		m.posts = mergePostsByTime(m.posts, msg.posts)
+		switch {
+		case wasAtBottom:
 			m.postIdx = len(m.posts) - 1
+		case selID != "":
+			for i, p := range m.posts {
+				if p.Id == selID {
+					m.postIdx = i
+					break
+				}
+			}
+		}
+		if m.postIdx > len(m.posts)-1 {
+			m.postIdx = len(m.posts) - 1
+		}
+		if m.postIdx < 0 {
+			m.postIdx = 0
 		}
 		m.loading = false
 		m.status = ""
@@ -142,6 +154,99 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scheduleMarkViewed(msg.channelID),
 			persistCmd,
 		)
+
+	case olderPostsMsg:
+		// Server-fetched page of older history (scroll-up past the loaded
+		// window). Persist regardless of focus; only mutate the view if it's
+		// still the open channel.
+		persistCmd := m.persistPosts(msg.posts...)
+		for id, name := range msg.users {
+			m.userNames[id] = name
+		}
+		if msg.channelID != m.openChannelID {
+			return m, persistCmd
+		}
+		if len(msg.posts) == 0 {
+			// Nothing older came back. Distinguish the true start of the
+			// channel from a transient empty page so we don't cry "beginning"
+			// prematurely.
+			if msg.atChannelStart {
+				m.status = "beginning of channel"
+			} else {
+				m.status = ""
+			}
+			return m, persistCmd
+		}
+		// Merge by create_at (mergePostsByTime inserts across any interior
+		// hole the cache would skip) while keeping the selected post pinned
+		// to the top of the viewport, so freshly-loaded older posts appear
+		// above it and the screen doesn't jump.
+		selID := ""
+		if m.postIdx >= 0 && m.postIdx < len(m.posts) {
+			selID = m.posts[m.postIdx].Id
+		}
+		m.posts = mergePostsByTime(m.posts, msg.posts)
+		if selID != "" {
+			for i, p := range m.posts {
+				if p.Id == selID {
+					m.postIdx = i
+					break
+				}
+			}
+		}
+		if m.postIdx > len(m.posts)-1 {
+			m.postIdx = len(m.posts) - 1
+		}
+		if m.postIdx < 0 {
+			m.postIdx = 0
+		}
+		m.anchorMsgSelTop = true
+		// Keep the loaded window bounded; selection sits near the top after a
+		// scroll-up, so the trimmed tail is safely off-screen.
+		m.trimPostWindowTail()
+		m.status = ""
+		m.renderMessages()
+		return m, persistCmd
+
+	case newerPostsMsg:
+		// Forward mirror of olderPostsMsg (scroll-down past the loaded tail).
+		persistCmd := m.persistPosts(msg.posts...)
+		for id, name := range msg.users {
+			m.userNames[id] = name
+		}
+		if msg.channelID != m.openChannelID {
+			return m, persistCmd
+		}
+		if len(msg.posts) == 0 {
+			m.status = ""
+			return m, persistCmd
+		}
+		selID := ""
+		if m.postIdx >= 0 && m.postIdx < len(m.posts) {
+			selID = m.posts[m.postIdx].Id
+		}
+		m.posts = mergePostsByTime(m.posts, msg.posts)
+		if selID != "" {
+			for i, p := range m.posts {
+				if p.Id == selID {
+					m.postIdx = i
+					break
+				}
+			}
+		}
+		if m.postIdx > len(m.posts)-1 {
+			m.postIdx = len(m.posts) - 1
+		}
+		if m.postIdx < 0 {
+			m.postIdx = 0
+		}
+		// Selection sits near the bottom after a scroll-down; trim the head
+		// and pin to the bottom so the stale viewport offset doesn't top-align.
+		m.anchorMsgSelBottom = true
+		m.trimPostWindowHead()
+		m.status = ""
+		m.renderMessages()
+		return m, persistCmd
 
 	case markViewedMsg:
 		// The dwell elapsed. Ignore if the user switched away or refocused
@@ -1094,8 +1199,14 @@ func (m Model) handleThreadKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.threadIdx < len(m.threadPosts)-1 {
 			m.threadIdx++
 			m.renderThread()
+			return m, nil
 		}
-		return m, nil
+		if len(m.threadPosts) == 0 {
+			return m, nil
+		}
+		// On the last thread reply: ↓ drops into the thread composer (the
+		// inverse of ↑-on-the-first-composer-row selecting the last reply).
+		return m.focusComposer()
 	case key.Matches(msg, m.keys.Home):
 		m.threadIdx = 0
 		m.renderThread()
@@ -1466,6 +1577,35 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.cycleFocus(1)
 	case key.Matches(msg, m.keys.ShiftTab):
 		return m.cycleFocus(-1)
+	case msg.String() == "up" && m.editingPostID == "" &&
+		m.input.Line() == 0 && m.input.LineInfo().RowOffset == 0:
+		// ↑ on the first visual row of the composer selects the absolute last
+		// message — the inverse of ↓-on-the-last-message dropping into the
+		// composer. The @-mention / :emoji popups consume ↑ above while open,
+		// so reaching here means no autocomplete tooltip is showing. On a
+		// multi-row draft ↑ still moves the cursor within the text (the case
+		// falls through to the textarea below); only the top row escapes to
+		// the transcript. Skipped while editing a post so an in-progress edit
+		// isn't abandoned by a stray ↑.
+		if m.threadOpen {
+			if len(m.threadPosts) == 0 {
+				break // nothing to select; let ↑ fall through to the textarea
+			}
+			m.input.Blur()
+			m.focus = focusThread
+			m.threadIdx = len(m.threadPosts) - 1
+			m.renderMessages()
+			m.renderThread()
+			return m, nil
+		}
+		if len(m.posts) == 0 {
+			break
+		}
+		m.input.Blur()
+		m.focus = focusMessages
+		m.selectLastMessage()
+		m.renderMessages()
+		return m, nil
 	case key.Matches(msg, m.keys.LeaveInput):
 		// While composing a new message, esc only leaves the input when
 		// the textarea is empty — a stray esc shouldn't yank focus away
@@ -1650,6 +1790,11 @@ func (m Model) handleChannelsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.channelIdx = len(vis) - 1
 	case key.Matches(msg, m.keys.OpenChannel):
 		ch := vis[m.channelIdx]
+		// Already open? A second enter means "take me in to type" — focus the
+		// composer (matching ctrl+k and "i"). No reload; it's already loaded.
+		if ch.Id == m.openChannelID {
+			return m.focusComposer()
+		}
 		// When opening from the virtual Unread tab, hop to the channel's
 		// home team so isCurrentChannel keeps tracking the open channel
 		// after its unread count clears and it leaves the Unread list.
@@ -1681,6 +1826,27 @@ func (m Model) messagesPageStep() int {
 	return 1
 }
 
+// selectLastMessage moves the message selection to the channel's newest
+// post. The loaded window may have slid up while scrolling back (older
+// posts paged in, the newest trimmed off), so the loaded tail isn't
+// necessarily the channel's newest message; if the store has posts newer
+// than what's loaded, reload the most recent page first so the selection
+// lands on the true newest rather than the bottom of the loaded slice. The
+// caller renders. Shared by End/G and the ↑-in-composer jump, both of which
+// target the absolute last message.
+func (m *Model) selectLastMessage() {
+	if len(m.posts) > 0 {
+		last := m.posts[len(m.posts)-1]
+		if newer := m.loadNewerFromStore(last.ChannelId, last.CreateAt); len(newer) > 0 {
+			if latest := m.loadFromStore(last.ChannelId); len(latest) > 0 {
+				m.posts = latest
+			}
+		}
+	}
+	m.postIdx = len(m.posts) - 1
+	m.anchorMsgSelBottom = true
+}
+
 func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Poll accelerators (digits / a / E / X) act on a poll post under
 	// the cursor, before the regular messages-pane handler picks them
@@ -1698,82 +1864,77 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.renderMessages()
 			return m, nil
 		}
-		// At the top — try to page further back through the cache so the
-		// user can keep scrolling into older history rather than hitting
-		// a wall at the initial render limit.
-		if len(m.posts) > 0 {
-			older := m.loadOlderFromStore(m.posts[0].ChannelId, m.posts[0].CreateAt)
-			if len(older) > 0 {
-				m.posts = append(older, m.posts...)
-				m.postIdx = len(older) - 1
-				m.status = ""
-				// Pin the new selection to the top of the viewport so
-				// the previously-visible content stays where it was on
-				// screen, with the just-loaded older posts appearing
-				// above it (reachable by continuing to scroll up).
-				m.anchorMsgSelTop = true
-				// Slide the window: drop the now-off-screen newest posts so
-				// the loaded slice stays bounded over a long scroll-back.
-				m.trimPostWindowTail()
-				m.renderMessages()
-			} else {
-				m.status = "no more cached messages"
-			}
+		// At the top. Paint the next cached page immediately for instant
+		// feedback, then ask the server for the page strictly older than the
+		// current top and merge it (see the olderPostsMsg handler). The
+		// server fetch is anchored on the OLD top — before the optimistic
+		// prepend — so its page overlaps the cache page and reconciles it,
+		// filling any interior hole the cache would silently skip and
+		// continuing past the oldest cached post into history the cache
+		// never held.
+		if len(m.posts) == 0 {
+			return m, nil
 		}
-		return m, nil
+		oldestID := m.posts[0].Id
+		older := m.loadOlderFromStore(m.posts[0].ChannelId, m.posts[0].CreateAt)
+		if len(older) > 0 {
+			m.posts = append(older, m.posts...)
+			m.postIdx = len(older) - 1
+			m.status = ""
+			m.anchorMsgSelTop = true
+			m.trimPostWindowTail()
+			m.renderMessages()
+		} else {
+			m.status = "loading older messages…"
+		}
+		if oldestID == "" {
+			return m, nil
+		}
+		return m, m.fetchOlder(m.openChannelID, oldestID)
 	case key.Matches(msg, m.keys.Down):
 		if m.postIdx < len(m.posts)-1 {
 			m.postIdx++
 			m.renderMessages()
 			return m, nil
 		}
-		// At the bottom — try to page forward through the cache.
-		// Mirror of the Up-at-top load-older path. Especially useful
-		// after opening a search hit, where m.posts is centred on the
-		// matched message and there may be plenty of cached history
-		// after it the user wants to read forward into.
-		if len(m.posts) > 0 {
-			last := m.posts[len(m.posts)-1]
-			newer := m.loadNewerFromStore(last.ChannelId, last.CreateAt)
-			if len(newer) > 0 {
-				oldLen := len(m.posts)
-				m.posts = append(m.posts, newer...)
-				m.postIdx = oldLen
-				m.status = ""
-				// Slide the window: drop the now-off-screen oldest posts so
-				// the loaded slice stays bounded over a long scroll-forward.
-				// Pin the selection to the bottom — the head drop shifted
-				// content up, leaving the viewport offset stale, so without
-				// this the "keep selection visible" logic would top-align it.
-				m.trimPostWindowHead()
-				m.anchorMsgSelBottom = true
-				m.renderMessages()
-			} else {
-				m.status = "no more cached messages"
-			}
+		// At the bottom of the loaded window.
+		if len(m.posts) == 0 {
+			return m, nil
 		}
-		return m, nil
+		last := m.posts[len(m.posts)-1]
+		newer := m.loadNewerFromStore(last.ChannelId, last.CreateAt)
+		if len(newer) == 0 {
+			// On the channel's newest loaded post with nothing newer in the
+			// cache — the absolute last message. ↓ here drops into the
+			// composer (the inverse of ↑-on-the-first-composer-row selecting
+			// it).
+			return m.focusComposer()
+		}
+		// More cached history sits below the loaded window (e.g. reading
+		// forward from a search hit centred on an old post): paint the next
+		// cached page immediately, then fetch the page strictly newer than
+		// the current tail from the server and merge it (see the
+		// newerPostsMsg handler). Anchored on the OLD tail so it reconciles
+		// the cache page and crosses any hole between the loaded tail and the
+		// live tail.
+		oldLen := len(m.posts)
+		newestID := last.Id
+		m.posts = append(m.posts, newer...)
+		m.postIdx = oldLen
+		m.status = ""
+		m.trimPostWindowHead()
+		m.anchorMsgSelBottom = true
+		m.renderMessages()
+		if newestID == "" {
+			return m, nil
+		}
+		return m, m.fetchNewer(m.openChannelID, newestID)
 	case key.Matches(msg, m.keys.Home):
 		m.postIdx = 0
 		m.renderMessages()
 		return m, nil
 	case key.Matches(msg, m.keys.End):
-		// The window may have slid up while scrolling back (older posts
-		// paged in, the newest trimmed off), so the loaded tail isn't
-		// necessarily the channel's newest message. If the store has posts
-		// newer than what's loaded, reload the most recent page so End/G
-		// lands on the true newest rather than the bottom of the loaded
-		// slice.
-		if len(m.posts) > 0 {
-			last := m.posts[len(m.posts)-1]
-			if newer := m.loadNewerFromStore(last.ChannelId, last.CreateAt); len(newer) > 0 {
-				if latest := m.loadFromStore(last.ChannelId); len(latest) > 0 {
-					m.posts = latest
-				}
-			}
-		}
-		m.postIdx = len(m.posts) - 1
-		m.anchorMsgSelBottom = true
+		m.selectLastMessage()
 		m.renderMessages()
 		return m, nil
 	case key.Matches(msg, m.keys.PageDown):

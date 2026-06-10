@@ -20,13 +20,39 @@ type postsLoadedMsg struct {
 	users     map[string]string
 }
 
-// postsGapFilledMsg carries the posts created in `channelID` after the
-// newest post we had cached. Empty `posts` means the cache was already
-// current. Posts are oldest→newest.
+// postsGapFilledMsg carries a page of `channelID`'s posts (oldest→newest)
+// to reconcile into the open channel. Its handler merges them by Id and
+// create_at rather than appending, so the page may fill a gap *inside* the
+// loaded range as well as extend it — see fetchRecent (warm-open recent-
+// window reconcile) and fetchPostsAfter (forward fill from a cached post).
+// Empty `posts` means there was nothing to reconcile.
 type postsGapFilledMsg struct {
 	channelID string
 	posts     []*model.Post
 	users     map[string]string
+}
+
+// olderPostsMsg carries a server-fetched page of posts strictly older than
+// the top of the loaded window (see fetchOlder), merged in when the user
+// scrolls past it. atChannelStart is true when the server reports nothing
+// older — the genuine beginning of the channel, not just the cache floor —
+// so the UI can say "beginning of channel" only when it's actually true.
+type olderPostsMsg struct {
+	channelID      string
+	posts          []*model.Post
+	users          map[string]string
+	atChannelStart bool
+}
+
+// newerPostsMsg is the forward mirror of olderPostsMsg: a server-fetched
+// page strictly newer than the bottom of the loaded window (see
+// fetchNewer). atChannelEnd is true when the page reaches the channel's
+// newest post.
+type newerPostsMsg struct {
+	channelID    string
+	posts        []*model.Post
+	users        map[string]string
+	atChannelEnd bool
 }
 // markViewedMsg fires after a channel has been open for the configured
 // dwell. gen is the viewGen captured when the tick was scheduled; the

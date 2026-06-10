@@ -965,38 +965,58 @@ func (m Model) fetchAllChannels(userID string) tea.Cmd {
 	}
 }
 
+// orderOldestFirst flips a PostList's newest-first Order into an
+// oldest-first slice of posts, skipping any id missing from pl.Posts.
+func orderOldestFirst(pl *model.PostList) []*model.Post {
+	ordered := make([]*model.Post, 0, len(pl.Order))
+	for i := len(pl.Order) - 1; i >= 0; i-- {
+		if p, ok := pl.Posts[pl.Order[i]]; ok {
+			ordered = append(ordered, p)
+		}
+	}
+	return ordered
+}
+
+// resolveSenderNames fetches usernames for any post authors in `posts` not
+// already known to m.userNames, returning them keyed userID → username.
+// Shared by the post-fetch commands so each doesn't re-implement the same
+// "collect unknown ids → look them up" dance. Returns an empty (non-nil)
+// map when every author is already cached.
+func (m Model) resolveSenderNames(posts []*model.Post) (map[string]string, error) {
+	need := map[string]struct{}{}
+	for _, p := range posts {
+		if _, have := m.userNames[p.UserId]; !have {
+			need[p.UserId] = struct{}{}
+		}
+	}
+	users := map[string]string{}
+	if len(need) == 0 {
+		return users, nil
+	}
+	ids := make([]string, 0, len(need))
+	for id := range need {
+		ids = append(ids, id)
+	}
+	us, err := m.client.UsersByIDs(m.ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for _, u := range us {
+		users[u.Id] = u.Username
+	}
+	return users, nil
+}
+
 func (m Model) fetchPosts(channelID string) tea.Cmd {
 	return func() tea.Msg {
 		pl, err := m.client.Posts(m.ctx, channelID, 60)
 		if err != nil {
 			return errMsg{err}
 		}
-		ordered := make([]*model.Post, 0, len(pl.Order))
-		for i := len(pl.Order) - 1; i >= 0; i-- {
-			if p, ok := pl.Posts[pl.Order[i]]; ok {
-				ordered = append(ordered, p)
-			}
-		}
-
-		need := map[string]struct{}{}
-		for _, p := range ordered {
-			if _, have := m.userNames[p.UserId]; !have {
-				need[p.UserId] = struct{}{}
-			}
-		}
-		users := map[string]string{}
-		if len(need) > 0 {
-			ids := make([]string, 0, len(need))
-			for id := range need {
-				ids = append(ids, id)
-			}
-			us, err := m.client.UsersByIDs(m.ctx, ids)
-			if err != nil {
-				return errMsg{err}
-			}
-			for _, u := range us {
-				users[u.Id] = u.Username
-			}
+		ordered := orderOldestFirst(pl)
+		users, err := m.resolveSenderNames(ordered)
+		if err != nil {
+			return errMsg{err}
 		}
 		return postsLoadedMsg{channelID: channelID, posts: ordered, users: users}
 	}
@@ -1174,6 +1194,47 @@ func (m *Model) trimPostWindowHead() {
 	m.postIdx -= drop
 }
 
+// mergePostsByTime unions two create_at-ascending post slices into one
+// ascending slice, deduping by Id. On an Id collision the post from
+// `incoming` wins — it's the fresher server copy, carrying any edits or
+// reaction/metadata updates. Optimistic stubs (empty Id, an own-send not
+// yet confirmed) in `existing` can't be matched by Id, so they're kept at
+// the end after every real post, preserving their original order. Unlike a
+// plain append this can insert `incoming` posts *between* existing ones,
+// which is what heals an interior cache gap when the recent window is
+// reconciled with the server on channel open.
+func mergePostsByTime(existing, incoming []*model.Post) []*model.Post {
+	byID := make(map[string]*model.Post, len(existing)+len(incoming))
+	var stubs []*model.Post
+	for _, p := range existing {
+		if p == nil {
+			continue
+		}
+		if p.Id == "" {
+			stubs = append(stubs, p)
+			continue
+		}
+		byID[p.Id] = p
+	}
+	for _, p := range incoming {
+		if p == nil || p.Id == "" {
+			continue
+		}
+		byID[p.Id] = p
+	}
+	merged := make([]*model.Post, 0, len(byID)+len(stubs))
+	for _, p := range byID {
+		merged = append(merged, p)
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		if merged[i].CreateAt != merged[j].CreateAt {
+			return merged[i].CreateAt < merged[j].CreateAt
+		}
+		return merged[i].Id < merged[j].Id
+	})
+	return append(merged, stubs...)
+}
+
 // fetchPostsAfter pulls every post created after afterPostID in the
 // channel. Use this when reopening a channel whose history is already
 // in the cache: paint cached → call this → append the gap.
@@ -1183,34 +1244,103 @@ func (m Model) fetchPostsAfter(channelID, afterPostID string) tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
-		// pl.Order is newest-first; flip to oldest-first.
-		ordered := make([]*model.Post, 0, len(pl.Order))
-		for i := len(pl.Order) - 1; i >= 0; i-- {
-			if p, ok := pl.Posts[pl.Order[i]]; ok {
-				ordered = append(ordered, p)
-			}
-		}
-		need := map[string]struct{}{}
-		for _, p := range ordered {
-			if _, have := m.userNames[p.UserId]; !have {
-				need[p.UserId] = struct{}{}
-			}
-		}
-		users := map[string]string{}
-		if len(need) > 0 {
-			ids := make([]string, 0, len(need))
-			for id := range need {
-				ids = append(ids, id)
-			}
-			us, err := m.client.UsersByIDs(m.ctx, ids)
-			if err != nil {
-				return errMsg{err}
-			}
-			for _, u := range us {
-				users[u.Id] = u.Username
-			}
+		ordered := orderOldestFirst(pl)
+		users, err := m.resolveSenderNames(ordered)
+		if err != nil {
+			return errMsg{err}
 		}
 		return postsGapFilledMsg{channelID: channelID, posts: ordered, users: users}
+	}
+}
+
+// reconcilePageSize is how many of the channel's most recent posts the
+// warm-open path pulls from the server to reconcile against the cache.
+// Anchored at "now" and walking backward, this page is authoritative for
+// the recent window regardless of cache state — the property a forward
+// PostsAfter(newestCached) lacks once the cache has an interior gap. 200
+// matches the old gap-fill's page size, so the per-open fetch ceiling is
+// unchanged; it covers a multi-day absence in a typical channel, and any
+// deeper gap surfaces when the user scrolls back.
+const reconcilePageSize = 200
+
+// fetchRecent pulls the channel's most recent page from the server and
+// returns it as a postsGapFilledMsg so the open channel's recent window is
+// reconciled (not just appended to) — see the postsGapFilledMsg handler's
+// merge. Used on warm open in place of fetchPostsAfter: because it's
+// anchored at the newest server post rather than the newest *cached* one,
+// it surfaces posts hidden beneath a stale cache high-water mark.
+func (m Model) fetchRecent(channelID string) tea.Cmd {
+	return func() tea.Msg {
+		pl, err := m.client.Posts(m.ctx, channelID, reconcilePageSize)
+		if err != nil {
+			return errMsg{err}
+		}
+		ordered := orderOldestFirst(pl)
+		users, err := m.resolveSenderNames(ordered)
+		if err != nil {
+			return errMsg{err}
+		}
+		return postsGapFilledMsg{channelID: channelID, posts: ordered, users: users}
+	}
+}
+
+// historyPageSize is how many posts the on-demand history pagers
+// (fetchOlder / fetchNewer) pull per server round-trip when the user
+// scrolls past the loaded window. Matches olderPageSize so a server page
+// and a cache page advance the view by the same amount.
+const historyPageSize = olderPageSize
+
+// fetchOlder pulls the page of posts immediately older than beforePostID
+// straight from the server and returns it as an olderPostsMsg. Used when
+// the user scrolls past the top of the loaded window: unlike the cache
+// pager (BeforeInChannel) it can cross an interior hole the cache would
+// silently skip, and it keeps working past the oldest cached post into
+// history the cache never held. atChannelStart (PrevPostId == "") reports
+// the genuine start of the channel, as opposed to merely the cache floor.
+func (m Model) fetchOlder(channelID, beforePostID string) tea.Cmd {
+	return func() tea.Msg {
+		pl, err := m.client.PostsBefore(m.ctx, channelID, beforePostID, historyPageSize)
+		if err != nil {
+			return errMsg{err}
+		}
+		ordered := orderOldestFirst(pl)
+		users, err := m.resolveSenderNames(ordered)
+		if err != nil {
+			return errMsg{err}
+		}
+		return olderPostsMsg{
+			channelID:      channelID,
+			posts:          ordered,
+			users:          users,
+			atChannelStart: pl.PrevPostId == "",
+		}
+	}
+}
+
+// fetchNewer is the forward mirror of fetchOlder: it pulls the page of
+// posts immediately newer than afterPostID from the server. Used when the
+// user scrolls past the bottom of the loaded window (e.g. reading forward
+// from a search hit centred on an old post) so a hole between the loaded
+// tail and the live tail gets crossed rather than jumped. atChannelEnd
+// (NextPostId == "") reports that the page reaches the channel's newest
+// post.
+func (m Model) fetchNewer(channelID, afterPostID string) tea.Cmd {
+	return func() tea.Msg {
+		pl, err := m.client.PostsAfter(m.ctx, channelID, afterPostID, historyPageSize)
+		if err != nil {
+			return errMsg{err}
+		}
+		ordered := orderOldestFirst(pl)
+		users, err := m.resolveSenderNames(ordered)
+		if err != nil {
+			return errMsg{err}
+		}
+		return newerPostsMsg{
+			channelID:   channelID,
+			posts:       ordered,
+			users:       users,
+			atChannelEnd: pl.NextPostId == "",
+		}
 	}
 }
 
@@ -1266,7 +1396,15 @@ func (m *Model) openChannelLoadCmd(channelID string) tea.Cmd {
 		// cached page, position the cursor on it before painting.
 		m.jumpToPendingPost()
 		m.renderMessages()
-		return m.fetchPostsAfter(channelID, cached[len(cached)-1].Id)
+		// Reconcile the recent window against the server rather than only
+		// fetching posts *after* the newest cached one. The cache is not
+		// guaranteed contiguous: a message posted while matterbox was
+		// offline, followed by a newer message caught live over WebSocket,
+		// leaves an interior gap *below* the newest cached post — which a
+		// forward-only PostsAfter(newestCached) can never see. fetchRecent
+		// pulls the channel's latest page (anchored at "now") so the merge
+		// fills any such hole. See fetchRecent / the postsGapFilledMsg merge.
+		return m.fetchRecent(channelID)
 	}
 	m.posts = nil
 	m.status = "loading messages…"
