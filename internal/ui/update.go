@@ -1174,7 +1174,7 @@ func (m Model) handleAttachmentsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.OpenAttach):
 		att := m.attachments[m.attachmentIdx]
 		m.status = "opening " + att.filename + "…"
-		return m, xdgOpenPath(att.filename, att.localPath)
+		return m, openLocalPath(att.filename, att.localPath)
 	case key.Matches(msg, m.keys.AttachRemove):
 		id := m.attachments[m.attachmentIdx].id
 		m.removeAttachment(id)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -23,6 +22,7 @@ import (
 	"matterbox/internal/config"
 	"matterbox/internal/embed"
 	"matterbox/internal/mm"
+	"matterbox/internal/opener"
 	"matterbox/internal/semindex"
 	"matterbox/internal/store"
 )
@@ -701,13 +701,13 @@ func (m Model) fetchFileInfos(postID string) tea.Cmd {
 }
 
 // openable represents anything `o` can open from the selected post:
-// either an uploaded file (download to cache, then xdg-open the local
-// path) or a direct URL (xdg-open it as-is, letting the desktop
-// dispatch to the browser).
+// either an uploaded file (download to cache, then open the local path
+// via the OS handler) or a direct URL (open it as-is, letting the
+// desktop dispatch to the browser).
 type openable struct {
 	name string
 	file *model.FileInfo // download via API and open locally
-	url  string          // hand directly to xdg-open
+	url  string          // hand directly to the OS default handler
 }
 
 // collectOpenables enumerates everything in a post that `o` can act on:
@@ -754,7 +754,7 @@ func collectOpenables(p *model.Post) []openable {
 	return out
 }
 
-// openOpenable runs xdg-open on either a downloaded file or a URL.
+// openOpenable opens either a downloaded file or a URL via the OS handler.
 func (m Model) openOpenable(o openable) tea.Cmd {
 	return func() tea.Msg {
 		target := o.url
@@ -774,9 +774,9 @@ func (m Model) openOpenable(o openable) tea.Cmd {
 			}
 			target = path
 		}
-		// xdg-open forks and returns immediately; we don't wait for the
+		// The launcher forks and returns immediately; we don't wait for the
 		// viewer process to exit.
-		if err := exec.Command("xdg-open", target).Start(); err != nil {
+		if err := opener.Open(target); err != nil {
 			return attachmentOpenedMsg{name: o.name, err: err}
 		}
 		return attachmentOpenedMsg{name: o.name}
@@ -1364,9 +1364,9 @@ func (m Model) fetchNewer(channelID, afterPostID string) tea.Cmd {
 			return errMsg{err}
 		}
 		return newerPostsMsg{
-			channelID:   channelID,
-			posts:       ordered,
-			users:       users,
+			channelID:    channelID,
+			posts:        ordered,
+			users:        users,
 			atChannelEnd: pl.NextPostId == "",
 		}
 	}

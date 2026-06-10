@@ -14,6 +14,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+
+	"matterbox/internal/opener"
 )
 
 type clipboardKind int
@@ -252,11 +254,11 @@ func writeImageTemp(data []byte, mime, ext string) (clipboardPayload, error) {
 	}, nil
 }
 
-// xdgOpenPath fires xdg-open on a local path. Mirrors the pattern in
-// (Model).openOpenable but for paths we already have on disk.
-func xdgOpenPath(name, path string) tea.Cmd {
+// openLocalPath hands a local path to the OS default handler. Mirrors the
+// pattern in (Model).openOpenable but for paths we already have on disk.
+func openLocalPath(name, path string) tea.Cmd {
 	return func() tea.Msg {
-		if err := exec.Command("xdg-open", path).Start(); err != nil {
+		if err := opener.Open(path); err != nil {
 			return attachmentOpenedMsg{name: name, err: err}
 		}
 		return attachmentOpenedMsg{name: name}

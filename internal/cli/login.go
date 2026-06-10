@@ -8,9 +8,7 @@ import (
 	"io"
 	"net/url"
 	"os"
-	"os/exec"
 	"os/signal"
-	"runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -18,6 +16,7 @@ import (
 	"matterbox/internal/auth"
 	"matterbox/internal/config"
 	"matterbox/internal/mm"
+	"matterbox/internal/opener"
 )
 
 // mmauthRedirect is the redirect_to handed to Mattermost's mobile-login
@@ -126,7 +125,7 @@ func runLogin(ctx context.Context, out io.Writer, noBrowser bool) error {
 	switch {
 	case noBrowser:
 		fmt.Fprintln(out, "Open this URL to sign in with GitLab SSO:")
-	case openURL(loginURL) != nil:
+	case opener.Open(loginURL) != nil:
 		fmt.Fprintln(out, "Couldn't open a browser automatically. Open this URL to sign in:")
 	default:
 		fmt.Fprintln(out, "Opening your browser to sign in with GitLab SSO…")
@@ -247,19 +246,4 @@ func extractToken(s string) string {
 		return ""
 	}
 	return s
-}
-
-// openURL launches the user's default browser at u. The command forks and
-// returns immediately; we don't wait for the browser to exit.
-func openURL(u string) error {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", u)
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", u)
-	default:
-		cmd = exec.Command("xdg-open", u)
-	}
-	return cmd.Start()
 }
