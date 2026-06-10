@@ -44,7 +44,7 @@ func navModel() Model {
 			},
 		},
 		userNames:     map[string]string{},
-		keys:          newKeyMap(true),
+		keys:          newKeyMap("ctrl"),
 		focus:         focusMessages,
 		width:         100,
 		height:        44,
@@ -198,7 +198,7 @@ func TestFilterApplyOpensAndClears(t *testing.T) {
 // ctrl+j still switches channel.
 func TestCtrlArrowNavDisabled(t *testing.T) {
 	m := navModel()
-	m.keys = newKeyMap(false)
+	m.keys = newKeyMap("none")
 
 	out, _ := m.handleKey(ctrlKey(tea.KeyDown))
 	got := out.(Model)
@@ -213,12 +213,42 @@ func TestCtrlArrowNavDisabled(t *testing.T) {
 	}
 }
 
+// TestNavModifierSuper: a non-default nav modifier rebinds the arrow aliases —
+// super+↓ (the macOS ⌘) switches channel, plain ctrl+↓ no longer does, and the
+// ctrl+vim alias keeps working regardless of which modifier the arrows use.
+func TestNavModifierSuper(t *testing.T) {
+	superDown := tea.KeyPressMsg(tea.Key{Code: tea.KeyDown, Mod: tea.ModSuper})
+
+	m := navModel()
+	m.keys = newKeyMap("super")
+	out, _ := m.handleKey(superDown)
+	if got := out.(Model); got.openChannelID != "c2" {
+		t.Fatalf("super+↓ should switch channel; opened %q want c2", got.openChannelID)
+	}
+
+	// With the modifier moved to super, plain ctrl+↓ is inert.
+	m2 := navModel()
+	m2.keys = newKeyMap("super")
+	out2, _ := m2.handleKey(ctrlKey(tea.KeyDown))
+	if got := out2.(Model); got.openChannelID != "c1" {
+		t.Fatalf("ctrl+↓ should be inert when modifier is super; opened %q want c1", got.openChannelID)
+	}
+
+	// ctrl+j (vim alias) always navigates, whatever the arrow modifier is.
+	m3 := navModel()
+	m3.keys = newKeyMap("super")
+	out3, _ := m3.handleKey(ctrlKey('j'))
+	if got := out3.(Model); got.openChannelID != "c2" {
+		t.Fatalf("ctrl+j should still navigate under super modifier; opened %q want c2", got.openChannelID)
+	}
+}
+
 // TestComposerCtrlLeftWordJumpWhenNavOff: with ctrl-arrow nav disabled, ctrl+←
 // isn't swallowed by the nav dispatch and reaches the composer, where it
 // word-jumps the cursor back (mirroring New()'s textarea keymap tweak).
 func TestComposerCtrlLeftWordJumpWhenNavOff(t *testing.T) {
 	m := navModel()
-	m.keys = newKeyMap(false)
+	m.keys = newKeyMap("none")
 	// Mirror New()'s composer setup when ctrl-arrow nav is off.
 	m.input.KeyMap.WordBackward = key.NewBinding(key.WithKeys("alt+left", "alt+b", "ctrl+left"))
 	m.focus = focusInput

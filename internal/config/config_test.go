@@ -35,26 +35,44 @@ func TestAISearchTimeoutParse(t *testing.T) {
 	}
 }
 
-// TestCtrlArrowNavDefault: an absent keybindings section defaults ctrl+arrow
-// nav to enabled (non-nil true), so existing users keep the arrow aliases.
-func TestCtrlArrowNavDefault(t *testing.T) {
+// TestNavModifierDefault: an absent keybindings section defaults the arrow-nav
+// modifier to ctrl, so existing users keep the ctrl+arrow aliases.
+func TestNavModifierDefault(t *testing.T) {
 	c := &Config{}
 	c.fillDefaults()
-	if c.Keybindings.CtrlArrowNav == nil || !*c.Keybindings.CtrlArrowNav {
-		t.Errorf("default ctrl_arrow_nav = %v; want non-nil true", c.Keybindings.CtrlArrowNav)
+	if c.Keybindings.NavModifier != "ctrl" {
+		t.Errorf("default nav_modifier = %q; want \"ctrl\"", c.Keybindings.NavModifier)
 	}
 }
 
-// TestCtrlArrowNavParse pins the yaml key and confirms an explicit false
-// survives fillDefaults (the pointer lets us tell "absent" from "off").
-func TestCtrlArrowNavParse(t *testing.T) {
+// TestNavModifierParse pins the yaml key and confirms an explicit value
+// survives fillDefaults (e.g. super for the macOS ⌘ key).
+func TestNavModifierParse(t *testing.T) {
+	const y = "keybindings:\n  nav_modifier: super\n"
+	var c Config
+	if err := yaml.Unmarshal([]byte(y), &c); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	c.fillDefaults()
+	if c.Keybindings.NavModifier != "super" {
+		t.Errorf("fillDefaults clobbered explicit nav_modifier: got %q", c.Keybindings.NavModifier)
+	}
+}
+
+// TestNavModifierLegacyMigration: a pre-NavModifier config that set
+// ctrl_arrow_nav: false migrates to nav_modifier: none, and the superseded
+// toggle is dropped so a rewrite carries only the new key.
+func TestNavModifierLegacyMigration(t *testing.T) {
 	const y = "keybindings:\n  ctrl_arrow_nav: false\n"
 	var c Config
 	if err := yaml.Unmarshal([]byte(y), &c); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	c.fillDefaults()
-	if c.Keybindings.CtrlArrowNav == nil || *c.Keybindings.CtrlArrowNav {
-		t.Errorf("fillDefaults clobbered explicit false: got %v", c.Keybindings.CtrlArrowNav)
+	if c.Keybindings.NavModifier != "none" {
+		t.Errorf("legacy ctrl_arrow_nav: false migrated to %q; want \"none\"", c.Keybindings.NavModifier)
+	}
+	if c.Keybindings.CtrlArrowNav != nil {
+		t.Errorf("legacy toggle not cleared after migration: got %v", c.Keybindings.CtrlArrowNav)
 	}
 }

@@ -1,6 +1,10 @@
 package ui
 
-import "charm.land/bubbles/v2/key"
+import (
+	"strings"
+
+	"charm.land/bubbles/v2/key"
+)
 
 // keyMap holds every user-facing keybinding. Bindings are reused by both
 // the help bubble (for rendering) and the focused handlers (for matching),
@@ -82,23 +86,52 @@ type keyMap struct {
 	Quit       key.Binding
 }
 
-// newKeyMap builds the keymap. ctrlArrowNav toggles the ctrl+arrow aliases for
-// sidebar navigation: when false, only the ctrl+vim keys (ctrl+h/j/k/l) move
-// teams/channels, leaving ctrl+arrows free for the composer's word-jump.
-func newKeyMap(ctrlArrowNav bool) keyMap {
-	// Sidebar-nav keys: ctrl+vim letters are always bound; the ctrl+arrow
-	// aliases are prepended (and shown in help) only when enabled.
+// navMod resolves a config nav_modifier value to the bubbletea key-string
+// prefix used for the arrow-key sidebar navigation (e.g. "ctrl+", "super+").
+// enabled is false for "none"/"off", which disables arrow-nav entirely and
+// frees ctrl+←/→ for the composer's word-jump. Friendly aliases are accepted
+// so a user can write "cmd"/"command" for the macOS ⌘ key, "option" for alt,
+// etc.; an unrecognised value falls back to ctrl.
+func navMod(s string) (prefix string, enabled bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "none", "off", "false", "disabled", "no":
+		return "", false
+	case "alt", "option", "opt":
+		return "alt+", true
+	case "shift":
+		return "shift+", true
+	case "super", "cmd", "command", "win", "windows":
+		return "super+", true
+	case "meta":
+		return "meta+", true
+	case "hyper":
+		return "hyper+", true
+	default: // "", "ctrl", "control", or anything unrecognised
+		return "ctrl+", true
+	}
+}
+
+// newKeyMap builds the keymap. navModifier selects the modifier for the
+// arrow-key sidebar navigation (ctrl/alt/shift/super/meta/hyper, or "none" to
+// disable it): the ctrl+vim keys (ctrl+h/j/k/l) always move teams/channels,
+// and with arrow-nav off ctrl+arrows are left free for the composer's
+// word-jump. See navMod for the accepted values.
+func newKeyMap(navModifier string) keyMap {
+	prefix, navEnabled := navMod(navModifier)
+	// Sidebar-nav keys: ctrl+vim letters are always bound; the arrow-key
+	// aliases (with the configured modifier) are prepended — and shown in
+	// help — only when arrow-nav is enabled.
 	teamPrev, teamNext := []string{"ctrl+h"}, []string{"ctrl+l"}
 	chanPrev, chanNext := []string{"ctrl+k"}, []string{"ctrl+j"}
 	teamPrevHelp, teamNextHelp := "ctrl+h", "ctrl+l"
 	chanPrevHelp, chanNextHelp := "ctrl+k", "ctrl+j"
-	if ctrlArrowNav {
-		teamPrev = append([]string{"ctrl+left"}, teamPrev...)
-		teamNext = append([]string{"ctrl+right"}, teamNext...)
-		chanPrev = append([]string{"ctrl+up"}, chanPrev...)
-		chanNext = append([]string{"ctrl+down"}, chanNext...)
-		teamPrevHelp, teamNextHelp = "ctrl+←/h", "ctrl+→/l"
-		chanPrevHelp, chanNextHelp = "ctrl+↑/k", "ctrl+↓/j"
+	if navEnabled {
+		teamPrev = append([]string{prefix + "left"}, teamPrev...)
+		teamNext = append([]string{prefix + "right"}, teamNext...)
+		chanPrev = append([]string{prefix + "up"}, chanPrev...)
+		chanNext = append([]string{prefix + "down"}, chanNext...)
+		teamPrevHelp, teamNextHelp = prefix+"←/h", prefix+"→/l"
+		chanPrevHelp, chanNextHelp = prefix+"↑/k", prefix+"↓/j"
 	}
 	return keyMap{
 		Tab: key.NewBinding(

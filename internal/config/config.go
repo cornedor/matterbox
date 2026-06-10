@@ -53,12 +53,22 @@ type Config struct {
 
 // KeybindingsConfig holds optional keymap tweaks. Defaults in fillDefaults.
 type KeybindingsConfig struct {
-	// CtrlArrowNav enables ctrl+←/→/↑/↓ as aliases for the ctrl+h/j/k/l
-	// sidebar navigation (switch team / channel from any focus). Pointer so an
-	// absent key defaults to true while an explicit false is honoured: turning
-	// it off frees ctrl+arrows for the composer's word-jump, leaving channel/
-	// team navigation on the ctrl+vim keys only.
-	CtrlArrowNav *bool `yaml:"ctrl_arrow_nav"`
+	// NavModifier sets the modifier for the arrow-key sidebar navigation
+	// (switch team with ←/→ and channel with ↑/↓ from any focus). One of
+	// "ctrl" (default), "alt", "shift", "super" (the macOS ⌘ / Windows key;
+	// also accepted as "cmd"), "meta", "hyper", or "none" to turn arrow-nav
+	// off — which frees ctrl+←/→ for the composer's word-jump. The ctrl+h/j/k/l
+	// vim aliases stay bound regardless. On macOS ctrl+arrows collide with
+	// Mission Control: "shift" is the most broadly compatible alternative, and
+	// "super" (⌘) works on terminals that speak the Kitty keyboard protocol
+	// (Ghostty, kitty, WezTerm) but not the default Terminal.app / iTerm2.
+	NavModifier string `yaml:"nav_modifier"`
+
+	// CtrlArrowNav is the superseded boolean toggle. Kept only so a config
+	// written before NavModifier existed keeps working: when NavModifier is
+	// unset, an explicit false migrates to "none". fillDefaults clears it once
+	// migrated, so a rewritten config carries only nav_modifier.
+	CtrlArrowNav *bool `yaml:"ctrl_arrow_nav,omitempty"`
 }
 
 // SearchConfig tunes local message search ranking. Defaults in fillDefaults.
@@ -260,7 +270,7 @@ func Load() (*Config, error) {
 	// and rewrite the file once so the discovered model + prompt show up as
 	// editable defaults. Best-effort: a failed rewrite only means the file
 	// keeps working off in-memory defaults.
-	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.Keybindings.CtrlArrowNav == nil
+	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.Keybindings.NavModifier == ""
 	cfg.fillDefaults()
 	if addDefaults {
 		if werr := writeConfig(p, cfg); werr != nil {
@@ -315,10 +325,17 @@ func (c *Config) fillDefaults() {
 		d := defaultMarkReadDelaySeconds
 		c.MarkReadDelaySeconds = &d
 	}
-	if c.Keybindings.CtrlArrowNav == nil {
-		t := true
-		c.Keybindings.CtrlArrowNav = &t
+	if c.Keybindings.NavModifier == "" {
+		// Default to the ctrl modifier, but honour a pre-NavModifier config's
+		// ctrl_arrow_nav: false by migrating it to "none".
+		c.Keybindings.NavModifier = "ctrl"
+		if c.Keybindings.CtrlArrowNav != nil && !*c.Keybindings.CtrlArrowNav {
+			c.Keybindings.NavModifier = "none"
+		}
 	}
+	// The legacy toggle has been folded into NavModifier; drop it so a
+	// rewritten config carries only the new key.
+	c.Keybindings.CtrlArrowNav = nil
 }
 
 // SaveTeamOrder persists the given left-to-right team-tab ordering to
@@ -370,6 +387,12 @@ func writeConfig(p string, cfg *Config) error {
 		"#             halves a match's relevance weight per that many days of age\n" +
 		"#             (lower = stronger recency bias; default 90).\n" +
 		"# mark_read_delay_seconds: how long a channel must stay open before it's\n" +
-		"#             marked read (default 5). 0 marks read immediately on open.\n"
+		"#             marked read (default 5). 0 marks read immediately on open.\n" +
+		"# keybindings: nav_modifier sets the modifier for arrow-key team/channel\n" +
+		"#             navigation: ctrl (default), alt, shift, super (the ⌘/Windows\n" +
+		"#             key; also \"cmd\"), meta, hyper, or none. ctrl+h/j/k/l always\n" +
+		"#             navigate too. On macOS ctrl+arrows clash with Mission\n" +
+		"#             Control — try shift, or super on a Kitty-protocol terminal\n" +
+		"#             (Ghostty/kitty/WezTerm).\n"
 	return os.WriteFile(p, append([]byte(header), body...), 0o644)
 }

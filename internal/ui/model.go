@@ -441,10 +441,14 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	var embedDim int
 	embedAuto := false
 	markReadDelay := defaultMarkReadDelay
-	ctrlArrowNav := true
+	navModifier := "ctrl"
 	if cfg != nil {
-		if cfg.Keybindings.CtrlArrowNav != nil {
-			ctrlArrowNav = *cfg.Keybindings.CtrlArrowNav
+		switch {
+		case cfg.Keybindings.NavModifier != "":
+			navModifier = cfg.Keybindings.NavModifier
+		case cfg.Keybindings.CtrlArrowNav != nil && !*cfg.Keybindings.CtrlArrowNav:
+			// Honour a pre-NavModifier config that hasn't been migrated yet.
+			navModifier = "none"
 		}
 		reactions = append([]string(nil), cfg.Reactions...)
 		teamOrder = append([]string(nil), cfg.TeamOrder...)
@@ -465,11 +469,11 @@ func New(client *mm.Client, cfg *config.Config) Model {
 			markReadDelay = time.Duration(*cfg.MarkReadDelaySeconds) * time.Second
 		}
 	}
-	// When ctrl+arrow sidebar nav is disabled, ctrl+←/→ never reach the global
-	// dispatch, so let them word-jump in the composer (the textarea otherwise
-	// only binds alt+←/→ for that — ctrl+arrows would do nothing). Keep the
-	// alt+ defaults too.
-	if !ctrlArrowNav {
+	// Unless the sidebar nav uses the ctrl modifier itself, ctrl+←/→ never
+	// reach the global dispatch, so let them word-jump in the composer (the
+	// textarea otherwise only binds alt+←/→ for that — ctrl+arrows would do
+	// nothing). Keep the alt+ defaults too.
+	if prefix, _ := navMod(navModifier); prefix != "ctrl+" {
 		ta.KeyMap.WordBackward = key.NewBinding(
 			key.WithKeys("alt+left", "alt+b", "ctrl+left"),
 			key.WithHelp("ctrl+←", "word backward"),
@@ -506,7 +510,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		uploadCancel:        map[string]context.CancelFunc{},
 		loading:             true,
 		status:              "loading…",
-		keys:                newKeyMap(ctrlArrowNav),
+		keys:                newKeyMap(navModifier),
 		help:                h,
 		search:              newSearchState(st != nil),
 		feed:                newFeedState(),
