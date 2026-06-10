@@ -5,9 +5,10 @@ Opens a browser for GitLab authentication, extracts the session token,
 and saves it for future API calls.
 
 Usage:
-    python mm_login.py          # Login and save token
-    python mm_login.py --show   # Show current saved token
-    python mm_login.py --clear  # Clear saved token
+    python mm_login.py --url https://mattermost.example.com         # Login and save token
+    python mm_login.py --url https://mattermost.example.com --test  # Test saved token
+    python mm_login.py --show                                       # Show current saved token
+    python mm_login.py --clear                                      # Clear saved token
 """
 
 import argparse
@@ -18,7 +19,6 @@ import time
 import webbrowser
 from pathlib import Path
 
-MM_URL = "https://mattermost.example.com"
 TOKEN_FILE = Path.home() / ".config/matterbox/mm_token.json"
 
 
@@ -35,9 +35,9 @@ def load_token() -> dict | None:
     return None
 
 
-def get_token():
+def get_token(mm_url: str):
     """Get token via browser-based GitLab SSO login."""
-    login_url = f"{MM_URL}/login/gitlab"
+    login_url = f"{mm_url}/login/gitlab"
     print(f"Opening browser for GitLab login...")
     print(f"If the browser doesn't open, go to: {login_url}")
 
@@ -47,7 +47,7 @@ def get_token():
     print("After logging in, you'll need to extract the session token.")
     print("\nHow to get the token:")
     print("1. Open browser DevTools (F12)")
-    print("2. Go to Application/Storage > Cookies > https://mattermost.example.com")
+    print(f"2. Go to Application/Storage > Cookies > {mm_url}")
     print("3. Copy the value of 'MMAUTHTOKEN'")
     print("4. Paste it below\n")
 
@@ -60,12 +60,12 @@ def get_token():
     return token
 
 
-def test_token(token: str) -> bool:
+def test_token(token: str, mm_url: str) -> bool:
     """Verify the token works by fetching the current user."""
     import urllib.request
 
     req = urllib.request.Request(
-        f"{MM_URL}/api/v4/users/me",
+        f"{mm_url}/api/v4/users/me",
         headers={"Authorization": f"Bearer {token}"},
     )
     try:
@@ -80,6 +80,11 @@ def test_token(token: str) -> bool:
 
 def main():
     parser = argparse.ArgumentParser(description="Mattermost GitLab SSO login")
+    parser.add_argument(
+        "--url",
+        help="Mattermost base URL, e.g. https://mattermost.example.com "
+        "(required to log in or test a token)",
+    )
     parser.add_argument("--show", action="store_true", help="Show current saved token")
     parser.add_argument("--clear", action="store_true", help="Clear saved token")
     parser.add_argument("--test", action="store_true", help="Test the saved token")
@@ -102,25 +107,28 @@ def main():
             print("No saved token found.")
         return
 
+    if not args.url:
+        parser.error("--url is required (e.g. --url https://mattermost.example.com)")
+
     if args.test:
         token_data = load_token()
         if not token_data:
-            print("No saved token found. Run without arguments to login first.")
+            print("No saved token found. Run without --test to login first.")
             sys.exit(1)
-        success = test_token(token_data["token"])
+        success = test_token(token_data["token"], args.url)
         sys.exit(0 if success else 1)
 
     # Login flow
     token_data = load_token()
     if token_data:
         print(f"Existing token found (saved {time.strftime('%Y-%m-%d %H:%M', time.localtime(token_data['saved_at']))})")
-        if test_token(token_data["token"]):
+        if test_token(token_data["token"], args.url):
             print("Token is still valid. Use it for API calls.")
             return
         print("Token expired or invalid. Logging in again...")
 
-    token = get_token()
-    test_token(token)
+    token = get_token(args.url)
+    test_token(token, args.url)
 
 
 if __name__ == "__main__":

@@ -128,9 +128,9 @@ type EmbeddingsConfig struct {
 	AutoIndex *bool `yaml:"auto_index"`
 }
 
-// defaultServerURL is the URL used when config.yaml is missing or has
-// no server_url. It preserves the original hard-coded behaviour from
-// before this file existed.
+// defaultServerURL is a placeholder used when config.yaml is missing or
+// has no server_url set. Point it at your own Mattermost instance by
+// setting server_url in config.yaml.
 const defaultServerURL = "https://mattermost.example.com"
 
 // Summary defaults. The model is the one that was available on the local

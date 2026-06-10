@@ -1,2 +1,11 @@
 # Compiled binary (build with `go build -o matterbox .` or run via `go run .`)
 /matterbox
+
+# Go test binaries (`go test -c`)
+*.test
+
+# Local project notes, not part of the release
+/PLAN.md
+
+# Python bytecode cache
+__pycache__/
