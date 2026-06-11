@@ -21,6 +21,13 @@ type Client struct {
 	// name yet (see resolveUnknownSenders); without this, a burst of
 	// renders for the same unresolved set would each hit the server.
 	usersSF singleflight.Group
+
+	// emojiSF collapses concurrent CustomEmojiImage downloads for the same
+	// emoji id into one request. Custom-emoji image fetches are render-driven
+	// (a body, pill, or picker entry sights an unknown emoji and enqueues a
+	// fetch), so the same id can be requested from several event loops before
+	// the first download lands; singleflight makes that cost one GET.
+	emojiSF singleflight.Group
 }
 
 // New builds a Client4 wrapper pointed at the given Mattermost server.
@@ -399,6 +406,67 @@ func (c *Client) UsernamesByIDs(ctx context.Context, ids []string) (map[string]s
 		return nil, err
 	}
 	return v.(map[string]string), nil
+}
+
+// CustomEmojisByNames bulk-resolves emoji shortcodes (no surrounding
+// colons) to their server Emoji records. Names that aren't custom emoji
+// are simply absent from the result — that's how the caller learns a
+// `:name:` is not a server emoji (so it stays literal text). Old servers
+// that lack the bulk endpoint surface an error; the caller can fall back
+// to per-name resolution if needed.
+func (c *Client) CustomEmojisByNames(ctx context.Context, names []string) ([]*model.Emoji, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	es, _, err := c.c.GetEmojisByNames(ctx, names)
+	if err != nil {
+		return nil, fmt.Errorf("get emojis by names: %w", err)
+	}
+	return es, nil
+}
+
+// CustomEmojiImage downloads the raw image bytes for a custom emoji by
+// id. Concurrent calls for the same id are coalesced into one request via
+// singleflight; the returned slice is shared with any coalesced callers,
+// so treat it as read-only.
+func (c *Client) CustomEmojiImage(ctx context.Context, emojiID string) ([]byte, error) {
+	if emojiID == "" {
+		return nil, fmt.Errorf("get emoji image: empty id")
+	}
+	v, err, _ := c.emojiSF.Do(emojiID, func() (any, error) {
+		b, _, err := c.c.GetEmojiImage(ctx, emojiID)
+		if err != nil {
+			return nil, fmt.Errorf("get emoji image: %w", err)
+		}
+		return b, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.([]byte), nil
+}
+
+// AllCustomEmoji returns every custom emoji name (no colons) defined on
+// the server, paging until the list is exhausted. Used to seed the
+// `:`-picker index; the images themselves stay lazy.
+func (c *Client) AllCustomEmoji(ctx context.Context) ([]string, error) {
+	const perPage = 200
+	var names []string
+	for page := 0; ; page++ {
+		batch, _, err := c.c.GetEmojiList(ctx, page, perPage)
+		if err != nil {
+			return nil, fmt.Errorf("get emoji list: %w", err)
+		}
+		for _, e := range batch {
+			if e != nil && e.Name != "" {
+				names = append(names, e.Name)
+			}
+		}
+		if len(batch) < perPage {
+			break
+		}
+	}
+	return names, nil
 }
 
 // ChannelByName resolves a team-qualified channel to its record by URL

@@ -64,8 +64,10 @@ func trimTrailingURLPunct(u string) (clean, trailing string) {
 }
 
 // renderMarkdown renders a Mattermost message body. Each output line is
-// already indented with the two-space message gutter.
-func renderMarkdown(msg string) string {
+// already indented with the two-space message gutter. ei (may be nil) resolves
+// custom server emoji to inline Kitty-graphics placeholders; a nil manager
+// leaves them as literal :name: text.
+func renderMarkdown(msg string, ei *emojiImages) string {
 	lines := strings.Split(strings.TrimRight(msg, "\n"), "\n")
 	out := make([]string, 0, len(lines))
 	inFence := false
@@ -82,15 +84,20 @@ func renderMarkdown(msg string) string {
 		}
 		if strings.HasPrefix(raw, ">") {
 			content := strings.TrimPrefix(strings.TrimPrefix(raw, ">"), " ")
-			out = append(out, "  "+mdQuoteBarStyle.Render("┃")+" "+renderInline(content))
+			out = append(out, "  "+mdQuoteBarStyle.Render("┃")+" "+renderInline(content, ei))
 			continue
 		}
-		out = append(out, "  "+renderInline(raw))
+		out = append(out, "  "+renderInline(raw, ei))
 	}
 	return strings.Join(out, "\n")
 }
 
-func renderInline(s string) string {
+// emojiShortcodeRe matches a `:shortcode:` left unresolved by kyokomi — i.e. a
+// custom server emoji candidate. The class mirrors Mattermost's emoji-name
+// charset; code spans are already stashed before this runs.
+var emojiShortcodeRe = regexp.MustCompile(`:([a-zA-Z0-9_+\-]+):`)
+
+func renderInline(s string, ei *emojiImages) string {
 	if s == "" {
 		return ""
 	}
@@ -101,7 +108,20 @@ func renderInline(s string) string {
 		return mdCodeSentinel + strconv.Itoa(len(codes)-1) + "\x00"
 	})
 
+	// Unicode emoji first (kyokomi font glyphs, exactly as before); then any
+	// surviving :name: is a custom-emoji candidate resolved to an inline-image
+	// placeholder when ready (and recorded as a sighting otherwise). The
+	// placeholder carries no markdown metacharacters, so the styling passes
+	// below can't corrupt it.
 	s = emoji.Sprint(s)
+	if ei != nil {
+		s = emojiShortcodeRe.ReplaceAllStringFunc(s, func(m string) string {
+			if ph, ok := ei.inline(m[1 : len(m)-1]); ok {
+				return ph
+			}
+			return m
+		})
+	}
 
 	// Inline images first, so the bracketed alt text isn't mistaken for
 	// other inline syntax.

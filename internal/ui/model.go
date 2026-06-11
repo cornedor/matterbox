@@ -363,6 +363,15 @@ type Model struct {
 	keys keyMap
 	help help.Model
 
+	// emojiImg renders custom (server) emoji as inline Kitty-graphics images
+	// (see emojiimg.go). A pointer so the value-copied Model shares one
+	// manager; nil-safe everywhere (off when nil or when the startup probe
+	// finds no support). customEmojiNames is the server's full custom-emoji
+	// shortcode list, fetched once after channels load to seed the :-picker
+	// (images stay lazy).
+	emojiImg         *emojiImages
+	customEmojiNames []string
+
 	// postLineCache memoizes renderPostLines / renderThreadPostLines
 	// output keyed by post id, with a fingerprint over the inputs (see
 	// postcache.go). Bounded at postLineCacheCap; cleared on width
@@ -454,6 +463,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	markReadDelay := defaultMarkReadDelay
 	showCustomStatus := true
 	navModifier := "ctrl"
+	emojiMode := "auto"
 	if cfg != nil {
 		switch {
 		case cfg.Keybindings.NavModifier != "":
@@ -482,6 +492,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		}
 		if cfg.CustomStatus != nil {
 			showCustomStatus = *cfg.CustomStatus
+		}
+		if cfg.EmojiImages != "" {
+			emojiMode = cfg.EmojiImages
 		}
 	}
 	// Unless the sidebar nav uses the ctrl modifier itself, ctrl+←/→ never
@@ -549,6 +562,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		embedBatch:          semindex.DefaultBatch,
 		embedder:            embedderState{enabled: embedderEnabled},
 		markReadDelay:       markReadDelay,
+		emojiImg:            newEmojiImages(emojiMode),
 	}
 }
 
@@ -627,7 +641,36 @@ func (m Model) FullHelp() [][]key.Binding {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.fetchMe(), m.connectWS(), m.startEmbedder())
+	cmds := []tea.Cmd{m.fetchMe(), m.connectWS(), m.startEmbedder()}
+	if c := m.emojiProbeCmd(); c != nil {
+		cmds = append(cmds, c)
+	}
+	return tea.Batch(cmds...)
+}
+
+// emojiProbeTimeout bounds how long we wait for the terminal to answer the
+// custom-emoji graphics probe before giving up and treating images as
+// unsupported. One second is ample for a local reply; a slow ssh hop just
+// degrades to literal :name: text.
+const emojiProbeTimeout = time.Second
+
+// emojiProbeCmd kicks off custom-emoji image support detection: a Kitty
+// graphics query plus a timeout fallback. Returns nil (leaving the manager
+// disabled) when images are configured off, or under tmux where the probe
+// reply is unreliable and passthrough is fragile. The truecolor half of the
+// gate is learned separately from tea.ColorProfileMsg.
+func (m Model) emojiProbeCmd() tea.Cmd {
+	if m.emojiImg == nil || m.emojiImg.mode != "auto" {
+		return nil
+	}
+	if os.Getenv("TMUX") != "" {
+		m.emojiImg.markUnsupported()
+		return nil
+	}
+	return tea.Batch(
+		tea.Raw(kittyProbe()),
+		tea.Tick(emojiProbeTimeout, func(time.Time) tea.Msg { return emojiProbeTimeoutMsg{} }),
+	)
 }
 
 func (m Model) connectWS() tea.Cmd {

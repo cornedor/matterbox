@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	emoji "github.com/kyokomi/emoji/v2"
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
@@ -149,7 +148,7 @@ func runSetCustomStatus(m *Model, arg string) tea.Cmd {
 	emojiName, text := parseCustomStatusArg(arg)
 	cs := model.CustomStatus{Emoji: emojiName, Text: text}
 	m.customStatuses[m.me.Id] = cs
-	m.status = "custom status: " + strings.TrimSpace(emoji.Sprint(":"+emojiName+":")+" "+text)
+	m.status = "custom status: " + strings.TrimSpace(m.renderEmojiGlyph(emojiName)+" "+text)
 	id := m.me.Id
 	client, ctx := m.client, m.ctx
 	return func() tea.Msg {

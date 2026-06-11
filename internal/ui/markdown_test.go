@@ -14,7 +14,7 @@ const (
 
 func TestRenderInlineBareURL(t *testing.T) {
 	url := "https://example.com/a/b"
-	got := renderInline("see " + url + " ok")
+	got := renderInline("see "+url+" ok", nil)
 	if !strings.Contains(got, osc8Open+url+"\x1b\\") {
 		t.Fatalf("missing OSC 8 open for %q in %q", url, got)
 	}
@@ -28,7 +28,7 @@ func TestRenderInlineBareURL(t *testing.T) {
 }
 
 func TestRenderInlineMarkdownLink(t *testing.T) {
-	got := renderInline("[click here](https://example.com/x)")
+	got := renderInline("[click here](https://example.com/x)", nil)
 	if !strings.Contains(got, osc8Open+"https://example.com/x\x1b\\") {
 		t.Fatalf("URL not used as hyperlink target: %q", got)
 	}
@@ -38,7 +38,7 @@ func TestRenderInlineMarkdownLink(t *testing.T) {
 }
 
 func TestRenderInlineTrailingPunctuation(t *testing.T) {
-	got := renderInline("look at https://example.com/a.")
+	got := renderInline("look at https://example.com/a.", nil)
 	// The period must fall outside the hyperlink target.
 	if !strings.Contains(got, osc8Open+"https://example.com/a\x1b\\") {
 		t.Fatalf("trailing period not trimmed from target: %q", got)
@@ -50,7 +50,7 @@ func TestRenderInlineTrailingPunctuation(t *testing.T) {
 
 func TestRenderInlineBalancedParensKept(t *testing.T) {
 	url := "https://en.wikipedia.org/wiki/Go_(language)"
-	got := renderInline(url)
+	got := renderInline(url, nil)
 	if !strings.Contains(got, osc8Open+url+"\x1b\\") {
 		t.Fatalf("balanced parens dropped from target: %q", got)
 	}
@@ -61,7 +61,7 @@ func TestRenderInlineBalancedParensKept(t *testing.T) {
 // in between clickable.
 func TestLinkSurvivesBodyWrap(t *testing.T) {
 	url := "https://example.com/a/very/long/path/that/will/wrap/across/rows/for/sure"
-	line := renderMarkdown(url) // gains the two-space gutter
+	line := renderMarkdown(url, nil) // gains the two-space gutter
 	rows := wrapBodyLine(line, 30)
 	if len(rows) < 2 {
 		t.Fatalf("expected the long URL to wrap, got %d row(s)", len(rows))

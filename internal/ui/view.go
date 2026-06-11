@@ -10,7 +10,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-	emoji "github.com/kyokomi/emoji/v2"
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
@@ -573,7 +572,7 @@ func (m *Model) renderThreadPostLines(p *model.Post, isRoot bool) ([]string, int
 	}
 	header = withEditedTag(header, p, width)
 	lines := []string{header}
-	if body := renderMarkdown(p.Message); body != "" {
+	if body := renderMarkdown(p.Message, m.emojiImg); body != "" {
 		for _, l := range strings.Split(body, "\n") {
 			lines = append(lines, wrapBodyLine(l, width)...)
 		}
@@ -623,7 +622,7 @@ func (m *Model) renderPostLines(p *model.Post) ([]string, int) {
 	}
 	header = withEditedTag(header, p, width)
 	lines := []string{header}
-	if body := renderMarkdown(p.Message); body != "" {
+	if body := renderMarkdown(p.Message, m.emojiImg); body != "" {
 		for _, l := range strings.Split(body, "\n") {
 			lines = append(lines, wrapBodyLine(l, width)...)
 		}
@@ -1003,7 +1002,7 @@ func (m *Model) renderMessagesPane(height, width int) string {
 		}
 		if cs, ok := m.dmCustomStatus(ch); ok {
 			if cs.Emoji != "" {
-				titleRendered += " " + emoji.Sprint(":"+cs.Emoji+":")
+				titleRendered += " " + m.renderEmojiGlyph(cs.Emoji)
 			}
 			if cs.Text != "" {
 				titleRendered += " " + cs.Text

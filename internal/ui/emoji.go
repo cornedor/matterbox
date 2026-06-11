@@ -15,11 +15,12 @@ import (
 const emojiLimit = 8
 
 // emojiItem is one picker candidate: `code` is the colon-wrapped shortcode
-// (e.g. ":smile:") inserted on accept; `glyph` is the rendered emoji shown
-// in the popup for preview.
+// (e.g. ":smile:") inserted on accept; `name` is the bare shortcode, resolved
+// to a glyph (unicode, custom image, or literal) at render time so a custom
+// emoji's image appears as soon as it's ready without recomputing matches.
 type emojiItem struct {
-	code  string
-	glyph string
+	code string
+	name string
 }
 
 // emojiState mirrors mentionState but for `:`-triggered shortcode
@@ -110,7 +111,7 @@ func (m *Model) updateEmoji() {
 	m.emoji.line = row
 	m.emoji.start = at
 	m.emoji.query = query
-	m.emoji.items = emojiMatches(query)
+	m.emoji.items = m.emojiMatches(query)
 	m.emoji.idx = 0
 	if len(m.emoji.items) == 0 {
 		m.closeEmoji()
@@ -128,21 +129,36 @@ func (m *Model) closeEmoji() {
 // emojiMatches returns up to emojiLimit candidates, prefix matches first
 // (":smi" → smile before kissing_smiling_eyes), then substring matches, so
 // the most obvious completion sits at the top while fuzzier hits stay
-// reachable.
-func emojiMatches(query string) []emojiItem {
-	cm := emoji.CodeMap()
+// reachable. Custom (server) emoji are merged ahead of the kyokomi index
+// within each tier so they stay discoverable against the much larger unicode
+// set; glyphs are resolved at render time, not here.
+func (m Model) emojiMatches(query string) []emojiItem {
 	var prefix, infix []emojiItem
-	for _, name := range emojiIndex() {
+	seen := map[string]struct{}{}
+	add := func(dst *[]emojiItem, name string) {
+		if _, dup := seen[name]; dup {
+			return
+		}
+		seen[name] = struct{}{}
+		*dst = append(*dst, emojiItem{code: ":" + name + ":", name: name})
+	}
+	for _, name := range m.customEmojiNames {
 		switch {
 		case strings.HasPrefix(name, query):
-			code := ":" + name + ":"
-			prefix = append(prefix, emojiItem{code: code, glyph: cm[code]})
+			add(&prefix, name)
 		case strings.Contains(name, query):
-			code := ":" + name + ":"
-			infix = append(infix, emojiItem{code: code, glyph: cm[code]})
+			add(&infix, name)
 		}
+	}
+	for _, name := range emojiIndex() {
 		if len(prefix) >= emojiLimit {
 			break
+		}
+		switch {
+		case strings.HasPrefix(name, query):
+			add(&prefix, name)
+		case strings.Contains(name, query):
+			add(&infix, name)
 		}
 	}
 	out := prefix
@@ -151,6 +167,9 @@ func emojiMatches(query string) []emojiItem {
 			break
 		}
 		out = append(out, it)
+	}
+	if len(out) > emojiLimit {
+		out = out[:emojiLimit]
 	}
 	return out
 }
@@ -201,15 +220,16 @@ func (m *Model) renderEmojiPopup() string {
 	dim := lipgloss.NewStyle().Foreground(dimColor)
 	rows := make([]string, 0, len(m.emoji.items))
 	for i, it := range m.emoji.items {
+		glyph := m.renderEmojiGlyph(it.name)
 		if i == m.emoji.idx {
 			// Don't dim the code on the highlighted row — the dim foreground
 			// against the selection background is barely legible. Leave the
 			// glyph and code at default (white) and let selectedRow paint the
 			// background.
-			rows = append(rows, selectedRow.Render(it.glyph+"  "+it.code))
+			rows = append(rows, selectedRow.Render(glyph+"  "+it.code))
 			continue
 		}
-		rows = append(rows, it.glyph+"  "+dim.Render(it.code))
+		rows = append(rows, glyph+"  "+dim.Render(it.code))
 	}
 	return emojiPopupStyle.Render(strings.Join(rows, "\n"))
 }

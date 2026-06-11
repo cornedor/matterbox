@@ -55,6 +55,14 @@ type Config struct {
 	CustomStatus *bool `yaml:"custom_status"`
 	// Keybindings holds optional keymap tweaks. See internal/ui.
 	Keybindings KeybindingsConfig `yaml:"keybindings"`
+	// EmojiImages controls whether custom (server) emoji render as real
+	// inline images via the Kitty graphics protocol instead of literal
+	// `:name:` text. "auto" (default) probes the terminal at startup and
+	// enables images only on a Kitty/Ghostty-class terminal with a truecolor
+	// profile (and not inside tmux); "off" keeps the literal-text behaviour
+	// everywhere. Unicode emoji are unaffected — they always render as font
+	// glyphs. See internal/ui.
+	EmojiImages string `yaml:"emoji_images"`
 }
 
 // KeybindingsConfig holds optional keymap tweaks. Defaults in fillDefaults.
@@ -276,7 +284,7 @@ func Load() (*Config, error) {
 	// and rewrite the file once so the discovered model + prompt show up as
 	// editable defaults. Best-effort: a failed rewrite only means the file
 	// keeps working off in-memory defaults.
-	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.Keybindings.NavModifier == ""
+	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.Keybindings.NavModifier == "" || cfg.EmojiImages == ""
 	cfg.fillDefaults()
 	if addDefaults {
 		if werr := writeConfig(p, cfg); werr != nil {
@@ -346,6 +354,9 @@ func (c *Config) fillDefaults() {
 	// The legacy toggle has been folded into NavModifier; drop it so a
 	// rewritten config carries only the new key.
 	c.Keybindings.CtrlArrowNav = nil
+	if c.EmojiImages == "" {
+		c.EmojiImages = "auto"
+	}
 }
 
 // SaveTeamOrder persists the given left-to-right team-tab ordering to
@@ -405,6 +416,10 @@ func writeConfig(p string, cfg *Config) error {
 		"#             key; also \"cmd\"), meta, hyper, or none. ctrl+h/j/k/l always\n" +
 		"#             navigate too. On macOS ctrl+arrows clash with Mission\n" +
 		"#             Control — try shift, or super on a Kitty-protocol terminal\n" +
-		"#             (Ghostty/kitty/WezTerm).\n"
+		"#             (Ghostty/kitty/WezTerm).\n" +
+		"# emoji_images: render custom (server) emoji as inline images via the\n" +
+		"#             Kitty graphics protocol. auto (default) enables them on a\n" +
+		"#             Kitty/Ghostty truecolor terminal outside tmux; off keeps\n" +
+		"#             literal :name: text. Unicode emoji are unaffected.\n"
 	return os.WriteFile(p, append([]byte(header), body...), 0o644)
 }

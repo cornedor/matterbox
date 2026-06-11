@@ -9,7 +9,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"charm.land/lipgloss/v2/compat"
-	emoji "github.com/kyokomi/emoji/v2"
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
@@ -53,6 +52,12 @@ var (
 	// background colour, background = unset so the cap reads as a
 	// rounded transition into the terminal's own background.
 	reactionCapStyle = lipgloss.NewStyle().Foreground(reactionChipBg)
+
+	// reactionChipBgStyle sets only the chip background. Used for a custom
+	// emoji's image placeholder so the pill colour sits under it without a
+	// foreground — the protocol carries the image id in the foreground, which
+	// a chip foreground colour would overwrite.
+	reactionChipBgStyle = lipgloss.NewStyle().Background(reactionChipBg)
 )
 
 // renderReactions returns a single indented line summarising the post's
@@ -91,19 +96,22 @@ func (m *Model) renderReactions(p *model.Post) string {
 	parts := make([]string, 0, len(order))
 	for _, name := range order {
 		b := buckets[name]
-		glyph := emoji.Sprint(":" + name + ":")
-		// Shortcodes the emoji library doesn't recognise come back
-		// unchanged (still wrapped in colons) — show the original name
-		// instead so the user can still see what was reacted with.
-		if strings.HasPrefix(glyph, ":") {
-			glyph = ":" + name + ":"
-		}
-		body := fmt.Sprintf("%s %d", glyph, b.count)
-		var styled string
+		// renderEmojiGlyph yields a unicode glyph, a custom-emoji image
+		// placeholder, or the literal :name: (shortcodes nothing recognises),
+		// so the user always sees what was reacted with.
+		glyph := m.renderEmojiGlyph(name)
+		style := reactionStyle
 		if b.self {
-			styled = selfReactionStyle.Render(body)
+			style = selfReactionStyle
+		}
+		var styled string
+		if emojiIsPlaceholder(glyph) {
+			// Render the placeholder under the chip background only, then the
+			// count as a normal styled run so it keeps its colour after the
+			// placeholder's [39m foreground reset.
+			styled = reactionChipBgStyle.Render(glyph) + style.Render(fmt.Sprintf(" %d", b.count))
 		} else {
-			styled = reactionStyle.Render(body)
+			styled = style.Render(fmt.Sprintf("%s %d", glyph, b.count))
 		}
 		parts = append(parts,
 			reactionCapStyle.Render(reactionCapLeft)+
@@ -320,10 +328,7 @@ func (m *Model) renderReactionPicker() string {
 	cursorStyle := lipgloss.NewStyle().Foreground(focusedColor).Bold(true)
 	rows := make([]string, 0, len(m.reactionEmojis))
 	for i, name := range m.reactionEmojis {
-		glyph := emoji.Sprint(":" + name + ":")
-		if strings.HasPrefix(glyph, ":") {
-			glyph = ":" + name + ":"
-		}
+		glyph := m.renderEmojiGlyph(name)
 		accel := " "
 		if i < 9 {
 			accel = fmt.Sprintf("%d", i+1)

@@ -8,6 +8,8 @@ import (
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/colorprofile"
+	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
@@ -25,6 +27,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	if resolve := nm.resolveUnknownSenders(); resolve != nil {
 		cmd = tea.Batch(cmd, resolve)
+	}
+	if fetch := nm.fetchPendingEmoji(); fetch != nil {
+		cmd = tea.Batch(cmd, fetch)
 	}
 	return nm, cmd
 }
@@ -48,6 +53,37 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.PasteMsg:
 		return m.handlePaste(msg)
+
+	case tea.ColorProfileMsg:
+		// The truecolor half of the custom-emoji image gate (the id rides in
+		// the foreground, which a non-truecolor profile would quantise away).
+		if m.emojiImg != nil {
+			m.emojiImg.setColorProfile(msg.Profile == colorprofile.TrueColor)
+		}
+		return m, nil
+
+	case uv.KittyGraphicsEvent:
+		// Reply to the startup graphics-support probe (see emojiProbeCmd).
+		// Transmits use q=2, so only the probe reply should reach here.
+		if m.emojiImg != nil && msg.Options.ID == kittyProbeID {
+			m.emojiImg.setProbeResult(strings.HasPrefix(string(msg.Payload), "OK"))
+		}
+		return m, nil
+
+	case emojiProbeTimeoutMsg:
+		if m.emojiImg != nil {
+			m.emojiImg.setProbeResult(false)
+		}
+		return m, nil
+
+	case customEmojiListMsg:
+		if msg.err == nil {
+			m.customEmojiNames = msg.names
+		}
+		return m, nil
+
+	case emojiImagesFetchedMsg:
+		return m.handleEmojiImagesFetched(msg)
 
 	case meLoadedMsg:
 		m.me = msg.user
@@ -75,6 +111,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.channelsLoaded = true
 		m.applyUnreadFromMembers()
 		cmds := []tea.Cmd{m.maybeFetchInitialPosts()}
+		// Seed the :-picker's custom-emoji index once (images stay lazy).
+		if m.customEmojiNames == nil {
+			if c := m.fetchCustomEmojiList(); c != nil {
+				cmds = append(cmds, c)
+			}
+		}
 		// Start the single presence-poll chain now that DM partners are known.
 		if !m.statusPollStarted {
 			m.statusPollStarted = true
