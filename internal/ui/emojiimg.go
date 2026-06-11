@@ -17,7 +17,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/ansi/kitty"
-	emoji "github.com/kyokomi/emoji/v2"
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
@@ -361,8 +360,7 @@ func (e *emojiImages) markFailed(names ...string) {
 // :name: as a last resort. Used by the reaction pills/picker, the emoji popup,
 // and the custom-status surfaces; the message body resolves via renderInline.
 func (m Model) renderEmojiGlyph(name string) string {
-	code := ":" + name + ":"
-	if g := emoji.CodeMap()[code]; g != "" {
+	if g := unicodeEmojiGlyph(name); g != "" {
 		return g
 	}
 	if m.emojiImg != nil {
@@ -370,7 +368,7 @@ func (m Model) renderEmojiGlyph(name string) string {
 			return ph
 		}
 	}
-	return code
+	return ":" + name + ":"
 }
 
 // --- background fetch + Update wiring -------------------------------------

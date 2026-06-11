@@ -61,3 +61,33 @@ func TestEmojiMatches(t *testing.T) {
 		t.Errorf("party: custom emoji not surfaced first, got %v", got)
 	}
 }
+
+func TestUnicodeEmojiGlyph(t *testing.T) {
+	tests := []struct {
+		name, want string
+	}{
+		// Plain codemap lookups still resolve.
+		{"+1", "👍"},
+		{"smile", "😄"},
+		// Mattermost skin-tone naming kyokomi doesn't carry, composed from the
+		// base glyph + Fitzpatrick modifier (matches kyokomi's own _toneN form).
+		{"+1_light_skin_tone", "👍🏻"},
+		{"+1_medium_light_skin_tone", "👍🏼"},
+		{"+1_medium_skin_tone", "👍🏽"},
+		{"+1_medium_dark_skin_tone", "👍🏾"},
+		{"+1_dark_skin_tone", "👍🏿"},
+		{"wave_medium_skin_tone", "👋🏽"},
+		// Base glyph carrying a VS16 drops it before the modifier so the
+		// sequence is canonical (one grapheme, not glyph + swatch).
+		{"point_up_medium_skin_tone", "☝🏽"},
+		// Unknown base or non-emoji shortcode stays unresolved.
+		{"party_parrot", ""},
+		{"definitely_not_an_emoji_dark_skin_tone", ""},
+	}
+	for _, tt := range tests {
+		if got := unicodeEmojiGlyph(tt.name); got != tt.want {
+			t.Errorf("unicodeEmojiGlyph(%q) = %q (% x), want %q (% x)",
+				tt.name, got, []byte(got), tt.want, []byte(tt.want))
+		}
+	}
+}

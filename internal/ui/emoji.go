@@ -14,6 +14,52 @@ import (
 // of how many shortcodes match the query.
 const emojiLimit = 8
 
+// skinTones maps Mattermost's descriptive skin-tone shortcode suffixes to the
+// Unicode Fitzpatrick modifier runes. Mattermost spells toned emoji as
+// "<base>_<tone>_skin_tone" (e.g. ":+1_medium_light_skin_tone:") where kyokomi
+// uses "<base>_toneN", so a direct codemap lookup misses. Ordered longest
+// suffix first so "medium_light"/"medium_dark" win over the "light"/"dark"
+// suffixes they contain.
+// vs16 is the emoji variation selector (U+FE0F). It forces emoji presentation
+// on the base glyph but is redundant — and non-canonical — once a skin-tone
+// modifier follows, so it's stripped before the modifier is appended.
+const vs16 = "️"
+
+var skinTones = []struct {
+	suffix string
+	mod    rune
+}{
+	{"medium_light_skin_tone", '\U0001F3FC'},
+	{"medium_dark_skin_tone", '\U0001F3FE'},
+	{"medium_skin_tone", '\U0001F3FD'},
+	{"light_skin_tone", '\U0001F3FB'},
+	{"dark_skin_tone", '\U0001F3FF'},
+}
+
+// unicodeEmojiGlyph resolves a bare emoji shortcode (no colons) to a unicode
+// glyph, or "" if kyokomi doesn't know it. Beyond a direct codemap lookup it
+// understands Mattermost's "<base>_<tone>_skin_tone" naming: the base glyph is
+// resolved and the matching Fitzpatrick modifier appended, composing the same
+// grapheme kyokomi's "_toneN" variants produce. A trailing VS16 on the base is
+// dropped first — it's redundant before a modifier and yields a non-canonical
+// sequence some terminals split into two glyphs.
+func unicodeEmojiGlyph(name string) string {
+	cm := emoji.CodeMap()
+	if g := cm[":"+name+":"]; g != "" {
+		return g
+	}
+	for _, st := range skinTones {
+		base := strings.TrimSuffix(name, "_"+st.suffix)
+		if base == name {
+			continue
+		}
+		if g := cm[":"+base+":"]; g != "" {
+			return strings.TrimSuffix(g, vs16) + string(st.mod)
+		}
+	}
+	return ""
+}
+
 // emojiItem is one picker candidate: `code` is the colon-wrapped shortcode
 // (e.g. ":smile:") inserted on accept; `name` is the bare shortcode, resolved
 // to a glyph (unicode, custom image, or literal) at render time so a custom

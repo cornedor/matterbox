@@ -108,20 +108,25 @@ func renderInline(s string, ei *emojiImages) string {
 		return mdCodeSentinel + strconv.Itoa(len(codes)-1) + "\x00"
 	})
 
-	// Unicode emoji first (kyokomi font glyphs, exactly as before); then any
-	// surviving :name: is a custom-emoji candidate resolved to an inline-image
-	// placeholder when ready (and recorded as a sighting otherwise). The
-	// placeholder carries no markdown metacharacters, so the styling passes
-	// below can't corrupt it.
+	// Unicode emoji first (kyokomi font glyphs, exactly as before). Any
+	// surviving :name: is either a Mattermost skin-tone variant kyokomi spells
+	// differently (resolved to a unicode glyph) or a custom-emoji candidate
+	// resolved to an inline-image placeholder when ready (and recorded as a
+	// sighting otherwise). The placeholder carries no markdown metacharacters,
+	// so the styling passes below can't corrupt it.
 	s = emoji.Sprint(s)
-	if ei != nil {
-		s = emojiShortcodeRe.ReplaceAllStringFunc(s, func(m string) string {
-			if ph, ok := ei.inline(m[1 : len(m)-1]); ok {
+	s = emojiShortcodeRe.ReplaceAllStringFunc(s, func(m string) string {
+		name := m[1 : len(m)-1]
+		if g := unicodeEmojiGlyph(name); g != "" {
+			return g
+		}
+		if ei != nil {
+			if ph, ok := ei.inline(name); ok {
 				return ph
 			}
-			return m
-		})
-	}
+		}
+		return m
+	})
 
 	// Inline images first, so the bracketed alt text isn't mistaken for
 	// other inline syntax.
