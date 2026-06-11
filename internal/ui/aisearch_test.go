@@ -17,7 +17,7 @@ func TestNormalizeChannelArg(t *testing.T) {
 	cases := map[string]string{
 		"#frontend":             "frontend",
 		"frontend":              "frontend",
-		"Acme › #acme":  "acme",
+		"Acme › #acme":          "acme",
 		"Ops > #infra-platform": "infra-platform",
 		"DMs › @alice":          "alice",
 		"  🔒secret  ":           "secret",
@@ -302,7 +302,7 @@ func TestExecSearch(t *testing.T) {
 
 	t.Run("scope label marks team vs channel", func(t *testing.T) {
 		cases := []struct{ args, want string }{
-			{`{"any_of":["storyblok"],"team":"Acme"}`, "Acme"},         // bare name = team
+			{`{"any_of":["storyblok"],"team":"Acme"}`, "Acme"},             // bare name = team
 			{`{"any_of":["storyblok"],"channel":"frontend"}`, "#frontend"}, // # = channel
 			{`{"any_of":["storyblok"],"team":"Acme","channel":"acme-project"}`, "Acme › #acme-project"},
 			{`{"any_of":["storyblok"],"channel":"nonexistent-zzz"}`, "#nonexistent-zzz (no match → all)"},

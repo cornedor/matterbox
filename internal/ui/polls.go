@@ -37,9 +37,9 @@ var (
 type pollAction struct {
 	id    string
 	name  string
-	vote  bool   // vote0/vote1/... — gets a numeric accelerator
-	admin bool   // custom_matterpoll_admin_button — restricted to creator
-	accel rune   // user-facing accelerator key (only set for vote, addOption, endPoll, deletePoll)
+	vote  bool // vote0/vote1/... — gets a numeric accelerator
+	admin bool // custom_matterpoll_admin_button — restricted to creator
+	accel rune // user-facing accelerator key (only set for vote, addOption, endPoll, deletePoll)
 }
 
 // pollData is what we render inline. It's reconstructed every render
@@ -662,5 +662,3 @@ func (m Model) handlePollKey(p *model.Post, msg tea.KeyPressMsg) (tea.Model, tea
 	}
 	return m, m.doPollAction(p.Id, action.id), true
 }
-
-

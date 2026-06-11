@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/mattermost/mattermost/server/public/model"
@@ -18,7 +19,7 @@ const switcherWidth = 60
 // the popup short, generous enough for "go to <project>" muscle memory.
 const switcherLimit = 12
 
-// openSwitcher activates the global ctrl+k channel switcher. The
+// openSwitcher activates the global ctrl+p channel switcher. The
 // textinput is reset (no stale query), focused so the cursor blinks,
 // and selection lands on the first match.
 func (m Model) openSwitcher() (tea.Model, tea.Cmd) {
@@ -46,20 +47,23 @@ func (m *Model) closeSwitcher() {
 // Three sub-modes coexist behind the same popup: normal channel switch,
 // "> command" list, and a captive arg-prompt for a selected command.
 func (m Model) handleSwitcherKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "ctrl+c":
+	switch {
+	case msg.String() == "ctrl+c": // hardwired quit
 		return m, tea.Quit
-	case "esc":
+	case msg.String() == "esc": // hardwired modal cancel
 		if m.inCommandArgMode() {
 			m.leaveCommandArgMode()
 			return m, nil
 		}
 		m.closeSwitcher()
 		return m, nil
-	case "ctrl+k":
+	case key.Matches(msg, m.keys.Switcher):
+		// ctrl+p opened the switcher; pressing it again toggles it closed.
+		// (It used to be ctrl+k, which is now "prev channel" in the global nav.)
+		// Checked before InputUp so it wins ctrl+p (a whitelisted shadow).
 		m.closeSwitcher()
 		return m, nil
-	case "up", "ctrl+p":
+	case key.Matches(msg, m.keys.InputUp):
 		if m.inCommandArgMode() {
 			// Captive arg-prompt: no list to navigate.
 			return m, nil
@@ -68,7 +72,7 @@ func (m Model) handleSwitcherKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.switcherIdx--
 		}
 		return m, nil
-	case "down", "ctrl+n":
+	case key.Matches(msg, m.keys.InputDown):
 		if m.inCommandArgMode() {
 			return m, nil
 		}
@@ -82,7 +86,7 @@ func (m Model) handleSwitcherKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.switcherIdx++
 		}
 		return m, nil
-	case "enter":
+	case key.Matches(msg, m.keys.OpenChannel):
 		if m.inCommandArgMode() {
 			cmd := *m.switcherCmdPending
 			arg := m.switcher.Value()
@@ -114,9 +118,9 @@ func (m Model) handleSwitcherKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.switchToChannelHomeTeam(ch)
 		m.filterValue = ""
 		m.filter.SetValue("")
-		// Ctrl+k is a deliberate "jump there and start typing" action, so
-		// land focus in the composer. (Unlike enter on the sidebar, which
-		// stays in the channel list so navigation keys keep working.)
+		// The switcher (ctrl+p) is a deliberate "jump there and start typing"
+		// action, so land focus in the composer. (Unlike enter on the sidebar,
+		// which stays in the channel list so navigation keys keep working.)
 		m.focus = focusInput
 		m.openChannelID = ch.Id
 		// New focus session: start a fresh mark-read dwell (this path
@@ -181,7 +185,7 @@ func (m *Model) switcherResults() []*model.Channel {
 		}
 	}
 	// Ordering keys, in priority order. The first three are the same
-	// attention/usage ranking a bare ctrl+k shows; the only change while
+	// attention/usage ranking a bare ctrl+p shows; the only change while
 	// filtering is that match quality is now coarse (band) instead of a
 	// fine score, so it stops dominating. That way typing a name still
 	// jumps to the strongest textual match, but among comparable matches

@@ -396,4 +396,3 @@ func (m Model) handleReactionPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 	}
 	return m, nil
 }
-

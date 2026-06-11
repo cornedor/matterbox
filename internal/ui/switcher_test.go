@@ -34,7 +34,7 @@ func TestFuzzyScoreBands(t *testing.T) {
 // Within a single band the finer score still orders by earliest match
 // position, so it remains a sensible last-resort tiebreaker.
 func TestFuzzyScoreWithinBandPosition(t *testing.T) {
-	_, early, _ := fuzzyScore("ab-team", "team") // substring at index 3
+	_, early, _ := fuzzyScore("ab-team", "team")  // substring at index 3
 	_, late, _ := fuzzyScore("abcd-team", "team") // substring at index 5
 	if !(early < late) {
 		t.Errorf("expected earlier substring to score lower: early=%d late=%d", early, late)

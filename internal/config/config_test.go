@@ -59,6 +59,53 @@ func TestNavModifierParse(t *testing.T) {
 	}
 }
 
+// TestVimNavDefault: an absent vim_nav defaults to "global", preserving the
+// ctrl+h/j/k/l-navigate-anywhere behaviour.
+func TestVimNavDefault(t *testing.T) {
+	c := &Config{}
+	c.fillDefaults()
+	if c.Keybindings.VimNav != "global" {
+		t.Errorf("default vim_nav = %q; want \"global\"", c.Keybindings.VimNav)
+	}
+}
+
+// TestVimNavParse pins the yaml key and confirms an explicit value survives
+// fillDefaults.
+func TestVimNavParse(t *testing.T) {
+	const y = "keybindings:\n  vim_nav: reading\n"
+	var c Config
+	if err := yaml.Unmarshal([]byte(y), &c); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	c.fillDefaults()
+	if c.Keybindings.VimNav != "reading" {
+		t.Errorf("fillDefaults clobbered explicit vim_nav: got %q", c.Keybindings.VimNav)
+	}
+}
+
+// TestBindingsStringOrList: a binding value accepts a scalar, a list, or an
+// empty value (unbind), so all three on-disk forms round-trip.
+func TestBindingsStringOrList(t *testing.T) {
+	const y = "keybindings:\n" +
+		"  bindings:\n" +
+		"    compose: a\n" +
+		"    channel_next: [ctrl+j, alt+j]\n" +
+		"    quit: []\n"
+	var c Config
+	if err := yaml.Unmarshal([]byte(y), &c); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := c.Keybindings.Bindings["compose"]; len(got) != 1 || got[0] != "a" {
+		t.Errorf("compose = %v, want [a] (scalar → one element)", got)
+	}
+	if got := c.Keybindings.Bindings["channel_next"]; len(got) != 2 || got[0] != "ctrl+j" || got[1] != "alt+j" {
+		t.Errorf("channel_next = %v, want [ctrl+j alt+j]", got)
+	}
+	if got, ok := c.Keybindings.Bindings["quit"]; !ok || len(got) != 0 {
+		t.Errorf("quit = %v (ok=%v), want an empty slice (unbind)", got, ok)
+	}
+}
+
 // TestNavModifierLegacyMigration: a pre-NavModifier config that set
 // ctrl_arrow_nav: false migrates to nav_modifier: none, and the superseded
 // toggle is dropped so a rewrite carries only the new key.

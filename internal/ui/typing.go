@@ -90,7 +90,7 @@ func buildTypingFrames(target string) []typingFrame {
 		if r != ' ' && rand.Float64() < typoChance {
 			bad := append(append([]rune{}, typed...), rune(wrong[rand.IntN(len(wrong))]))
 			frames = append(frames,
-				typingFrame{text: string(bad), delay: keyDelay(false)}, // oops
+				typingFrame{text: string(bad), delay: keyDelay(false)},          // oops
 				typingFrame{text: string(typed), delay: 180 * time.Millisecond}, // backspace
 			)
 		}

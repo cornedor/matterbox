@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
@@ -421,10 +422,10 @@ func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.aiSearch.phase == aiSearchDone {
 		return m.handleAIDoneKey(msg)
 	}
-	switch msg.String() {
-	case "ctrl+c":
+	switch {
+	case msg.String() == "ctrl+c": // hardwired quit
 		return m, tea.Quit
-	case "esc":
+	case msg.String() == "esc": // hardwired clear/cancel
 		// First esc cancels/clears an AI run but keeps the typed question so
 		// it can be tweaked; a second esc then clears the input as usual.
 		if m.aiSearch.active() {
@@ -450,13 +451,16 @@ func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.search.input.Blur()
 		m.focus = focusTeams
 		return m, nil
-	case "up", "ctrl+p":
+	case key.Matches(msg, m.keys.InputUp):
+		// input_up is ↑/ctrl+p; ctrl+p is shadowed by the global switcher, so
+		// in practice ↑ moves the selection here. ctrl+n (input_down) still
+		// moves down (it has no such global owner).
 		if m.search.idx > 0 {
 			m.search.idx--
 			m.renderSearchResults()
 		}
 		return m, nil
-	case "down", "ctrl+n":
+	case key.Matches(msg, m.keys.InputDown):
 		maxIdx := len(m.search.hits) - 1
 		if m.search.hasMore() {
 			maxIdx = len(m.search.hits) // load-more pseudo-row
@@ -466,17 +470,18 @@ func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.renderSearchResults()
 		}
 		return m, nil
-	case "left", "right":
+	case msg.String() == "left", msg.String() == "right":
 		// With an empty query the search box has nothing to edit, so ←/→
 		// keep switching tabs — you're never trapped after arrowing in.
 		// Once text is present they fall through to move the input cursor.
+		// (Kept literal: matching m.keys.Left/Right would steal typed h/l.)
 		if m.search.input.Value() == "" {
 			if msg.String() == "left" {
 				return m.switchTeamTab(-1)
 			}
 			return m.switchTeamTab(1)
 		}
-	case "enter":
+	case msg.String() == "enter":
 		// While an AI run is in flight, enter is a no-op (it would restart it).
 		if m.aiSearch.phase == aiSearchRunning {
 			return m, nil
@@ -492,17 +497,19 @@ func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.openHitChannel(m.search.hits[m.search.idx])
-	case "pgup":
+	case msg.String() == "pgup":
+		// Kept literal: PageUp's ctrl+u alias is an emacs editing key the
+		// search input needs (delete-to-start), so don't claim it here.
 		m.search.view.ScrollUp(m.search.view.Height() / 2)
 		return m, nil
-	case "pgdown":
+	case msg.String() == "pgdown":
 		m.search.view.ScrollDown(m.search.view.Height() / 2)
 		return m, nil
-	case "tab":
+	case key.Matches(msg, m.keys.Tab):
 		return m.cycleFocus(1)
-	case "shift+tab":
+	case key.Matches(msg, m.keys.ShiftTab):
 		return m.cycleFocus(-1)
-	case "ctrl+v":
+	case key.Matches(msg, m.keys.Paste):
 		// Pull text from the system clipboard. The result lands as a
 		// clipboardReadMsg, which the global handler routes back through
 		// handlePaste — that's where the textinput is updated.
@@ -542,10 +549,10 @@ func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // summary — enter either runs the follow-up or opens the selected hit, and any
 // other keypress edits the follow-up field while the answer box is selected.
 func (m Model) handleAIDoneKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "ctrl+c":
+	switch {
+	case msg.String() == "ctrl+c": // hardwired quit
 		return m, tea.Quit
-	case "esc":
+	case msg.String() == "esc": // hardwired tear-down
 		// Tear the AI result down and return to plain search, keeping the typed
 		// question so it can be tweaked and re-asked.
 		m.cancelAISearch()
@@ -555,7 +562,8 @@ func (m Model) handleAIDoneKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.search.input.Focus()
 		m.renderSearchResults()
 		return m, nil
-	case "up", "ctrl+p":
+	case key.Matches(msg, m.keys.InputUp):
+		// input_up is ↑/ctrl+p; ctrl+p is shadowed by the global switcher.
 		if m.search.idx > -1 {
 			m.search.idx--
 			var cmd tea.Cmd
@@ -566,7 +574,7 @@ func (m Model) handleAIDoneKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		return m, nil
-	case "down", "ctrl+n":
+	case key.Matches(msg, m.keys.InputDown):
 		// An errored run renders the banner only (no hit bubbles), so there's
 		// nothing below the answer box to move onto.
 		if m.aiSearch.err == nil && m.search.idx < len(m.search.hits)-1 {
@@ -577,7 +585,7 @@ func (m Model) handleAIDoneKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.renderSearchResults()
 		}
 		return m, nil
-	case "enter":
+	case msg.String() == "enter":
 		if m.search.idx <= -1 {
 			return m, m.startAIFollowup()
 		}
@@ -585,17 +593,17 @@ func (m Model) handleAIDoneKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.openHitChannel(m.search.hits[m.search.idx])
 		}
 		return m, nil
-	case "pgup":
+	case msg.String() == "pgup":
 		m.search.view.ScrollUp(m.search.view.Height() / 2)
 		return m, nil
-	case "pgdown":
+	case msg.String() == "pgdown":
 		m.search.view.ScrollDown(m.search.view.Height() / 2)
 		return m, nil
-	case "tab":
+	case key.Matches(msg, m.keys.Tab):
 		return m.cycleFocus(1)
-	case "shift+tab":
+	case key.Matches(msg, m.keys.ShiftTab):
 		return m.cycleFocus(-1)
-	case "ctrl+v":
+	case key.Matches(msg, m.keys.Paste):
 		return m, readClipboard()
 	}
 	// Anything else edits the follow-up field, but only while the answer box is

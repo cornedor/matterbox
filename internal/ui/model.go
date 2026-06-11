@@ -361,7 +361,11 @@ type Model struct {
 	openPickerIdx   int
 
 	keys keyMap
-	help help.Model
+	// vimNav controls when the ctrl+vim sidebar-nav keys fire (see keys.go).
+	// Zero value (vimNavGlobal) is today's behaviour, so test Models that
+	// don't set it keep navigating with ctrl+h/j/k/l from any focus.
+	vimNav vimNavMode
+	help   help.Model
 
 	// emojiImg renders custom (server) emoji as inline Kitty-graphics images
 	// (see emojiimg.go). A pointer so the value-copied Model shares one
@@ -419,12 +423,14 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	taStyles.Focused.CursorLine = lipgloss.NewStyle()
 	taStyles.Blurred.CursorLine = lipgloss.NewStyle()
 	ta.SetStyles(taStyles)
-	// Enter sends; alt+enter / ctrl+j / shift+enter all insert a newline.
-	// v2's default kitty "disambiguate" flag makes shift+enter a distinct
+	// Enter sends; alt+enter / shift+enter insert a newline. ctrl+j is
+	// deliberately NOT bound here — it's the global "next channel" nav, and a
+	// single key meaning "newline" or "switch channel" depending on focus is a
+	// trap. v2's default kitty "disambiguate" flag makes shift+enter a distinct
 	// keystroke on kitty-protocol-capable terminals.
 	ta.KeyMap.InsertNewline = key.NewBinding(
-		key.WithKeys("alt+enter", "ctrl+j", "shift+enter"),
-		key.WithHelp("shift+↵", "newline"),
+		key.WithKeys("alt+enter", "shift+enter"),
+		key.WithHelp("alt+↵/shift+↵", "newline"),
 	)
 
 	h := help.New()
@@ -462,16 +468,11 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	embedAuto := false
 	markReadDelay := defaultMarkReadDelay
 	showCustomStatus := true
-	navModifier := "ctrl"
+	navModifier := navModifierFromConfig(cfg)
+	vimNav := vimNavGlobal
 	emojiMode := "auto"
 	if cfg != nil {
-		switch {
-		case cfg.Keybindings.NavModifier != "":
-			navModifier = cfg.Keybindings.NavModifier
-		case cfg.Keybindings.CtrlArrowNav != nil && !*cfg.Keybindings.CtrlArrowNav:
-			// Honour a pre-NavModifier config that hasn't been migrated yet.
-			navModifier = "none"
-		}
+		vimNav = parseVimNav(cfg.Keybindings.VimNav)
 		reactions = append([]string(nil), cfg.Reactions...)
 		teamOrder = append([]string(nil), cfg.TeamOrder...)
 		summaryEndpoint = cfg.Summary.Endpoint
@@ -516,6 +517,14 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	// the loop just backs off (see embedindex.go).
 	embedderEnabled := st != nil && embedClient != nil && embedAuto
 
+	// Build the keymap from defaults + any bindings overrides. CheckKeybindings
+	// already vetted these at startup; on the off chance we're reached with a
+	// bad override, fall back to defaults so the app still runs.
+	km, kmErr := keyMapForConfig(cfg)
+	if kmErr != nil {
+		km = newKeyMap(navModifier)
+	}
+
 	return Model{
 		client:              client,
 		ctx:                 context.Background(),
@@ -541,7 +550,8 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		uploadCancel:        map[string]context.CancelFunc{},
 		loading:             true,
 		status:              "loading…",
-		keys:                newKeyMap(navModifier),
+		keys:                km,
+		vimNav:              vimNav,
 		help:                h,
 		search:              newSearchState(st != nil),
 		feed:                newFeedState(),
@@ -608,9 +618,11 @@ func (m Model) ShortHelp() []key.Binding {
 	case m.focus == focusInput:
 		return []key.Binding{k.Send, k.NewLine, k.Paste, k.LeaveInput, k.Tab}
 	case m.focus == focusMessages:
-		return []key.Binding{k.Tab, k.Up, k.Down, k.NavChanNext, k.NavTeamNext, k.Compose, k.OpenThread, k.ReplyInThread, k.SearchHere, k.Filter, k.NextHit, k.PrevHit, k.OpenAttach, k.CopyMD, k.EditPost, k.DeletePost, k.React, k.ShowHistory, k.Leader, k.Switcher, k.Unread, k.Feed, k.Help, k.Quit}
+		// Concise footer: the primary actions only (the old 23-binding line
+		// ellipsized after ~6). `?` opens the full, grouped help.
+		return []key.Binding{k.Compose, k.OpenThread, k.SearchHere, k.Filter, k.Unread, k.Leader, k.Help}
 	case m.focus == focusThread:
-		return []key.Binding{k.Tab, k.Up, k.Down, k.Compose, k.SearchHere, k.OpenAttach, k.CopyMD, k.EditPost, k.DeletePost, k.React, k.ShowHistory, k.CloseThread, k.Leader, k.Switcher, k.Unread, k.Help, k.Quit}
+		return []key.Binding{k.Compose, k.SearchHere, k.CloseThread, k.Unread, k.Leader, k.Help}
 	case m.focus == focusAttachments:
 		return []key.Binding{k.Left, k.Right, k.OpenAttach, k.AttachRemove, k.Tab, k.Leader, k.Help, k.Quit}
 	case m.focus == focusTeams:

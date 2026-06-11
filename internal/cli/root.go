@@ -98,6 +98,11 @@ func runTUI() error {
 	if err != nil {
 		return err
 	}
+	// Fail loud on a bad keybinding override (unknown action, bad chord, or a
+	// conflict) before launching, rather than silently dropping the binding.
+	if err := ui.CheckKeybindings(cfg); err != nil {
+		return fmt.Errorf("keybindings: %w", err)
+	}
 	// v2 drops tea.WithAltScreen(); each tea.View opts in via
 	// v.AltScreen = true (set in Model.View). v2 always requests the
 	// kitty "disambiguate escape codes" flag, which makes shift+enter

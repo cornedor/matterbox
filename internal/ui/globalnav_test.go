@@ -267,6 +267,60 @@ func TestComposerCtrlLeftWordJumpWhenNavOff(t *testing.T) {
 	}
 }
 
+// TestVimNavReadingFreesComposer: in vim_nav=reading the ctrl+vim keys don't
+// navigate while typing — ctrl+j falls through to the composer (so ctrl+h /
+// ctrl+k stay free as emacs editing keys) — but the arrow alias still does.
+func TestVimNavReadingFreesComposer(t *testing.T) {
+	m := navModel()
+	m.vimNav = vimNavReading
+	m.focus = focusInput
+	m.input.Focus()
+	m.input.SetValue("draft")
+
+	out, _ := m.handleKey(ctrlKey('j'))
+	got := out.(Model)
+	if got.openChannelID != "c1" {
+		t.Fatalf("vim_nav=reading: ctrl+j while typing navigated to %q, want it inert (c1)", got.openChannelID)
+	}
+
+	// The arrow alias keeps navigating from any focus, even in reading mode.
+	out2, _ := m.handleKey(ctrlKey(tea.KeyDown))
+	got2 := out2.(Model)
+	if got2.openChannelID != "c2" {
+		t.Fatalf("vim_nav=reading: ctrl+↓ while typing should still navigate; opened %q want c2", got2.openChannelID)
+	}
+}
+
+// TestVimNavReadingNavigatesOutsideInput: in a content focus (no text input)
+// the ctrl+vim keys navigate normally under vim_nav=reading.
+func TestVimNavReadingNavigatesOutsideInput(t *testing.T) {
+	m := navModel()
+	m.vimNav = vimNavReading // focusMessages by default
+
+	out, _ := m.handleKey(ctrlKey('j'))
+	got := out.(Model)
+	if got.openChannelID != "c2" {
+		t.Fatalf("vim_nav=reading: ctrl+j in the messages pane should navigate; opened %q want c2", got.openChannelID)
+	}
+}
+
+// TestVimNavOff: the ctrl+vim keys never navigate, but the arrow alias still
+// does.
+func TestVimNavOff(t *testing.T) {
+	m := navModel()
+	m.vimNav = vimNavOff
+
+	out, _ := m.handleKey(ctrlKey('j'))
+	if got := out.(Model); got.openChannelID != "c1" {
+		t.Fatalf("vim_nav=off: ctrl+j navigated to %q, want it inert (c1)", got.openChannelID)
+	}
+
+	out2, _ := m.handleKey(ctrlKey(tea.KeyDown))
+	if got := out2.(Model); got.openChannelID != "c2" {
+		t.Fatalf("vim_nav=off: ctrl+↓ should still navigate; opened %q want c2", got.openChannelID)
+	}
+}
+
 // TestNavWorksWhileComposing: ctrl-nav fires even when the composer is focused
 // (it's checked before the typing guards), switching channel without discarding
 // the in-progress draft and leaving focus in the composer so typing continues

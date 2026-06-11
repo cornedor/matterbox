@@ -98,6 +98,42 @@ scripting:
 
 Channels are addressed as `team/channel` (e.g. `eng/general`) or `@username` for a DM.
 
+## Keybindings
+
+Press `?` in the TUI for the full, grouped list; the footer shows the primary
+keys for the focused pane. Three knobs under `keybindings:` in `config.yaml`
+tune them:
+
+```yaml
+keybindings:
+  nav_modifier: ctrl     # modifier for arrow-key team/channel nav:
+                         # ctrl (default), alt, shift, super (⌘ / Windows;
+                         # also "cmd"), meta, hyper, or none. On macOS ctrl+arrows
+                         # clash with Mission Control — try shift, or super on a
+                         # Kitty-protocol terminal (Ghostty/kitty/WezTerm).
+  vim_nav: global        # when ctrl+h/j/k/l switch team/channel:
+                         #   global  — from any focus, even while typing (default)
+                         #   reading — only outside text inputs, so ctrl+h / ctrl+k
+                         #             stay as the composer's emacs editing keys
+                         #   off     — never (arrow nav still works in every mode)
+  bindings:              # rebind individual actions (optional)
+    compose: [i, a]      # a single key or a list
+    delete_post: shift+d
+    quit: []             # empty list (or "none") unbinds — ctrl+c always quits
+    channel_next: ctrl+j # rebinding a nav action drops its modifier-arrow alias too
+```
+
+Each `bindings:` value names an **action** (`compose`, `channel_next`,
+`delete_post`, …) and the key or keys that trigger it. Modifiers are
+`ctrl`/`alt`/`shift`/`super`/`meta`/`hyper`. An unknown action id, an
+unparseable chord, or a binding that would collide with another action is
+reported as a startup error (with the full list of valid action ids), so a
+typo fails loud rather than silently shadowing a key.
+
+> Some chords only arrive on terminals that speak the Kitty keyboard protocol
+> (Ghostty, kitty, WezTerm). `shift+enter` for example *sends* the message on a
+> legacy terminal instead of inserting a newline — use `alt+enter` there.
+
 ## AI features (optional)
 
 Summaries and search use OpenAI-compatible endpoints configured under `summary`,

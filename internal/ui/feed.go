@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 
+	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -310,51 +311,54 @@ func (m Model) applyFeedResults(msg feedLoadedMsg) (tea.Model, tea.Cmd) {
 // Up/down select bubbles; enter opens the channel; m marks it read in
 // place; r refreshes; esc returns to the tab strip.
 func (m Model) handleFeedKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "ctrl+c":
+	switch {
+	case msg.String() == "ctrl+c": // hardwired quit
 		return m, tea.Quit
-	case "esc":
+	case msg.String() == "esc": // hardwired back-to-tab-strip
 		m.focus = focusTeams
 		return m, nil
-	case "up", "ctrl+p", "k":
+	case key.Matches(msg, m.keys.Up), key.Matches(msg, m.keys.InputUp):
+		// The feed is a pure list (no text input), so reading-pane ↑/k both
+		// move; ctrl+n (input_down) is also honoured below for symmetry with
+		// the search list. ctrl+p (input_up) is shadowed by the global switcher.
 		if m.feed.idx > 0 {
 			m.feed.idx--
 			m.renderFeedResults()
 		}
 		return m, nil
-	case "down", "ctrl+n", "j":
+	case key.Matches(msg, m.keys.Down), key.Matches(msg, m.keys.InputDown):
 		if m.feed.idx < len(m.feed.entries)-1 {
 			m.feed.idx++
 			m.renderFeedResults()
 		}
 		return m, nil
-	case "left", "h":
+	case key.Matches(msg, m.keys.Left):
 		return m.switchTeamTab(-1)
-	case "right", "l":
+	case key.Matches(msg, m.keys.Right):
 		return m.switchTeamTab(1)
-	case "home", "g":
+	case key.Matches(msg, m.keys.Home):
 		m.feed.idx = 0
 		m.renderFeedResults()
 		return m, nil
-	case "end", "G":
+	case key.Matches(msg, m.keys.End):
 		m.feed.idx = len(m.feed.entries) - 1
 		m.renderFeedResults()
 		return m, nil
-	case "pgup":
+	case msg.String() == "pgup":
 		m.feed.view.ScrollUp(m.feed.view.Height() / 2)
 		return m, nil
-	case "pgdown":
+	case msg.String() == "pgdown":
 		m.feed.view.ScrollDown(m.feed.view.Height() / 2)
 		return m, nil
-	case "enter":
+	case key.Matches(msg, m.keys.OpenChannel):
 		return m.openFeedEntry()
-	case "m":
+	case key.Matches(msg, m.keys.MarkRead):
 		return m.markFeedEntryRead()
-	case "r":
+	case key.Matches(msg, m.keys.Refresh):
 		return m, m.buildFeed()
-	case "tab":
+	case key.Matches(msg, m.keys.Tab):
 		return m.cycleFocus(1)
-	case "shift+tab":
+	case key.Matches(msg, m.keys.ShiftTab):
 		return m.cycleFocus(-1)
 	}
 	return m, nil

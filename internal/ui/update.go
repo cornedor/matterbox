@@ -1193,21 +1193,20 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.openSwitcher()
 	}
 
-	// Global sidebar navigation: ctrl+arrows / ctrl+vim keys switch team
-	// (←/→) and channel (↑/↓) and open the target immediately, from ANY focus
-	// — including while typing in the composer, filter, or search box. The
-	// sidebar is no longer a focus you tab into; this is the only way to move
-	// it. Checked before the typing guards so the inputs don't eat it; the
-	// open path leaves the composer text alone, so a draft survives the jump.
-	switch {
-	case key.Matches(msg, m.keys.NavTeamPrev):
-		return m.navTeam(-1)
-	case key.Matches(msg, m.keys.NavTeamNext):
-		return m.navTeam(1)
-	case key.Matches(msg, m.keys.NavChanPrev):
-		return m.navChannel(-1)
-	case key.Matches(msg, m.keys.NavChanNext):
-		return m.navChannel(1)
+	// Global sidebar navigation: the modifier-arrow aliases switch team (←/→)
+	// and channel (↑/↓) and open the target immediately from ANY focus —
+	// including while typing in the composer, filter, or search box — so a
+	// draft survives the jump. The ctrl+vim keys do the same, but only here
+	// (before the typing guards) when vim_nav is "global"; in "reading" mode
+	// they're dispatched below, after the typing guards, so the composer keeps
+	// ctrl+h/ctrl+k; "off" never navigates with them. See vimNavMode.
+	if mm, cmd, ok := m.dispatchNav(msg, false); ok {
+		return mm, cmd
+	}
+	if m.vimNav == vimNavGlobal {
+		if mm, cmd, ok := m.dispatchNav(msg, true); ok {
+			return mm, cmd
+		}
 	}
 
 	// Filter mode and input mode each own most keys while active; check
@@ -1230,6 +1229,15 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// chord, F (global search), and U (unread feed) are dispatched here.
 	// The "," leader chord, F (global search), and U (unread feed) are
 	// dispatched here rather than globally for exactly that reason.
+
+	// vim_nav "reading": the ctrl+vim keys navigate only out here, away from
+	// the text inputs (which kept ctrl+h/ctrl+k for emacs editing above).
+	if m.vimNav == vimNavReading {
+		if mm, cmd, ok := m.dispatchNav(msg, true); ok {
+			return mm, cmd
+		}
+	}
+
 	if m.leaderPending {
 		return m.handleLeaderKey(msg)
 	}
@@ -1292,15 +1300,17 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case msg.String() == "esc":
+		// Close the open thread first — it's the visually dominant thing on
+		// screen, so esc should dismiss it before touching the sidebar filter.
+		if m.threadOpen {
+			m.closeThread()
+			return m, nil
+		}
 		if m.filterValue != "" {
 			m.filterValue = ""
 			m.filter.SetValue("")
 			m.channelIdx = 0
 			m.chanOff = 0
-			return m, nil
-		}
-		if m.threadOpen {
-			m.closeThread()
 			return m, nil
 		}
 	}
@@ -1490,24 +1500,28 @@ func (m Model) jumpToUnread() (tea.Model, tea.Cmd) {
 
 // handleLeaderKey resolves the second key of a "," leader chord. It is
 // only reached when m.leaderPending is set (in handleKey, after the ","
-// leader key in a navigation focus); the flag is always cleared here.
-// Unrecognized second keys — including esc — simply cancel the chord.
+// leader key in a navigation focus); the flag is always cleared here. esc
+// cancels silently; any other unbound second key flashes a hint so the
+// chord doesn't just vanish, and the no-op tab jumps explain themselves.
 func (m Model) handleLeaderKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	m.leaderPending = false
 	switch msg.String() {
 	case "t":
 		// The sidebar isn't focusable — teams/channels move with ctrl-nav from
 		// anywhere. On the Search/Feed tabs ",t" still drops onto the tab strip
-		// (their body's "up a level"); on channel tabs it's a no-op.
+		// (their body's "up a level"); on channel tabs it has nowhere to go.
 		if m.onSearchTab() || m.onFeedTab() {
 			m.focus = focusTeams
 			m.input.Blur()
 			m.renderMessages()
+			return m, nil
 		}
+		m.status = ",t only moves to the tab strip on the Search/Feed tabs — ctrl-nav switches teams everywhere else"
 		return m, nil
 	case "m":
 		if m.onSearchTab() || m.onFeedTab() {
-			return m, nil // no messages pane on these tabs
+			m.status = ",m needs a messages pane — the Search/Feed tabs don't have one"
+			return m, nil
 		}
 		m.focus = focusMessages
 		m.input.Blur()
@@ -1519,7 +1533,11 @@ func (m Model) handleLeaderKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.gotoDMTab()
 	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 		return m.gotoTeam(int(msg.String()[0] - '0'))
+	case "esc":
+		// esc is the universal cancel — drop the chord without a fuss.
+		return m, nil
 	}
+	m.status = ", " + msg.String() + " — nothing bound; , then t/m/i/d/1-9"
 	return m, nil
 }
 
@@ -1587,6 +1605,31 @@ func (m Model) switchTeamTab(dir int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m.gotoTab(target)
+}
+
+// dispatchNav tries to handle msg as a sidebar-nav key. includeVim selects
+// whether the ctrl+vim keys are considered (the always-global arrow aliases
+// are considered regardless); handleKey calls it once with includeVim=false
+// before the typing guards and again with includeVim=true on the schedule
+// vim_nav dictates. Returns handled=false when msg isn't a nav key so the
+// caller falls through to the next layer.
+func (m Model) dispatchNav(msg tea.KeyPressMsg, includeVim bool) (tea.Model, tea.Cmd, bool) {
+	for _, r := range m.keys.navRoutes {
+		if key.Matches(msg, r.arrow) || (includeVim && key.Matches(msg, r.vim)) {
+			mm, cmd := m.navMove(r)
+			return mm, cmd, true
+		}
+	}
+	return m, nil, false
+}
+
+// navMove performs a single nav route: a team switch or a channel switch in
+// the route's direction.
+func (m Model) navMove(r navRoute) (tea.Model, tea.Cmd) {
+	if r.team {
+		return m.navTeam(r.dir)
+	}
+	return m.navChannel(r.dir)
 }
 
 // navTeam is the global (any-focus) team switch driven by ctrl+←/→ and
@@ -1735,22 +1778,24 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// When the @-mention popup is open with at least one candidate, it
 	// owns navigation/accept/dismiss keys before the normal input flow.
 	if m.mention.active && len(m.mention.items) > 0 {
-		switch msg.String() {
-		case "up", "ctrl+p":
+		switch {
+		case key.Matches(msg, m.keys.InputUp):
+			// The popup owns ctrl+p/ctrl+n (input_up/down) while open — the
+			// popupOpen guard in handleKey keeps the global switcher off ctrl+p.
 			if m.mention.idx > 0 {
 				m.mention.idx--
 			}
 			return m, nil
-		case "down", "ctrl+n":
+		case key.Matches(msg, m.keys.InputDown):
 			if m.mention.idx < len(m.mention.items)-1 {
 				m.mention.idx++
 			}
 			return m, nil
-		case "tab", "enter":
+		case key.Matches(msg, m.keys.Tab), key.Matches(msg, m.keys.Send):
 			if m.acceptMention() {
 				return m, nil
 			}
-		case "esc":
+		case msg.String() == "esc": // hardwired popup dismiss
 			m.closeMention()
 			return m, nil
 		}
@@ -1759,22 +1804,22 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// The `:`-emoji picker owns the same navigation/accept/dismiss keys when
 	// it's open, mirroring the @-mention popup above.
 	if m.emoji.active && len(m.emoji.items) > 0 {
-		switch msg.String() {
-		case "up", "ctrl+p":
+		switch {
+		case key.Matches(msg, m.keys.InputUp):
 			if m.emoji.idx > 0 {
 				m.emoji.idx--
 			}
 			return m, nil
-		case "down", "ctrl+n":
+		case key.Matches(msg, m.keys.InputDown):
 			if m.emoji.idx < len(m.emoji.items)-1 {
 				m.emoji.idx++
 			}
 			return m, nil
-		case "tab", "enter":
+		case key.Matches(msg, m.keys.Tab), key.Matches(msg, m.keys.Send):
 			if m.acceptEmoji() {
 				return m, nil
 			}
-		case "esc":
+		case msg.String() == "esc": // hardwired popup dismiss
 			m.closeEmoji()
 			return m, nil
 		}
@@ -1826,7 +1871,10 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// which is the more useful escape hatch even with text present.
 		editing := m.editingPostID != ""
 		if !editing && strings.TrimSpace(m.input.Value()) != "" {
-			break
+			// A stray esc shouldn't yank focus away from a half-typed draft;
+			// say so instead of silently swallowing the key.
+			m.status = "draft kept — esc leaves only when the input is empty"
+			return m, nil
 		}
 		m.closeMention()
 		m.closeEmoji()
@@ -1963,9 +2011,10 @@ func (m Model) handleFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, tea.Batch(m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id))
-	case msg.String() == "up", msg.String() == "down":
-		// Arrow through the filtered list while still typing. We deliberately
-		// don't accept j/k here — the user may be typing those into the filter.
+	case key.Matches(msg, m.keys.InputUp), key.Matches(msg, m.keys.InputDown):
+		// Arrow through the filtered list while still typing (input_up/down:
+		// ↑/ctrl+p, ↓/ctrl+n). We deliberately don't accept j/k here — the user
+		// may be typing those into the filter. ctrl+p is the global switcher.
 		vis := m.visibleChannels()
 		if len(vis) > 0 {
 			if m.channelIdx >= len(vis) {
@@ -1974,10 +2023,10 @@ func (m Model) handleFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			if m.channelIdx < 0 {
 				m.channelIdx = 0
 			}
-			if msg.String() == "up" && m.channelIdx > 0 {
+			if key.Matches(msg, m.keys.InputUp) && m.channelIdx > 0 {
 				m.channelIdx--
 			}
-			if msg.String() == "down" && m.channelIdx < len(vis)-1 {
+			if key.Matches(msg, m.keys.InputDown) && m.channelIdx < len(vis)-1 {
 				m.channelIdx++
 			}
 		}
@@ -2219,12 +2268,14 @@ func (m Model) canMutatePost(p *model.Post) bool {
 }
 
 // handleDeleteConfirmKey owns every keystroke while the delete modal
-// is open. y/enter confirms (fires the DeletePost call); n/esc cancels.
+// is open. y confirms (fires the DeletePost call); n/esc/q cancels.
+// enter is deliberately NOT a confirm — a delete is destructive, so it
+// shouldn't ride on the same key that opens threads / sends messages.
 func (m Model) handleDeleteConfirmKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "ctrl+c":
+	switch {
+	case msg.String() == "ctrl+c": // hardwired quit
 		return m, tea.Quit
-	case "y", "Y", "enter":
+	case key.Matches(msg, m.keys.ConfirmYes):
 		id := m.deleteConfirmPostID
 		m.closeDeleteConfirm()
 		// If we were editing the same post, drop the edit state — the
@@ -2234,7 +2285,8 @@ func (m Model) handleDeleteConfirmKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 		}
 		m.status = "deleting…"
 		return m, m.deletePost(id)
-	case "n", "N", "esc", "q":
+	case key.Matches(msg, m.keys.ConfirmNo), msg.String() == "esc", msg.String() == "q":
+		// esc / q are hardwired modal-cancel aliases alongside confirm_no (n).
 		m.closeDeleteConfirm()
 		return m, nil
 	}

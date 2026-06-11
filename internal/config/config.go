@@ -78,11 +78,55 @@ type KeybindingsConfig struct {
 	// (Ghostty, kitty, WezTerm) but not the default Terminal.app / iTerm2.
 	NavModifier string `yaml:"nav_modifier"`
 
+	// VimNav controls when the ctrl+h/j/k/l vim keys switch team / channel:
+	// "global" (default) navigates from any focus, including while typing;
+	// "reading" navigates only outside text inputs, so ctrl+h / ctrl+k stay
+	// available as the composer's emacs editing keys; "off" never navigates
+	// with the vim keys. The modifier-arrow aliases (see NavModifier) keep
+	// navigating in every mode. See internal/ui.
+	VimNav string `yaml:"vim_nav"`
+
 	// CtrlArrowNav is the superseded boolean toggle. Kept only so a config
 	// written before NavModifier existed keeps working: when NavModifier is
 	// unset, an explicit false migrates to "none". fillDefaults clears it once
 	// migrated, so a rewritten config carries only nav_modifier.
 	CtrlArrowNav *bool `yaml:"ctrl_arrow_nav,omitempty"`
+
+	// Bindings maps an action id (e.g. "channel_next", "delete_post") to the
+	// key or keys that trigger it, replacing that action's defaults. A value
+	// may be a single string ("shift+d") or a list (["i", "a"]); an empty
+	// list or "none" unbinds the action. Unknown action names and unparseable
+	// chords are reported as startup errors (see internal/ui). Absent by
+	// default — the action ids are documented in the config header.
+	Bindings map[string]StringOrList `yaml:"bindings,omitempty"`
+}
+
+// StringOrList is a yaml field that accepts either a single scalar string or
+// a list of strings, so `compose: i` and `compose: [i, a]` both parse. A null
+// or empty value yields an empty slice (used to unbind an action).
+type StringOrList []string
+
+// UnmarshalYAML accepts a scalar (→ one element), a sequence (→ the list), or
+// null/empty (→ empty slice).
+func (s *StringOrList) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		if value.Tag == "!!null" || value.Value == "" {
+			*s = []string{}
+			return nil
+		}
+		*s = []string{value.Value}
+		return nil
+	case yaml.SequenceNode:
+		var list []string
+		if err := value.Decode(&list); err != nil {
+			return err
+		}
+		*s = list
+		return nil
+	default:
+		return fmt.Errorf("keybinding value must be a string or a list, got yaml kind %d", value.Kind)
+	}
 }
 
 // SearchConfig tunes local message search ranking. Defaults in fillDefaults.
@@ -284,7 +328,7 @@ func Load() (*Config, error) {
 	// and rewrite the file once so the discovered model + prompt show up as
 	// editable defaults. Best-effort: a failed rewrite only means the file
 	// keeps working off in-memory defaults.
-	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.Keybindings.NavModifier == "" || cfg.EmojiImages == ""
+	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == ""
 	cfg.fillDefaults()
 	if addDefaults {
 		if werr := writeConfig(p, cfg); werr != nil {
@@ -351,6 +395,9 @@ func (c *Config) fillDefaults() {
 			c.Keybindings.NavModifier = "none"
 		}
 	}
+	if c.Keybindings.VimNav == "" {
+		c.Keybindings.VimNav = "global"
+	}
 	// The legacy toggle has been folded into NavModifier; drop it so a
 	// rewritten config carries only the new key.
 	c.Keybindings.CtrlArrowNav = nil
@@ -413,10 +460,19 @@ func writeConfig(p string, cfg *Config) error {
 		"#             shows presence dots only.\n" +
 		"# keybindings: nav_modifier sets the modifier for arrow-key team/channel\n" +
 		"#             navigation: ctrl (default), alt, shift, super (the ⌘/Windows\n" +
-		"#             key; also \"cmd\"), meta, hyper, or none. ctrl+h/j/k/l always\n" +
-		"#             navigate too. On macOS ctrl+arrows clash with Mission\n" +
-		"#             Control — try shift, or super on a Kitty-protocol terminal\n" +
-		"#             (Ghostty/kitty/WezTerm).\n" +
+		"#             key; also \"cmd\"), meta, hyper, or none. On macOS ctrl+arrows\n" +
+		"#             clash with Mission Control — try shift, or super on a\n" +
+		"#             Kitty-protocol terminal (Ghostty/kitty/WezTerm).\n" +
+		"#             vim_nav controls the ctrl+h/j/k/l keys: global (default,\n" +
+		"#             navigate from anywhere incl. while typing), reading (navigate\n" +
+		"#             only outside text inputs, freeing ctrl+h/ctrl+k for the\n" +
+		"#             composer's emacs editing), or off. Arrow nav stays on in all\n" +
+		"#             modes.\n" +
+		"#             bindings rebinds individual actions by id: a single key or a\n" +
+		"#             list, e.g.  bindings: {compose: [i, a], delete_post: shift+d}.\n" +
+		"#             An empty list or \"none\" unbinds. Modifiers: ctrl/alt/shift/\n" +
+		"#             super/meta/hyper. Unknown action ids and bad chords are\n" +
+		"#             reported at startup with the full list of valid actions.\n" +
 		"# emoji_images: render custom (server) emoji as inline images via the\n" +
 		"#             Kitty graphics protocol. auto (default) enables them on a\n" +
 		"#             Kitty/Ghostty truecolor terminal outside tmux; off keeps\n" +
