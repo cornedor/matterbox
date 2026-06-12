@@ -44,6 +44,14 @@ type keyMap struct {
 	NavChanPrev key.Binding
 	NavChanNext key.Binding
 
+	// Direct jumps (replace the old "," leader chords). Dispatched in the
+	// content-pane region, after the typing guards, so they fire only from
+	// reading panes and never shadow the composer's alt-edit keys. NavTeam
+	// holds alt+1…alt+9 as one action; the pressed digit selects the team.
+	NavTeam key.Binding
+	NavDM   key.Binding
+	NavFeed key.Binding
+
 	// Channels
 	Filter      key.Binding
 	ClearFilter key.Binding
@@ -99,7 +107,6 @@ type keyMap struct {
 	Switcher   key.Binding
 	Search     key.Binding
 	SearchHere key.Binding
-	Leader     key.Binding
 	Help       key.Binding
 	Quit       key.Binding
 
@@ -134,6 +141,12 @@ type actionDef struct {
 	navArrow string
 	desc     string // help description ("next channel")
 	primary  bool   // shown in the one-line footer (short) help
+	// helpKey, when set, overrides the auto-derived footer key label. Used by
+	// actions whose full key list reads badly in the one-line footer — e.g.
+	// goto_team binds alt+1…alt+9 but should show "alt+1…9", and search keeps
+	// "/" / "F" as the footer glyph while also answering to ctrl+f / ctrl+shift+f
+	// (the cheatsheet still lists every key via prettyKeysAll).
+	helpKey string
 }
 
 // actionDefs is the registry. Every keyMap field appears exactly once;
@@ -202,9 +215,11 @@ var actionDefs = []actionDef{
 	{id: "cancel_edit", field: func(k *keyMap) *key.Binding { return &k.CancelEdit }, keys: []string{"esc"}, desc: "cancel"},
 
 	{id: "switcher", field: func(k *keyMap) *key.Binding { return &k.Switcher }, keys: []string{"ctrl+p"}, desc: "switch channel"},
-	{id: "search_all", field: func(k *keyMap) *key.Binding { return &k.Search }, keys: []string{"F"}, desc: "search all"},
-	{id: "search_here", field: func(k *keyMap) *key.Binding { return &k.SearchHere }, keys: []string{"/"}, desc: "search channel", primary: true},
-	{id: "leader", field: func(k *keyMap) *key.Binding { return &k.Leader }, keys: []string{",", "ctrl+w"}, desc: "go to…", primary: true},
+	{id: "search_all", field: func(k *keyMap) *key.Binding { return &k.Search }, keys: []string{"F", "ctrl+shift+f"}, desc: "search all", helpKey: "F"},
+	{id: "search_here", field: func(k *keyMap) *key.Binding { return &k.SearchHere }, keys: []string{"/", "ctrl+f"}, desc: "search channel", primary: true, helpKey: "/"},
+	{id: "goto_team", field: func(k *keyMap) *key.Binding { return &k.NavTeam }, keys: []string{"alt+1", "alt+2", "alt+3", "alt+4", "alt+5", "alt+6", "alt+7", "alt+8", "alt+9"}, desc: "go to team", primary: true, helpKey: "alt+1…9"},
+	{id: "goto_dm", field: func(k *keyMap) *key.Binding { return &k.NavDM }, keys: []string{"alt+d"}, desc: "DMs"},
+	{id: "goto_feed", field: func(k *keyMap) *key.Binding { return &k.NavFeed }, keys: []string{"alt+u"}, desc: "Feed"},
 	{id: "help", field: func(k *keyMap) *key.Binding { return &k.Help }, keys: []string{"?"}, desc: "help", primary: true},
 	{id: "quit", field: func(k *keyMap) *key.Binding { return &k.Quit }, keys: []string{"q", "ctrl+c"}, desc: "quit"},
 }
@@ -248,13 +263,62 @@ func prettyKeyLabel(keys []string) string {
 
 // prettyKeysAll prettifies every key of a binding and joins them with two
 // spaces. Unlike prettyKeyLabel (footer-only, first two) the cheatsheet shows
-// the full set so a user sees every key an action answers to.
+// the full set so a user sees every key an action answers to. A run of
+// consecutive modifier+digit keys (goto_team's alt+1…alt+9) is folded to one
+// "alt+1…9" token so it doesn't print nine columns.
 func prettyKeysAll(keys []string) string {
+	keys = foldDigitRun(keys)
 	parts := make([]string, 0, len(keys))
 	for _, k := range keys {
 		parts = append(parts, prettyKey(k))
 	}
 	return strings.Join(parts, "  ")
+}
+
+// foldDigitRun collapses a maximal run (length ≥ 3) of keys that share a
+// modifier prefix and carry consecutive single digits — e.g. "alt+1", "alt+2",
+// …, "alt+9" — into a single "alt+1…9" token. Shorter runs and any key that
+// isn't <modifier>+<digit> pass through untouched.
+func foldDigitRun(keys []string) []string {
+	out := make([]string, 0, len(keys))
+	for i := 0; i < len(keys); {
+		mod, d0, ok := splitModDigit(keys[i])
+		j := i + 1
+		if ok {
+			for j < len(keys) {
+				m2, d2, ok2 := splitModDigit(keys[j])
+				if !ok2 || m2 != mod || d2 != d0+(j-i) {
+					break
+				}
+				j++
+			}
+		}
+		if ok && j-i >= 3 {
+			out = append(out, fmt.Sprintf("%s%d…%d", mod, d0, d0+(j-i)-1))
+			i = j
+			continue
+		}
+		out = append(out, keys[i])
+		i++
+	}
+	return out
+}
+
+// splitModDigit splits "alt+5" into ("alt+", 5, true); ok is false unless the
+// key is a real <modifier>+<single digit> (a bare "5" doesn't fold).
+func splitModDigit(k string) (mod string, d int, ok bool) {
+	if k == "" {
+		return "", 0, false
+	}
+	last := k[len(k)-1]
+	if last < '0' || last > '9' {
+		return "", 0, false
+	}
+	mod = k[:len(k)-1]
+	if !strings.HasSuffix(mod, "+") {
+		return "", 0, false
+	}
+	return mod, int(last - '0'), true
 }
 
 // vimNavMode controls when the ctrl+vim keys (ctrl+h/j/k/l) switch team /
@@ -325,9 +389,13 @@ func newKeyMap(navModifier string) keyMap {
 		if def.navArrow != "" && navEnabled {
 			keys = append([]string{prefix + def.navArrow}, keys...)
 		}
+		label := prettyKeyLabel(keys)
+		if def.helpKey != "" {
+			label = def.helpKey
+		}
 		*def.field(&km) = key.NewBinding(
 			key.WithKeys(keys...),
-			key.WithHelp(prettyKeyLabel(keys), def.desc),
+			key.WithHelp(label, def.desc),
 		)
 		// Build the routing split for the four nav actions: the vim key(s)
 		// and (when enabled) the arrow alias, keyed off navArrow's direction.

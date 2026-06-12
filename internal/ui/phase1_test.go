@@ -95,45 +95,86 @@ func TestEscClosesThreadBeforeFilter(t *testing.T) {
 	}
 }
 
-// TestLeaderUnknownKeyFlashes: an unbound second key flashes a hint rather
-// than vanishing silently.
-func TestLeaderUnknownKeyFlashes(t *testing.T) {
-	m := navModel()
-	m.leaderPending = true
+// altKey builds an alt+<rune> KeyPressMsg (e.g. the alt+d jump), matching how
+// Ghostty delivers it under the Kitty protocol.
+func altKey(code rune) tea.KeyPressMsg {
+	return tea.KeyPressMsg(tea.Key{Code: code, Mod: tea.ModAlt})
+}
 
-	out, _ := m.handleLeaderKey(keyStr("z"))
+// TestAltDigitSwitchesTeam: alt+<n> jumps straight to the n-th real team,
+// replacing the old ",n" leader chord.
+func TestAltDigitSwitchesTeam(t *testing.T) {
+	m := navModel() // sits on team t1
+	out, _ := m.handleKey(altKey('2'))
 	got := out.(Model)
-	if got.leaderPending {
-		t.Fatalf("leader chord not cleared after second key")
-	}
-	if got.status == "" {
-		t.Fatalf("unbound leader key gave no feedback")
+	if kind, id, _ := got.tabAt(got.teamIdx); kind != tabTeam || id != "t2" {
+		t.Fatalf("alt+2 landed on tab kind=%v id=%q, want the 2nd team t2", kind, id)
 	}
 }
 
-// TestLeaderEscCancelsSilently: esc still cancels the chord with no noise.
-func TestLeaderEscCancelsSilently(t *testing.T) {
+// TestAltDigitSwitchesTeamWhileComposing: alt+<n> is global — it jumps teams
+// even from the composer (no alt+digit is a textarea edit key), so fast
+// switching works mid-draft like the ctrl+arrow nav.
+func TestAltDigitSwitchesTeamWhileComposing(t *testing.T) {
 	m := navModel()
-	m.leaderPending = true
+	m.focus = focusInput
+	m.input.Focus()
+	m.input.SetValue("draft")
 
-	out, _ := m.handleLeaderKey(keyStr("esc"))
+	out, _ := m.handleKey(altKey('2'))
 	got := out.(Model)
-	if got.status != "" {
-		t.Fatalf("esc on a leader chord flashed %q, want silent cancel", got.status)
+	if kind, id, _ := got.tabAt(got.teamIdx); kind != tabTeam || id != "t2" {
+		t.Fatalf("alt+2 while composing landed on kind=%v id=%q, want team t2", kind, id)
 	}
 }
 
-// TestLeaderMessagesNoOpOnSearchTabFlashes: ",m" has no messages pane on the
-// Search tab, so it explains why instead of doing nothing.
-func TestLeaderMessagesNoOpOnSearchTabFlashes(t *testing.T) {
+// TestAltDJumpsToDMs: alt+d jumps to the DM tab (old ",d").
+func TestAltDJumpsToDMs(t *testing.T) {
 	m := navModel()
-	m.openSearchTab() // move onto the synthetic Search tab
-	m.leaderPending = true
-
-	out, _ := m.handleLeaderKey(keyStr("m"))
+	m.hasDMs = true
+	out, _ := m.handleKey(altKey('d'))
 	got := out.(Model)
-	if got.status == "" {
-		t.Fatalf(",m on the Search tab gave no feedback")
+	if kind, _, _ := got.tabAt(got.teamIdx); kind != tabDM {
+		t.Fatalf("alt+d landed on tab kind=%v, want the DM tab", kind)
+	}
+}
+
+// TestAltUJumpsToFeed: alt+u jumps to the Feed tab (old ",u").
+func TestAltUJumpsToFeed(t *testing.T) {
+	m := navModel()
+	out, _ := m.handleKey(altKey('u'))
+	if got := out.(Model); !got.onFeedTab() {
+		t.Fatalf("alt+u did not open the Feed tab (teamIdx=%d)", got.teamIdx)
+	}
+}
+
+// TestCtrlShiftFOpensSearchAll: ctrl+shift+f opens the all-channel search tab,
+// the ctrl twin of F.
+func TestCtrlShiftFOpensSearchAll(t *testing.T) {
+	m := navModel()
+	out, _ := m.handleKey(tea.KeyPressMsg(tea.Key{Code: 'f', Mod: tea.ModCtrl | tea.ModShift}))
+	if got := out.(Model); !got.onSearchTab() {
+		t.Fatalf("ctrl+shift+f did not open the Search tab (teamIdx=%d)", got.teamIdx)
+	}
+}
+
+// TestAltJumpInertWhileComposing: the alt-jumps are reading-pane only, so a
+// jump key pressed in the composer stays with the textarea (alt+u =
+// uppercase-word) and does NOT switch tabs.
+func TestAltJumpInertWhileComposing(t *testing.T) {
+	m := navModel()
+	m.focus = focusInput
+	m.input.Focus()
+	m.input.SetValue("hi")
+	startTab := m.teamIdx
+
+	out, _ := m.handleKey(altKey('u'))
+	got := out.(Model)
+	if got.focus != focusInput {
+		t.Fatalf("alt+u in the composer changed focus to %v, want focusInput", got.focus)
+	}
+	if got.teamIdx != startTab || got.onFeedTab() {
+		t.Fatalf("alt+u in the composer switched tabs (teamIdx %d→%d); jumps must be reading-pane only", startTab, got.teamIdx)
 	}
 }
 

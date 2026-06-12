@@ -199,17 +199,12 @@ var keyContexts = []keyContext{
 		},
 	},
 	{
-		name:     "chord:leader",
-		active:   func(m *Model) bool { return m.leaderPending },
-		terminal: true,
-		claims:   func(m *Model) []key.Binding { return nil },
-	},
-	{
 		name:   "global:reading",
-		active: func(m *Model) bool { return m.contentFocus() && !m.leaderPending && !m.inModal() },
+		active: func(m *Model) bool { return m.contentFocus() && !m.inModal() },
 		claims: func(m *Model) []key.Binding {
 			bs := []key.Binding{
-				m.keys.Leader, m.keys.Search, m.keys.Compose,
+				m.keys.NavTeam, m.keys.NavDM, m.keys.NavFeed,
+				m.keys.Search, m.keys.Compose,
 				m.keys.Tab, m.keys.ShiftTab, m.keys.Help, m.keys.Quit,
 				m.keys.SearchHere, m.keys.Filter, m.keys.MoveTeamLeft, m.keys.MoveTeamRight,
 				m.keys.ClearFilter, // esc: close thread / clear filter, before the focus panes
@@ -299,7 +294,6 @@ var shadowProbeStates = []struct {
 	{"teams", func(m *Model) { m.focus = focusTeams }},
 	{"feed", func(m *Model) { m.focus = focusFeed }},
 	{"filter", func(m *Model) { m.focus = focusMessages; m.filterMode = true }},
-	{"leader", func(m *Model) { m.focus = focusMessages; m.leaderPending = true }},
 	{"delete-confirm", func(m *Model) { m.deleteConfirmPostID = "x" }},
 	{"reaction-picker", func(m *Model) { m.reactionPickerPostID = "x" }},
 	{"open-picker", func(m *Model) { m.openPickerItems = make([]openable, 1) }},

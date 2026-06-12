@@ -73,8 +73,7 @@ func TestKeysSheetGroupsReflectEffectiveBindings(t *testing.T) {
 	if len(groups) == 0 {
 		t.Fatal("expected non-empty cheatsheet groups")
 	}
-	// The compose action lives in the Global section; the leader section has a
-	// distinct ",i → compose" jump hint, so scope the lookup to Global.
+	// The compose action lives in the Global section; scope the lookup there.
 	var composeRow *keysSheetRow
 	for _, g := range groups {
 		if g.title != "Global" {

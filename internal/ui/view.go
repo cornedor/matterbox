@@ -1409,8 +1409,6 @@ func (m *Model) renderFooter() string {
 	// to ride along in the old footer prompt.
 	var prefix string
 	switch {
-	case m.leaderPending:
-		prefix = "go to  "
 	case m.filterMode:
 		prefix = "type to filter  "
 	case m.focus == focusInput && m.editingPostID != "":

@@ -1235,6 +1235,16 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// alt+1…9 jump straight to a team from ANY focus, including the composer.
+	// Safe to dispatch before the typing guards because the textarea binds
+	// alt+f/d/u/b/c/l but no alt+digit, so these never shadow an edit key — and
+	// like the arrow nav above, the draft survives the jump. (alt+d / alt+u DO
+	// collide with the composer's delete-word / uppercase-word, so those stay
+	// below, after the typing guards.)
+	if key.Matches(msg, m.keys.NavTeam) {
+		return m.gotoTeam(teamDigit(msg))
+	}
+
 	// Filter mode and input mode each own most keys while active; check
 	// before the navigation shortcuts so plain letters ("," / "f" / "F" /
 	// "U" / "q" / "/") don't leak through while the user is typing.
@@ -1251,10 +1261,11 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	// Below here we're in a content focus (messages / thread / attachments /
-	// teams / feed), so plain-character shortcuts are safe. The "," leader
-	// chord, F (global search), and U (unread feed) are dispatched here.
-	// The "," leader chord, F (global search), and U (unread feed) are
-	// dispatched here rather than globally for exactly that reason.
+	// teams / feed), so plain-character and alt-letter shortcuts are safe. The
+	// alt+d DMs / alt+u Feed jumps, F / ctrl+shift+f (global search), and i
+	// (compose) are dispatched here rather than globally so they never shadow
+	// the composer's own alt/ctrl edit keys while the user is typing. (alt+1…9
+	// team jumps are global — see above — because no alt+digit is an edit key.)
 
 	// vim_nav "reading": the ctrl+vim keys navigate only out here, away from
 	// the text inputs (which kept ctrl+h/ctrl+k for emacs editing above).
@@ -1264,14 +1275,13 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	if m.leaderPending {
-		return m.handleLeaderKey(msg)
+	if key.Matches(msg, m.keys.NavDM) { // alt+d → DMs tab
+		return m.gotoDMTab()
 	}
-	if key.Matches(msg, m.keys.Leader) {
-		m.leaderPending = true
-		return m, nil
+	if key.Matches(msg, m.keys.NavFeed) { // alt+u → Feed (unread bubbles)
+		return m, m.openFeedTab()
 	}
-	if key.Matches(msg, m.keys.Search) { // F → global search, empty box
+	if key.Matches(msg, m.keys.Search) { // F / ctrl+shift+f → global search, empty box
 		return m, m.openSearchTab()
 	}
 	if key.Matches(msg, m.keys.Compose) { // i → focus the composer
@@ -1490,57 +1500,27 @@ func (m Model) handleThreadKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// handleLeaderKey resolves the second key of a "," leader chord. It is
-// only reached when m.leaderPending is set (in handleKey, after the ","
-// leader key in a navigation focus); the flag is always cleared here. esc
-// cancels silently; any other unbound second key flashes a hint so the
-// chord doesn't just vanish, and the no-op tab jumps explain themselves.
-func (m Model) handleLeaderKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	m.leaderPending = false
-	switch msg.String() {
-	case "t":
-		// The sidebar isn't focusable — teams/channels move with ctrl-nav from
-		// anywhere. On the Search/Feed tabs ",t" still drops onto the tab strip
-		// (their body's "up a level"); on channel tabs it has nowhere to go.
-		if m.onSearchTab() || m.onFeedTab() {
-			m.focus = focusTeams
-			m.input.Blur()
-			m.renderMessages()
-			return m, nil
-		}
-		m.status = ",t only moves to the tab strip on the Search/Feed tabs — ctrl-nav switches teams everywhere else"
-		return m, nil
-	case "m":
-		if m.onSearchTab() || m.onFeedTab() {
-			m.status = ",m needs a messages pane — the Search/Feed tabs don't have one"
-			return m, nil
-		}
-		m.focus = focusMessages
-		m.input.Blur()
-		m.renderMessages()
-		return m, nil
-	case "i":
-		return m.focusComposer()
-	case "d":
-		return m.gotoDMTab()
-	case "u":
-		// The unread feed (one bubble per unread channel).
-		return m, m.openFeedTab()
-	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
-		return m.gotoTeam(int(msg.String()[0] - '0'))
-	case "esc":
-		// esc is the universal cancel — drop the chord without a fuss.
-		return m, nil
+// teamDigit reads the team index (1-9) from a NavTeam keypress. The bound
+// keys are alt+1…alt+9, so the trailing rune of the key string is the digit;
+// returns 0 for anything without a 1-9 suffix (gotoTeam treats <1 as a no-op),
+// which keeps a custom rebind that drops the digit from panicking.
+func teamDigit(msg tea.KeyPressMsg) int {
+	s := msg.String()
+	if s == "" {
+		return 0
 	}
-	m.status = ", " + msg.String() + " — nothing bound; , then t/m/i/d/u/1-9"
-	return m, nil
+	c := s[len(s)-1]
+	if c < '1' || c > '9' {
+		return 0
+	}
+	return int(c - '0')
 }
 
 // focusComposer moves focus to the message input so the user can type. It
 // is a no-op on the Search and Feed tabs, which have no composer. Bound to
-// the bare "i" key in any navigation focus and to the ",i" leader chord.
-// (Entering a channel deliberately does NOT call this — the user opts in to
-// typing rather than having the textarea swallow navigation shortcuts.)
+// the bare "i" key in any navigation focus. (Entering a channel deliberately
+// does NOT call this — the user opts in to typing rather than having the
+// textarea swallow navigation shortcuts.)
 func (m Model) focusComposer() (tea.Model, tea.Cmd) {
 	if m.onSearchTab() || m.onFeedTab() {
 		return m, nil

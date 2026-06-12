@@ -503,6 +503,11 @@ func writeConfig(p string, cfg *Config) error {
 		"#             An empty list or \"none\" unbinds. Modifiers: ctrl/alt/shift/\n" +
 		"#             super/meta/hyper. Unknown action ids and bad chords are\n" +
 		"#             reported at startup with the full list of valid actions.\n" +
+		"#             Jump-to actions: goto_team (alt+1…9), goto_dm (alt+d),\n" +
+		"#             goto_feed (alt+u); search_here / search_all answer to\n" +
+		"#             ctrl+f / ctrl+shift+f. On macOS, alt+ reaches the app only\n" +
+		"#             with macos-option-as-alt = true in Ghostty — otherwise\n" +
+		"#             rebind these here (e.g. goto_team: [super+1, …]).\n" +
 		"# emoji_images: render custom (server) emoji as inline images via the\n" +
 		"#             Kitty graphics protocol. auto (default) enables them on a\n" +
 		"#             Kitty/Ghostty truecolor terminal outside tmux; off keeps\n" +

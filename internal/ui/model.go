@@ -161,12 +161,6 @@ type Model struct {
 	filterMode  bool
 	filterValue string // committed/live filter applied to channel list
 
-	// leaderPending is true between pressing the "," leader key and the
-	// next keystroke, which handleLeaderKey interprets as a pane/tab jump.
-	// Only set/cleared inside handleKey's navigation region, so it never
-	// outlives a single keypress.
-	leaderPending bool
-
 	// global channel switcher (ctrl+k). When switcherMode is true, the
 	// switcher owns every keystroke and an overlay popup is rendered in
 	// place of the main body. switcherCmdPending is non-nil while the
@@ -640,31 +634,11 @@ const defaultMarkReadDelay = 5 * time.Second
 // the poll is the backstop for events that never arrive.
 const statusPollInterval = 60 * time.Second
 
-// leaderHints are the synthetic bindings shown in the footer while the
-// "," leader chord is pending, so the user sees the available jump
-// targets before pressing the second key. The keys are display-only
-// (they're never matched against — handleLeaderKey owns the resolution).
-func leaderHints() []key.Binding {
-	nb := func(k, h string) key.Binding {
-		return key.NewBinding(key.WithKeys(k), key.WithHelp(k, h))
-	}
-	return []key.Binding{
-		nb("m", "messages"),
-		nb("i", "compose"),
-		nb("d", "DMs"),
-		nb("u", "feed"),
-		nb("1-9", "team N"),
-	}
-}
-
 // ShortHelp returns the bindings shown on the footer's single-line help.
 // The selection depends on which pane has focus so the prompt always
 // matches the keys that will work right now.
 func (m Model) ShortHelp() []key.Binding {
 	k := m.keys
-	if m.leaderPending {
-		return leaderHints()
-	}
 	switch {
 	case m.switcherMode:
 		return []key.Binding{k.ApplyOpen, k.Up, k.Down, k.CancelEdit}
@@ -675,30 +649,27 @@ func (m Model) ShortHelp() []key.Binding {
 	case m.focus == focusMessages:
 		// Concise footer: the primary actions only (the old 23-binding line
 		// ellipsized after ~6). `?` opens the full, grouped help.
-		return []key.Binding{k.Compose, k.OpenThread, k.SearchHere, k.Filter, k.Leader, k.Help}
+		return []key.Binding{k.Compose, k.OpenThread, k.SearchHere, k.Filter, k.NavTeam, k.Help}
 	case m.focus == focusThread:
-		return []key.Binding{k.Compose, k.SearchHere, k.CloseThread, k.Leader, k.Help}
+		return []key.Binding{k.Compose, k.SearchHere, k.CloseThread, k.NavTeam, k.Help}
 	case m.focus == focusAttachments:
-		return []key.Binding{k.Left, k.Right, k.OpenAttach, k.AttachRemove, k.Tab, k.Leader, k.Help, k.Quit}
+		return []key.Binding{k.Left, k.Right, k.OpenAttach, k.AttachRemove, k.Tab, k.NavTeam, k.Help, k.Quit}
 	case m.focus == focusTeams:
-		return []key.Binding{k.Tab, k.SwitchTeam, k.LoadTeam, k.MoveTeamLeft, k.MoveTeamRight, k.SearchHere, k.Leader, k.Switcher, k.Search, k.Help, k.Quit}
+		return []key.Binding{k.Tab, k.SwitchTeam, k.LoadTeam, k.MoveTeamLeft, k.MoveTeamRight, k.SearchHere, k.NavTeam, k.Switcher, k.Search, k.Help, k.Quit}
 	case m.focus == focusSearch:
 		return []key.Binding{k.Up, k.Down, k.ApplyOpen, k.CancelEdit, k.Tab, k.Help, k.Quit}
 	case m.focus == focusFeed:
-		return []key.Binding{k.Up, k.Down, k.OpenChannel, k.MarkRead, k.Refresh, k.Tab, k.Leader, k.Help, k.Quit}
+		return []key.Binding{k.Up, k.Down, k.OpenChannel, k.MarkRead, k.Refresh, k.Tab, k.NavTeam, k.Help, k.Quit}
 	}
-	return []key.Binding{k.Tab, k.Leader, k.Switcher, k.Search, k.SearchHere, k.Help, k.Quit}
+	return []key.Binding{k.Tab, k.NavTeam, k.Switcher, k.Search, k.SearchHere, k.Help, k.Quit}
 }
 
 // FullHelp returns the bindings grouped into columns for the expanded
 // help view (toggled with `?`). Columns mirror the panes of the UI.
 func (m Model) FullHelp() [][]key.Binding {
 	k := m.keys
-	if m.leaderPending {
-		return [][]key.Binding{leaderHints()}
-	}
 	return [][]key.Binding{
-		{k.Tab, k.ShiftTab, k.Leader, k.Switcher, k.Search, k.SearchHere, k.Help, k.Quit},
+		{k.Tab, k.ShiftTab, k.NavTeam, k.NavDM, k.NavFeed, k.Switcher, k.Search, k.SearchHere, k.Help, k.Quit},
 		{k.Up, k.Down, k.Home, k.End, k.Left, k.Right, k.PageDown, k.PageUp, k.NextHit, k.PrevHit},
 		{k.NavChanPrev, k.NavChanNext, k.NavTeamPrev, k.NavTeamNext},
 		{k.Filter, k.ClearFilter, k.OpenChannel, k.OpenThread, k.ReplyInThread, k.CloseThread},

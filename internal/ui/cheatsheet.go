@@ -31,8 +31,8 @@ var keysSheetSections = []struct {
 	{title: "Messages", contexts: []string{"focus:messages"}},
 	{title: "Thread", contexts: []string{"focus:thread"}},
 	// The preview modal's own keys are hardwired in handlePreviewKey (not bound
-	// through the registry), so list them from a synthetic source like the
-	// leader chord below.
+	// through the registry), so list them from a synthetic source (rows func),
+	// like navSheetRows above.
 	{title: "Image preview", rows: (*Model).previewSheetRows},
 	{title: "Compose", contexts: []string{"focus:input"}},
 	{title: "Attachments", contexts: []string{"focus:attachments"}},
@@ -146,8 +146,7 @@ type keysSheetGroup struct {
 // keysSheetGroups builds the cheatsheet's grouped rows from the context table.
 // Each section pulls the bound keys + descriptions out of its context(s)'
 // claims, deduping rows that repeat (e.g. a key shared by two merged
-// contexts). Unbound actions (empty override) are skipped. A final synthetic
-// section lists the leader-chord jump targets.
+// contexts). Unbound actions (empty override) are skipped.
 func (m *Model) keysSheetGroups() []keysSheetGroup {
 	byName := make(map[string]keyContext, len(keyContexts))
 	for _, c := range keyContexts {
@@ -185,20 +184,6 @@ func (m *Model) keysSheetGroups() []keysSheetGroup {
 		if len(rows) > 0 {
 			groups = append(groups, keysSheetGroup{title: sec.title, rows: rows})
 		}
-	}
-
-	// Leader chord: the second-key jump targets resolved by handleLeaderKey
-	// (synthetic, never matched against — see leaderHints).
-	leadKey := ","
-	if ks := m.keys.Leader.Keys(); len(ks) > 0 {
-		leadKey = prettyKey(ks[0])
-	}
-	var lrows []keysSheetRow
-	for _, b := range leaderHints() {
-		lrows = append(lrows, keysSheetRow{keys: prettyKeysAll(b.Keys()), desc: b.Help().Desc})
-	}
-	if len(lrows) > 0 {
-		groups = append(groups, keysSheetGroup{title: "Go to (press " + leadKey + " then)", rows: lrows})
 	}
 	return groups
 }
