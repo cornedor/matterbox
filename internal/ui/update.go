@@ -562,6 +562,29 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = "nothing to paste"
 		return m, nil
 
+	case giphyResolvedMsg:
+		// Background Giphy title lookup finished. On error keep the instant
+		// expansion that's already in the composer; just note it. On success
+		// swap the instant markdown for the upgraded line — but only if it's
+		// still present, so a paste the user has since edited isn't clobbered.
+		if msg.err != nil {
+			m.status = "Giphy title lookup failed: " + msg.err.Error()
+			return m, nil
+		}
+		if msg.markdown == "" || m.focus != focusInput {
+			return m, nil
+		}
+		val := m.input.Value()
+		if !strings.Contains(val, msg.old) {
+			return m, nil
+		}
+		m.input.SetValue(strings.Replace(val, msg.old, msg.markdown, 1))
+		m.input.CursorEnd()
+		m.updateMention()
+		m.syncInputHeight()
+		m.status = "expanded Giphy link"
+		return m, nil
+
 	case attachmentUploadedMsg:
 		m.applyUploadResult(msg)
 		return m, nil
@@ -1140,11 +1163,23 @@ func (m Model) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	if m.focus == focusInput {
+		// A pasted Giphy link becomes an inline ![alt](url) image instead of a
+		// bare URL: expand it instantly (offline, from the GIF id) and, when a
+		// Giphy API key is configured, kick off a background lookup that swaps
+		// in the GIF's real title + the configured rendition.
+		var giphyCmd tea.Cmd
+		if md, id, ok := giphyExpand(strings.TrimSpace(msg.Content), m.giphyRendition); ok {
+			msg.Content = md
+			m.status = "expanded Giphy link"
+			if m.giphyAPIKey != "" {
+				giphyCmd = giphyLookup(m.ctx, m.giphyAPIKey, id, m.giphyRendition, md)
+			}
+		}
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
 		mentionCmd := m.updateMention()
 		m.syncInputHeight()
-		return m, tea.Batch(cmd, mentionCmd)
+		return m, tea.Batch(cmd, mentionCmd, giphyCmd)
 	}
 	if m.focus == focusSearch {
 		// A finished AI run with the answer box selected pastes into the in-box

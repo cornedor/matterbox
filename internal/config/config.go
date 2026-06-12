@@ -68,6 +68,25 @@ type Config struct {
 	// than a flat flag because more toggles are planned (e.g. animating GIFs in
 	// the space-to-preview modal). See internal/ui.
 	Animations AnimationsConfig `yaml:"animations"`
+	// Giphy turns a pasted Giphy link into an inline ![alt](url) image in the
+	// composer. The link is expanded instantly from its id (offline); when
+	// api_key is set the line is then upgraded in place with the GIF's real
+	// title and the chosen rendition. See internal/ui.
+	Giphy GiphyConfig `yaml:"giphy"`
+}
+
+// GiphyConfig configures pasted-Giphy-link expansion. Defaults in fillDefaults.
+type GiphyConfig struct {
+	// APIKey is a Giphy API key (https://developers.giphy.com). Optional: with
+	// no key a pasted link still expands offline to a working image, but the alt
+	// text comes from the URL slug ("gif" for a bare media link) rather than the
+	// GIF's real title. The GIPHY_API_KEY environment variable overrides this.
+	APIKey string `yaml:"api_key"`
+	// Rendition is which Giphy size to post: "fixed_height" (default, 200px tall
+	// — the picker's look), "fixed_height_small" (100px), "fixed_width" (200px
+	// wide), "downsized" / "downsized_medium" (full dimensions, size-capped;
+	// needs api_key), or "original" (full quality, can be several MB).
+	Rendition string `yaml:"rendition"`
 }
 
 // AnimationsConfig groups the optional motion toggles. Each field is a pointer
@@ -271,6 +290,12 @@ const (
 // enough that stale chat sinks. Kept here so the config is self-documenting.
 const defaultSearchRecencyHalfLifeDays = 90
 
+// defaultGiphyRendition is the Giphy size posted when none is configured:
+// fixed_height (200px tall) matches how the Mattermost GIF picker normally
+// posts (a /200.gif), and is light enough that everyone in the channel loads
+// it quickly.
+const defaultGiphyRendition = "fixed_height"
+
 // defaultMarkReadDelaySeconds is the dwell a channel must stay open before
 // it's marked read. Long enough that an accidental peek doesn't clear
 // unread, short enough not to feel laggy when you actually read it.
@@ -350,7 +375,7 @@ func Load() (*Config, error) {
 	// and rewrite the file once so the discovered model + prompt show up as
 	// editable defaults. Best-effort: a failed rewrite only means the file
 	// keeps working off in-memory defaults.
-	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil
+	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Giphy.Rendition == ""
 	cfg.fillDefaults()
 	if addDefaults {
 		if werr := writeConfig(p, cfg); werr != nil {
@@ -434,6 +459,9 @@ func (c *Config) fillDefaults() {
 		t := true
 		c.Animations.ImagePreview = &t
 	}
+	if c.Giphy.Rendition == "" {
+		c.Giphy.Rendition = defaultGiphyRendition
+	}
 }
 
 // SaveTeamOrder persists the given left-to-right team-tab ordering to
@@ -515,6 +543,13 @@ func writeConfig(p string, cfg *Config) error {
 		"# animations: optional motion effects, off-able if distracting.\n" +
 		"#             custom_emoji (default true) animates GIF custom emoji in\n" +
 		"#             place; image_preview (default true) animates GIFs in the\n" +
-		"#             space-to-preview modal; false freezes either on frame one.\n"
+		"#             space-to-preview modal; false freezes either on frame one.\n" +
+		"# giphy:      expand a pasted Giphy link into an inline image. The link is\n" +
+		"#             turned into ![alt](url) instantly (offline, from its id);\n" +
+		"#             with api_key set (https://developers.giphy.com, or the\n" +
+		"#             GIPHY_API_KEY env var) the line is then upgraded with the\n" +
+		"#             GIF's real title. rendition picks the size: fixed_height\n" +
+		"#             (default, 200px), fixed_height_small (100px), fixed_width,\n" +
+		"#             downsized / downsized_medium (need api_key), or original.\n"
 	return os.WriteFile(p, append([]byte(header), body...), 0o644)
 }

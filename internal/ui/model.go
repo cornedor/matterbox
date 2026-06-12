@@ -380,6 +380,12 @@ type Model struct {
 	// the preview modal shows its first frame only. See preview.go.
 	animatePreview bool
 
+	// giphyAPIKey / giphyRendition configure pasted-Giphy-link expansion. The
+	// key (empty = offline-only) enables the background title upgrade; the
+	// rendition picks which GIF size is posted. See giphy.go.
+	giphyAPIKey    string
+	giphyRendition string
+
 	keys keyMap
 	// vimNav controls when the ctrl+vim sidebar-nav keys fire (see keys.go).
 	// Zero value (vimNavGlobal) is today's behaviour, so test Models that
@@ -516,6 +522,8 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	emojiMode := "auto"
 	animateEmoji := true
 	animatePreview := true
+	var giphyAPIKey string
+	giphyRendition := "fixed_height" // mirrors config.defaultGiphyRendition
 	if cfg != nil {
 		vimNav = parseVimNav(cfg.Keybindings.VimNav)
 		reactions = append([]string(nil), cfg.Reactions...)
@@ -548,6 +556,15 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		if cfg.Animations.ImagePreview != nil {
 			animatePreview = *cfg.Animations.ImagePreview
 		}
+		giphyAPIKey = cfg.Giphy.APIKey
+		if cfg.Giphy.Rendition != "" {
+			giphyRendition = cfg.Giphy.Rendition
+		}
+	}
+	// The GIPHY_API_KEY env var overrides the config key (handy for keeping a
+	// secret out of the YAML file).
+	if env := os.Getenv("GIPHY_API_KEY"); env != "" {
+		giphyAPIKey = env
 	}
 	// Unless the sidebar nav uses the ctrl modifier itself, ctrl+←/→ never
 	// reach the global dispatch, so let them word-jump in the composer (the
@@ -627,6 +644,8 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		markReadDelay:       markReadDelay,
 		emojiImg:            newEmojiImages(emojiMode, animateEmoji),
 		animatePreview:      animatePreview,
+		giphyAPIKey:         giphyAPIKey,
+		giphyRendition:      giphyRendition,
 	}
 }
 
@@ -717,6 +736,7 @@ func (m Model) emojiProbeCmd() tea.Cmd {
 	}
 	return tea.Batch(
 		tea.Raw(kittyProbe()),
+		tea.Raw(requestCellSize()),
 		tea.Tick(emojiProbeTimeout, func(time.Time) tea.Msg { return emojiProbeTimeoutMsg{} }),
 	)
 }
