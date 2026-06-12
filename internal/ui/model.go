@@ -290,6 +290,14 @@ type Model struct {
 	keysSheetMode bool
 	keysSheetView viewport.Model
 
+	// Key inspector popup (switcher "> Debug: key inspector"). While
+	// keyDebugMode is true the popup owns every keystroke, decoding each into
+	// a line in keyDebugLog (keystroke / String / modifier bits / code / text)
+	// instead of acting on it, so the user can see exactly what the terminal
+	// sends for e.g. option+arrow. esc closes it. See keydebug.go.
+	keyDebugMode bool
+	keyDebugLog  []string
+
 	// Search tab state: live FTS5 search over the persisted message
 	// corpus. Activated by F (all channels) or / (scoped to the current
 	// channel), or by selecting the synthetic "Search" tab. See

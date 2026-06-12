@@ -90,7 +90,21 @@ func builtinCommands() []switcherCommand {
 			argPlaceholder: "8 30",
 			run:            runBouncingBall,
 		},
+		{
+			name: "Debug: key inspector",
+			desc: "echo the raw key events the terminal sends (diagnose option/ctrl/shift+arrow)",
+			run:  runKeyDebug,
+		},
 	}
+}
+
+// runKeyDebug opens the key-inspector popup (see keydebug.go), which echoes the
+// decoded key events the terminal delivers — useful for diagnosing why a
+// modifier+arrow binding (e.g. nav_modifier: alt) never fires: you can see
+// whether option+arrow arrives as "alt+up", as a bare "up", or not at all.
+func runKeyDebug(m *Model, _ string) tea.Cmd {
+	m.openKeyDebug()
+	return nil
 }
 
 // runShowKeys opens the keyboard cheatsheet popup (see cheatsheet.go). The

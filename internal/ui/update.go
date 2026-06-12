@@ -1158,6 +1158,12 @@ func (m Model) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// Key inspector is fully modal and checked first: it echoes every decoded
+	// keystroke instead of acting on it (esc closes, ctrl+c still quits), so a
+	// user can see exactly what the terminal sends for e.g. option+arrow.
+	if m.keyDebugMode {
+		return m.handleKeyDebugKey(msg)
+	}
 	// Delete-confirmation modal is fully modal: y/enter performs the
 	// delete, n/esc cancels. Anything else is ignored.
 	if m.deleteConfirmPostID != "" {

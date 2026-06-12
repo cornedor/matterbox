@@ -798,6 +798,9 @@ func (m *Model) viewContent() string {
 	if m.keysSheetMode {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderKeysSheetPopup())
 	}
+	if m.keyDebugMode {
+		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderKeyDebugPopup())
+	}
 	if m.deleteConfirmPostID != "" {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderDeleteConfirm())
 	}
