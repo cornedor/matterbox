@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -63,8 +64,8 @@ var attachableMIMEs = []struct {
 }
 
 type clipTool struct {
-	name string // "wl-paste" or "xclip"
-	path string
+	name string // "macos", "wl-paste", or "xclip"
+	path string // absolute path to the tool (osascript for "macos")
 }
 
 var (
@@ -74,6 +75,15 @@ var (
 
 func detectClipTool() clipTool {
 	clipToolOnce.Do(func() {
+		// macOS has no wl-paste/xclip — drive the native pasteboard through
+		// osascript (+ pbpaste for text) instead. Checked first so a stray
+		// brew-installed xclip on a Mac doesn't shadow the working path.
+		if runtime.GOOS == "darwin" {
+			if p, err := exec.LookPath("osascript"); err == nil {
+				clipToolVal = clipTool{name: "macos", path: p}
+				return
+			}
+		}
 		if p, err := exec.LookPath("wl-paste"); err == nil {
 			clipToolVal = clipTool{name: "wl-paste", path: p}
 			return
@@ -94,7 +104,13 @@ func readClipboard() tea.Cmd {
 	return func() tea.Msg {
 		tool := detectClipTool()
 		if tool.name == "" {
+			if runtime.GOOS == "darwin" {
+				return clipboardReadMsg{err: errors.New("clipboard paste needs osascript (built into macOS)")}
+			}
 			return clipboardReadMsg{err: errors.New("install wl-clipboard or xclip to paste files")}
+		}
+		if tool.name == "macos" {
+			return readClipboardMac(tool)
 		}
 
 		types, err := clipListTypes(tool)
@@ -145,6 +161,94 @@ func readClipboard() tea.Cmd {
 		}
 		return clipboardReadMsg{}
 	}
+}
+
+// readClipboardMac reads the macOS pasteboard via osascript/pbpaste. macOS
+// exposes no clean "list types then read one" interface like wl-paste, so each
+// flavor is just attempted in preference order: a copied Finder file first
+// (attach the original, no temp copy), then image data coerced to PNG, then
+// plain text so ctrl+v still inserts a copied string.
+func readClipboardMac(t clipTool) clipboardReadMsg {
+	if uris, err := macClipFileURIs(t); err == nil && len(uris) > 0 {
+		if ps := parseURIList(uris); len(ps) > 0 {
+			return clipboardReadMsg{payloads: ps}
+		}
+	}
+	if data, err := macClipImagePNG(t); err == nil && len(data) > 0 {
+		p, err := writeImageTemp(data, "image/png", ".png")
+		if err != nil {
+			return clipboardReadMsg{err: err}
+		}
+		return clipboardReadMsg{payloads: []clipboardPayload{p}}
+	}
+	if data, err := macClipText(); err == nil && len(data) > 0 {
+		return clipboardReadMsg{text: string(data)}
+	}
+	return clipboardReadMsg{}
+}
+
+// macClipFileURIs returns a synthesized file:// uri-list for a file copied in
+// Finder, or empty when the clipboard holds no file reference. Only the first
+// file is taken (AppleScript's furl coercion yields a single reference).
+func macClipFileURIs(t clipTool) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, t.path, "-e", `POSIX path of (the clipboard as «class furl»)`).Output()
+	if err != nil {
+		return nil, err // not a file on the clipboard
+	}
+	path := strings.TrimSpace(string(out))
+	if path == "" {
+		return nil, nil
+	}
+	u := url.URL{Scheme: "file", Path: path}
+	return []byte(u.String() + "\n"), nil
+}
+
+// macClipImagePNG extracts pasteboard image data as PNG bytes (macOS coerces
+// TIFF/other flavors to PNG on request). Returns empty bytes when there is no
+// image — osascript can't emit raw bytes on stdout, so it writes to a tempfile
+// we read back. The try/close keeps the file handle from leaking when the
+// clipboard holds no image (which leaves the file empty, signalling no match).
+func macClipImagePNG(t clipTool) ([]byte, error) {
+	dir, err := pasteTempDir()
+	if err != nil {
+		return nil, err
+	}
+	f, err := os.CreateTemp(dir, "clip-*.png")
+	if err != nil {
+		return nil, err
+	}
+	tmp := f.Name()
+	f.Close()
+	defer os.Remove(tmp)
+
+	script := fmt.Sprintf(`set f to open for access POSIX file %q with write permission
+set eof f to 0
+try
+	write (the clipboard as «class PNGf») to f
+end try
+close access f`, tmp)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, t.path, "-e", script)
+	var errOut bytes.Buffer
+	cmd.Stderr = &errOut
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("read clipboard image: %w: %s", err, strings.TrimSpace(errOut.String()))
+	}
+	return os.ReadFile(tmp)
+}
+
+// macClipText returns the clipboard's plain text via pbpaste (empty when none).
+func macClipText() ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "pbpaste").Output()
+	if err != nil {
+		return nil, fmt.Errorf("pbpaste: %w", err)
+	}
+	return out, nil
 }
 
 func clipListTypes(t clipTool) ([]string, error) {
