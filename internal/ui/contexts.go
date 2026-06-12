@@ -261,7 +261,9 @@ var keyContexts = []keyContext{
 		claims: func(m *Model) []key.Binding {
 			// MoveTeamLeft/Right (< >) are owned by global:reading above; the
 			// pane's own arms for them are shadowed, so they're not claimed here.
-			return []key.Binding{m.keys.Left, m.keys.Right, m.keys.Up, m.keys.Down, m.keys.LoadTeam}
+			// Bare ←/→ no longer switch teams (ctrl+←/→ does), so only ↑/↓ (drop
+			// into the body) and enter (LoadTeam) are claimed.
+			return []key.Binding{m.keys.Up, m.keys.Down, m.keys.LoadTeam}
 		},
 	},
 	{
@@ -270,8 +272,9 @@ var keyContexts = []keyContext{
 		terminal: true,
 		claims: func(m *Model) []key.Binding {
 			// Tab/ShiftTab are owned by global:reading above; not claimed here.
+			// Bare ←/→ no longer switch teams here (ctrl+←/→ does).
 			return []key.Binding{
-				m.keys.Up, m.keys.Down, m.keys.InputUp, m.keys.InputDown, m.keys.Left, m.keys.Right,
+				m.keys.Up, m.keys.Down, m.keys.InputUp, m.keys.InputDown,
 				m.keys.Home, m.keys.End, m.keys.OpenChannel, m.keys.MarkRead, m.keys.Refresh,
 			}
 		},

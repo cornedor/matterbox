@@ -90,7 +90,6 @@ type keyMap struct {
 	AttachRemove key.Binding
 
 	// Teams
-	SwitchTeam    key.Binding
 	LoadTeam      key.Binding
 	MoveTeamLeft  key.Binding
 	MoveTeamRight key.Binding
@@ -202,7 +201,6 @@ var actionDefs = []actionDef{
 	{id: "paste", field: func(k *keyMap) *key.Binding { return &k.Paste }, keys: []string{"ctrl+v"}, desc: "paste"},
 	{id: "attachment_remove", field: func(k *keyMap) *key.Binding { return &k.AttachRemove }, keys: []string{"d", "x"}, desc: "remove"},
 
-	{id: "switch_team", field: func(k *keyMap) *key.Binding { return &k.SwitchTeam }, keys: []string{"left", "right", "h", "l"}, desc: "switch"},
 	{id: "load_team", field: func(k *keyMap) *key.Binding { return &k.LoadTeam }, keys: []string{"enter"}, desc: "load"},
 	{id: "move_team_left", field: func(k *keyMap) *key.Binding { return &k.MoveTeamLeft }, keys: []string{"<"}, desc: "move team left"},
 	{id: "move_team_right", field: func(k *keyMap) *key.Binding { return &k.MoveTeamRight }, keys: []string{">"}, desc: "move team right"},

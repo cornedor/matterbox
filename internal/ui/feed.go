@@ -332,10 +332,6 @@ func (m Model) handleFeedKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.renderFeedResults()
 		}
 		return m, nil
-	case key.Matches(msg, m.keys.Left):
-		return m.switchTeamTab(-1)
-	case key.Matches(msg, m.keys.Right):
-		return m.switchTeamTab(1)
 	case key.Matches(msg, m.keys.Home):
 		m.feed.idx = 0
 		m.renderFeedResults()

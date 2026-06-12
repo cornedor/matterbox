@@ -2385,10 +2385,6 @@ func (m Model) handleTeamsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.persistTeamOrder()
 		}
 		return m, nil
-	case key.Matches(msg, m.keys.Left):
-		return m.switchTeamTab(-1)
-	case key.Matches(msg, m.keys.Right):
-		return m.switchTeamTab(1)
 	case key.Matches(msg, m.keys.Up), key.Matches(msg, m.keys.Down):
 		// ↑/↓ drop into the current tab's body list (search hits / feed
 		// bubbles), so the team strip and the list below it read as one

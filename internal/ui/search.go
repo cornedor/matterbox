@@ -470,17 +470,6 @@ func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.renderSearchResults()
 		}
 		return m, nil
-	case msg.String() == "left", msg.String() == "right":
-		// With an empty query the search box has nothing to edit, so ←/→
-		// keep switching tabs — you're never trapped after arrowing in.
-		// Once text is present they fall through to move the input cursor.
-		// (Kept literal: matching m.keys.Left/Right would steal typed h/l.)
-		if m.search.input.Value() == "" {
-			if msg.String() == "left" {
-				return m.switchTeamTab(-1)
-			}
-			return m.switchTeamTab(1)
-		}
 	case msg.String() == "enter":
 		// While an AI run is in flight, enter is a no-op (it would restart it).
 		if m.aiSearch.phase == aiSearchRunning {

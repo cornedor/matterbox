@@ -680,7 +680,7 @@ func (m Model) ShortHelp() []key.Binding {
 	case m.focus == focusAttachments:
 		return []key.Binding{k.Left, k.Right, k.OpenAttach, k.AttachRemove, k.Tab, k.NavTeam, k.Help, k.Quit}
 	case m.focus == focusTeams:
-		return []key.Binding{k.Tab, k.SwitchTeam, k.LoadTeam, k.MoveTeamLeft, k.MoveTeamRight, k.SearchHere, k.NavTeam, k.Switcher, k.Search, k.Help, k.Quit}
+		return []key.Binding{k.Tab, k.LoadTeam, k.MoveTeamLeft, k.MoveTeamRight, k.SearchHere, k.NavTeam, k.Switcher, k.Search, k.Help, k.Quit}
 	case m.focus == focusSearch:
 		return []key.Binding{k.Up, k.Down, k.ApplyOpen, k.CancelEdit, k.Tab, k.Help, k.Quit}
 	case m.focus == focusFeed:
