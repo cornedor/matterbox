@@ -284,8 +284,9 @@ func (m *Model) teamHintForChannel(ch *model.Channel) string {
 
 // renderSwitcher draws the centered popup: title, input row, separator,
 // then up to switcherLimit result rows with mention/unread badges and a
-// dim team-name suffix.
-func (m *Model) renderSwitcher() string {
+// dim team-name suffix. maxH is the body height it's centered in, used to
+// bound the (two-line) command list so it never pushes the footer off-screen.
+func (m *Model) renderSwitcher(maxH int) string {
 	w := switcherWidth
 	if cap := m.width - 4; cap > 0 && w > cap {
 		w = cap
@@ -304,7 +305,7 @@ func (m *Model) renderSwitcher() string {
 		return m.renderSwitcherArgPrompt(w, inner)
 	}
 	if m.inCommandMode() {
-		return m.renderSwitcherCommands(w, inner)
+		return m.renderSwitcherCommands(w, inner, maxH)
 	}
 
 	dim := lipgloss.NewStyle().Foreground(dimColor)
@@ -381,7 +382,7 @@ func (m *Model) renderSwitcher() string {
 // renderSwitcherCommands renders the popup for "> command" mode: the
 // title flips to "Run command" and the result list is the registered
 // command catalogue (filtered by anything after the ">").
-func (m *Model) renderSwitcherCommands(w, inner int) string {
+func (m *Model) renderSwitcherCommands(w, inner, maxH int) string {
 	dim := lipgloss.NewStyle().Foreground(dimColor)
 	results := m.commandResults()
 
@@ -394,33 +395,56 @@ func (m *Model) renderSwitcherCommands(w, inner int) string {
 	if len(results) == 0 {
 		rows = append(rows, dim.Render("  no matching commands"))
 	} else {
-		for i, c := range results {
-			name := c.name
-			desc := c.desc
-			// Reserve "  " leading + "  " gap + desc.
-			reserved := 2
-			if desc != "" {
-				reserved += 2 + lipgloss.Width(desc)
+		// Each command renders as a name line plus its description on its own
+		// indented line below — far roomier than squeezing both onto one row.
+		// That doubles the list height, so window it around the selection to
+		// keep the popup within maxH (overflow would shove the footer off the
+		// bottom). Chrome inside the box is the title + input + separator (3)
+		// plus the border (2); the rest is two rows per command.
+		visible := maxH - 5
+		if visible < 2 {
+			visible = 2
+		}
+		perPage := visible / 2
+		if perPage < 1 {
+			perPage = 1
+		}
+		start := 0
+		if len(results) > perPage {
+			// Keep the selected row roughly centered, clamped to the ends.
+			start = m.switcherIdx - perPage/2
+			if start < 0 {
+				start = 0
 			}
-			if reserved < inner {
-				name = truncate(name, inner-reserved)
+			if start > len(results)-perPage {
+				start = len(results) - perPage
 			}
+		}
+		end := start + perPage
+		if end > len(results) {
+			end = len(results)
+		}
+		for i := start; i < end; i++ {
+			c := results[i]
 			selected := i == m.switcherIdx
-			line := "  " + name
-			if desc != "" {
+			block := "  " + truncate(c.name, inner-2)
+			if c.desc != "" {
 				// On the selected row, skip the dim style so the selectedRow
-				// foreground applies — dim grey foreground on the highlight
-				// background is unreadable.
+				// foreground applies — dim grey on the highlight background is
+				// unreadable.
+				desc := truncate(c.desc, inner-4)
 				if selected {
-					line += "  " + desc
+					block += "\n    " + desc
 				} else {
-					line += "  " + dim.Render(desc)
+					block += "\n    " + dim.Render(desc)
 				}
 			}
 			if selected {
-				line = selectedRow.Width(inner).Render(line)
+				// Width() pads both lines of the block so the highlight spans
+				// the full row.
+				block = selectedRow.Width(inner).Render(block)
 			}
-			rows = append(rows, line)
+			rows = append(rows, block)
 		}
 	}
 

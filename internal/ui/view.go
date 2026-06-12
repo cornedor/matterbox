@@ -862,7 +862,7 @@ func (m *Model) viewContent() string {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, panes...)
 	}
 	if m.switcherMode {
-		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderSwitcher())
+		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderSwitcher(bodyH))
 	}
 	if m.historyMode {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderHistoryPopup())
