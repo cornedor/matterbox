@@ -159,3 +159,25 @@ func TestFeedEntryLastActivity(t *testing.T) {
 		t.Errorf("empty lastActivity = %d; want 0", got)
 	}
 }
+
+func TestChannelMuted(t *testing.T) {
+	muted := model.ChannelMember{ChannelId: "c-muted", NotifyProps: model.StringMap{
+		model.MarkUnreadNotifyProp: model.ChannelMarkUnreadMention,
+	}}
+	loud := model.ChannelMember{ChannelId: "c-loud", NotifyProps: model.StringMap{
+		model.MarkUnreadNotifyProp: model.ChannelMarkUnreadAll,
+	}}
+	m := Model{members: model.ChannelMembersWithTeamData{
+		{ChannelMember: muted},
+		{ChannelMember: loud},
+	}}
+	if !m.channelMuted("c-muted") {
+		t.Error("channelMuted(c-muted) = false; want true")
+	}
+	if m.channelMuted("c-loud") {
+		t.Error("channelMuted(c-loud) = true; want false")
+	}
+	if m.channelMuted("c-unknown") {
+		t.Error("channelMuted(c-unknown) = true; want false (no member row)")
+	}
+}

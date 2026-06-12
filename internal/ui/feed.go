@@ -109,9 +109,23 @@ func (m Model) lastViewedByChannel() map[string]int64 {
 	return out
 }
 
+// channelMuted reports whether the given channel is muted for the current
+// user, per the cached channel-member notify props (mark_unread == mention).
+// Muted channels are deliberately kept out of the unread feed.
+func (m Model) channelMuted(channelID string) bool {
+	for _, mb := range m.members {
+		if mb.ChannelId == channelID {
+			return mb.IsChannelMuted()
+		}
+	}
+	return false
+}
+
 // buildFeed snapshots the current unread channels and fires the worker
 // that fetches each channel's unread posts. Bumps the seq so any earlier
-// in-flight build is ignored when it lands.
+// in-flight build is ignored when it lands. Muted channels are skipped —
+// they still carry an unread count, but the feed is the "things to read"
+// list and muted channels are explicitly opted out of that.
 func (m *Model) buildFeed() tea.Cmd {
 	m.feed.seq++
 	m.feed.loading = true
@@ -122,6 +136,9 @@ func (m *Model) buildFeed() tea.Cmd {
 	chans := m.unreadChannels()
 	targets := make([]feedTarget, 0, len(chans))
 	for _, c := range chans {
+		if m.channelMuted(c.Id) {
+			continue
+		}
 		targets = append(targets, feedTarget{
 			channelID:    c.Id,
 			lastViewedAt: lastViewed[c.Id],
@@ -422,6 +439,11 @@ func (m *Model) removeFeedEntry(channelID string) {
 // until the feed has been built at least once.
 func (m *Model) feedAppendPosted(p *model.Post) {
 	if !m.feed.built || p == nil || p.Id == "" || p.DeleteAt != 0 || p.IsSystemMessage() {
+		return
+	}
+	// Muted channels are excluded from the feed (see buildFeed), so a live
+	// post in one must not slip a fresh bubble in either.
+	if m.channelMuted(p.ChannelId) {
 		return
 	}
 	for i := range m.feed.entries {
