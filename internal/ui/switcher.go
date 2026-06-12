@@ -33,6 +33,21 @@ func (m Model) openSwitcher() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// openCommandPicker activates the switcher straight into "> command" mode,
+// with the ">" prefix pre-filled (the F1 shortcut) so the command catalogue
+// shows immediately — equivalent to opening the switcher and typing ">".
+func (m Model) openCommandPicker() (tea.Model, tea.Cmd) {
+	m.switcherMode = true
+	m.switcher.SetValue(">")
+	m.switcher.CursorEnd()
+	m.switcher.Placeholder = "switch to channel or > for commands…"
+	m.switcher.Focus()
+	m.switcherIdx = 0
+	m.switcherCmdPending = nil
+	m.syncSwitcherPrompt() // value starts with ">", so drop the "> " prompt
+	return m, nil
+}
+
 func (m *Model) closeSwitcher() {
 	m.switcherMode = false
 	m.switcher.SetValue("")

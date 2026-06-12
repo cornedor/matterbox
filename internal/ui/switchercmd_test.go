@@ -54,6 +54,41 @@ func TestSwitcherCommandsFitsHeight(t *testing.T) {
 	}
 }
 
+// TestOpenCommandPicker checks the F1 entry point lands directly in command
+// mode with ">" pre-filled, so the catalogue renders without the user typing.
+func TestOpenCommandPicker(t *testing.T) {
+	ti := textinput.New()
+	m := Model{switcher: ti, width: 80}
+
+	updated, _ := m.openCommandPicker()
+	mm := updated.(Model)
+
+	if !mm.switcherMode {
+		t.Fatal("switcher should be open")
+	}
+	if mm.switcher.Value() != ">" {
+		t.Errorf("value = %q, want \">\"", mm.switcher.Value())
+	}
+	if !mm.inCommandMode() {
+		t.Error("should be in command mode after opening the picker")
+	}
+	if len(mm.commandResults()) == 0 {
+		t.Error("command catalogue should be populated")
+	}
+}
+
+// TestCommandPickerBoundToF1 pins the default key so a refactor can't silently
+// drop the shortcut.
+func TestCommandPickerBoundToF1(t *testing.T) {
+	km := newKeyMap("ctrl")
+	for _, k := range km.CommandPicker.Keys() {
+		if k == "f1" {
+			return
+		}
+	}
+	t.Errorf("command_picker not bound to f1; got %v", km.CommandPicker.Keys())
+}
+
 // lineContaining returns the first line of s containing sub, or "".
 func lineContaining(s, sub string) string {
 	for _, l := range strings.Split(s, "\n") {

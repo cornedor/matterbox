@@ -103,11 +103,12 @@ type keyMap struct {
 	CancelEdit key.Binding
 
 	// Global
-	Switcher   key.Binding
-	Search     key.Binding
-	SearchHere key.Binding
-	Help       key.Binding
-	Quit       key.Binding
+	Switcher      key.Binding
+	CommandPicker key.Binding
+	Search        key.Binding
+	SearchHere    key.Binding
+	Help          key.Binding
+	Quit          key.Binding
 
 	// navRoutes is a routing helper (not an action): the four sidebar-nav
 	// actions split into their always-global arrow alias and their vim key,
@@ -213,6 +214,7 @@ var actionDefs = []actionDef{
 	{id: "cancel_edit", field: func(k *keyMap) *key.Binding { return &k.CancelEdit }, keys: []string{"esc"}, desc: "cancel"},
 
 	{id: "switcher", field: func(k *keyMap) *key.Binding { return &k.Switcher }, keys: []string{"ctrl+p"}, desc: "switch channel"},
+	{id: "command_picker", field: func(k *keyMap) *key.Binding { return &k.CommandPicker }, keys: []string{"f1"}, desc: "command palette"},
 	{id: "search_all", field: func(k *keyMap) *key.Binding { return &k.Search }, keys: []string{"F", "ctrl+shift+f"}, desc: "search all", helpKey: "F"},
 	{id: "search_here", field: func(k *keyMap) *key.Binding { return &k.SearchHere }, keys: []string{"/", "ctrl+f"}, desc: "search channel", primary: true, helpKey: "/"},
 	{id: "goto_team", field: func(k *keyMap) *key.Binding { return &k.NavTeam }, keys: []string{"alt+1", "alt+2", "alt+3", "alt+4", "alt+5", "alt+6", "alt+7", "alt+8", "alt+9"}, desc: "go to team", primary: true, helpKey: "alt+1…9"},

@@ -1263,6 +1263,11 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, m.keys.Switcher) && msg.String() != "ctrl+c" && !popupOpen {
 		return m.openSwitcher()
 	}
+	// F1 opens the same switcher already in command mode (">" pre-filled). A
+	// function key never collides with composing, so it needs no typing guard.
+	if key.Matches(msg, m.keys.CommandPicker) {
+		return m.openCommandPicker()
+	}
 
 	// Global sidebar navigation: the modifier-arrow aliases switch team (←/→)
 	// and channel (↑/↓) and open the target immediately from ANY focus —
