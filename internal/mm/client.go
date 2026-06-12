@@ -157,6 +157,22 @@ func (c *Client) ViewChannel(ctx context.Context, userID, channelID string) erro
 	return nil
 }
 
+// SetChannelMuted mutes or unmutes a channel for the given user by
+// patching its member notify props (mark_unread = mention when muted,
+// all when not). The server broadcasts a `channel_member_updated` WS
+// event so other clients learn of the change.
+func (c *Client) SetChannelMuted(ctx context.Context, userID, channelID string, muted bool) error {
+	level := model.ChannelMarkUnreadAll
+	if muted {
+		level = model.ChannelMarkUnreadMention
+	}
+	props := map[string]string{model.MarkUnreadNotifyProp: level}
+	if _, err := c.c.UpdateChannelNotifyProps(ctx, channelID, userID, props); err != nil {
+		return fmt.Errorf("update channel notify props: %w", err)
+	}
+	return nil
+}
+
 // Send posts a new message to the given channel. If rootID is non-empty,
 // the message is sent as a reply in that thread. fileIDs (may be empty)
 // are previously-uploaded files to attach to the post.

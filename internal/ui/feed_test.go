@@ -181,3 +181,60 @@ func TestChannelMuted(t *testing.T) {
 		t.Error("channelMuted(c-unknown) = true; want false (no member row)")
 	}
 }
+
+func TestMuteCommand(t *testing.T) {
+	member := func(muted bool) model.ChannelMemberWithTeamData {
+		level := model.ChannelMarkUnreadAll
+		if muted {
+			level = model.ChannelMarkUnreadMention
+		}
+		return model.ChannelMemberWithTeamData{ChannelMember: model.ChannelMember{
+			ChannelId:   "c1",
+			NotifyProps: model.StringMap{model.MarkUnreadNotifyProp: level},
+		}}
+	}
+	newModel := func(muted bool) Model {
+		return Model{
+			openChannelID: "c1",
+			me:            &model.User{Id: "u1"},
+			channels: map[string][]*model.Channel{
+				"t1": {{Id: "c1", DisplayName: "general", Type: model.ChannelTypeOpen}},
+			},
+			members: model.ChannelMembersWithTeamData{member(muted)},
+		}
+	}
+
+	// No open channel → no mute command, and allCommands == the static set.
+	none := Model{}
+	if _, ok := none.muteCommand(); ok {
+		t.Error("muteCommand applies with no open channel; want not applicable")
+	}
+	if len(none.allCommands()) != len(builtinCommands()) {
+		t.Error("allCommands added a command when none should apply")
+	}
+
+	// Unmuted channel → a "Mute …" command, listed second (after Summarize).
+	m := newModel(false)
+	cmd, ok := m.muteCommand()
+	if !ok || cmd.name != "Mute #general" {
+		t.Fatalf("muteCommand = %q, ok=%v; want \"Mute #general\", true", cmd.name, ok)
+	}
+	all := m.allCommands()
+	if len(all) != len(builtinCommands())+1 || all[1].name != "Mute #general" {
+		t.Fatalf("allCommands[1] = %q; want the mute command second", all[1].name)
+	}
+
+	// Running it flips the cached member to muted, so the label inverts.
+	cmd.run(&m, "")
+	if !m.channelMuted("c1") {
+		t.Error("after running Mute, channelMuted(c1) = false; want true")
+	}
+	cmd2, _ := m.muteCommand()
+	if cmd2.name != "Unmute #general" {
+		t.Errorf("after muting, muteCommand = %q; want \"Unmute #general\"", cmd2.name)
+	}
+	cmd2.run(&m, "")
+	if m.channelMuted("c1") {
+		t.Error("after running Unmute, channelMuted(c1) = true; want false")
+	}
+}

@@ -202,6 +202,80 @@ func runClearCustomStatus(m *Model, _ string) tea.Cmd {
 	}
 }
 
+// muteCommand returns the mute/unmute toggle for the channel that was open
+// when the switcher was raised, plus whether one applies (there's nothing to
+// mute on the Feed/Search tabs). The label and action flip with the channel's
+// current mute state.
+func (m Model) muteCommand() (switcherCommand, bool) {
+	c := m.findChannel(m.openChannelID)
+	if c == nil {
+		return switcherCommand{}, false
+	}
+	label := m.channelLabel(c)
+	if m.channelMuted(c.Id) {
+		return switcherCommand{
+			name: "Unmute " + label,
+			desc: "restore notifications and let it back into the unread feed",
+			run:  runSetMuted(c.Id, false),
+		}, true
+	}
+	return switcherCommand{
+		name: "Mute " + label,
+		desc: "silence notifications and hide it from the unread feed",
+		run:  runSetMuted(c.Id, true),
+	}, true
+}
+
+// runSetMuted returns a runner that mutes/unmutes the given channel for the
+// current user. The cached member flips optimistically so the feed filter and
+// the command label update immediately; the server patch follows async.
+func runSetMuted(channelID string, muted bool) func(*Model, string) tea.Cmd {
+	return func(m *Model, _ string) tea.Cmd {
+		if m.me == nil {
+			m.status = "mute: user not loaded yet"
+			return nil
+		}
+		m.setChannelMutedLocal(channelID, muted)
+		label := channelID
+		if c := m.findChannel(channelID); c != nil {
+			label = m.channelLabel(c)
+		}
+		if muted {
+			m.status = "muted " + label
+		} else {
+			m.status = "unmuted " + label
+		}
+		userID := m.me.Id
+		client, ctx := m.client, m.ctx
+		return func() tea.Msg {
+			if err := client.SetChannelMuted(ctx, userID, channelID, muted); err != nil {
+				return errMsg{err}
+			}
+			return nil
+		}
+	}
+}
+
+// setChannelMutedLocal flips the cached member's mute state so the feed filter
+// (channelMuted) and the command label reflect the change before the server
+// confirms. No-op when the channel has no cached member row.
+func (m *Model) setChannelMutedLocal(channelID string, muted bool) {
+	level := model.ChannelMarkUnreadAll
+	if muted {
+		level = model.ChannelMarkUnreadMention
+	}
+	for i := range m.members {
+		if m.members[i].ChannelId != channelID {
+			continue
+		}
+		if m.members[i].NotifyProps == nil {
+			m.members[i].NotifyProps = model.StringMap{}
+		}
+		m.members[i].NotifyProps[model.MarkUnreadNotifyProp] = level
+		return
+	}
+}
+
 // inCommandMode reports whether the switcher value has the > prefix.
 func (m Model) inCommandMode() bool {
 	return strings.HasPrefix(m.switcher.Value(), ">")
@@ -223,10 +297,31 @@ func (m Model) commandQuery() string {
 	return strings.TrimSpace(strings.TrimPrefix(v, ">"))
 }
 
+// allCommands is the full ordered command list for the current context: the
+// static builtins plus any channel-specific commands (the mute toggle) that
+// only apply when a channel is open. The mute toggle is clustered next to
+// Summarize at the top, since both act on the currently-open channel.
+func (m Model) allCommands() []switcherCommand {
+	base := builtinCommands()
+	mute, ok := m.muteCommand()
+	if !ok {
+		return base
+	}
+	out := make([]switcherCommand, 0, len(base)+1)
+	if len(base) > 0 {
+		out = append(out, base[0]) // Summarize stays first
+	}
+	out = append(out, mute)
+	if len(base) > 1 {
+		out = append(out, base[1:]...)
+	}
+	return out
+}
+
 // commandResults returns commands matching the current query, in their
 // registered order. Empty query lists everything.
 func (m Model) commandResults() []switcherCommand {
-	all := builtinCommands()
+	all := m.allCommands()
 	q := strings.ToLower(m.commandQuery())
 	if q == "" {
 		return all
