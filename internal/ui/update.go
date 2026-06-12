@@ -40,12 +40,30 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.filter.SetWidth(channelsWidth - 4)
-		m.resizeMessagesViewport()
+		// A resize *drag* fires a storm of these. Re-laying-out the panes is
+		// cheap, so do it every frame — borders/scrollbars stay correct and
+		// the viewports soft-wrap their existing content. But defer the
+		// expensive content re-render (renderMessages walks every loaded post)
+		// to a settle tick that fires only once the drag stops, coalescing the
+		// storm into a single re-render. resizePreview is deferred with it so a
+		// drag doesn't re-transmit the image preview on every frame.
+		m.layoutPanes()
 		m.resizeInput()
-		// Pane widths just changed; every cached entry was fingerprinted
-		// with the old width and will miss on lookup. Drop the map so
-		// stale entries don't waste memory until cap eviction kicks in.
+		m.resizeGen++
+		return m, resizeSettleCmd(m.resizeGen)
+
+	case resizeSettleMsg:
+		// Ignore all but the latest scheduled settle — earlier ticks from the
+		// same drag are stale (a newer WindowSizeMsg bumped resizeGen).
+		if msg.gen != m.resizeGen {
+			return m, nil
+		}
+		// Pane widths settled; every width-keyed postLineCache entry is stale.
+		// Drop the map once here (not per drag frame) so it rebuilds at the
+		// final width. The width-independent postMarkdownCache survives, so
+		// this re-render re-wraps cached bodies instead of re-styling them.
 		m.postLineCache = nil
+		m.renderAllPanes()
 		// A resize while the image preview is open re-fits + re-transmits it.
 		return m, m.resizePreview()
 

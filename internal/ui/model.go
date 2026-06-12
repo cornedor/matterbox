@@ -420,6 +420,20 @@ type Model struct {
 	// on the current selection.
 	postLineCache map[string]postLineCacheEntry
 
+	// postMarkdownCache memoizes the width-INDEPENDENT styled body that
+	// renderMarkdown produces (the regex/emoji-heavy ~80% of a post's render
+	// cost), keyed by post id. Unlike postLineCache it is NOT dropped on a
+	// width change, so a resize re-wraps the cached body instead of re-styling
+	// it. See postcache.go.
+	postMarkdownCache map[string]postMarkdownCacheEntry
+
+	// resizeGen counts WindowSizeMsgs so the deferred content re-render fires
+	// only for the last size of a resize drag (see resizeSettleMsg). Each
+	// frame bumps it and schedules a settle tick carrying the current value;
+	// the handler runs the (expensive) re-render only when the tick's gen
+	// still matches, coalescing a drag's event storm into one re-render.
+	resizeGen int
+
 	// msgsContentVer / threadContentVer are bumped whenever renderMessages /
 	// renderThread rebuilds the corresponding viewport's content. The scroll
 	// geometry cache (vcache) keys on them so a per-keystroke render that

@@ -83,7 +83,39 @@ func tabBorderWithBottom(left, middle, right string) lipgloss.Border {
 // (top border + label row + bottom rule).
 const tabsHeight = 3
 
+// resizeMessagesViewport re-lays-out every pane and repaints its content.
+// Use it for one-shot layout changes (thread open/close, attachment-bar
+// growth, input height). A live resize *drag* must NOT use it per frame —
+// re-rendering every loaded post on each intermediate size is what made
+// dragging lag; that path calls layoutPanes() each frame and defers
+// renderAllPanes() to a settle tick (see the WindowSizeMsg handler).
 func (m *Model) resizeMessagesViewport() {
+	m.layoutPanes()
+	m.renderAllPanes()
+}
+
+// resizeSettleDelay is how long a resize must be quiet before the deferred
+// content re-render runs — long enough to coalesce a drag's WindowSizeMsg
+// storm into one re-render, short enough to feel instant once the drag stops.
+const resizeSettleDelay = 120 * time.Millisecond
+
+// resizeSettleMsg fires resizeSettleDelay after a WindowSizeMsg. gen lets the
+// handler ignore all but the most recent: a drag schedules one per frame and
+// only the final one should trigger the expensive content re-render.
+type resizeSettleMsg struct{ gen int }
+
+func resizeSettleCmd(gen int) tea.Cmd {
+	return tea.Tick(resizeSettleDelay, func(time.Time) tea.Msg {
+		return resizeSettleMsg{gen: gen}
+	})
+}
+
+// layoutPanes recomputes pane geometry and resizes every viewport/textarea to
+// the current terminal size, without rendering any content. It's cheap enough
+// to run on every frame of a resize drag: View() derives borders/scrollbars
+// from these sizes, and the viewports soft-wrap their existing content until
+// the deferred renderAllPanes() repaints it.
+func (m *Model) layoutPanes() {
 	// Match View()'s body sizing: subtract the rendered footer height
 	// (1 line normally, several when full help is open) plus the tab strip.
 	// The extra -1 accounts for the body pane's bottom border row (top
@@ -160,19 +192,32 @@ func (m *Model) resizeMessagesViewport() {
 	}
 	if m.historyMode {
 		m.sizeHistoryView()
-		m.renderHistory()
 	}
 	if m.keysSheetMode {
 		m.sizeKeysSheetView()
-		m.renderKeysSheet()
 	}
 	if m.summary.phase == summaryStreaming || m.summary.phase == summaryDone {
 		m.sizeSummaryView()
-		m.renderSummaryViewBody()
 	}
 	m.sizeSearchView(m.width, bodyH)
-	m.renderSearchResults()
 	m.sizeFeedView(m.width, bodyH)
+}
+
+// renderAllPanes repaints the content of every pane after a layout change.
+// This is the expensive half of a resize — renderMessages re-renders every
+// loaded post — so the live-drag path defers it to a settle tick rather than
+// running it on each intermediate size.
+func (m *Model) renderAllPanes() {
+	if m.historyMode {
+		m.renderHistory()
+	}
+	if m.keysSheetMode {
+		m.renderKeysSheet()
+	}
+	if m.summary.phase == summaryStreaming || m.summary.phase == summaryDone {
+		m.renderSummaryViewBody()
+	}
+	m.renderSearchResults()
 	m.renderFeedResults()
 	m.renderMessages()
 	m.renderThread()
@@ -594,7 +639,7 @@ func (m *Model) renderThreadPostLines(p *model.Post, isRoot, grouped bool) ([]st
 		header = withEditedTag(header, p, width)
 		lines = append(lines, header)
 	}
-	if body := renderMarkdown(p.Message, m.emojiImg); body != "" {
+	if body := m.markdownBody(p); body != "" {
 		for _, l := range strings.Split(body, "\n") {
 			lines = append(lines, wrapBodyLine(l, width)...)
 		}
@@ -696,7 +741,7 @@ func (m *Model) renderPostLines(p *model.Post, grouped bool) ([]string, int) {
 		header = withEditedTag(header, p, width)
 		lines = append(lines, header)
 	}
-	if body := renderMarkdown(p.Message, m.emojiImg); body != "" {
+	if body := m.markdownBody(p); body != "" {
 		for _, l := range strings.Split(body, "\n") {
 			lines = append(lines, wrapBodyLine(l, width)...)
 		}

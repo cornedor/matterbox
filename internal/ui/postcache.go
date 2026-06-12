@@ -137,12 +137,79 @@ func (m *Model) evictPostLines() {
 	}
 }
 
-// invalidatePostLines clears the cache entry for one post. Used by WS
-// event handlers (edit / delete / reaction add/remove) so the next
-// render observes the change even if UpdateAt didn't move.
+// invalidatePostLines clears the cache entries for one post. Used by WS
+// event handlers (edit / delete / reaction add/remove) so the next render
+// observes the change even if UpdateAt didn't move — and by the emoji-ready
+// path, which is why the width-independent markdown cache is dropped here too:
+// a just-readied emoji changes renderMarkdown's output without touching any
+// post field markdownFingerprint reads. delete on a nil map is a no-op.
 func (m *Model) invalidatePostLines(postID string) {
-	if m.postLineCache == nil || postID == "" {
+	if postID == "" {
 		return
 	}
 	delete(m.postLineCache, postID)
+	delete(m.postMarkdownCache, postID)
+}
+
+// postMarkdownCacheEntry caches the width-INDEPENDENT styled body that
+// renderMarkdown produces for a post. fp is markdownFingerprint(p); when it
+// still matches, the body can be re-wrapped at any width without re-styling.
+type postMarkdownCacheEntry struct {
+	fp   string
+	body string
+}
+
+// markdownFingerprint captures everything renderMarkdown reads from a post:
+// just its message text, tracked via the edit timestamps (UpdateAt moves on
+// any content change, EditAt/DeleteAt on edit/delete). Emoji readiness also
+// affects the output but is not a post field — invalidatePostLines is called
+// explicitly when an emoji image loads (invalidatePostsForEmoji), dropping
+// the stale entry.
+func markdownFingerprint(p *model.Post) string {
+	var b strings.Builder
+	b.Grow(40)
+	b.WriteString(strconv.FormatInt(p.UpdateAt, 10))
+	b.WriteByte('|')
+	b.WriteString(strconv.FormatInt(p.EditAt, 10))
+	b.WriteByte('|')
+	b.WriteString(strconv.FormatInt(p.DeleteAt, 10))
+	return b.String()
+}
+
+// markdownBody returns p's styled (but unwrapped) body, rendering it via
+// renderMarkdown on a miss and memoizing the result. The cache is
+// width-independent, so it stays warm across resizes: the costly styling runs
+// once per message version and a resize only re-wraps. The first render of a
+// post (a miss) still calls renderMarkdown, whose inline() records emoji
+// sightings, so deferring later styling doesn't drop the fetch trigger.
+func (m *Model) markdownBody(p *model.Post) string {
+	if p.Id == "" {
+		return renderMarkdown(p.Message, m.emojiImg)
+	}
+	fp := markdownFingerprint(p)
+	if e, ok := m.postMarkdownCache[p.Id]; ok && e.fp == fp {
+		return e.body
+	}
+	body := renderMarkdown(p.Message, m.emojiImg)
+	if m.postMarkdownCache == nil {
+		m.postMarkdownCache = make(map[string]postMarkdownCacheEntry, 128)
+	}
+	if len(m.postMarkdownCache) >= postLineCacheCap {
+		m.evictMarkdown()
+	}
+	m.postMarkdownCache[p.Id] = postMarkdownCacheEntry{fp: fp, body: body}
+	return body
+}
+
+// evictMarkdown drops roughly the oldest quarter of the markdown cache on
+// overflow, mirroring evictPostLines — keep ~75% of the working set warm
+// rather than clearing it whole.
+func (m *Model) evictMarkdown() {
+	target := postLineCacheCap * 3 / 4
+	for id := range m.postMarkdownCache {
+		if len(m.postMarkdownCache) <= target {
+			break
+		}
+		delete(m.postMarkdownCache, id)
+	}
 }
