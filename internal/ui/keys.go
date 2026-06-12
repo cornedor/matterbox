@@ -99,8 +99,6 @@ type keyMap struct {
 	Search     key.Binding
 	SearchHere key.Binding
 	Leader     key.Binding
-	Unread     key.Binding
-	Feed       key.Binding
 	Help       key.Binding
 	Quit       key.Binding
 
@@ -205,8 +203,6 @@ var actionDefs = []actionDef{
 	{id: "search_all", field: func(k *keyMap) *key.Binding { return &k.Search }, keys: []string{"F"}, desc: "search all"},
 	{id: "search_here", field: func(k *keyMap) *key.Binding { return &k.SearchHere }, keys: []string{"/"}, desc: "search channel", primary: true},
 	{id: "leader", field: func(k *keyMap) *key.Binding { return &k.Leader }, keys: []string{",", "ctrl+w"}, desc: "go to…", primary: true},
-	{id: "unread", field: func(k *keyMap) *key.Binding { return &k.Unread }, keys: []string{"u"}, desc: "jump to unread", primary: true},
-	{id: "feed", field: func(k *keyMap) *key.Binding { return &k.Feed }, keys: []string{"U"}, desc: "unread feed"},
 	{id: "help", field: func(k *keyMap) *key.Binding { return &k.Help }, keys: []string{"?"}, desc: "help", primary: true},
 	{id: "quit", field: func(k *keyMap) *key.Binding { return &k.Quit }, keys: []string{"q", "ctrl+c"}, desc: "quit"},
 }

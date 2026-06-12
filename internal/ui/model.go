@@ -60,11 +60,6 @@ const numFocus = 8
 // which carry an empty Channel.TeamId on the server.
 const dmTeamID = "__dm__"
 
-// unreadTeamID is a synthetic team identifier for the virtual "Unread"
-// tab. No channels are stored under this key; visibleChannels computes
-// the list on demand from m.unread / m.mentions across every bucket.
-const unreadTeamID = "__unread__"
-
 // searchTeamID is a synthetic team identifier for the virtual "Search"
 // tab. Its body is the live-search UI (input + result bubbles) rather
 // than the channel list.
@@ -72,9 +67,9 @@ const searchTeamID = "__search__"
 
 // feedTeamID is a synthetic team identifier for the virtual "Feed" tab.
 // Its body is the combined unread feed (one bubble per unread channel)
-// rather than the channel list. Like Unread, no channels are stored
-// under this key — the feed is computed on demand from m.unread /
-// m.mentions across every bucket.
+// rather than the channel list. No channels are stored under this key —
+// the feed is computed on demand from m.unread / m.mentions across every
+// bucket.
 const feedTeamID = "__feed__"
 
 type tabKind int
@@ -82,7 +77,6 @@ type tabKind int
 const (
 	tabTeam tabKind = iota
 	tabDM
-	tabUnread
 	tabSearch
 	tabFeed
 )
@@ -624,6 +618,7 @@ func leaderHints() []key.Binding {
 		nb("m", "messages"),
 		nb("i", "compose"),
 		nb("d", "DMs"),
+		nb("u", "feed"),
 		nb("1-9", "team N"),
 	}
 }
@@ -646,19 +641,19 @@ func (m Model) ShortHelp() []key.Binding {
 	case m.focus == focusMessages:
 		// Concise footer: the primary actions only (the old 23-binding line
 		// ellipsized after ~6). `?` opens the full, grouped help.
-		return []key.Binding{k.Compose, k.OpenThread, k.SearchHere, k.Filter, k.Unread, k.Leader, k.Help}
+		return []key.Binding{k.Compose, k.OpenThread, k.SearchHere, k.Filter, k.Leader, k.Help}
 	case m.focus == focusThread:
-		return []key.Binding{k.Compose, k.SearchHere, k.CloseThread, k.Unread, k.Leader, k.Help}
+		return []key.Binding{k.Compose, k.SearchHere, k.CloseThread, k.Leader, k.Help}
 	case m.focus == focusAttachments:
 		return []key.Binding{k.Left, k.Right, k.OpenAttach, k.AttachRemove, k.Tab, k.Leader, k.Help, k.Quit}
 	case m.focus == focusTeams:
-		return []key.Binding{k.Tab, k.SwitchTeam, k.LoadTeam, k.MoveTeamLeft, k.MoveTeamRight, k.SearchHere, k.Leader, k.Switcher, k.Search, k.Unread, k.Feed, k.Help, k.Quit}
+		return []key.Binding{k.Tab, k.SwitchTeam, k.LoadTeam, k.MoveTeamLeft, k.MoveTeamRight, k.SearchHere, k.Leader, k.Switcher, k.Search, k.Help, k.Quit}
 	case m.focus == focusSearch:
 		return []key.Binding{k.Up, k.Down, k.ApplyOpen, k.CancelEdit, k.Tab, k.Help, k.Quit}
 	case m.focus == focusFeed:
-		return []key.Binding{k.Up, k.Down, k.OpenChannel, k.MarkRead, k.Refresh, k.Tab, k.Leader, k.Unread, k.Help, k.Quit}
+		return []key.Binding{k.Up, k.Down, k.OpenChannel, k.MarkRead, k.Refresh, k.Tab, k.Leader, k.Help, k.Quit}
 	}
-	return []key.Binding{k.Tab, k.Leader, k.Switcher, k.Search, k.SearchHere, k.Unread, k.Feed, k.Help, k.Quit}
+	return []key.Binding{k.Tab, k.Leader, k.Switcher, k.Search, k.SearchHere, k.Help, k.Quit}
 }
 
 // FullHelp returns the bindings grouped into columns for the expanded
@@ -669,7 +664,7 @@ func (m Model) FullHelp() [][]key.Binding {
 		return [][]key.Binding{leaderHints()}
 	}
 	return [][]key.Binding{
-		{k.Tab, k.ShiftTab, k.Leader, k.Switcher, k.Search, k.SearchHere, k.Unread, k.Feed, k.Help, k.Quit},
+		{k.Tab, k.ShiftTab, k.Leader, k.Switcher, k.Search, k.SearchHere, k.Help, k.Quit},
 		{k.Up, k.Down, k.Home, k.End, k.Left, k.Right, k.PageDown, k.PageUp, k.NextHit, k.PrevHit},
 		{k.NavChanPrev, k.NavChanNext, k.NavTeamPrev, k.NavTeamNext},
 		{k.Filter, k.ClearFilter, k.OpenChannel, k.OpenThread, k.ReplyInThread, k.CloseThread},
@@ -1593,8 +1588,8 @@ func (m *Model) openChannelLoadCmd(channelID string) tea.Cmd {
 }
 
 // tabAt resolves a 0-based tab index into its kind and (for teams) the
-// team's ID + display name. Tab order is: DMs (if present), Unread,
-// Feed, Search, teams in their loaded order.
+// team's ID + display name. Tab order is: DMs (if present), Feed,
+// Search, teams in their loaded order.
 func (m Model) tabAt(i int) (kind tabKind, id, name string) {
 	if m.hasDMs {
 		if i == 0 {
@@ -1602,10 +1597,6 @@ func (m Model) tabAt(i int) (kind tabKind, id, name string) {
 		}
 		i--
 	}
-	if i == 0 {
-		return tabUnread, unreadTeamID, "Unread"
-	}
-	i--
 	if i == 0 {
 		return tabFeed, feedTeamID, "Feed"
 	}
@@ -1621,22 +1612,15 @@ func (m Model) tabAt(i int) (kind tabKind, id, name string) {
 }
 
 // currentTeamID returns the team ID corresponding to the focused tab, or
-// the synthetic dmTeamID / unreadTeamID for the virtual tabs.
+// the synthetic dmTeamID for the virtual DMs tab.
 func (m Model) currentTeamID() string {
 	_, id, _ := m.tabAt(m.teamIdx)
 	return id
 }
 
 // visibleChannels returns the channels in the current team, filtered.
-// For the Unread tab the list is computed on demand from m.unread /
-// m.mentions across every bucket.
 func (m Model) visibleChannels() []*model.Channel {
-	var all []*model.Channel
-	if m.currentTeamID() == unreadTeamID {
-		all = m.unreadChannels()
-	} else {
-		all = m.channels[m.currentTeamID()]
-	}
+	all := m.channels[m.currentTeamID()]
 	if m.filterValue == "" {
 		return all
 	}
@@ -1674,8 +1658,9 @@ func (m Model) unreadChannels() []*model.Channel {
 
 // switchToChannelHomeTeam navigates the team tabs and channel selection
 // to put `ch` in its native bucket (its team, or DMs for direct/group
-// channels). Used when the user opens a channel from the virtual
-// Unread tab so the messages pane stays in sync with isCurrentChannel.
+// channels). Used when the user opens a channel from the virtual Feed
+// tab (or the switcher / search) so the messages pane stays in sync with
+// isCurrentChannel.
 func (m *Model) switchToChannelHomeTeam(ch *model.Channel) {
 	targetTeamID := ch.TeamId
 	if ch.Type == model.ChannelTypeDirect || ch.Type == model.ChannelTypeGroup || targetTeamID == "" {
@@ -1699,11 +1684,11 @@ func (m *Model) switchToChannelHomeTeam(ch *model.Channel) {
 
 // isRestorableTeamID reports whether a team ID names a persistent bucket
 // whose last-open channel is worth remembering and restoring. The synthetic
-// Unread/Search/Feed tabs are computed on the fly, so they're excluded; real
-// teams and the DMs bucket qualify.
+// Search/Feed tabs are computed on the fly, so they're excluded; real teams
+// and the DMs bucket qualify.
 func isRestorableTeamID(id string) bool {
 	switch id {
-	case "", unreadTeamID, searchTeamID, feedTeamID:
+	case "", searchTeamID, feedTeamID:
 		return false
 	}
 	return true
@@ -1985,7 +1970,7 @@ func (m *Model) applyTeamOrder() {
 
 // firstTeamTabIdx returns the tab index of the leftmost real team, or -1
 // if the user belongs to no teams. Real teams are the trailing tabs (after
-// the synthetic DMs/Unread/Feed/Search tabs), so this is where the [N] /
+// the synthetic DMs/Feed/Search tabs), so this is where the [N] /
 // ",N" numbering begins.
 func (m *Model) firstTeamTabIdx() int {
 	for i := 0; i <= m.maxTeamIdx(); i++ {

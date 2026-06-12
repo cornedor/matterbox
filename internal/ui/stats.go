@@ -139,10 +139,10 @@ func (m *Model) bumpChannelStat(channelID string) tea.Cmd {
 	m.lastActiveChannelID = channelID
 
 	// Remember the last channel opened per persistent team bucket so a
-	// later team switch can reopen it. The synthetic Unread/Search/Feed
-	// tabs aren't restorable, so don't pollute the map with them — by the
-	// time we reach here a channel opened from the Unread tab has already
-	// hopped to its home team (switchToChannelHomeTeam), so teamID is real.
+	// later team switch can reopen it. The synthetic Search/Feed tabs
+	// aren't restorable, so don't pollute the map with them — by the time
+	// we reach here a channel opened from the Feed tab has already hopped
+	// to its home team (switchToChannelHomeTeam), so teamID is real.
 	if m.lastChannelByTeam == nil {
 		m.lastChannelByTeam = map[string]string{}
 	}

@@ -66,9 +66,9 @@ func TestApplyTeamOrder(t *testing.T) {
 	}
 }
 
-// withTeams builds a Model whose tab bar has the synthetic Unread/Feed/
-// Search tabs (always present) followed by the given teams, with the
-// active tab set to the team at teamPos (0-based among teams).
+// withTeams builds a Model whose tab bar has the synthetic Feed/Search
+// tabs (always present) followed by the given teams, with the active tab
+// set to the team at teamPos (0-based among teams).
 func withTeams(teams []*model.Team, teamPos int) Model {
 	m := Model{teams: teams}
 	m.teamIdx = m.firstTeamTabIdx() + teamPos

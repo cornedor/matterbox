@@ -128,7 +128,7 @@ func TestNavTeamNextClampsAtLastTeam(t *testing.T) {
 	}
 }
 
-// TestNavTeamPrevEntersSyntheticTab: the synthetic Unread/Feed/Search tabs sit
+// TestNavTeamPrevEntersSyntheticTab: the synthetic Feed/Search tabs sit
 // left of the teams in the strip, so ctrl+← from the first team steps onto the
 // Search tab and focuses its body — mirroring the plain ← behavior exactly.
 func TestNavTeamPrevEntersSyntheticTab(t *testing.T) {

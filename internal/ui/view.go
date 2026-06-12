@@ -47,7 +47,6 @@ var (
 	activeTabBorder   = tabBorderWithBottom("┘", " ", "└")
 	tabBase           = lipgloss.NewStyle().Padding(0, 1)
 	dmTabColor        = lipgloss.Color("5")
-	unreadTabColor    = lipgloss.Color("11") // yellow when there are unreads
 	mentionTabColor   = lipgloss.Color("9")  // red when there are mentions
 	searchTabColor    = lipgloss.Color("6")  // cyan to set Search apart from teams
 	feedTabColor      = lipgloss.Color("10") // green to set the Feed tab apart
@@ -897,11 +896,8 @@ func (m *Model) renderChannelsPane(height int) string {
 		header = filterStyle.Render("f " + m.filterValue)
 	} else {
 		title := "Channels"
-		switch m.currentTeamID() {
-		case dmTeamID:
+		if m.currentTeamID() == dmTeamID {
 			title = "DMs"
-		case unreadTeamID:
-			title = "Unread"
 		}
 		header = titleStyle.Render(title)
 	}
@@ -980,11 +976,7 @@ func (m *Model) renderChannelsPane(height int) string {
 		rows = append(rows, row)
 	}
 	if len(vis) == 0 {
-		empty := "  (none)"
-		if m.currentTeamID() == unreadTeamID {
-			empty = "  all caught up"
-		}
-		rows = append(rows, footerStyle.Render(empty))
+		rows = append(rows, footerStyle.Render("  (none)"))
 	}
 	for len(rows) < innerH {
 		rows = append(rows, "")
@@ -1186,7 +1178,7 @@ func (m *Model) renderTeamTabs() string {
 		blank := strings.Repeat("\n", tabsHeight-1)
 		return footerStyle.Render(" (no teams) ") + blank
 	}
-	// Pre-compute distinct counts for the Unread tab badge.
+	// Pre-compute distinct counts for the Feed tab badge.
 	unreadCh, mentionCh := 0, 0
 	for _, n := range m.unread {
 		if n > 0 {
@@ -1205,7 +1197,7 @@ func (m *Model) renderTeamTabs() string {
 	// active tab is always highlighted rather than tracking a focus.
 	activeColor := focusedColor
 
-	// Tabs split into a sticky synthetic prefix (DMs/Unread/Feed/Search,
+	// Tabs split into a sticky synthetic prefix (DMs/Feed/Search,
 	// always shown) and a scrollable team suffix. teamTabs collects the
 	// latter so a window can be chosen around the active team when they
 	// don't all fit; activeTeamPos is the active team's index within it.
@@ -1228,14 +1220,6 @@ func (m *Model) renderTeamTabs() string {
 			teamNum++
 			if teamNum <= 9 {
 				label = label + " [" + strconv.Itoa(teamNum) + "]"
-			}
-		}
-		if kind == tabUnread {
-			switch {
-			case mentionCh > 0:
-				label = "Unread " + strconv.Itoa(mentionCh) + "!"
-			case unreadCh > 0:
-				label = "Unread " + strconv.Itoa(unreadCh)
 			}
 		}
 		if kind == tabFeed {
@@ -1272,10 +1256,6 @@ func (m *Model) renderTeamTabs() string {
 				style = style.Foreground(feedTabColor).Bold(true)
 			case kind == tabFeed:
 				style = style.Foreground(feedTabColor)
-			case kind == tabUnread && mentionCh > 0:
-				style = style.Foreground(mentionTabColor).Bold(true)
-			case kind == tabUnread && unreadCh > 0:
-				style = style.Foreground(unreadTabColor).Bold(true)
 			default:
 				style = style.Foreground(dimColor)
 			}

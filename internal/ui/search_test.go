@@ -73,15 +73,15 @@ func TestQuoteModifier(t *testing.T) {
 }
 
 func TestSearchScopePrefix(t *testing.T) {
-	// With no DMs the tab order is Unread, Feed, Search, then teams — so
-	// the first (only) team lands at teamIdx 3.
+	// With no DMs the tab order is Feed, Search, then teams — so the first
+	// (only) team lands at teamIdx 2.
 	t.Run("regular channel", func(t *testing.T) {
 		m := Model{
 			teams: []*model.Team{{Id: "t1", Name: "engineering", DisplayName: "Engineering"}},
 			channels: map[string][]*model.Channel{
 				"t1": {{Id: "c1", TeamId: "t1", Type: model.ChannelTypeOpen, Name: "off-topic", DisplayName: "Off Topic"}},
 			},
-			teamIdx:       3,
+			teamIdx:       2,
 			channelIdx:    0,
 			openChannelID: "c1",
 		}
@@ -96,7 +96,7 @@ func TestSearchScopePrefix(t *testing.T) {
 			channels: map[string][]*model.Channel{
 				"t1": {{Id: "c1", TeamId: "t1", Type: model.ChannelTypeOpen, Name: "general", DisplayName: "General"}},
 			},
-			teamIdx:       3,
+			teamIdx:       2,
 			channelIdx:    0,
 			openChannelID: "c1",
 		}

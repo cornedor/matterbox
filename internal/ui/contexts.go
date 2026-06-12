@@ -198,8 +198,8 @@ var keyContexts = []keyContext{
 		active: func(m *Model) bool { return m.contentFocus() && !m.leaderPending && !m.inModal() },
 		claims: func(m *Model) []key.Binding {
 			bs := []key.Binding{
-				m.keys.Leader, m.keys.Search, m.keys.Feed, m.keys.Compose,
-				m.keys.Tab, m.keys.ShiftTab, m.keys.Help, m.keys.Unread, m.keys.Quit,
+				m.keys.Leader, m.keys.Search, m.keys.Compose,
+				m.keys.Tab, m.keys.ShiftTab, m.keys.Help, m.keys.Quit,
 				m.keys.SearchHere, m.keys.Filter, m.keys.MoveTeamLeft, m.keys.MoveTeamRight,
 				m.keys.ClearFilter, // esc: close thread / clear filter, before the focus panes
 			}

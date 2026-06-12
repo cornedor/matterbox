@@ -54,12 +54,12 @@ func TestBumpChannelStatRecordsPerTeam(t *testing.T) {
 		}
 	})
 
-	t.Run("skips the synthetic Unread tab", func(t *testing.T) {
+	t.Run("skips the synthetic Feed tab", func(t *testing.T) {
 		m := Model{teams: threeTeams()}
-		m.teamIdx = 0 // Unread (first synthetic tab; no DMs)
+		m.teamIdx = 0 // Feed (first synthetic tab; no DMs)
 		m.bumpChannelStat("chanA")
-		if _, ok := m.lastChannelByTeam[unreadTeamID]; ok {
-			t.Fatalf("synthetic Unread tab should not be recorded, map = %v", m.lastChannelByTeam)
+		if _, ok := m.lastChannelByTeam[feedTeamID]; ok {
+			t.Fatalf("synthetic Feed tab should not be recorded, map = %v", m.lastChannelByTeam)
 		}
 	})
 }

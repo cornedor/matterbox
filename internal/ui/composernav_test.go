@@ -16,9 +16,15 @@ func keyPress(code rune) tea.KeyPressMsg {
 
 // composerModel extends pagingModel with a real (empty) composer textarea so
 // the ↑/↓ composer-jump handlers can read the cursor row and focus the input.
+// It sits on a real team's channel tab — the only place an open channel has a
+// composer — so the ↓-into-composer drop isn't suppressed (focusComposer is a
+// no-op on the synthetic Feed/Search tabs).
 func composerModel(posts []*model.Post, postIdx int) Model {
 	m := pagingModel(posts, postIdx)
 	m.keys = newKeyMap("ctrl")
+	m.teams = []*model.Team{{Id: "t1", Name: "eng", DisplayName: "Engineering"}}
+	m.channels = map[string][]*model.Channel{"t1": {{Id: "c", TeamId: "t1", Type: model.ChannelTypeOpen}}}
+	m.teamIdx = m.firstTeamTabIdx() // land on the channel tab, not a synthetic tab
 	ta := textarea.New()
 	ta.SetWidth(40)
 	m.input = ta

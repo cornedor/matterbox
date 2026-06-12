@@ -1085,7 +1085,6 @@ func (m *Model) ensureSelection() {
 // Search tabs.
 func (m *Model) maxTeamIdx() int {
 	n := len(m.teams)
-	n++ // Unread is always present
 	n++ // Feed is always present
 	n++ // Search is always present
 	if m.hasDMs {
@@ -1254,9 +1253,6 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if key.Matches(msg, m.keys.Search) { // F → global search, empty box
 		return m, m.openSearchTab()
 	}
-	if key.Matches(msg, m.keys.Feed) { // U → combined unread feed
-		return m, m.openFeedTab()
-	}
 	if key.Matches(msg, m.keys.Compose) { // i → focus the composer
 		return m.focusComposer()
 	}
@@ -1272,9 +1268,6 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.resizeMessagesViewport()
 		return m, nil
 
-	case key.Matches(msg, m.keys.Unread):
-		return m.jumpToUnread()
-
 	case key.Matches(msg, m.keys.Tab):
 		return m.cycleFocus(1)
 	case key.Matches(msg, m.keys.ShiftTab):
@@ -1285,8 +1278,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.openSearchHere()
 	case key.Matches(msg, m.keys.Filter):
 		// "f" filters the channel-list sidebar. The sidebar is no longer a
-		// focus, so this works from any content pane on a channel/DM/Unread
-		// tab; the Search/Feed tabs have no channel list to filter.
+		// focus, so this works from any content pane on a channel/DM tab;
+		// the Search/Feed tabs have no channel list to filter.
 		if !m.onSearchTab() && !m.onFeedTab() {
 			m.filterMode = true
 			m.filter.SetValue(m.filterValue)
@@ -1470,40 +1463,6 @@ func (m Model) handleThreadKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// jumpToUnread switches to the synthetic Unread tab and selects its
-// first channel (loading its messages). If nothing is unread, it leaves
-// the tab focused with an "all caught up" status so the user still gets
-// confirmation that `u` did something.
-func (m Model) jumpToUnread() (tea.Model, tea.Cmd) {
-	target := -1
-	for i := 0; i <= m.maxTeamIdx(); i++ {
-		if kind, _, _ := m.tabAt(i); kind == tabUnread {
-			target = i
-			break
-		}
-	}
-	if target < 0 {
-		return m, nil
-	}
-	m.teamIdx = target
-	m.focus = focusMessages
-	m.channelIdx = 0
-	m.chanOff = 0
-	m.filterMode = false
-	m.filterValue = ""
-	m.filter.SetValue("")
-	m.filter.Blur()
-	m.input.Blur()
-	vis := m.visibleChannels()
-	if len(vis) == 0 {
-		m.posts = nil
-		m.renderMessages()
-		m.status = "all caught up"
-		return m, nil
-	}
-	return m, m.openChannelLoadCmd(vis[0].Id)
-}
-
 // handleLeaderKey resolves the second key of a "," leader chord. It is
 // only reached when m.leaderPending is set (in handleKey, after the ","
 // leader key in a navigation focus); the flag is always cleared here. esc
@@ -1537,13 +1496,16 @@ func (m Model) handleLeaderKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.focusComposer()
 	case "d":
 		return m.gotoDMTab()
+	case "u":
+		// The unread feed (one bubble per unread channel).
+		return m, m.openFeedTab()
 	case "1", "2", "3", "4", "5", "6", "7", "8", "9":
 		return m.gotoTeam(int(msg.String()[0] - '0'))
 	case "esc":
 		// esc is the universal cancel — drop the chord without a fuss.
 		return m, nil
 	}
-	m.status = ", " + msg.String() + " — nothing bound; , then t/m/i/d/1-9"
+	m.status = ", " + msg.String() + " — nothing bound; , then t/m/i/d/u/1-9"
 	return m, nil
 }
 
@@ -1581,7 +1543,7 @@ func (m Model) gotoTab(target int) (tea.Model, tea.Cmd) {
 		m.focus = focusFeed
 		return m, m.buildFeed()
 	}
-	// Channel/DM/Unread tab: land in the messages pane (the sidebar is not a
+	// Channel/DM tab: land in the messages pane (the sidebar is not a
 	// focus) and open the preferred channel.
 	m.focus = focusMessages
 	m.chanOff = 0
@@ -1590,11 +1552,7 @@ func (m Model) gotoTab(target int) (tea.Model, tea.Cmd) {
 		m.channelIdx = 0
 		m.posts = nil
 		m.renderMessages()
-		if m.currentTeamID() == unreadTeamID {
-			m.status = "all caught up"
-		} else {
-			m.status = "no channels in this team"
-		}
+		m.status = "no channels in this team"
 		return m, nil
 	}
 	m.channelIdx = m.preferredChannelIdx(vis)
@@ -1675,14 +1633,6 @@ func (m Model) navChannel(dir int) (tea.Model, tea.Cmd) {
 	if ch.Id == m.openChannelID {
 		return m, nil
 	}
-	// Mirror the enter-open Unread-tab hop: opening from the virtual Unread
-	// tab moves to the channel's home team so isCurrentChannel keeps tracking
-	// it after its unread clears and it drops off the Unread list.
-	if m.currentTeamID() == unreadTeamID {
-		m.switchToChannelHomeTeam(ch)
-		m.filterValue = ""
-		m.filter.SetValue("")
-	}
 	return m, tea.Batch(m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id))
 }
 
@@ -1699,7 +1649,7 @@ func (m Model) gotoDMTab() (tea.Model, tea.Cmd) {
 }
 
 // gotoTeam jumps to the n-th real team (1-based) in the tab bar, skipping
-// the synthetic DM/Unread/Feed/Search tabs (",1".."9"). No-op when there
+// the synthetic DM/Feed/Search tabs (",1".."9"). No-op when there
 // is no n-th team.
 func (m Model) gotoTeam(n int) (tea.Model, tea.Cmd) {
 	if n < 1 {
@@ -1999,11 +1949,6 @@ func (m Model) handleFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		ch := vis[m.channelIdx]
-		// Opening from the virtual Unread tab hops to the channel's home team
-		// so isCurrentChannel keeps tracking it once its unread clears.
-		if m.currentTeamID() == unreadTeamID {
-			m.switchToChannelHomeTeam(ch)
-		}
 		// One-shot: drop the filter so the sidebar shows the full list again,
 		// then re-point the selection at the channel we just opened (its index
 		// in the filtered list no longer matches the unfiltered one).
@@ -2421,11 +2366,7 @@ func (m Model) handleTeamsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.channelIdx = 0
 			m.posts = nil
 			m.renderMessages()
-			if m.currentTeamID() == unreadTeamID {
-				m.status = "all caught up"
-			} else {
-				m.status = "no channels in this team"
-			}
+			m.status = "no channels in this team"
 			return m, nil
 		}
 		m.channelIdx = m.preferredChannelIdx(vis)
