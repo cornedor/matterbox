@@ -1,7 +1,12 @@
 package ui
 
 import (
+	"bytes"
+	"context"
 	"image"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -48,17 +53,22 @@ func TestPreviewableMIME(t *testing.T) {
 	}
 }
 
-func TestImageAttachmentsFilters(t *testing.T) {
+func TestPreviewImagesAttachmentFilter(t *testing.T) {
 	p := imagePost("image/png", "application/pdf", "image/gif")
-	got := imageAttachments(p)
+	got := previewImages(p)
 	if len(got) != 2 {
-		t.Fatalf("imageAttachments returned %d files, want 2 (png+gif)", len(got))
+		t.Fatalf("previewImages returned %d items, want 2 (png+gif, pdf dropped)", len(got))
 	}
-	if imageAttachments(nil) != nil {
-		t.Error("imageAttachments(nil) should be nil")
+	for _, it := range got {
+		if it.file == nil {
+			t.Errorf("attachment item has no file: %+v", it)
+		}
 	}
-	if imageAttachments(&model.Post{}) != nil {
-		t.Error("imageAttachments on a post with no metadata should be nil")
+	if previewImages(nil) != nil {
+		t.Error("previewImages(nil) should be nil")
+	}
+	if previewImages(&model.Post{}) != nil {
+		t.Error("previewImages on an empty post should be nil")
 	}
 }
 
@@ -131,8 +141,8 @@ func TestOpenImagePreviewStartsLoad(t *testing.T) {
 		t.Fatalf("expected an active, loading preview; got active=%v loading=%v",
 			got.preview.active, got.preview.loading)
 	}
-	if len(got.preview.files) != 2 {
-		t.Errorf("preview.files = %d, want 2", len(got.preview.files))
+	if len(got.preview.items) != 2 {
+		t.Errorf("preview.items = %d, want 2", len(got.preview.items))
 	}
 	if got.previewGen == 0 {
 		t.Error("previewGen should be bumped on open")
@@ -147,7 +157,7 @@ func TestHandlePreviewLoadedTransmits(t *testing.T) {
 		width: 100, height: 40,
 		emojiImg: activeEmojiImages(),
 	}
-	m.preview = previewState{active: true, files: imageAttachments(imagePost("image/png")), loading: true}
+	m.preview = previewState{active: true, items: previewImages(imagePost("image/png")), loading: true}
 	m.previewGen = 1
 
 	img := image.NewRGBA(image.Rect(0, 0, 64, 48))
@@ -197,7 +207,7 @@ func twoFrames() ([]image.Image, []time.Duration) {
 // image (single frame) does not.
 func TestHandlePreviewLoadedAnimatedArmsTick(t *testing.T) {
 	m := Model{width: 100, height: 40, emojiImg: activeEmojiImages(), animatePreview: true}
-	m.preview = previewState{active: true, files: imageAttachments(imagePost("image/gif")), loading: true}
+	m.preview = previewState{active: true, items: previewImages(imagePost("image/gif")), loading: true}
 	m.previewGen = 1
 
 	frames, delays := twoFrames()
@@ -215,7 +225,7 @@ func TestHandlePreviewLoadedAnimatedArmsTick(t *testing.T) {
 
 	// Still image: one frame, no tick armed (frameStart stays zero).
 	still := Model{width: 100, height: 40, emojiImg: activeEmojiImages(), animatePreview: true}
-	still.preview = previewState{active: true, files: imageAttachments(imagePost("image/png")), loading: true}
+	still.preview = previewState{active: true, items: previewImages(imagePost("image/png")), loading: true}
 	still.previewGen = 1
 	smm, _ := still.handlePreviewLoaded(previewImageLoadedMsg{gen: 1, frames: []image.Image{frames[0]}})
 	if !smm.(Model).preview.frameStart.IsZero() {
@@ -261,7 +271,7 @@ func TestHandlePreviewTick(t *testing.T) {
 func TestHandlePreviewKeyClose(t *testing.T) {
 	for _, key := range []string{"space", "esc", "q"} {
 		m := Model{keys: newKeyMap("ctrl"), emojiImg: activeEmojiImages()}
-		m.preview = previewState{active: true, files: imageAttachments(imagePost("image/png")), id: 7}
+		m.preview = previewState{active: true, items: previewImages(imagePost("image/png")), id: 7}
 		m.previewGen = 1
 		mm, _ := m.handlePreviewKey(prevKey(key))
 		if mm.(Model).preview.active {
@@ -272,7 +282,7 @@ func TestHandlePreviewKeyClose(t *testing.T) {
 
 func TestHandlePreviewKeyCycle(t *testing.T) {
 	m := Model{keys: newKeyMap("ctrl"), emojiImg: activeEmojiImages()}
-	m.preview = previewState{active: true, files: imageAttachments(imagePost("image/png", "image/gif")), idx: 0}
+	m.preview = previewState{active: true, items: previewImages(imagePost("image/png", "image/gif")), idx: 0}
 	m.previewGen = 1
 
 	mm, cmd := m.handlePreviewKey(prevKey("right"))
@@ -292,7 +302,7 @@ func TestHandlePreviewKeyCycle(t *testing.T) {
 
 func TestCyclePreviewSingleImageNoop(t *testing.T) {
 	m := Model{emojiImg: activeEmojiImages()}
-	m.preview = previewState{active: true, files: imageAttachments(imagePost("image/png")), idx: 0}
+	m.preview = previewState{active: true, items: previewImages(imagePost("image/png")), idx: 0}
 	mm, cmd := m.cyclePreview(1)
 	if mm.(Model).preview.idx != 0 || cmd != nil {
 		t.Error("cycling a single-image preview should be a no-op")
@@ -313,10 +323,98 @@ func TestPreviewKeyConfigurable(t *testing.T) {
 		t.Fatalf("preview_image override not applied: Preview.Keys() = %v", got)
 	}
 	m := Model{keys: km, emojiImg: activeEmojiImages()}
-	m.preview = previewState{active: true, files: imageAttachments(imagePost("image/png")), id: 3}
+	m.preview = previewState{active: true, items: previewImages(imagePost("image/png")), id: 3}
 	m.previewGen = 1
 	if mm, _ := m.handlePreviewKey(prevKey("p")); mm.(Model).preview.active {
 		t.Error("the rebound preview key should close the modal")
+	}
+}
+
+func TestIsPreviewableImageURL(t *testing.T) {
+	yes := []string{
+		// A GIF-picker URL: extension on the path, cache keys in the query.
+		"https://media2.giphy.com/media/GRk3GLfzduq1NtfGt5/200.gif?cid=2475d0be&ep=v1_gifs_search&rid=200.gif&ct=g",
+		"https://example.com/cat.PNG", // case-insensitive
+		"http://host/a/b/photo.jpeg",
+		"https://host/x.jpg",
+	}
+	for _, u := range yes {
+		if !isPreviewableImageURL(u) {
+			t.Errorf("isPreviewableImageURL(%q) = false, want true", u)
+		}
+	}
+	no := []string{
+		"https://example.com/page",       // no extension
+		"https://example.com/video.mp4",  // not an image
+		"https://example.com/image.webp", // stdlib can't decode
+		"",
+	}
+	for _, u := range no {
+		if isPreviewableImageURL(u) {
+			t.Errorf("isPreviewableImageURL(%q) = true, want false", u)
+		}
+	}
+}
+
+// previewImages pulls a GIF-picker image link out of the message body (the
+// exact ![alt](url) form Mattermost's picker posts) as a URL item, with the alt
+// text as its name.
+func TestPreviewImagesFindsBodyURL(t *testing.T) {
+	p := &model.Post{
+		Id:      "p1",
+		Message: "haha ![Cat Fun GIF by Black Roses Playing Cards](https://media2.giphy.com/media/GRk3GLfzduq1NtfGt5/200.gif?cid=2475d0be&rid=200.gif&ct=g) lol",
+	}
+	got := previewImages(p)
+	if len(got) != 1 {
+		t.Fatalf("previewImages = %d items, want 1", len(got))
+	}
+	if got[0].file != nil || !strings.Contains(got[0].url, "200.gif") {
+		t.Errorf("item = %+v, want a giphy URL item", got[0])
+	}
+	if got[0].name != "Cat Fun GIF by Black Roses Playing Cards" {
+		t.Errorf("name = %q, want the alt text", got[0].name)
+	}
+
+	// A non-image link in the body is not previewable.
+	if n := len(previewImages(&model.Post{Id: "p2", Message: "see https://example.com/page"})); n != 0 {
+		t.Errorf("previewImages on a non-image link = %d items, want 0", n)
+	}
+}
+
+// readOrDownloadURL fetches an external image, caches it to disk, and serves the
+// cached copy on the next read; an HTTP error surfaces.
+func TestReadOrDownloadURL(t *testing.T) {
+	want := noisyPNG(t, 8, 8)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(want)
+	}))
+	defer srv.Close()
+
+	m := Model{ctx: context.Background()}
+	cachePath := filepath.Join(t.TempDir(), "img")
+
+	got, err := m.readOrDownloadURL(cachePath, srv.URL+"/x.png")
+	if err != nil {
+		t.Fatalf("download: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Error("downloaded bytes don't match the served image")
+	}
+	// Second read is served from the cache: a bogus URL is never contacted.
+	cached, err := m.readOrDownloadURL(cachePath, "http://127.0.0.1:0/never")
+	if err != nil {
+		t.Fatalf("cached read: %v", err)
+	}
+	if !bytes.Equal(cached, want) {
+		t.Error("second read did not use the on-disk cache")
+	}
+
+	errSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer errSrv.Close()
+	if _, err := m.readOrDownloadURL(filepath.Join(t.TempDir(), "y"), errSrv.URL+"/missing.png"); err == nil {
+		t.Error("expected an error on HTTP 404")
 	}
 }
 

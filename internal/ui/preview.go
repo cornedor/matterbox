@@ -1,13 +1,21 @@
 package ui
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"image"
 	_ "image/gif"  // GIF attachments (decoded via decodeImageFrames)
 	_ "image/jpeg" // JPEG attachments
 	_ "image/png"  // PNG attachments
+	"io"
 	"math"
+	"net/http"
+	"net/url"
 	"os"
+	"path"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/key"
@@ -16,8 +24,18 @@ import (
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
-// The image-preview modal: press space on a message carrying an image
-// attachment to view it inline, rendered via the Kitty Unicode-placeholder
+// previewHTTPClient fetches external preview images (e.g. GIF-picker ![](…)
+// links). The timeout bounds a slow or hung host; the modal surfaces the error
+// if it trips.
+var previewHTTPClient = &http.Client{Timeout: 30 * time.Second}
+
+// previewMaxImageBytes caps an external image download so a pathological URL
+// can't exhaust memory; generous for a GIF.
+const previewMaxImageBytes = 32 << 20 // 32 MiB
+
+// The image-preview modal: press space on a message carrying an image — either
+// an uploaded attachment or an image URL in the body (e.g. a GIF-picker
+// ![](…) link) — to view it inline, rendered via the Kitty Unicode-placeholder
 // protocol (the same mechanism custom emoji use — see emojiimg.go — so it
 // survives the TUI's per-frame repaints). Closable with space/esc/q; ←/→ cycle
 // when a post has several images.
@@ -29,13 +47,23 @@ import (
 // animations.image_preview config toggle is off, in which case they show the
 // first frame only. See IMAGE_PREVIEW_ANIMATION.md.
 
+// previewItem is one previewable image on a post: either an uploaded attachment
+// (downloaded through the Mattermost client) or an external image URL from the
+// message body (e.g. a GIF-picker ![](…) link), fetched over HTTP. Exactly one
+// of file / url is set.
+type previewItem struct {
+	file *model.FileInfo
+	url  string
+	name string
+}
+
 // previewState holds the live image-preview modal. The zero value is closed.
 type previewState struct {
 	active bool
 
-	// files is the post's previewable image attachments (metadata order); idx
-	// is the one on screen. ←/→ move idx when len(files) > 1.
-	files []*model.FileInfo
+	// items is the post's previewable images (attachments first, then body image
+	// URLs); idx is the one on screen. ←/→ move idx when len(items) > 1.
+	items []previewItem
 	idx   int
 
 	// loading is true while the current file downloads/decodes; err records a
@@ -99,26 +127,50 @@ func previewableMIME(mime string) bool {
 	return false
 }
 
-// imageAttachments returns the post's previewable image files in metadata order.
-func imageAttachments(p *model.Post) []*model.FileInfo {
-	if p == nil || p.Metadata == nil {
+// previewImages enumerates a post's previewable images: uploaded attachments
+// (previewable MIME, metadata order) followed by image URLs in the body — the
+// ![](…) links a GIF picker posts, plus any bare/linked URL whose path looks
+// like an image. Reuses collectOpenables so the extraction + dedup matches what
+// `o` opens. URLs are previewable only if their extension is one stdlib decodes.
+func previewImages(p *model.Post) []previewItem {
+	if p == nil {
 		return nil
 	}
-	var out []*model.FileInfo
-	for _, f := range p.Metadata.Files {
-		if f != nil && previewableMIME(f.MimeType) {
-			out = append(out, f)
+	var out []previewItem
+	for _, o := range collectOpenables(p) {
+		switch {
+		case o.file != nil:
+			if previewableMIME(o.file.MimeType) {
+				out = append(out, previewItem{file: o.file, name: o.file.Name})
+			}
+		case isPreviewableImageURL(o.url):
+			out = append(out, previewItem{url: o.url, name: o.name})
 		}
 	}
 	return out
+}
+
+// isPreviewableImageURL reports whether a URL's path ends in an extension we can
+// decode and render (Kitty-only, stdlib decoders). The query string — which a
+// CDN like Giphy stuffs with cache keys — is ignored.
+func isPreviewableImageURL(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(path.Ext(u.Path)) {
+	case ".png", ".jpg", ".jpeg", ".gif":
+		return true
+	}
+	return false
 }
 
 // openImagePreview raises the preview modal for the first previewable image on
 // p (←/→ cycle the rest). No image → a status hint; no terminal graphics → a
 // hint to use `o`, since we render Kitty-only.
 func (m Model) openImagePreview(p *model.Post) (tea.Model, tea.Cmd) {
-	files := imageAttachments(p)
-	if len(files) == 0 {
+	items := previewImages(p)
+	if len(items) == 0 {
 		m.status = "no image to preview on this message"
 		return m, nil
 	}
@@ -126,26 +178,41 @@ func (m Model) openImagePreview(p *model.Post) (tea.Model, tea.Cmd) {
 		m.status = "image preview needs a Kitty-capable terminal — press o to open"
 		return m, nil
 	}
-	m.preview = previewState{active: true, files: files, idx: 0, loading: true}
+	m.preview = previewState{active: true, items: items, idx: 0, loading: true}
 	m.previewGen++
-	return m, m.loadPreviewImage(m.previewGen, files[0])
+	return m, m.loadPreviewImage(m.previewGen, items[0])
 }
 
-// loadPreviewImage downloads (reusing the file cache) and decodes f in the
+// loadPreviewImage fetches (reusing the on-disk cache) and decodes it in the
 // background, returning a previewImageLoadedMsg tagged with gen.
-func (m Model) loadPreviewImage(gen int, f *model.FileInfo) tea.Cmd {
+func (m Model) loadPreviewImage(gen int, it previewItem) tea.Cmd {
 	return func() tea.Msg {
-		path, _ := m.cachedFilePath(f)
-		data, err := m.readOrDownloadFile(path, f)
+		data, err := m.readPreviewBytes(it)
 		if err != nil {
 			return previewImageLoadedMsg{gen: gen, err: err}
 		}
-		frames, delays, err := decodeImageFrames(data, m.animatePreview)
-		if err != nil {
-			return previewImageLoadedMsg{gen: gen, err: fmt.Errorf("decode image: %w", err)}
+		frames, delays, derr := decodeImageFrames(data, m.animatePreview)
+		if derr != nil {
+			return previewImageLoadedMsg{gen: gen, err: fmt.Errorf("decode image: %w", derr)}
 		}
-		return previewImageLoadedMsg{gen: gen, frames: frames, delays: delays, caption: previewCaption(f, frames[0])}
+		size := int64(len(data))
+		if it.file != nil && it.file.Size > 0 {
+			size = it.file.Size
+		}
+		return previewImageLoadedMsg{gen: gen, frames: frames, delays: delays, caption: previewCaption(it.name, frames[0], size)}
 	}
+}
+
+// readPreviewBytes returns the item's raw bytes: an attachment via the
+// Mattermost client (cached by file id), or an external URL over HTTP (cached
+// by URL hash).
+func (m Model) readPreviewBytes(it previewItem) ([]byte, error) {
+	if it.file != nil {
+		path, _ := m.cachedFilePath(it.file)
+		return m.readOrDownloadFile(path, it.file)
+	}
+	path, _ := cachedURLPath(it.url)
+	return m.readOrDownloadURL(path, it.url)
 }
 
 // readOrDownloadFile returns the file's bytes from the on-disk cache, falling
@@ -166,11 +233,60 @@ func (m Model) readOrDownloadFile(path string, f *model.FileInfo) ([]byte, error
 	return data, nil
 }
 
-// previewCaption builds the line under the image: name · W×H · size.
-func previewCaption(f *model.FileInfo, img image.Image) string {
-	name := normalizeFilename(f.Name)
+// readOrDownloadURL returns the external image's bytes from the on-disk cache,
+// falling back to an HTTP GET (capped at previewMaxImageBytes, then cached).
+func (m Model) readOrDownloadURL(path, rawURL string) ([]byte, error) {
+	if path != "" {
+		if data, err := os.ReadFile(path); err == nil && len(data) > 0 {
+			return data, nil
+		}
+	}
+	req, err := http.NewRequestWithContext(m.ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := previewHTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch image: %s", resp.Status)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, previewMaxImageBytes))
+	if err != nil {
+		return nil, err
+	}
+	if path != "" {
+		_ = os.WriteFile(path, data, 0o644) // best effort
+	}
+	return data, nil
+}
+
+// cachedURLPath returns the on-disk cache path for an external preview image,
+// keyed by a hash of the URL (mirrors cachedFilePath/cachedEmojiPath). Holds the
+// original downloaded bytes so a warm reopen costs no HTTP.
+func cachedURLPath(rawURL string) (string, error) {
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(cache, "matterbox", "urlimg")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(rawURL))
+	return filepath.Join(dir, hex.EncodeToString(sum[:])), nil
+}
+
+// previewCaption builds the line under the image: name · W×H · size (the size is
+// omitted when unknown).
+func previewCaption(name string, img image.Image, size int64) string {
 	b := img.Bounds()
-	return fmt.Sprintf("%s · %d×%d · %s", name, b.Dx(), b.Dy(), humanSize(f.Size))
+	if size > 0 {
+		return fmt.Sprintf("%s · %d×%d · %s", normalizeFilename(name), b.Dx(), b.Dy(), humanSize(size))
+	}
+	return fmt.Sprintf("%s · %d×%d", normalizeFilename(name), b.Dx(), b.Dy())
 }
 
 // handlePreviewLoaded installs a finished decode: it sizes the placement to the
@@ -248,11 +364,11 @@ func previewTickCmd(gen int, d time.Duration) tea.Cmd {
 // cyclePreview moves to the previous/next image on the post, freeing the current
 // id and kicking off a fresh load. No-op when the post has a single image.
 func (m Model) cyclePreview(delta int) (tea.Model, tea.Cmd) {
-	if len(m.preview.files) <= 1 {
+	if len(m.preview.items) <= 1 {
 		return m, nil
 	}
 	free := m.freePreviewID()
-	n := len(m.preview.files)
+	n := len(m.preview.items)
 	m.preview.idx = ((m.preview.idx+delta)%n + n) % n
 	m.preview.loading = true
 	m.preview.err = nil
@@ -263,7 +379,7 @@ func (m Model) cyclePreview(delta int) (tea.Model, tea.Cmd) {
 	m.preview.frameIdx = 0
 	m.preview.frameStart = time.Time{}
 	m.previewGen++ // also drops any in-flight animation tick for the old image
-	return m, tea.Batch(free, m.loadPreviewImage(m.previewGen, m.preview.files[m.preview.idx]))
+	return m, tea.Batch(free, m.loadPreviewImage(m.previewGen, m.preview.items[m.preview.idx]))
 }
 
 // closeImagePreview tears down the modal and frees the image id from terminal
@@ -410,9 +526,9 @@ func (m *Model) renderPreviewPopup() string {
 	}
 
 	hint := "space/esc/q close"
-	if len(m.preview.files) > 1 {
+	if len(m.preview.items) > 1 {
 		hint = fmt.Sprintf("%d/%d · ←/→ next · space/esc/q close",
-			m.preview.idx+1, len(m.preview.files))
+			m.preview.idx+1, len(m.preview.items))
 	}
 	hintLine := lipgloss.NewStyle().Foreground(dimColor).Italic(true).Render(hint)
 
