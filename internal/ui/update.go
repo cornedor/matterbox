@@ -86,8 +86,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case emojiImagesFetchedMsg:
 		return m.handleEmojiImagesFetched(msg)
 
+	case emojiAnimTickMsg:
+		return m, m.advanceEmojiAnim()
+
 	case previewImageLoadedMsg:
 		return m.handlePreviewLoaded(msg)
+
+	case previewTickMsg:
+		return m.handlePreviewTick(msg)
 
 	case meLoadedMsg:
 		m.me = msg.user

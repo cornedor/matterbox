@@ -368,6 +368,9 @@ type Model struct {
 	// after the user cycled or closed. See preview.go.
 	preview    previewState
 	previewGen int
+	// animatePreview snapshots animations.image_preview: when false, a GIF in
+	// the preview modal shows its first frame only. See preview.go.
+	animatePreview bool
 
 	keys keyMap
 	// vimNav controls when the ctrl+vim sidebar-nav keys fire (see keys.go).
@@ -384,6 +387,12 @@ type Model struct {
 	// (images stay lazy).
 	emojiImg         *emojiImages
 	customEmojiNames []string
+
+	// emojiAnimating guards the single GIF-emoji animation loop: it's set when
+	// the first animated emoji becomes ready and the tick is armed, and cleared
+	// when the loop finds nothing left to animate. Prevents a second batch from
+	// starting a parallel (rate-doubling) loop. See emojiimg.go.
+	emojiAnimating bool
 
 	// postLineCache memoizes renderPostLines / renderThreadPostLines
 	// output keyed by post id, with a fingerprint over the inputs (see
@@ -497,6 +506,8 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	navModifier := navModifierFromConfig(cfg)
 	vimNav := vimNavGlobal
 	emojiMode := "auto"
+	animateEmoji := true
+	animatePreview := true
 	if cfg != nil {
 		vimNav = parseVimNav(cfg.Keybindings.VimNav)
 		reactions = append([]string(nil), cfg.Reactions...)
@@ -522,6 +533,12 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		}
 		if cfg.EmojiImages != "" {
 			emojiMode = cfg.EmojiImages
+		}
+		if cfg.Animations.CustomEmoji != nil {
+			animateEmoji = *cfg.Animations.CustomEmoji
+		}
+		if cfg.Animations.ImagePreview != nil {
+			animatePreview = *cfg.Animations.ImagePreview
 		}
 	}
 	// Unless the sidebar nav uses the ctrl modifier itself, ctrl+←/→ never
@@ -600,7 +617,8 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		embedBatch:          semindex.DefaultBatch,
 		embedder:            embedderState{enabled: embedderEnabled},
 		markReadDelay:       markReadDelay,
-		emojiImg:            newEmojiImages(emojiMode),
+		emojiImg:            newEmojiImages(emojiMode, animateEmoji),
+		animatePreview:      animatePreview,
 	}
 }
 

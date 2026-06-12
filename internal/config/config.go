@@ -63,6 +63,28 @@ type Config struct {
 	// everywhere. Unicode emoji are unaffected — they always render as font
 	// glyphs. See internal/ui.
 	EmojiImages string `yaml:"emoji_images"`
+	// Animations groups the optional motion effects so a user who finds
+	// movement distracting can switch them off individually. An object rather
+	// than a flat flag because more toggles are planned (e.g. animating GIFs in
+	// the space-to-preview modal). See internal/ui.
+	Animations AnimationsConfig `yaml:"animations"`
+}
+
+// AnimationsConfig groups the optional motion toggles. Each field is a pointer
+// so an absent key takes the (on) default while an explicit false disables just
+// that animation. Defaults in fillDefaults.
+type AnimationsConfig struct {
+	// CustomEmoji animates GIF custom (server) emoji: every appearance of an
+	// animated-GIF emoji cycles through its frames in place. No effect unless
+	// emoji_images renders custom emoji as images in the first place. Pointer
+	// so an absent key defaults to true; an explicit false freezes them on the
+	// first frame (the pre-animation behaviour).
+	CustomEmoji *bool `yaml:"custom_emoji"`
+	// ImagePreview animates GIFs in the image-preview modal (space on a message
+	// with an image attachment). Same Kitty-only path as still previews; an
+	// explicit false shows the first frame only. Pointer so an absent key
+	// defaults to true.
+	ImagePreview *bool `yaml:"image_preview"`
 }
 
 // KeybindingsConfig holds optional keymap tweaks. Defaults in fillDefaults.
@@ -328,7 +350,7 @@ func Load() (*Config, error) {
 	// and rewrite the file once so the discovered model + prompt show up as
 	// editable defaults. Best-effort: a failed rewrite only means the file
 	// keeps working off in-memory defaults.
-	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == ""
+	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil
 	cfg.fillDefaults()
 	if addDefaults {
 		if werr := writeConfig(p, cfg); werr != nil {
@@ -404,6 +426,14 @@ func (c *Config) fillDefaults() {
 	if c.EmojiImages == "" {
 		c.EmojiImages = "auto"
 	}
+	if c.Animations.CustomEmoji == nil {
+		t := true
+		c.Animations.CustomEmoji = &t
+	}
+	if c.Animations.ImagePreview == nil {
+		t := true
+		c.Animations.ImagePreview = &t
+	}
 }
 
 // SaveTeamOrder persists the given left-to-right team-tab ordering to
@@ -476,6 +506,10 @@ func writeConfig(p string, cfg *Config) error {
 		"# emoji_images: render custom (server) emoji as inline images via the\n" +
 		"#             Kitty graphics protocol. auto (default) enables them on a\n" +
 		"#             Kitty/Ghostty truecolor terminal outside tmux; off keeps\n" +
-		"#             literal :name: text. Unicode emoji are unaffected.\n"
+		"#             literal :name: text. Unicode emoji are unaffected.\n" +
+		"# animations: optional motion effects, off-able if distracting.\n" +
+		"#             custom_emoji (default true) animates GIF custom emoji in\n" +
+		"#             place; image_preview (default true) animates GIFs in the\n" +
+		"#             space-to-preview modal; false freezes either on frame one.\n"
 	return os.WriteFile(p, append([]byte(header), body...), 0o644)
 }

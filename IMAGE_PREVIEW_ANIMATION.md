@@ -1,74 +1,80 @@
-# Image preview — animated GIF (out of scope, future work)
+# Animated GIFs
 
-The image-preview modal (`space` on a message with an image attachment, see
-`internal/ui/preview.go`) renders a **static** image via the Kitty
-Unicode-placeholder protocol — the same mechanism custom emoji use
-(`internal/ui/emojiimg.go`). An animated GIF currently shows its **first frame
-only** (whatever `image.Decode` returns), which matches how custom emoji handle
-GIFs.
+## Status
 
-Playing the animation was deliberately deferred: it can't be borrowed from an
-existing tool and has to be hand-wired into our render loop. This note records
-the design so it can be picked up later.
+**Custom emoji — done.** Animated-GIF custom emoji cycle through their frames in
+place (`internal/ui/emojiimg.go`). Gated by the `animations.custom_emoji` config
+toggle (an object so more toggles can join it — see below). The frame decode and
+the animation loop live entirely in `emojiimg.go`; nothing in the render path
+changed.
 
-## Why not shell out to `timg`
+**Image-preview modal — still future work.** The preview modal (`space` on a
+message with an image, `internal/ui/preview.go`) still shows a GIF's **first
+frame only**. The decode + tick technique below is now proven for emoji and can
+be lifted into the modal; the planned config key is `animations.image_preview`.
 
-`timg` (and `chafa`/`viu`/…) are standalone terminal image viewers. Reusing the
-**binary** doesn't fit:
+## How emoji animation works
 
-- Their main value is multi-protocol auto-detection plus **ASCII / half-block
-  fallbacks** — explicitly not wanted here (we are Kitty-only).
-- They can't live inside our modal. `timg` writes absolute-positioned escape
-  sequences and runs its own animation loop owning the screen, whereas our TUI
-  repaints every frame and depends on the Kitty **Unicode virtual-placeholder**
-  variant so an image moves with the layout and survives repaints. Splicing
-  `timg`'s output into a Bubble Tea frame fights the renderer.
-- The only way to run it is to suspend the whole TUI (`tea.Exec` exists in
-  bubbletea v2) and hand off full-screen — not a modal, and a runtime
-  dependency the user must install.
+The terminal will not animate a static placeholder on its own. Two routes exist:
 
-So if we animate, we reuse the **technique**, not the tool.
+1. **Two image ids, flipped per frame** — what `timg` does. Each frame targets a
+   different id and the placement re-points at it. Routes around an old Ghostty
+   bug (ghostty-org/ghostty#1037, fixed in #1043) where re-transmitting to an
+   *already-known* id didn't repaint. Cheap for `timg` (absolute placements) but
+   for our **Unicode virtual-placeholder** the id rides in the placeholder cells'
+   foreground — flipping ids would mean rewriting every cached message line that
+   shows the emoji, every frame. That fights the render-window/line cache.
 
-## The technique (from ghostty-org/ghostty#1037)
+2. **One id, re-transmitted per frame** — what we do. The emoji keeps a single
+   image id; each frame is a prebuilt transmit APC (`frameSeqs`) targeting that
+   id. The animation tick re-emits the due frame out of band (`tea.Raw`); the
+   placeholder cells already on screen keep pointing at the same id, so the
+   terminal repaints them with **no re-render and no cache invalidation**. This
+   relies on the terminal repainting a virtual placement when its image data is
+   replaced — true on current Kitty and Ghostty (post-#1043), which are the only
+   terminals this feature targets.
 
-The terminal will not animate a static placeholder on its own. `timg` animates
-over Kitty by **double-buffering two image ids and flipping between them per
-frame**, with the application driving frame timing. Issue #1037 / fix #1043 was
-a Ghostty bug where re-transmitting to an *already-known* id didn't repaint;
-the two-id flip routes around it (each frame targets a different id, so even a
-terminal that ignores "update existing id" still repaints).
+Pieces in `emojiimg.go`:
 
-## Sketch of the in-process implementation
+- **`decodeImageFrames` / `compositeGIF`** — `gif.DecodeAll` yields per-frame
+  *sub-images*; `compositeGIF` layers each onto a persistent RGBA canvas honoring
+  the disposal methods (`DisposalNone` / `DisposalBackground` /
+  `DisposalPrevious`) and snapshots every composited frame. Per-frame delays come
+  from `gif.GIF.Delay` (hundredths of a second), clamped by `clampGIFDelay`
+  (0/absurd → ~100ms, the browser convention).
+- **Build** — `buildReadyEmoji` (on the fetch goroutine, off the render loop)
+  decodes frames and prebuilds one transmit APC per frame plus the placeholder.
+  A still image / single-frame GIF / animations-off all collapse to one frame.
+- **State** — `emojiImgEntry` carries `frameSeqs`, `delays`, `frameIdx`,
+  `frameStart`. A still emoji has one frame and never ticks.
+- **Tick** — a single self-rescheduling `emojiAnimTickMsg` loop (guarded by
+  `Model.emojiAnimating` so only one runs) advances every animated emoji whose
+  frame is due via `advanceFrame`, emits the concatenated re-transmits, and
+  reschedules from the soonest next-due frame (floored to `emojiAnimMinInterval`
+  to cap the wakeup rate). The loop stops when nothing is left to animate.
+- **Cache** — `cachedEmojiPath` now stores the **original** downloaded bytes
+  (format sniffed on read), so a warm restart can still decode every frame.
 
-Everything below sits on top of the existing transmit + placeholder helpers, so
-it's additive — no renderer changes.
+## Porting it to the preview modal
 
-1. **Decode all frames.** `gif.DecodeAll` yields per-frame *sub-images*, not
-   ready-to-show full frames. Composite each onto a persistent RGBA canvas
-   honoring the GIF disposal methods (`DisposalNone` / `DisposalBackground` /
-   `DisposalPrevious`); snapshot each composited frame. Capture per-frame
-   delays from `gif.GIF.Delay` (hundredths of a second; clamp 0 → ~100ms).
+The modal is single-image and re-renders cheaply, so either route works there.
+Reuse `decodeImageFrames`/`compositeGIF`/`clampGIFDelay`. Sketch:
 
-2. **State.** Extend `previewState` with `frames []image.Image`,
-   `delays []time.Duration`, `frameIdx int`, a second image id, and a `cur`
-   flip index. A still image keeps a single frame and never ticks.
+1. Decode all frames on load (`loadPreviewImage`), store `frames`/`delays`/
+   `frameIdx` on `previewState`.
+2. On load, transmit frame 0 and, if `len(frames) > 1` and
+   `animations.image_preview` is on, schedule a `tea.Tick`. Each tick transmits
+   the next frame (same-id re-transmit, as for emoji) and reschedules.
+3. Guard every tick with `previewGen` so a tick from a closed/cycled preview is
+   dropped, and scope it to `preview.active` so there are no idle wakeups.
+4. Free the id with `kittyDelete` on close/cycle (already done).
+5. Cost: a full-frame transmit per tick is fine for a modal; downscale toward the
+   display box only if large GIFs lag (needs `golang.org/x/image/draw`).
 
-3. **Tick loop.** On load, transmit frame 0 and (if `len(frames) > 1`) schedule
-   `tea.Tick(delays[0], …)`. Each `previewTickMsg`:
-   - transmits the next frame to the **other** id (`kittyTransmitImage`),
-   - points the placeholder at that id (re-render),
-   - schedules the next tick from `delays[next]`.
-   Guard every tick with the `previewGen` counter so a tick from a closed or
-   cycled preview is dropped. Scope the tick to `preview.active` so there are no
-   idle wakeups.
+### Why not shell out to `timg`
 
-4. **Cleanup.** Free **both** ids with `kittyDelete` on close / cycle.
-
-5. **Cost control.** Transmitting a full frame per tick is fine for a modal, but
-   downscale frames toward the display box if large GIFs lag (no scaler in the
-   stdlib — would add `golang.org/x/image/draw`).
-
-The static path already factors the hard parts (sizing/aspect via
-`fitImageCells`, transmit via `kittyTransmitImage`, placeholder via
-`kittyPlaceholder`, id cleanup via `kittyDelete`), so animation is mostly the
-frame decode + the tick loop.
+`timg`/`chafa`/`viu` are standalone viewers: their value is multi-protocol
+auto-detection plus ASCII/half-block fallbacks (not wanted — we're Kitty-only),
+they own the screen with absolute escape sequences (can't live in a Bubble Tea
+modal that repaints every frame), and the only way to run one is to suspend the
+whole TUI. So we reuse the **technique**, not the tool.

@@ -5,14 +5,16 @@ import (
 	"crypto/rand"
 	"fmt"
 	"image"
-	_ "image/gif"  // first-frame decode for animated emoji
+	"image/draw"
+	"image/gif"
 	_ "image/jpeg" // some servers store emoji as JPEG
-	"image/png"
+	_ "image/png"  // PNG emoji (and the kitty transmit format)
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -24,8 +26,10 @@ import (
 // protocol's Unicode-placeholder variant — the only variant that survives a
 // full-screen TUI's repaints and scrolling, because the image is anchored to
 // ordinary text cells rather than an absolute screen position. Supported by
-// Kitty and Ghostty. Unicode emoji are unaffected (kyokomi font glyphs);
-// animated GIF emoji render as a static first frame.
+// Kitty and Ghostty. Unicode emoji are unaffected (kyokomi font glyphs).
+// Animated GIF emoji cycle through their frames in place (see advanceFrame and
+// the animation tick in update.go) unless the animations.custom_emoji config
+// toggle is off, in which case they freeze on the first frame.
 //
 // Lifecycle: an emoji image is transmitted to the terminal once per session
 // (out of band, via tea.Raw) and thereafter displayed by emitting placeholder
@@ -96,18 +100,6 @@ func emojiIsPlaceholder(s string) bool {
 	return strings.ContainsRune(s, kitty.Placeholder)
 }
 
-// kittyTransmit builds the out-of-band APC sequence that uploads a PNG to the
-// terminal and registers a virtual placement under id, so the matching
-// kittyPlaceholder cells display it. Decodes the PNG and defers to
-// kittyTransmitImage with the emoji's fixed 1×2 placement.
-func kittyTransmit(id uint32, png []byte) (string, error) {
-	img, _, err := image.Decode(bytes.NewReader(png))
-	if err != nil {
-		return "", fmt.Errorf("decode emoji png: %w", err)
-	}
-	return kittyTransmitImage(id, img, emojiPlaceholderRows, emojiPlaceholderCols)
-}
-
 // kittyTransmitImage builds the out-of-band APC that uploads img to the terminal
 // under id and registers a virtual placement sized to rows×cols text cells, so a
 // matching kittyPlaceholder(id, rows, cols) displays it. Action TransmitAndPut
@@ -142,33 +134,102 @@ func kittyDelete(id uint32) string {
 	return ansi.KittyGraphics(nil, "a=d", "d=I", fmt.Sprintf("i=%d", id), "q=2")
 }
 
-// normalizeEmojiPNG converts raw custom-emoji image bytes to PNG, the form we
-// cache on disk and hand to kittyTransmit. PNG passes through untouched; GIF
-// (first frame only — we don't animate) and JPEG are decoded and re-encoded.
-// Anything stdlib can't decode is an error.
-func normalizeEmojiPNG(raw []byte) ([]byte, error) {
-	if isPNG(raw) {
-		return raw, nil
-	}
-	img, _, err := image.Decode(bytes.NewReader(raw))
-	if err != nil {
-		return nil, fmt.Errorf("decode emoji image: %w", err)
-	}
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		return nil, fmt.Errorf("encode emoji png: %w", err)
-	}
-	return buf.Bytes(), nil
+func isGIF(b []byte) bool {
+	return len(b) >= 6 && (string(b[:6]) == "GIF87a" || string(b[:6]) == "GIF89a")
 }
 
-func isPNG(b []byte) bool {
-	const sig = "\x89PNG\r\n\x1a\n"
-	return len(b) >= len(sig) && string(b[:len(sig)]) == sig
+// decodeImageFrames turns raw image bytes into the frames we transmit. With
+// animation enabled it returns every composited frame of a multi-frame GIF plus
+// per-frame delays; otherwise (a still image, a single-frame GIF, or animation
+// disabled) it returns one frame and a nil delay slice. Anything stdlib can't
+// decode is an error. Shared by the custom-emoji and image-preview paths.
+func decodeImageFrames(raw []byte, animate bool) (frames []image.Image, delays []time.Duration, err error) {
+	if animate && isGIF(raw) {
+		if g, derr := gif.DecodeAll(bytes.NewReader(raw)); derr == nil && len(g.Image) > 1 {
+			return compositeGIF(g)
+		}
+		// Single-frame GIF or a decode error: fall through to the still path,
+		// which yields the first frame via the general image decoder.
+	}
+	img, _, derr := image.Decode(bytes.NewReader(raw))
+	if derr != nil {
+		return nil, nil, fmt.Errorf("decode emoji image: %w", derr)
+	}
+	return []image.Image{img}, nil, nil
 }
 
-// cachedEmojiPath returns the on-disk PNG path for a custom emoji, keyed by
-// name (mirrors cachedFilePath). Re-uploading an emoji under the same name
-// shows the stale image until the file is removed — acceptable for emoji.
+// compositeGIF flattens an animated GIF into one fully-painted RGBA frame per
+// step, honouring the disposal methods (gif.DecodeAll hands back only the
+// changed sub-rectangle of each step, layered on whatever the disposal left
+// behind). Delays come from gif.GIF.Delay (hundredths of a second), clamped so
+// a 0/absurd delay can't busy-loop the render.
+func compositeGIF(g *gif.GIF) (frames []image.Image, delays []time.Duration, err error) {
+	bounds := image.Rect(0, 0, g.Config.Width, g.Config.Height)
+	if bounds.Empty() {
+		bounds = g.Image[0].Bounds()
+	}
+	canvas := image.NewRGBA(bounds)
+	frames = make([]image.Image, 0, len(g.Image))
+	delays = make([]time.Duration, 0, len(g.Image))
+	var restore *image.RGBA // canvas snapshot for a DisposalPrevious rollback
+	for i, src := range g.Image {
+		disposal := byte(0)
+		if i < len(g.Disposal) {
+			disposal = g.Disposal[i]
+		}
+		// DisposalPrevious means "after this frame, roll back to what was here
+		// before it" — so snapshot the canvas before painting.
+		if disposal == gif.DisposalPrevious {
+			restore = cloneRGBA(canvas)
+		}
+		draw.Draw(canvas, src.Bounds(), src, src.Bounds().Min, draw.Over)
+		frames = append(frames, cloneRGBA(canvas))
+
+		d := 100 * time.Millisecond
+		if i < len(g.Delay) {
+			d = clampGIFDelay(g.Delay[i])
+		}
+		delays = append(delays, d)
+
+		switch disposal {
+		case gif.DisposalBackground:
+			// Clear this frame's rectangle back to transparent.
+			r := src.Bounds().Intersect(canvas.Rect)
+			draw.Draw(canvas, r, image.Transparent, image.Point{}, draw.Src)
+		case gif.DisposalPrevious:
+			if restore != nil {
+				copy(canvas.Pix, restore.Pix)
+			}
+		}
+	}
+	return frames, delays, nil
+}
+
+// cloneRGBA returns an independent copy of src, used to snapshot each
+// composited GIF frame (the shared canvas keeps mutating).
+func cloneRGBA(src *image.RGBA) *image.RGBA {
+	dst := image.NewRGBA(src.Rect)
+	copy(dst.Pix, src.Pix)
+	return dst
+}
+
+// clampGIFDelay converts a GIF per-frame delay (hundredths of a second) to a
+// duration, settling a 0 or absurdly small delay to ~100ms — what browsers do,
+// and enough to keep a pathological GIF from hammering the terminal.
+func clampGIFDelay(hundredths int) time.Duration {
+	d := time.Duration(hundredths) * 10 * time.Millisecond
+	if d < 20*time.Millisecond {
+		d = 100 * time.Millisecond
+	}
+	return d
+}
+
+// cachedEmojiPath returns the on-disk cache path for a custom emoji, keyed by
+// name (mirrors cachedFilePath). The file holds the *original* downloaded bytes
+// (PNG/JPEG/GIF), so a warm restart can still decode every GIF frame and
+// animate — the format is sniffed on read, the extension is omitted on purpose.
+// Re-uploading an emoji under the same name shows the stale image until the file
+// is removed — acceptable for emoji.
 func cachedEmojiPath(name string) (string, error) {
 	cache, err := os.UserCacheDir()
 	if err != nil {
@@ -180,7 +241,7 @@ func cachedEmojiPath(name string) (string, error) {
 	}
 	// filepath.Base guards against a stray separator in the name; the
 	// shortcode regex already constrains body/picker names to a safe class.
-	return filepath.Join(dir, filepath.Base(name)+".png"), nil
+	return filepath.Join(dir, filepath.Base(name)), nil
 }
 
 // emojiImgState is the per-name lifecycle in the custom-emoji image manager.
@@ -197,7 +258,16 @@ type emojiImgEntry struct {
 	state       emojiImgState
 	id          uint32
 	placeholder string // prebuilt placeholder run (ready only)
-	transmit    string // prebuilt transmit APC (ready only)
+
+	// Animation (ready only). frameSeqs holds one prebuilt transmit APC per
+	// frame, every one targeting id, so flipping frames is just re-emitting the
+	// next APC — the placeholder cells already on screen keep pointing at the
+	// same id and the terminal repaints them. A still emoji has exactly one
+	// entry and a nil delays slice; an animated GIF has len(frameSeqs) > 1.
+	frameSeqs  []string
+	delays     []time.Duration // per-frame display time, parallel to frameSeqs
+	frameIdx   int             // frame currently transmitted under id
+	frameStart time.Time       // when frameIdx began showing (zero until first tick)
 }
 
 // emojiImages manages rendering custom (server) emoji as inline Kitty
@@ -206,8 +276,9 @@ type emojiImgEntry struct {
 // (body/pill renders during renderMessages) and View (popup/status renders),
 // so every access takes mu.
 type emojiImages struct {
-	mu   sync.Mutex
-	mode string // "auto" | "off"
+	mu      sync.Mutex
+	mode    string // "auto" | "off"
+	animate bool   // animations.custom_emoji: cycle GIF emoji frames in place
 
 	// Probe + colour-profile gating. The feature is active only once the
 	// graphics probe came back OK *and* the terminal reports a truecolor
@@ -223,16 +294,26 @@ type emojiImages struct {
 	nextID  uint32
 }
 
-func newEmojiImages(mode string) *emojiImages {
+func newEmojiImages(mode string, animate bool) *emojiImages {
 	if mode != "off" {
 		mode = "auto"
 	}
 	return &emojiImages{
 		mode:    mode,
+		animate: animate,
 		entries: map[string]*emojiImgEntry{},
 		pending: map[string]struct{}{},
 		nextID:  randomEmojiIDSeed(),
 	}
+}
+
+// animationsEnabled reports whether GIF custom emoji should be decoded to all
+// frames and animated. Read off the main goroutine (the background fetch), so
+// it takes the lock.
+func (e *emojiImages) animationsEnabled() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.animate
 }
 
 // randomEmojiIDSeed picks a non-zero 24-bit starting id. A random per-session
@@ -355,18 +436,61 @@ func (e *emojiImages) allocID() uint32 {
 	return id
 }
 
-// markReady installs a fetched-and-transmitted emoji: subsequent inline()
-// calls return its placeholder. The caller has already allocated the id and
-// built the placeholder + transmit sequences.
-func (e *emojiImages) markReady(name string, id uint32, placeholder, transmit string) {
+// markReady installs a fetched emoji: subsequent inline() calls return its
+// placeholder. The caller has already allocated the id and prebuilt the
+// placeholder + per-frame transmit sequences (frameSeqs[0] is the still/first
+// frame, already transmitted out of band; delays is nil for a still emoji).
+func (e *emojiImages) markReady(name string, id uint32, placeholder string, frameSeqs []string, delays []time.Duration) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.entries[name] = &emojiImgEntry{
 		state:       emojiReady,
 		id:          id,
 		placeholder: placeholder,
-		transmit:    transmit,
+		frameSeqs:   frameSeqs,
+		delays:      delays,
 	}
+}
+
+// advanceFrame steps every animated emoji whose current frame's delay has
+// elapsed at time now, and returns the concatenated transmit APCs for those
+// that moved (each re-transmits to the emoji's fixed id, so the placeholder
+// cells already on screen repaint without any re-render). next is the soonest
+// any animated emoji is next due — the caller schedules the following tick from
+// it. animating is false when nothing is left to animate, so the loop can stop.
+func (e *emojiImages) advanceFrame(now time.Time) (seq string, next time.Duration, animating bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var sb strings.Builder
+	next = -1
+	for _, ent := range e.entries {
+		if ent.state != emojiReady || len(ent.frameSeqs) <= 1 {
+			continue
+		}
+		animating = true
+		if ent.frameStart.IsZero() {
+			ent.frameStart = now
+		}
+		advanced := false
+		// Catch up across as many frames as the elapsed time covers, so a late
+		// tick (a long sleep, a busy main loop) doesn't play in slow motion.
+		for now.Sub(ent.frameStart) >= ent.delays[ent.frameIdx] {
+			ent.frameStart = ent.frameStart.Add(ent.delays[ent.frameIdx])
+			ent.frameIdx = (ent.frameIdx + 1) % len(ent.frameSeqs)
+			advanced = true
+		}
+		if advanced {
+			sb.WriteString(ent.frameSeqs[ent.frameIdx])
+		}
+		rem := ent.delays[ent.frameIdx] - now.Sub(ent.frameStart)
+		if rem < 0 {
+			rem = 0
+		}
+		if next < 0 || rem < next {
+			next = rem
+		}
+	}
+	return sb.String(), next, animating
 }
 
 // markFailed records names that aren't custom emoji (or whose fetch failed):
@@ -409,12 +533,23 @@ type customEmojiListMsg struct {
 	err   error
 }
 
+// readyEmoji is a fetched, decoded, and fully-built emoji image: an allocated
+// id, its placeholder run, and one transmit APC per frame (still emoji have
+// exactly one and a nil delays slice). Built off the main goroutine in
+// loadEmojiImages so no decode/encode work lands on the render loop.
+type readyEmoji struct {
+	id          uint32
+	placeholder string
+	frameSeqs   []string
+	delays      []time.Duration
+}
+
 // emojiImagesFetchedMsg is the result of a background image batch. ready maps
-// shortcode → normalised PNG bytes (to transmit); failed names are not custom
-// emoji (or unrecoverable) and settle to literal text; retry names hit a
-// transient error and are forgotten so a later sighting tries again.
+// shortcode → its built image; failed names are not custom emoji (or
+// unrecoverable) and settle to literal text; retry names hit a transient error
+// and are forgotten so a later sighting tries again.
 type emojiImagesFetchedMsg struct {
-	ready  map[string][]byte
+	ready  map[string]readyEmoji
 	failed []string
 	retry  []string
 }
@@ -454,18 +589,19 @@ func (m Model) fetchPendingEmoji() tea.Cmd {
 	}
 }
 
-// loadEmojiImages resolves a batch of sighted shortcodes to PNG bytes. Disk
+// loadEmojiImages resolves a batch of sighted shortcodes to built images. Disk
 // cache first (a warm restart costs no HTTP); the rest are bulk-resolved to
-// server emoji records, downloaded, and normalised to PNG. Names the server
+// server emoji records and downloaded. Raw bytes are decoded into frames and
+// turned into transmit sequences here, off the render loop. Names the server
 // doesn't return are failed (not custom emoji); a transport error on the bulk
 // resolve marks the whole miss-set for retry rather than burning them.
 func (m Model) loadEmojiImages(names []string) tea.Msg {
-	ready := map[string][]byte{}
-	var failed, misses []string
+	raws := map[string][]byte{}
+	var failed, retry, misses []string
 	for _, name := range names {
 		if p, err := cachedEmojiPath(name); err == nil {
 			if data, rerr := os.ReadFile(p); rerr == nil && len(data) > 0 {
-				ready[name] = data
+				raws[name] = data
 				continue
 			}
 		}
@@ -474,62 +610,96 @@ func (m Model) loadEmojiImages(names []string) tea.Msg {
 	if len(misses) > 0 {
 		emojis, err := m.client.CustomEmojisByNames(m.ctx, misses)
 		if err != nil {
-			// Transient (or old server without the bulk endpoint): retry later.
-			return emojiImagesFetchedMsg{ready: ready, retry: misses}
-		}
-		byName := make(map[string]*model.Emoji, len(emojis))
-		for _, e := range emojis {
-			if e != nil {
-				byName[e.Name] = e
+			// Transient (or old server without the bulk endpoint): forget the
+			// misses so a later sighting retries. Cache hits still build below.
+			retry = misses
+		} else {
+			byName := make(map[string]*model.Emoji, len(emojis))
+			for _, e := range emojis {
+				if e != nil {
+					byName[e.Name] = e
+				}
 			}
-		}
-		for _, name := range misses {
-			e := byName[name]
-			if e == nil {
-				failed = append(failed, name) // server doesn't know it → literal
-				continue
-			}
-			raw, err := m.client.CustomEmojiImage(m.ctx, e.Id)
-			if err != nil {
-				failed = append(failed, name)
-				continue
-			}
-			pngBytes, err := normalizeEmojiPNG(raw)
-			if err != nil {
-				failed = append(failed, name)
-				continue
-			}
-			ready[name] = pngBytes
-			if p, perr := cachedEmojiPath(name); perr == nil {
-				_ = os.WriteFile(p, pngBytes, 0o644) // best effort
+			for _, name := range misses {
+				e := byName[name]
+				if e == nil {
+					failed = append(failed, name) // server doesn't know it → literal
+					continue
+				}
+				raw, err := m.client.CustomEmojiImage(m.ctx, e.Id)
+				if err != nil {
+					failed = append(failed, name)
+					continue
+				}
+				raws[name] = raw
+				if p, perr := cachedEmojiPath(name); perr == nil {
+					_ = os.WriteFile(p, raw, 0o644) // best effort; original bytes
+				}
 			}
 		}
 	}
-	return emojiImagesFetchedMsg{ready: ready, failed: failed, retry: nil}
+	ready := make(map[string]readyEmoji, len(raws))
+	for name, raw := range raws {
+		re, err := m.buildReadyEmoji(raw)
+		if err != nil {
+			failed = append(failed, name)
+			continue
+		}
+		ready[name] = re
+	}
+	return emojiImagesFetchedMsg{ready: ready, failed: failed, retry: retry}
 }
 
-// handleEmojiImagesFetched installs a finished image batch: each ready emoji
-// gets an id, a built transmit sequence, and a placeholder; failed ones settle
-// to literal; retried ones are forgotten. Cached post lines that reference a
-// newly-ready emoji are invalidated and re-rendered, and the concatenated
-// transmit sequences are sent raw (out of band) so the placeholders resolve.
+// buildReadyEmoji decodes raw emoji bytes into frames (all of them for an
+// animated GIF when animations are on, else just the first) and prebuilds the
+// id, placeholder, and one transmit APC per frame. Runs on the fetch goroutine,
+// so every PNG encode stays off the render loop.
+func (m Model) buildReadyEmoji(raw []byte) (readyEmoji, error) {
+	frames, delays, err := decodeImageFrames(raw, m.emojiImg.animationsEnabled())
+	if err != nil {
+		return readyEmoji{}, err
+	}
+	id := m.emojiImg.allocID()
+	seqs := make([]string, len(frames))
+	for i, f := range frames {
+		seq, err := kittyTransmitImage(id, f, emojiPlaceholderRows, emojiPlaceholderCols)
+		if err != nil {
+			return readyEmoji{}, err
+		}
+		seqs[i] = seq
+	}
+	return readyEmoji{
+		id:          id,
+		placeholder: kittyPlaceholder(id, emojiPlaceholderRows, emojiPlaceholderCols),
+		frameSeqs:   seqs,
+		delays:      delays,
+	}, nil
+}
+
+// handleEmojiImagesFetched installs a finished image batch: each ready emoji is
+// recorded with its placeholder + frames; failed ones settle to literal;
+// retried ones are forgotten. Cached post lines that reference a newly-ready
+// emoji are invalidated and re-rendered, and each emoji's first frame is sent
+// raw (out of band) so its placeholders resolve. If any installed emoji is
+// animated, the animation tick is armed (once — emojiAnimating guards it).
 func (m Model) handleEmojiImagesFetched(msg emojiImagesFetchedMsg) (Model, tea.Cmd) {
 	if m.emojiImg == nil {
 		return m, nil
 	}
 	var transmit strings.Builder
 	readyNames := make(map[string]struct{}, len(msg.ready))
-	for name, png := range msg.ready {
-		id := m.emojiImg.allocID()
-		seq, err := kittyTransmit(id, png)
-		if err != nil {
+	animated := false
+	for name, re := range msg.ready {
+		if len(re.frameSeqs) == 0 {
 			m.emojiImg.markFailed(name)
 			continue
 		}
-		ph := kittyPlaceholder(id, emojiPlaceholderRows, emojiPlaceholderCols)
-		m.emojiImg.markReady(name, id, ph, seq)
-		transmit.WriteString(seq)
+		m.emojiImg.markReady(name, re.id, re.placeholder, re.frameSeqs, re.delays)
+		transmit.WriteString(re.frameSeqs[0])
 		readyNames[name] = struct{}{}
+		if len(re.frameSeqs) > 1 {
+			animated = true
+		}
 	}
 	m.emojiImg.markFailed(msg.failed...)
 	m.emojiImg.markUnresolved(msg.retry...)
@@ -538,10 +708,18 @@ func (m Model) handleEmojiImagesFetched(msg emojiImagesFetchedMsg) (Model, tea.C
 		m.renderMessages()
 		m.renderThread()
 	}
-	if transmit.Len() == 0 {
+	var cmds []tea.Cmd
+	if transmit.Len() > 0 {
+		cmds = append(cmds, tea.Raw(transmit.String()))
+	}
+	if animated && !m.emojiAnimating {
+		m.emojiAnimating = true
+		cmds = append(cmds, emojiAnimTickCmd(0))
+	}
+	if len(cmds) == 0 {
 		return m, nil
 	}
-	return m, tea.Raw(transmit.String())
+	return m, tea.Batch(cmds...)
 }
 
 // invalidatePostsForEmoji drops the cached rendered lines of every on-screen
@@ -595,4 +773,45 @@ func (e *emojiImages) markUnresolved(names ...string) {
 	for _, n := range names {
 		delete(e.entries, n)
 	}
+}
+
+// --- GIF emoji animation tick ---------------------------------------------
+
+// emojiAnimMinInterval floors the tick cadence: it caps the wakeup rate (so a
+// fast GIF can't spin the loop at hundreds of Hz) and stands in for a 0 initial
+// delay. Per-frame GIF delays below it are honoured loosely — the catch-up loop
+// in advanceFrame skips frames rather than playing in slow motion.
+const emojiAnimMinInterval = 50 * time.Millisecond
+
+// emojiAnimTickMsg drives the single GIF-emoji animation loop. There is at most
+// one in flight (guarded by Model.emojiAnimating); it reschedules itself from
+// the soonest next-due frame until nothing is left to animate.
+type emojiAnimTickMsg struct{}
+
+// emojiAnimTickCmd schedules the next animation tick after d, floored to
+// emojiAnimMinInterval.
+func emojiAnimTickCmd(d time.Duration) tea.Cmd {
+	if d < emojiAnimMinInterval {
+		d = emojiAnimMinInterval
+	}
+	return tea.Tick(d, func(time.Time) tea.Msg { return emojiAnimTickMsg{} })
+}
+
+// advanceEmojiAnim steps every animated emoji whose frame is due, emits the
+// resulting re-transmits out of band (no re-render — the on-screen placeholders
+// keep their id and the terminal repaints them), and reschedules itself. It
+// clears emojiAnimating and stops once nothing animates.
+func (m *Model) advanceEmojiAnim() tea.Cmd {
+	if m.emojiImg == nil || !m.emojiAnimating {
+		return nil
+	}
+	seq, next, animating := m.emojiImg.advanceFrame(time.Now())
+	if !animating {
+		m.emojiAnimating = false
+		return nil
+	}
+	if seq == "" {
+		return emojiAnimTickCmd(next)
+	}
+	return tea.Batch(tea.Raw(seq), emojiAnimTickCmd(next))
 }

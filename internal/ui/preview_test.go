@@ -4,6 +4,7 @@ import (
 	"image"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/mattermost/mattermost/server/public/model"
@@ -15,7 +16,7 @@ import (
 // truecolor), so emojiImg.active() is true — the precondition for the preview
 // modal to open.
 func activeEmojiImages() *emojiImages {
-	e := newEmojiImages("auto")
+	e := newEmojiImages("auto", true)
 	e.setProbeResult(true)
 	e.setColorProfile(true)
 	return e
@@ -150,7 +151,7 @@ func TestHandlePreviewLoadedTransmits(t *testing.T) {
 	m.previewGen = 1
 
 	img := image.NewRGBA(image.Rect(0, 0, 64, 48))
-	mm, cmd := m.handlePreviewLoaded(previewImageLoadedMsg{gen: 1, img: img, caption: "pic.png"})
+	mm, cmd := m.handlePreviewLoaded(previewImageLoadedMsg{gen: 1, frames: []image.Image{img}, caption: "pic.png"})
 	got := mm.(Model)
 	if got.preview.loading {
 		t.Error("loading should clear once the decode lands")
@@ -175,10 +176,85 @@ func TestHandlePreviewLoadedStaleDropped(t *testing.T) {
 	m.previewGen = 5 // live generation
 
 	img := image.NewRGBA(image.Rect(0, 0, 10, 10))
-	mm, cmd := m.handlePreviewLoaded(previewImageLoadedMsg{gen: 2, img: img}) // stale
+	mm, cmd := m.handlePreviewLoaded(previewImageLoadedMsg{gen: 2, frames: []image.Image{img}}) // stale
 	got := mm.(Model)
 	if got.preview.img != nil || cmd != nil {
 		t.Error("a stale (gen-mismatched) load result must be ignored")
+	}
+}
+
+func twoFrames() ([]image.Image, []time.Duration) {
+	frames := []image.Image{
+		image.NewRGBA(image.Rect(0, 0, 8, 8)),
+		image.NewRGBA(image.Rect(0, 0, 8, 8)),
+		image.NewRGBA(image.Rect(0, 0, 8, 8)),
+	}
+	const d = 50 * time.Millisecond
+	return frames, []time.Duration{d, d, d}
+}
+
+// A multi-frame decode anchors the animation clock and arms the tick; a still
+// image (single frame) does not.
+func TestHandlePreviewLoadedAnimatedArmsTick(t *testing.T) {
+	m := Model{width: 100, height: 40, emojiImg: activeEmojiImages(), animatePreview: true}
+	m.preview = previewState{active: true, files: imageAttachments(imagePost("image/gif")), loading: true}
+	m.previewGen = 1
+
+	frames, delays := twoFrames()
+	mm, cmd := m.handlePreviewLoaded(previewImageLoadedMsg{gen: 1, frames: frames, delays: delays, caption: "a.gif"})
+	got := mm.(Model)
+	if len(got.preview.frames) != 3 {
+		t.Fatalf("frames stored = %d, want 3", len(got.preview.frames))
+	}
+	if got.preview.frameStart.IsZero() {
+		t.Error("animated preview should anchor frameStart")
+	}
+	if cmd == nil {
+		t.Fatal("expected a transmit + tick command")
+	}
+
+	// Still image: one frame, no tick armed (frameStart stays zero).
+	still := Model{width: 100, height: 40, emojiImg: activeEmojiImages(), animatePreview: true}
+	still.preview = previewState{active: true, files: imageAttachments(imagePost("image/png")), loading: true}
+	still.previewGen = 1
+	smm, _ := still.handlePreviewLoaded(previewImageLoadedMsg{gen: 1, frames: []image.Image{frames[0]}})
+	if !smm.(Model).preview.frameStart.IsZero() {
+		t.Error("a still preview should not anchor an animation clock")
+	}
+}
+
+// handlePreviewTick advances the frame (catching up overdue frames) and
+// reschedules; a tick from a cycled/closed preview or a still image is dropped.
+func TestHandlePreviewTick(t *testing.T) {
+	frames, delays := twoFrames()
+	m := Model{width: 100, height: 40, emojiImg: activeEmojiImages(), animatePreview: true}
+	m.preview = previewState{
+		active: true, id: 9, rows: 4, cols: 8,
+		frames: frames, delays: delays,
+		frameStart: time.Now().Add(-2 * delays[0]), // ~2 frames overdue
+	}
+	m.previewGen = 1
+
+	mm, cmd := m.handlePreviewTick(previewTickMsg{gen: 1})
+	got := mm.(Model)
+	if got.preview.frameIdx == 0 {
+		t.Errorf("frameIdx did not advance past 0 on an overdue tick")
+	}
+	if cmd == nil {
+		t.Fatal("expected a transmit + reschedule command")
+	}
+
+	// A stale-generation tick is a no-op.
+	if _, c := got.handlePreviewTick(previewTickMsg{gen: 999}); c != nil {
+		t.Error("stale (gen-mismatched) preview tick should be dropped")
+	}
+
+	// A still image (one frame) never ticks.
+	still := Model{emojiImg: activeEmojiImages()}
+	still.preview = previewState{active: true, id: 1, frames: frames[:1], frameStart: time.Now()}
+	still.previewGen = 1
+	if _, c := still.handlePreviewTick(previewTickMsg{gen: 1}); c != nil {
+		t.Error("a still-image preview should not schedule animation ticks")
 	}
 }
 
