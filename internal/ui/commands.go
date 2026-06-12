@@ -70,8 +70,8 @@ func builtinCommands() []switcherCommand {
 			run:  runClearCustomStatus,
 		},
 		{
-			name:           "Index this channel until X days ago",
-			desc:           "fetch & cache history back N days into the local DB",
+			name:           "Index channel",
+			desc:           "cache N days of history to the local DB",
 			argPrompt:      "days: ",
 			argPlaceholder: "30",
 			run:            runIndexChannel,
