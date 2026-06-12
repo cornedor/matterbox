@@ -212,10 +212,16 @@ type Model struct {
 	// channel_stats.json alongside lastActive; synthetic tabs are excluded.
 	lastChannelByTeam map[string]string
 
-	focus    focus
-	width    int
-	height   int
-	msgsView viewport.Model
+	focus  focus
+	width  int
+	height int
+	// cellPxW/cellPxH are the terminal's character-cell size in pixels, learned
+	// from a startup XTWINOPS query (see requestCellSize / the uv.CellSizeEvent
+	// handler). Zero until the terminal answers (or if it never does). The
+	// image-preview modal uses them to size a placement to the image's native
+	// pixels and avoid upscaling a small image to fill the box (see sizePreview).
+	cellPxW, cellPxH int
+	msgsView         viewport.Model
 
 	input textarea.Model
 	// lastInputHeight is the input height the messages pane was last
@@ -697,6 +703,10 @@ const emojiProbeTimeout = time.Second
 // disabled) when images are configured off, or under tmux where the probe
 // reply is unreliable and passthrough is fragile. The truecolor half of the
 // gate is learned separately from tea.ColorProfileMsg.
+//
+// It also asks for the terminal's cell size in pixels (see requestCellSize) —
+// the same gate (Kitty-capable, non-tmux) is exactly when the image-preview
+// modal can open and wants it. The reply lands as a uv.CellSizeEvent.
 func (m Model) emojiProbeCmd() tea.Cmd {
 	if m.emojiImg == nil || m.emojiImg.mode != "auto" {
 		return nil

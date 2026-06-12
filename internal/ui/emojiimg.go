@@ -61,6 +61,17 @@ func kittyProbe() string {
 		"s=1", "v=1", "a=q", "t=d", "f=32")
 }
 
+// requestCellSize builds the XTWINOPS query (CSI 16 t) asking the terminal to
+// report its character-cell size in pixels. A Kitty/Ghostty-class terminal
+// replies `CSI 6 ; height ; width t`, which ultraviolet decodes into a
+// uv.CellSizeEvent (handled in Update). The image-preview modal uses it to size
+// a placement to the image's native pixels rather than upscaling a small image
+// to fill the box. Terminals that don't support the query simply stay silent,
+// and the modal keeps its box-filling fallback.
+func requestCellSize() string {
+	return ansi.WindowOp(16)
+}
+
 // kittyPlaceholder builds the Unicode-placeholder text that displays a
 // previously-transmitted image (see kittyTransmit) anchored to text cells. The
 // 24-bit image id rides in the truecolor foreground (\x1b[38;2;R;G;Bm); each

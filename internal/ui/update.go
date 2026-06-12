@@ -77,6 +77,16 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case uv.CellSizeEvent:
+		// Reply to the startup cell-size query (see requestCellSize): the
+		// terminal's pixel-per-cell, used by the image-preview modal to avoid
+		// upscaling a small image. Re-fit any open preview to the new figure (a
+		// no-op unless one is up — e.g. after a mid-session font-size change).
+		if msg.Width > 0 && msg.Height > 0 {
+			m.cellPxW, m.cellPxH = msg.Width, msg.Height
+		}
+		return m, m.resizePreview()
+
 	case customEmojiListMsg:
 		if msg.err == nil {
 			m.customEmojiNames = msg.names

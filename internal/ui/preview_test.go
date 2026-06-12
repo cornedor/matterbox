@@ -76,27 +76,47 @@ func TestFitImageCells(t *testing.T) {
 	tests := []struct {
 		name               string
 		w, h, maxC, maxR   int
+		cellPxW, cellPxH   int
 		wantCols, wantRows int
 	}{
+		// --- Cell size unknown (0,0): box-filling fallback, ~1:2 cell aspect. ---
 		// Square image: cols/rows = 2·w/h = 2, so the box is twice as wide as
 		// tall in cells (≈ square on screen at a 1:2 cell aspect).
-		{"square, col-bound", 100, 100, 40, 40, 40, 20},
+		{"square, col-bound", 100, 100, 40, 40, 0, 0, 40, 20},
 		// Wide image is column-bound.
-		{"wide", 200, 100, 40, 40, 40, 10},
+		{"wide", 200, 100, 40, 40, 0, 0, 40, 10},
 		// Tall image is row-bound: ratio 1, cols would be 40 but rows cap at 10.
-		{"tall, row-bound", 100, 200, 40, 10, 10, 10},
+		{"tall, row-bound", 100, 200, 40, 10, 0, 0, 10, 10},
 		// Degenerate dims fall back to the full box.
-		{"zero dims", 0, 0, 30, 12, 30, 12},
+		{"zero dims", 0, 0, 30, 12, 0, 0, 30, 12},
+
+		// --- Cell size known: never upscale past native, fill when larger. ---
+		// Image smaller than the box stays native: 40×20px at a 10×20px cell is
+		// 4×1 cells, not blown up to fill the 40×40 box.
+		{"small, no upscale", 40, 20, 40, 40, 10, 20, 4, 1},
+		// A large image is scaled down to fit, preserving aspect: 800×400px at a
+		// 10×20px cell wants 80×20 cells but is capped to fill the 40-col box.
+		{"large, scaled down", 800, 400, 40, 40, 10, 20, 40, 10},
+		// Exactly box-sized: native fit, no scaling either way.
+		{"exact fit", 400, 800, 40, 40, 10, 20, 40, 40},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cols, rows := fitImageCells(tt.w, tt.h, tt.maxC, tt.maxR)
+			cols, rows := fitImageCells(tt.w, tt.h, tt.maxC, tt.maxR, tt.cellPxW, tt.cellPxH)
 			if cols != tt.wantCols || rows != tt.wantRows {
-				t.Errorf("fitImageCells(%d,%d,%d,%d) = (%d,%d), want (%d,%d)",
-					tt.w, tt.h, tt.maxC, tt.maxR, cols, rows, tt.wantCols, tt.wantRows)
+				t.Errorf("fitImageCells(%d,%d,%d,%d,%d,%d) = (%d,%d), want (%d,%d)",
+					tt.w, tt.h, tt.maxC, tt.maxR, tt.cellPxW, tt.cellPxH, cols, rows, tt.wantCols, tt.wantRows)
 			}
 			if cols > tt.maxC || rows > tt.maxR {
 				t.Errorf("result (%d,%d) exceeds box (%d,%d)", cols, rows, tt.maxC, tt.maxR)
+			}
+			// With a known cell size the placement must never exceed the image's
+			// native pixels (the whole point: no upscaling).
+			if tt.cellPxW > 0 && tt.cellPxH > 0 {
+				if cols*tt.cellPxW > tt.w || rows*tt.cellPxH > tt.h {
+					t.Errorf("placement %dx%d cells = %dx%d px upsizes past native %dx%d",
+						cols, rows, cols*tt.cellPxW, rows*tt.cellPxH, tt.w, tt.h)
+				}
 			}
 		})
 	}

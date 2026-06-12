@@ -460,25 +460,43 @@ func (m *Model) sizePreview() {
 	}
 	b := m.preview.img.Bounds()
 	maxC, maxR := m.previewMaxBox()
-	m.preview.cols, m.preview.rows = fitImageCells(b.Dx(), b.Dy(), maxC, maxR)
+	m.preview.cols, m.preview.rows = fitImageCells(b.Dx(), b.Dy(), maxC, maxR, m.cellPxW, m.cellPxH)
 }
 
-// fitImageCells picks the rows×cols cell box that best fits a wPx×hPx image
-// within (maxCols, maxRows) while preserving aspect, assuming a ~1:2 cell aspect
-// (terminal cells are about twice as tall as wide). The Kitty protocol scales
-// the image to fill the chosen box, so matching the box aspect to the image is
-// what keeps it undistorted.
-func fitImageCells(wPx, hPx, maxCols, maxRows int) (cols, rows int) {
+// fitImageCells picks the rows×cols cell box for a wPx×hPx image within
+// (maxCols, maxRows), preserving aspect. The Kitty protocol scales the image to
+// fill the chosen box, so the box aspect is what keeps it undistorted.
+//
+// When the terminal reported its cell size (cellPxW, cellPxH both > 0) we work
+// in real pixels and cap the scale at 1, so an image smaller than the box keeps
+// its native size instead of being blown up to fill it. Without that figure we
+// fall back to filling the box at an assumed ~1:2 cell aspect (cells are about
+// twice as tall as wide) — which can upscale, but it's the best we can do blind.
+func fitImageCells(wPx, hPx, maxCols, maxRows, cellPxW, cellPxH int) (cols, rows int) {
 	if wPx <= 0 || hPx <= 0 {
 		return maxCols, maxRows
 	}
-	// (cols·cellW)/(rows·cellH) = wPx/hPx, with cellH ≈ 2·cellW ⇒ cols/rows = 2·wPx/hPx.
-	ratio := 2.0 * float64(wPx) / float64(hPx)
-	cols = maxCols
-	rows = int(math.Round(float64(cols) / ratio))
-	if rows > maxRows {
-		rows = maxRows
-		cols = int(math.Round(float64(rows) * ratio))
+	if cellPxW > 0 && cellPxH > 0 {
+		// Scale to fit the box, but never above 1:1 — that cap is what stops a
+		// small image from being upsized when the modal is larger than it.
+		scale := math.Min(
+			float64(maxCols*cellPxW)/float64(wPx),
+			float64(maxRows*cellPxH)/float64(hPx),
+		)
+		if scale > 1 {
+			scale = 1
+		}
+		cols = int(math.Round(float64(wPx) * scale / float64(cellPxW)))
+		rows = int(math.Round(float64(hPx) * scale / float64(cellPxH)))
+	} else {
+		// (cols·cellW)/(rows·cellH) = wPx/hPx, with cellH ≈ 2·cellW ⇒ cols/rows = 2·wPx/hPx.
+		ratio := 2.0 * float64(wPx) / float64(hPx)
+		cols = maxCols
+		rows = int(math.Round(float64(cols) / ratio))
+		if rows > maxRows {
+			rows = maxRows
+			cols = int(math.Round(float64(rows) * ratio))
+		}
 	}
 	if cols < 1 {
 		cols = 1
