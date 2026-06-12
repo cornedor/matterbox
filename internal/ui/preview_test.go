@@ -1,0 +1,265 @@
+package ui
+
+import (
+	"image"
+	"strings"
+	"testing"
+
+	tea "charm.land/bubbletea/v2"
+	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/config"
+)
+
+// activeEmojiImages returns an emojiImages manager gated fully on (probe OK +
+// truecolor), so emojiImg.active() is true — the precondition for the preview
+// modal to open.
+func activeEmojiImages() *emojiImages {
+	e := newEmojiImages("auto")
+	e.setProbeResult(true)
+	e.setColorProfile(true)
+	return e
+}
+
+func imagePost(mimes ...string) *model.Post {
+	files := make([]*model.FileInfo, 0, len(mimes))
+	for i, mime := range mimes {
+		files = append(files, &model.FileInfo{
+			Id:       "f" + string(rune('0'+i)),
+			Name:     "pic.png",
+			Size:     1234,
+			MimeType: mime,
+		})
+	}
+	return &model.Post{Id: "p1", Metadata: &model.PostMetadata{Files: files}}
+}
+
+func TestPreviewableMIME(t *testing.T) {
+	for _, mime := range []string{"image/png", "image/jpeg", "image/jpg", "image/gif"} {
+		if !previewableMIME(mime) {
+			t.Errorf("previewableMIME(%q) = false, want true", mime)
+		}
+	}
+	for _, mime := range []string{"image/webp", "image/svg+xml", "application/pdf", "text/plain", ""} {
+		if previewableMIME(mime) {
+			t.Errorf("previewableMIME(%q) = true, want false", mime)
+		}
+	}
+}
+
+func TestImageAttachmentsFilters(t *testing.T) {
+	p := imagePost("image/png", "application/pdf", "image/gif")
+	got := imageAttachments(p)
+	if len(got) != 2 {
+		t.Fatalf("imageAttachments returned %d files, want 2 (png+gif)", len(got))
+	}
+	if imageAttachments(nil) != nil {
+		t.Error("imageAttachments(nil) should be nil")
+	}
+	if imageAttachments(&model.Post{}) != nil {
+		t.Error("imageAttachments on a post with no metadata should be nil")
+	}
+}
+
+func TestFitImageCells(t *testing.T) {
+	tests := []struct {
+		name               string
+		w, h, maxC, maxR   int
+		wantCols, wantRows int
+	}{
+		// Square image: cols/rows = 2·w/h = 2, so the box is twice as wide as
+		// tall in cells (≈ square on screen at a 1:2 cell aspect).
+		{"square, col-bound", 100, 100, 40, 40, 40, 20},
+		// Wide image is column-bound.
+		{"wide", 200, 100, 40, 40, 40, 10},
+		// Tall image is row-bound: ratio 1, cols would be 40 but rows cap at 10.
+		{"tall, row-bound", 100, 200, 40, 10, 10, 10},
+		// Degenerate dims fall back to the full box.
+		{"zero dims", 0, 0, 30, 12, 30, 12},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cols, rows := fitImageCells(tt.w, tt.h, tt.maxC, tt.maxR)
+			if cols != tt.wantCols || rows != tt.wantRows {
+				t.Errorf("fitImageCells(%d,%d,%d,%d) = (%d,%d), want (%d,%d)",
+					tt.w, tt.h, tt.maxC, tt.maxR, cols, rows, tt.wantCols, tt.wantRows)
+			}
+			if cols > tt.maxC || rows > tt.maxR {
+				t.Errorf("result (%d,%d) exceeds box (%d,%d)", cols, rows, tt.maxC, tt.maxR)
+			}
+		})
+	}
+}
+
+func TestOpenImagePreviewNoImage(t *testing.T) {
+	m := Model{emojiImg: activeEmojiImages()}
+	mm, cmd := m.openImagePreview(&model.Post{Id: "x"})
+	got := mm.(Model)
+	if got.preview.active {
+		t.Error("preview should not open for a post with no image")
+	}
+	if cmd != nil {
+		t.Error("no load command expected when there's nothing to preview")
+	}
+	if !strings.Contains(got.status, "no image") {
+		t.Errorf("status = %q, want a 'no image' hint", got.status)
+	}
+}
+
+func TestOpenImagePreviewNoGraphics(t *testing.T) {
+	// emojiImg nil → Kitty graphics unavailable → modal declines with a hint.
+	m := Model{}
+	mm, cmd := m.openImagePreview(imagePost("image/png"))
+	got := mm.(Model)
+	if got.preview.active {
+		t.Error("preview should not open without terminal graphics support")
+	}
+	if cmd != nil {
+		t.Error("no load command expected without graphics support")
+	}
+	if !strings.Contains(got.status, "Kitty") {
+		t.Errorf("status = %q, want a Kitty-capable hint", got.status)
+	}
+}
+
+func TestOpenImagePreviewStartsLoad(t *testing.T) {
+	m := Model{emojiImg: activeEmojiImages()}
+	mm, cmd := m.openImagePreview(imagePost("image/png", "image/gif"))
+	got := mm.(Model)
+	if !got.preview.active || !got.preview.loading {
+		t.Fatalf("expected an active, loading preview; got active=%v loading=%v",
+			got.preview.active, got.preview.loading)
+	}
+	if len(got.preview.files) != 2 {
+		t.Errorf("preview.files = %d, want 2", len(got.preview.files))
+	}
+	if got.previewGen == 0 {
+		t.Error("previewGen should be bumped on open")
+	}
+	if cmd == nil {
+		t.Error("expected a background load command")
+	}
+}
+
+func TestHandlePreviewLoadedTransmits(t *testing.T) {
+	m := Model{
+		width: 100, height: 40,
+		emojiImg: activeEmojiImages(),
+	}
+	m.preview = previewState{active: true, files: imageAttachments(imagePost("image/png")), loading: true}
+	m.previewGen = 1
+
+	img := image.NewRGBA(image.Rect(0, 0, 64, 48))
+	mm, cmd := m.handlePreviewLoaded(previewImageLoadedMsg{gen: 1, img: img, caption: "pic.png"})
+	got := mm.(Model)
+	if got.preview.loading {
+		t.Error("loading should clear once the decode lands")
+	}
+	if got.preview.img == nil {
+		t.Error("decoded image should be stored")
+	}
+	if got.preview.id == 0 {
+		t.Error("an image id should be allocated")
+	}
+	if got.preview.rows <= 0 || got.preview.cols <= 0 {
+		t.Errorf("placement not sized: rows=%d cols=%d", got.preview.rows, got.preview.cols)
+	}
+	if cmd == nil {
+		t.Error("expected a tea.Raw transmit command")
+	}
+}
+
+func TestHandlePreviewLoadedStaleDropped(t *testing.T) {
+	m := Model{width: 100, height: 40, emojiImg: activeEmojiImages()}
+	m.preview = previewState{active: true, loading: true}
+	m.previewGen = 5 // live generation
+
+	img := image.NewRGBA(image.Rect(0, 0, 10, 10))
+	mm, cmd := m.handlePreviewLoaded(previewImageLoadedMsg{gen: 2, img: img}) // stale
+	got := mm.(Model)
+	if got.preview.img != nil || cmd != nil {
+		t.Error("a stale (gen-mismatched) load result must be ignored")
+	}
+}
+
+func TestHandlePreviewKeyClose(t *testing.T) {
+	for _, key := range []string{"space", "esc", "q"} {
+		m := Model{keys: newKeyMap("ctrl"), emojiImg: activeEmojiImages()}
+		m.preview = previewState{active: true, files: imageAttachments(imagePost("image/png")), id: 7}
+		m.previewGen = 1
+		mm, _ := m.handlePreviewKey(prevKey(key))
+		if mm.(Model).preview.active {
+			t.Errorf("%q should close the preview modal", key)
+		}
+	}
+}
+
+func TestHandlePreviewKeyCycle(t *testing.T) {
+	m := Model{keys: newKeyMap("ctrl"), emojiImg: activeEmojiImages()}
+	m.preview = previewState{active: true, files: imageAttachments(imagePost("image/png", "image/gif")), idx: 0}
+	m.previewGen = 1
+
+	mm, cmd := m.handlePreviewKey(prevKey("right"))
+	got := mm.(Model)
+	if got.preview.idx != 1 {
+		t.Errorf("right should advance idx to 1, got %d", got.preview.idx)
+	}
+	if !got.preview.loading || cmd == nil {
+		t.Error("cycling should reload the new image")
+	}
+	// Wrap-around: left from idx 1 → 0, and again → last.
+	mm2, _ := got.handlePreviewKey(prevKey("left"))
+	if mm2.(Model).preview.idx != 0 {
+		t.Errorf("left should move idx to 0, got %d", mm2.(Model).preview.idx)
+	}
+}
+
+func TestCyclePreviewSingleImageNoop(t *testing.T) {
+	m := Model{emojiImg: activeEmojiImages()}
+	m.preview = previewState{active: true, files: imageAttachments(imagePost("image/png")), idx: 0}
+	mm, cmd := m.cyclePreview(1)
+	if mm.(Model).preview.idx != 0 || cmd != nil {
+		t.Error("cycling a single-image preview should be a no-op")
+	}
+}
+
+// TestPreviewKeyConfigurable proves the preview trigger goes through the action
+// registry: a `preview_image` override rebinds it everywhere — the keymap field
+// and the modal's own toggle-close both honor the new key.
+func TestPreviewKeyConfigurable(t *testing.T) {
+	km, err := applyKeyOverrides(newKeyMap("ctrl"), map[string]config.StringOrList{
+		"preview_image": {"p"},
+	})
+	if err != nil {
+		t.Fatalf("applyKeyOverrides: %v", err)
+	}
+	if got := km.Preview.Keys(); len(got) != 1 || got[0] != "p" {
+		t.Fatalf("preview_image override not applied: Preview.Keys() = %v", got)
+	}
+	m := Model{keys: km, emojiImg: activeEmojiImages()}
+	m.preview = previewState{active: true, files: imageAttachments(imagePost("image/png")), id: 3}
+	m.previewGen = 1
+	if mm, _ := m.handlePreviewKey(prevKey("p")); mm.(Model).preview.active {
+		t.Error("the rebound preview key should close the modal")
+	}
+}
+
+// prevKey builds a KeyPressMsg whose String() matches the given key string for
+// the named keys used by the preview modal (space/esc/q/left/right). Special
+// keys set only their Code constant (String() derives the name); single runes
+// set Text so String() round-trips — mirroring keyStr in phase1_test.go.
+func prevKey(s string) tea.KeyPressMsg {
+	switch s {
+	case "space":
+		return tea.KeyPressMsg(tea.Key{Code: tea.KeySpace})
+	case "esc":
+		return tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape})
+	case "left":
+		return tea.KeyPressMsg(tea.Key{Code: tea.KeyLeft})
+	case "right":
+		return tea.KeyPressMsg(tea.Key{Code: tea.KeyRight})
+	default: // single rune like "q"
+		r := []rune(s)
+		return tea.KeyPressMsg(tea.Key{Code: r[0], Text: s})
+	}
+}

@@ -361,6 +361,14 @@ type Model struct {
 	openPickerItems []openable
 	openPickerIdx   int
 
+	// Image-preview modal (space on a message with an image attachment). While
+	// preview.active the modal owns every keystroke (space/esc/q close, ←/→
+	// cycle images) and renders the image inline via Kitty graphics. previewGen
+	// is a monotonic token that lets a stale async decode / resize be dropped
+	// after the user cycled or closed. See preview.go.
+	preview    previewState
+	previewGen int
+
 	keys keyMap
 	// vimNav controls when the ctrl+vim sidebar-nav keys fire (see keys.go).
 	// Zero value (vimNavGlobal) is today's behaviour, so test Models that

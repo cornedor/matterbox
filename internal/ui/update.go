@@ -46,7 +46,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// with the old width and will miss on lookup. Drop the map so
 		// stale entries don't waste memory until cap eviction kicks in.
 		m.postLineCache = nil
-		return m, nil
+		// A resize while the image preview is open re-fits + re-transmits it.
+		return m, m.resizePreview()
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
@@ -84,6 +85,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case emojiImagesFetchedMsg:
 		return m.handleEmojiImagesFetched(msg)
+
+	case previewImageLoadedMsg:
+		return m.handlePreviewLoaded(msg)
 
 	case meLoadedMsg:
 		m.me = msg.user
@@ -1177,6 +1181,11 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.keysSheetMode {
 		return m.handleKeysSheetKey(msg)
 	}
+	// Image-preview modal is fully modal: space/esc/q close it, ←/→ cycle the
+	// post's images, everything else is swallowed.
+	if m.preview.active {
+		return m.handlePreviewKey(msg)
+	}
 	// Summary modal (duration picker / running / result) owns every
 	// keystroke while open. Opened from the switcher's "> Summarize"
 	// command, which closes the switcher first, so there's no overlap.
@@ -1408,6 +1417,12 @@ func (m Model) handleThreadKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.openFromPost(m.threadPosts[m.threadIdx])
+	case key.Matches(msg, m.keys.Preview):
+		if m.threadIdx < 0 || m.threadIdx >= len(m.threadPosts) {
+			m.status = "no message selected"
+			return m, nil
+		}
+		return m.openImagePreview(m.threadPosts[m.threadIdx])
 	case key.Matches(msg, m.keys.CopyMD):
 		if m.threadIdx < 0 || m.threadIdx >= len(m.threadPosts) {
 			m.status = "no message selected"
@@ -2171,6 +2186,12 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.openFromPost(m.posts[m.postIdx])
+	case key.Matches(msg, m.keys.Preview):
+		if m.postIdx < 0 || m.postIdx >= len(m.posts) {
+			m.status = "no message selected"
+			return m, nil
+		}
+		return m.openImagePreview(m.posts[m.postIdx])
 	case key.Matches(msg, m.keys.CopyMD):
 		if m.postIdx < 0 || m.postIdx >= len(m.posts) {
 			m.status = "no message selected"

@@ -30,6 +30,10 @@ var keysSheetSections = []struct {
 	{title: "Sidebar navigation", rows: (*Model).navSheetRows},
 	{title: "Messages", contexts: []string{"focus:messages"}},
 	{title: "Thread", contexts: []string{"focus:thread"}},
+	// The preview modal's own keys are hardwired in handlePreviewKey (not bound
+	// through the registry), so list them from a synthetic source like the
+	// leader chord below.
+	{title: "Image preview", rows: (*Model).previewSheetRows},
 	{title: "Compose", contexts: []string{"focus:input"}},
 	{title: "Attachments", contexts: []string{"focus:attachments"}},
 	{title: "Teams", contexts: []string{"focus:teams"}},
@@ -55,6 +59,22 @@ func (m *Model) navSheetRows() []keysSheetRow {
 			continue
 		}
 		rows = append(rows, keysSheetRow{keys: prettyKeysAll(keys), desc: r.desc})
+	}
+	return rows
+}
+
+// previewSheetRows lists the image-preview modal's keys, built from the live
+// bindings so a rebind of the preview / left / right actions is reflected here.
+// esc/q are the conventional modal dismiss (hardwired), shown alongside the
+// configurable toggle key.
+func (m *Model) previewSheetRows() []keysSheetRow {
+	var rows []keysSheetRow
+	closeKeys := append(append([]string(nil), m.keys.Preview.Keys()...), "esc", "q")
+	rows = append(rows, keysSheetRow{keys: prettyKeysAll(closeKeys), desc: "open / close preview"})
+
+	cycleKeys := append(append([]string(nil), m.keys.Left.Keys()...), m.keys.Right.Keys()...)
+	if len(cycleKeys) > 0 {
+		rows = append(rows, keysSheetRow{keys: prettyKeysAll(cycleKeys), desc: "previous / next image"})
 	}
 	return rows
 }

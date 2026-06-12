@@ -61,6 +61,7 @@ type keyMap struct {
 	OpenThread    key.Binding
 	ReplyInThread key.Binding
 	OpenAttach    key.Binding
+	Preview       key.Binding
 	CopyMD        key.Binding
 	ShowHistory   key.Binding
 	EditPost      key.Binding
@@ -171,6 +172,7 @@ var actionDefs = []actionDef{
 	{id: "open_thread", field: func(k *keyMap) *key.Binding { return &k.OpenThread }, keys: []string{"enter"}, desc: "open thread", primary: true},
 	{id: "reply_in_thread", field: func(k *keyMap) *key.Binding { return &k.ReplyInThread }, keys: []string{"r"}, desc: "reply in thread"},
 	{id: "open_attachment", field: func(k *keyMap) *key.Binding { return &k.OpenAttach }, keys: []string{"o"}, desc: "open attachment/link"},
+	{id: "preview_image", field: func(k *keyMap) *key.Binding { return &k.Preview }, keys: []string{"space"}, desc: "preview image"},
 	{id: "copy_markdown", field: func(k *keyMap) *key.Binding { return &k.CopyMD }, keys: []string{"y"}, desc: "copy markdown"},
 	{id: "edit_history", field: func(k *keyMap) *key.Binding { return &k.ShowHistory }, keys: []string{"alt+e"}, desc: "edit history"},
 	{id: "edit_post", field: func(k *keyMap) *key.Binding { return &k.EditPost }, keys: []string{"e"}, desc: "edit message"},

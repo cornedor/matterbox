@@ -813,6 +813,9 @@ func (m *Model) viewContent() string {
 	if m.summary.active() {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderSummaryPopup())
 	}
+	if m.preview.active {
+		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderPreviewPopup())
+	}
 
 	tabs := m.renderTeamTabs()
 

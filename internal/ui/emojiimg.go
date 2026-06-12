@@ -62,22 +62,30 @@ func kittyProbe() string {
 // 24-bit image id rides in the truecolor foreground (\x1b[38;2;R;G;Bm); each
 // cell is the placeholder rune U+10EEEE followed by its row and column
 // diacritics. The SGR is hand-built rather than routed through lipgloss so the
-// colour-profile machinery can never quantise the id away. A reset (\x1b[39m)
-// closes the run so following text keeps its own colour.
+// colour-profile machinery can never quantise the id away.
+//
+// The id foreground is (re)opened and closed (\x1b[39m) on *every* row rather
+// than spanning the whole block, so a multi-row placement survives being routed
+// through lipgloss layout (JoinVertical / a bordered box, as the image-preview
+// modal does): lipgloss resets SGR at line boundaries, which would otherwise
+// strip the id from every row after the first and collapse the image to a
+// single rendered row. For the 1-row emoji case this is byte-identical to a
+// single leading SGR.
 func kittyPlaceholder(id uint32, rows, cols int) string {
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "\x1b[38;2;%d;%d;%dm", byte(id>>16), byte(id>>8), byte(id))
+	fg := fmt.Sprintf("\x1b[38;2;%d;%d;%dm", byte(id>>16), byte(id>>8), byte(id))
 	for row := 0; row < rows; row++ {
 		if row > 0 {
 			sb.WriteByte('\n')
 		}
+		sb.WriteString(fg)
 		for col := 0; col < cols; col++ {
 			sb.WriteRune(kitty.Placeholder)
 			sb.WriteRune(kitty.Diacritic(row))
 			sb.WriteRune(kitty.Diacritic(col))
 		}
+		sb.WriteString("\x1b[39m")
 	}
-	sb.WriteString("\x1b[39m")
 	return sb.String()
 }
 
@@ -90,22 +98,31 @@ func emojiIsPlaceholder(s string) bool {
 
 // kittyTransmit builds the out-of-band APC sequence that uploads a PNG to the
 // terminal and registers a virtual placement under id, so the matching
-// kittyPlaceholder cells display it. Action TransmitAndPut with U=1 does
-// transmit + virtual placement in one go; r/c size the placement to the
-// placeholder cells; q=2 suppresses the OK/error replies the terminal would
-// otherwise emit for every emoji. Chunked at 4KB.
+// kittyPlaceholder cells display it. Decodes the PNG and defers to
+// kittyTransmitImage with the emoji's fixed 1×2 placement.
 func kittyTransmit(id uint32, png []byte) (string, error) {
 	img, _, err := image.Decode(bytes.NewReader(png))
 	if err != nil {
 		return "", fmt.Errorf("decode emoji png: %w", err)
 	}
+	return kittyTransmitImage(id, img, emojiPlaceholderRows, emojiPlaceholderCols)
+}
+
+// kittyTransmitImage builds the out-of-band APC that uploads img to the terminal
+// under id and registers a virtual placement sized to rows×cols text cells, so a
+// matching kittyPlaceholder(id, rows, cols) displays it. Action TransmitAndPut
+// with U=1 does transmit + virtual placement in one go; r/c size the placement;
+// q=2 suppresses the OK/error replies the terminal would otherwise emit. Chunked
+// at 4KB. Shared by the emoji path (1×2) and the image-preview modal (large
+// boxes); see preview.go.
+func kittyTransmitImage(id uint32, img image.Image, rows, cols int) (string, error) {
 	var sb strings.Builder
 	opts := &kitty.Options{
 		Action:           kitty.TransmitAndPut,
 		VirtualPlacement: true,
 		ID:               int(id),
-		Rows:             emojiPlaceholderRows,
-		Columns:          emojiPlaceholderCols,
+		Rows:             rows,
+		Columns:          cols,
 		Format:           kitty.PNG,
 		Transmission:     kitty.Direct,
 		Quite:            2,
@@ -115,6 +132,14 @@ func kittyTransmit(id uint32, png []byte) (string, error) {
 		return "", fmt.Errorf("encode kitty graphics: %w", err)
 	}
 	return sb.String(), nil
+}
+
+// kittyDelete builds the APC that frees image id from terminal memory — both the
+// image data and any placements (d=I, the capital variant). Used when the
+// preview modal closes or cycles so a session that previews many images doesn't
+// accumulate them in the terminal. q=2 suppresses the reply.
+func kittyDelete(id uint32) string {
+	return ansi.KittyGraphics(nil, "a=d", "d=I", fmt.Sprintf("i=%d", id), "q=2")
 }
 
 // normalizeEmojiPNG converts raw custom-emoji image bytes to PNG, the form we

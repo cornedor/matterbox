@@ -56,7 +56,7 @@ func (m *Model) contentFocus() bool {
 func (m *Model) inModal() bool {
 	return m.deleteConfirmPostID != "" || m.reactionPickerPostID != "" ||
 		m.openPickerActive() || m.pollDialog.open || m.historyMode ||
-		m.summary.active() || m.switcherMode || m.keysSheetMode
+		m.summary.active() || m.switcherMode || m.keysSheetMode || m.preview.active
 }
 
 // popupOpenInComposer mirrors handleKey's popupOpen guard: the @-mention /
@@ -114,6 +114,17 @@ var keyContexts = []keyContext{
 		active:   func(m *Model) bool { return m.keysSheetMode },
 		terminal: true,
 		claims:   func(m *Model) []key.Binding { return nil },
+	},
+	{
+		// Image-preview modal (space on a message image). The preview key
+		// toggles it shut and the list-left/right keys cycle images (esc/q are
+		// the hardwired dismiss, handled before claims in handlePreviewKey).
+		name:     "modal:image-preview",
+		active:   func(m *Model) bool { return m.preview.active },
+		terminal: true,
+		claims: func(m *Model) []key.Binding {
+			return []key.Binding{m.keys.Preview, m.keys.Left, m.keys.Right}
+		},
 	},
 	{
 		name:     "modal:switcher",
@@ -224,7 +235,7 @@ var keyContexts = []keyContext{
 			return []key.Binding{
 				m.keys.Up, m.keys.Down, m.keys.Home, m.keys.End, m.keys.PageUp, m.keys.PageDown,
 				m.keys.NextHit, m.keys.PrevHit, m.keys.OpenThread, m.keys.ReplyInThread,
-				m.keys.EditPost, m.keys.DeletePost, m.keys.OpenAttach, m.keys.CopyMD,
+				m.keys.EditPost, m.keys.DeletePost, m.keys.OpenAttach, m.keys.Preview, m.keys.CopyMD,
 				m.keys.ShowHistory, m.keys.React,
 			}
 		},
@@ -235,7 +246,7 @@ var keyContexts = []keyContext{
 		terminal: true,
 		claims: func(m *Model) []key.Binding {
 			return []key.Binding{
-				m.keys.Up, m.keys.Down, m.keys.Home, m.keys.End, m.keys.OpenAttach,
+				m.keys.Up, m.keys.Down, m.keys.Home, m.keys.End, m.keys.OpenAttach, m.keys.Preview,
 				m.keys.CopyMD, m.keys.ShowHistory, m.keys.EditPost, m.keys.DeletePost, m.keys.React,
 			}
 		},
@@ -297,6 +308,7 @@ var shadowProbeStates = []struct {
 	{"summary", func(m *Model) { m.summary.phase = summaryPicking }},
 	{"switcher", func(m *Model) { m.switcherMode = true }},
 	{"keys-sheet", func(m *Model) { m.keysSheetMode = true }},
+	{"image-preview", func(m *Model) { m.preview.active = true }},
 }
 
 // keySet flattens a binding slice to the set of key strings it matches.
