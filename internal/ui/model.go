@@ -127,6 +127,11 @@ type Model struct {
 	// marked read (server + badges). Snapshotted from config at New(); 0 means
 	// mark read immediately on open (the original behaviour).
 	markReadDelay time.Duration
+	// groupWindow is the span within which a message from the same author as
+	// the one above it renders without its own name/time header (a continuation
+	// line). Snapshotted from config at New(); 0 disables grouping so every
+	// message keeps its header. See groupWithPrev.
+	groupWindow time.Duration
 	// viewGen is bumped on every channel open. A scheduled mark-read tick
 	// captures the generation it was queued under and only fires if it still
 	// matches — so switching (or refocusing) before the dwell elapses drops the
@@ -516,6 +521,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	var embedDim int
 	embedAuto := false
 	markReadDelay := defaultMarkReadDelay
+	groupWindow := defaultGroupWindow
 	showCustomStatus := true
 	navModifier := navModifierFromConfig(cfg)
 	vimNav := vimNavGlobal
@@ -543,6 +549,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		}
 		if cfg.MarkReadDelaySeconds != nil {
 			markReadDelay = time.Duration(*cfg.MarkReadDelaySeconds) * time.Second
+		}
+		if cfg.GroupMessageSeconds != nil {
+			groupWindow = time.Duration(*cfg.GroupMessageSeconds) * time.Second
 		}
 		if cfg.CustomStatus != nil {
 			showCustomStatus = *cfg.CustomStatus
@@ -642,6 +651,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		embedBatch:          semindex.DefaultBatch,
 		embedder:            embedderState{enabled: embedderEnabled},
 		markReadDelay:       markReadDelay,
+		groupWindow:         groupWindow,
 		emojiImg:            newEmojiImages(emojiMode, animateEmoji),
 		animatePreview:      animatePreview,
 		giphyAPIKey:         giphyAPIKey,
@@ -652,6 +662,11 @@ func New(client *mm.Client, cfg *config.Config) Model {
 // defaultMarkReadDelay mirrors config.defaultMarkReadDelaySeconds and is the
 // fallback dwell used when no config is supplied (e.g. in tests).
 const defaultMarkReadDelay = 5 * time.Second
+
+// defaultGroupWindow mirrors config.defaultGroupMessageSeconds and is the
+// fallback message-grouping window used when no config is supplied (e.g. in
+// tests).
+const defaultGroupWindow = 120 * time.Second
 
 // statusPollInterval is how often DM partner presence is re-fetched in a
 // single batched request — the same cadence the official Mattermost web

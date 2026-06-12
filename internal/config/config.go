@@ -47,6 +47,14 @@ type Config struct {
 	// defaults to defaultMarkReadDelaySeconds while an explicit 0 means "mark
 	// read immediately" (the original behaviour). See internal/ui.
 	MarkReadDelaySeconds *int `yaml:"mark_read_delay_seconds"`
+	// GroupMessageSeconds collapses the author/timestamp header on a run of
+	// consecutive messages from one person: a message sent within this many
+	// seconds of the previous one (with nobody else posting in between) renders
+	// as a bare continuation line under the first, instead of repeating the
+	// name and time. Pointer so an absent key defaults to
+	// defaultGroupMessageSeconds (120) while an explicit 0 disables grouping —
+	// every message keeps its own header. See internal/ui.
+	GroupMessageSeconds *int `yaml:"group_message_seconds"`
 	// CustomStatus toggles showing DM partners' custom statuses (the emoji +
 	// text a user sets, e.g. "🌴 On vacation"): the full text in the messages
 	// header and a small hint glyph in the sidebar. Pointer so an absent key
@@ -301,6 +309,11 @@ const defaultGiphyRendition = "fixed_height"
 // unread, short enough not to feel laggy when you actually read it.
 const defaultMarkReadDelaySeconds = 5
 
+// defaultGroupMessageSeconds is the window within which consecutive
+// same-author messages collapse under a single header. Two minutes mirrors
+// the grouping window the Mattermost web client and similar chat clients use.
+const defaultGroupMessageSeconds = 120
+
 // AI-search defaults. The agent runs against the same local server as the
 // summarizer (Summary.Endpoint / Summary.Model).
 const (
@@ -375,7 +388,7 @@ func Load() (*Config, error) {
 	// and rewrite the file once so the discovered model + prompt show up as
 	// editable defaults. Best-effort: a failed rewrite only means the file
 	// keeps working off in-memory defaults.
-	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Giphy.Rendition == ""
+	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Giphy.Rendition == ""
 	cfg.fillDefaults()
 	if addDefaults {
 		if werr := writeConfig(p, cfg); werr != nil {
@@ -429,6 +442,10 @@ func (c *Config) fillDefaults() {
 	if c.MarkReadDelaySeconds == nil {
 		d := defaultMarkReadDelaySeconds
 		c.MarkReadDelaySeconds = &d
+	}
+	if c.GroupMessageSeconds == nil {
+		d := defaultGroupMessageSeconds
+		c.GroupMessageSeconds = &d
 	}
 	if c.CustomStatus == nil {
 		t := true
@@ -514,6 +531,10 @@ func writeConfig(p string, cfg *Config) error {
 		"#             (lower = stronger recency bias; default 90).\n" +
 		"# mark_read_delay_seconds: how long a channel must stay open before it's\n" +
 		"#             marked read (default 5). 0 marks read immediately on open.\n" +
+		"# group_message_seconds: collapse the name+time header on consecutive\n" +
+		"#             messages from the same person sent within this many seconds\n" +
+		"#             of each other (default 120). 0 keeps a header on every\n" +
+		"#             message.\n" +
 		"# custom_status: show DM partners' custom statuses (default true); false\n" +
 		"#             shows presence dots only.\n" +
 		"# keybindings: nav_modifier sets the modifier for arrow-key team/channel\n" +

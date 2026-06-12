@@ -258,7 +258,7 @@ func TestEmojiImageInvalidationAndRender(t *testing.T) {
 	m.msgsView.SetHeight(10)
 
 	// First render: emoji not ready → literal text, and the post is cached.
-	lines, _ := m.renderPostLines(m.posts[0])
+	lines, _ := m.renderPostLines(m.posts[0], false)
 	if strings.ContainsRune(strings.Join(lines, "\n"), kitty.Placeholder) {
 		t.Fatal("placeholder shown before the image was ready")
 	}
@@ -275,7 +275,7 @@ func TestEmojiImageInvalidationAndRender(t *testing.T) {
 	}
 
 	// Second render: now the placeholder appears.
-	lines, _ = m.renderPostLines(m.posts[0])
+	lines, _ = m.renderPostLines(m.posts[0], false)
 	if !strings.ContainsRune(strings.Join(lines, "\n"), kitty.Placeholder) {
 		t.Fatal("placeholder not shown after the image was ready")
 	}

@@ -276,7 +276,11 @@ func (m *Model) renderMessages() {
 	// each keystroke (visAcc is the running visual-row offset).
 	selVisStart, selVisRows, visAcc := -1, 0, 0
 	for i, p := range m.posts {
-		chunk, rows := m.renderPostLines(p)
+		var prev *model.Post
+		if i > 0 {
+			prev = m.posts[i-1]
+		}
+		chunk, rows := m.renderPostLines(p, m.groupWithPrev(p, prev, false))
 		if i == m.postIdx {
 			selVisStart = visAcc
 			if decorate {
@@ -356,7 +360,11 @@ func (m *Model) renderThread() {
 	var allLines []string
 	selVisStart, selVisRows, visAcc := -1, 0, 0
 	for i, p := range m.threadPosts {
-		chunk, rows := m.renderThreadPostLines(p, i == 0)
+		var prev *model.Post
+		if i > 0 {
+			prev = m.threadPosts[i-1]
+		}
+		chunk, rows := m.renderThreadPostLines(p, i == 0, m.groupWithPrev(p, prev, true))
 		if i == m.threadIdx {
 			selVisStart = visAcc
 			if decorate {
@@ -562,25 +570,30 @@ func formatPostTime(createAtMillis int64) string {
 
 // renderThreadPostLines is the thread-sidebar variant of
 // renderPostLines: the root post gets no ↳/↪ hint (it IS the root),
-// replies omit the reply hint since context makes it obvious.
-func (m *Model) renderThreadPostLines(p *model.Post, isRoot bool) ([]string, int) {
+// replies omit the reply hint since context makes it obvious. grouped
+// suppresses the name/time header for a reply continuing the author run above
+// it (the root, isRoot, always keeps its header — see groupWithPrev).
+func (m *Model) renderThreadPostLines(p *model.Post, isRoot, grouped bool) ([]string, int) {
 	width := m.threadView.Width()
 	poll := isPoll(p)
 	var fp string
 	if !poll && p.Id != "" {
-		fp = m.postLineFingerprint(p, width, true, isRoot)
+		fp = m.postLineFingerprint(p, width, true, isRoot, grouped)
 		if cached, rows, ok := m.cachedPostLines(p, fp); ok {
 			return cached, rows
 		}
 	}
-	name := m.postAuthorName(p)
-	ts := formatPostTime(p.CreateAt)
-	header := userStyle.Render(name) + "  " + timeStyle.Render(ts)
-	if isRoot {
-		header += "  " + replyHintStyle.Render("· root")
+	var lines []string
+	if !grouped {
+		name := m.postAuthorName(p)
+		ts := formatPostTime(p.CreateAt)
+		header := userStyle.Render(name) + "  " + timeStyle.Render(ts)
+		if isRoot {
+			header += "  " + replyHintStyle.Render("· root")
+		}
+		header = withEditedTag(header, p, width)
+		lines = append(lines, header)
 	}
-	header = withEditedTag(header, p, width)
-	lines := []string{header}
 	if body := renderMarkdown(p.Message, m.emojiImg); body != "" {
 		for _, l := range strings.Split(body, "\n") {
 			lines = append(lines, wrapBodyLine(l, width)...)
@@ -600,6 +613,10 @@ func (m *Model) renderThreadPostLines(p *model.Post, isRoot bool) ([]string, int
 	if rx := m.renderReactions(p); rx != "" {
 		lines = append(lines, wrapBodyLine(rx, width)...)
 	}
+	// See renderPostLines: keep a grouped, otherwise-empty post visible.
+	if len(lines) == 0 {
+		lines = append(lines, "  ")
+	}
 	rows := postVisualRows(lines, width)
 	if !poll && p.Id != "" {
 		m.putPostLines(p.Id, fp, lines, rows)
@@ -607,30 +624,78 @@ func (m *Model) renderThreadPostLines(p *model.Post, isRoot bool) ([]string, int
 	return lines, rows
 }
 
+// groupWithPrev reports whether post cur should render as a bare continuation
+// of prev — without repeating the author name and timestamp — because it
+// belongs to the same uninterrupted run: same author, sent within
+// m.groupWindow of prev, and carrying no thread or edited affordance that the
+// header alone conveys. prev is the post rendered immediately above cur (nil
+// at the top of the loaded window, so the run always starts with a header).
+// inThread relaxes the inline-reply guard: in the thread sidebar every post
+// but the root is a reply and shows no ↳ hint, so replies there may still
+// group under one another (the root, handled by the caller, always keeps its
+// header).
+func (m *Model) groupWithPrev(cur, prev *model.Post, inThread bool) bool {
+	if m.groupWindow <= 0 || cur == nil || prev == nil {
+		return false
+	}
+	// Same person — compare the resolved display name too, so a human and a
+	// bot posting under one UserId with different override_username names stay
+	// visually separate.
+	if cur.UserId != prev.UserId || m.postAuthorName(cur) != m.postAuthorName(prev) {
+		return false
+	}
+	// Within the window, and not out of order: a clock-skewed older post keeps
+	// its own header rather than hiding under a newer one.
+	gap := cur.CreateAt - prev.CreateAt
+	if gap < 0 || time.Duration(gap)*time.Millisecond > m.groupWindow {
+		return false
+	}
+	// An edited message keeps its header so the right-aligned "edited" tag
+	// (which lives on the header line) stays visible.
+	if cur.EditAt != 0 {
+		return false
+	}
+	if inThread {
+		return true
+	}
+	// In the main pane, never merge across a thread affordance: a reply shows a
+	// leading ↳ and a thread root a trailing ↪ N, both anchored on the header.
+	// Keep the header whenever either post carries one.
+	if cur.RootId != "" || prev.RootId != "" || cur.ReplyCount > 0 {
+		return false
+	}
+	return true
+}
+
 // renderPostLines returns one rendered line per visual row of a post:
 // the header line, the (possibly multi-line) body, and one line per
 // attachment. Existing styles already include a two-space left gutter
-// on body and attachment lines.
-func (m *Model) renderPostLines(p *model.Post) ([]string, int) {
+// on body and attachment lines. When grouped is true the post continues
+// the author run above it, so the name/time header is omitted and the body
+// starts straight away (see groupWithPrev).
+func (m *Model) renderPostLines(p *model.Post, grouped bool) ([]string, int) {
 	width := m.msgsView.Width()
 	poll := isPoll(p)
 	var fp string
 	if !poll && p.Id != "" {
-		fp = m.postLineFingerprint(p, width, false, false)
+		fp = m.postLineFingerprint(p, width, false, false, grouped)
 		if cached, rows, ok := m.cachedPostLines(p, fp); ok {
 			return cached, rows
 		}
 	}
-	name := m.postAuthorName(p)
-	ts := formatPostTime(p.CreateAt)
-	header := userStyle.Render(name) + "  " + timeStyle.Render(ts)
-	if p.RootId != "" {
-		header = replyHintStyle.Render("↳ ") + header
-	} else if p.ReplyCount > 0 {
-		header += "  " + replyHintStyle.Render(fmt.Sprintf("↪ %d", p.ReplyCount))
+	var lines []string
+	if !grouped {
+		name := m.postAuthorName(p)
+		ts := formatPostTime(p.CreateAt)
+		header := userStyle.Render(name) + "  " + timeStyle.Render(ts)
+		if p.RootId != "" {
+			header = replyHintStyle.Render("↳ ") + header
+		} else if p.ReplyCount > 0 {
+			header += "  " + replyHintStyle.Render(fmt.Sprintf("↪ %d", p.ReplyCount))
+		}
+		header = withEditedTag(header, p, width)
+		lines = append(lines, header)
 	}
-	header = withEditedTag(header, p, width)
-	lines := []string{header}
 	if body := renderMarkdown(p.Message, m.emojiImg); body != "" {
 		for _, l := range strings.Split(body, "\n") {
 			lines = append(lines, wrapBodyLine(l, width)...)
@@ -649,6 +714,13 @@ func (m *Model) renderPostLines(p *model.Post) ([]string, int) {
 	}
 	if rx := m.renderReactions(p); rx != "" {
 		lines = append(lines, wrapBodyLine(rx, width)...)
+	}
+	// A grouped post with no body, attachments, reactions, or poll would render
+	// as zero lines and silently vanish (breaking selection geometry). Keep one
+	// blank continuation row so it stays visible and selectable, matching the
+	// single header line it would otherwise have shown.
+	if len(lines) == 0 {
+		lines = append(lines, "  ")
 	}
 	rows := postVisualRows(lines, width)
 	if !poll && p.Id != "" {

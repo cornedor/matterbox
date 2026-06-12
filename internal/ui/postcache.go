@@ -49,7 +49,7 @@ func (m *Model) postAuthorName(p *model.Post) string {
 	return name
 }
 
-func (m *Model) postLineFingerprint(p *model.Post, width int, isThread, isRoot bool) string {
+func (m *Model) postLineFingerprint(p *model.Post, width int, isThread, isRoot, grouped bool) string {
 	var b strings.Builder
 	b.Grow(96)
 	b.WriteString(strconv.FormatInt(p.UpdateAt, 10))
@@ -71,6 +71,12 @@ func (m *Model) postLineFingerprint(p *model.Post, width int, isThread, isRoot b
 		}
 	} else {
 		b.WriteByte('M')
+	}
+	// Whether the name/time header is suppressed (a continuation line) depends
+	// on the post above this one, so it must key the cache: the same post can
+	// render headed or grouped as its neighbours change.
+	if grouped {
+		b.WriteByte('g')
 	}
 	b.WriteByte('|')
 	b.WriteString(m.postAuthorName(p))
