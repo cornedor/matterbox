@@ -33,6 +33,11 @@ func builtinCommands() []switcherCommand {
 			run: runSummarize,
 		},
 		{
+			name: "Keys",
+			desc: "keyboard shortcuts cheatsheet (your effective bindings)",
+			run:  runShowKeys,
+		},
+		{
 			name: "Status: online",
 			desc: "set your presence to online",
 			run:  runSetPresence(model.StatusOnline),
@@ -86,6 +91,13 @@ func builtinCommands() []switcherCommand {
 			run:            runBouncingBall,
 		},
 	}
+}
+
+// runShowKeys opens the keyboard cheatsheet popup (see cheatsheet.go). The
+// switcher has already closed itself, so this just raises the popup.
+func runShowKeys(m *Model, _ string) tea.Cmd {
+	m.openKeysSheet()
+	return nil
 }
 
 func runIndexChannel(m *Model, arg string) tea.Cmd {

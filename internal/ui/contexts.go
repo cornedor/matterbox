@@ -56,7 +56,7 @@ func (m *Model) contentFocus() bool {
 func (m *Model) inModal() bool {
 	return m.deleteConfirmPostID != "" || m.reactionPickerPostID != "" ||
 		m.openPickerActive() || m.pollDialog.open || m.historyMode ||
-		m.summary.active() || m.switcherMode
+		m.summary.active() || m.switcherMode || m.keysSheetMode
 }
 
 // popupOpenInComposer mirrors handleKey's popupOpen guard: the @-mention /
@@ -104,6 +104,14 @@ var keyContexts = []keyContext{
 	{
 		name:     "modal:summary",
 		active:   func(m *Model) bool { return m.summary.active() },
+		terminal: true,
+		claims:   func(m *Model) []key.Binding { return nil },
+	},
+	{
+		// Keyboard cheatsheet (switcher "> Keys"): esc/q close, arrows scroll.
+		// All keys are hardwired in handleKeysSheetKey, so it claims nothing.
+		name:     "modal:keys-sheet",
+		active:   func(m *Model) bool { return m.keysSheetMode },
 		terminal: true,
 		claims:   func(m *Model) []key.Binding { return nil },
 	},
@@ -288,6 +296,7 @@ var shadowProbeStates = []struct {
 	{"history", func(m *Model) { m.historyMode = true }},
 	{"summary", func(m *Model) { m.summary.phase = summaryPicking }},
 	{"switcher", func(m *Model) { m.switcherMode = true }},
+	{"keys-sheet", func(m *Model) { m.keysSheetMode = true }},
 }
 
 // keySet flattens a binding slice to the set of key strings it matches.

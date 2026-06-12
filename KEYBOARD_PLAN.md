@@ -8,8 +8,11 @@ confused user.
 
 Status: phases 1–4 implemented (bug fixes, action registry, context
 table + shadowing test + vim_nav, config `bindings:` overrides). Phase 5
-(discoverability) is still optional/pending. Phases land in order; each
-leaves the tree green and is independently revertible.
+(discoverability) points 1–2 done — the `> Keys` switcher cheatsheet
+(internal/ui/cheatsheet.go) and the `matterbox keys` CLI verb
+(internal/cli/keys.go, backed by `ui.KeybindingsList`); point 3 (first-run
+hint) is still pending. Phases land in order; each leaves the tree green
+and is independently revertible.
 
 ---
 
@@ -321,12 +324,20 @@ suppresses the modifier-arrow alias.
 
 ### Phase 5 (optional) — discoverability
 
-1. `> Keys` switcher command: full-screen cheatsheet rendered from the
-   registry + context table (grouped, shows effective user bindings).
-2. `matterbox keys` CLI verb (fits the cobra tree, internal/cli):
-   prints actions, defaults, and current overrides — handy when
-   editing config.yaml.
+1. **Done.** `> Keys` switcher command: scrollable cheatsheet popup
+   (internal/ui/cheatsheet.go) grouped by context-table layer, rows pulled
+   from each context's `claims()` so it shows the user's *effective*
+   bindings (overrides + nav_modifier + vim_nav all flow through). Sidebar
+   nav is sourced from `navRoutes` (one row per direction, vim_nav-aware)
+   since the routing bindings carry no help text. Wired as a modal in
+   `inModal`/`keyContexts`/`handleKey`/`viewContent`; esc/q close, arrows
+   scroll. Tests in cheatsheet_test.go.
+2. **Done.** `matterbox keys` CLI verb (internal/cli/keys.go): prints every
+   action, its effective keys, and a `*`-flagged note with the default it
+   replaced when overridden — backed by the exported `ui.KeybindingsList`.
+   Tests in internal/cli/keys_test.go.
 3. First-run hint: one-time status line pointing at `?` and `> Keys`.
+   *(pending)*
 
 ---
 

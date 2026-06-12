@@ -1172,6 +1172,12 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.historyMode {
 		return m.handleHistoryKey(msg)
 	}
+	// Keyboard cheatsheet popup ("> Keys") is fully modal: esc/q close it,
+	// the rest scrolls the viewport. Opened from the switcher, which closes
+	// itself first, so there's no overlap.
+	if m.keysSheetMode {
+		return m.handleKeysSheetKey(msg)
+	}
 	// Summary modal (duration picker / running / result) owns every
 	// keystroke while open. Opened from the switcher's "> Summarize"
 	// command, which closes the switcher first, so there's no overlap.

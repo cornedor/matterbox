@@ -90,6 +90,7 @@ scripting:
 | `matterbox send <channel> [message]` | Post a message (`--file` to attach, repeatable) |
 | `matterbox read [channel]` | Print recent messages (`--since`, `--from`, `--thread`, `--wait`, `--json`) |
 | `matterbox unread` | List unread messages grouped by channel |
+| `matterbox mark-read <channel>...` | Mark one or more channels/DMs as read (clear unread) |
 | `matterbox search <query>` | Search the local cache (`--semantic`, `--channel`, `--context`, `--json`) |
 | `matterbox channels` | List all teams and channels with their addresses |
 | `matterbox digest` | Show your own recent messages in a time range |

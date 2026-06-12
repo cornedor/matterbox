@@ -163,6 +163,10 @@ func (m *Model) resizeMessagesViewport() {
 		m.sizeHistoryView()
 		m.renderHistory()
 	}
+	if m.keysSheetMode {
+		m.sizeKeysSheetView()
+		m.renderKeysSheet()
+	}
 	if m.summary.phase == summaryStreaming || m.summary.phase == summaryDone {
 		m.sizeSummaryView()
 		m.renderSummaryViewBody()
@@ -245,6 +249,10 @@ func (m *Model) capInputHeight(avail int) {
 }
 
 func (m *Model) renderMessages() {
+	// New content generation: invalidates the messages scroll-geometry cache
+	// (see scrollcache.go). Bump unconditionally — every path below resets the
+	// viewport content.
+	m.msgsContentVer++
 	if len(m.posts) == 0 {
 		m.msgsView.SetContent(lipgloss.NewStyle().Foreground(dimColor).Render("no messages"))
 		return
@@ -327,6 +335,8 @@ func (m *Model) renderThread() {
 	if !m.threadOpen {
 		return
 	}
+	// New content generation: invalidates the thread scroll-geometry cache.
+	m.threadContentVer++
 	if m.threadLoading && len(m.threadPosts) == 0 {
 		m.threadView.SetContent(lipgloss.NewStyle().Foreground(dimColor).Render("loading…"))
 		return
@@ -786,6 +796,9 @@ func (m *Model) viewContent() string {
 	if m.historyMode {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderHistoryPopup())
 	}
+	if m.keysSheetMode {
+		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderKeysSheetPopup())
+	}
 	if m.deleteConfirmPostID != "" {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderDeleteConfirm())
 	}
@@ -911,6 +924,15 @@ func (m *Model) renderChannelsPane(height int) string {
 	}
 	m.chanOff = off // safe: m is a value copy, no observable effect; keeps local math tidy
 
+	// The sidebar is fully re-styled below (grapheme-width measurement per row);
+	// skip it when nothing it reads has changed since the last render — the
+	// common case while typing in the composer. The fingerprint covers every
+	// per-row input (see channelsFingerprint).
+	fp := m.channelsFingerprint(vis, off, listH, innerH, header)
+	if c := m.vcache; c != nil && c.sidebar.valid && c.sidebar.fp == fp {
+		return c.sidebar.rendered
+	}
+
 	rows := []string{header}
 	for i := off; i < len(vis) && len(rows) <= listH; i++ {
 		ch := vis[i]
@@ -971,7 +993,11 @@ func (m *Model) renderChannelsPane(height int) string {
 	// Border stays dim: the pane is a ctrl-driven selector, never a Tab focus.
 	style := lipgloss.NewStyle().Border(border).UnsetBorderTop().
 		Width(channelsWidth).Height(innerH).BorderForeground(dimColor)
-	return style.Render(strings.Join(rows, "\n"))
+	out := style.Render(strings.Join(rows, "\n"))
+	if c := m.vcache; c != nil {
+		c.sidebar = sidebarCache{fp: fp, rendered: out, valid: true}
+	}
+	return out
 }
 
 func (m *Model) renderMessagesPane(height, width int) string {
@@ -1030,8 +1056,12 @@ func (m *Model) renderMessagesPane(height, width int) string {
 		}
 		m.msgsView.SetHeight(h)
 	}
-	totalRows := viewportVisualRows(m.msgsView.GetContent(), m.msgsView.Width())
-	showScrollbar := totalRows > m.msgsView.Height() && m.msgsView.ScrollPercent() < 1.0
+	// Scrollbar geometry (total wrapped rows + scroll percent) is an O(content)
+	// width-measuring walk; cache it across renders so typing in the composer
+	// doesn't re-measure unchanged content every keystroke. One call replaces
+	// the previous viewportVisualRows + two ScrollPercent passes.
+	totalRows, scrollPct := m.msgsScrollGeom()
+	showScrollbar := totalRows > m.msgsView.Height() && scrollPct < 1.0
 
 	// Clamp the header to the pane's inner width so a long custom status can't
 	// wrap to a second row (which would offset the scrollbar's row math).
@@ -1070,7 +1100,7 @@ func (m *Model) renderMessagesPane(height, width int) string {
 	box := style.Render(content)
 
 	// Title row is at index 0, viewport at index 1.
-	rightBorder := renderRightBorder(innerH, 1, m.msgsView.Height(), totalRows, m.msgsView.ScrollPercent(), borderColor, showScrollbar)
+	rightBorder := renderRightBorder(innerH, 1, m.msgsView.Height(), totalRows, scrollPct, borderColor, showScrollbar)
 	return lipgloss.JoinHorizontal(lipgloss.Top, box, rightBorder)
 }
 
@@ -1118,8 +1148,8 @@ func (m *Model) renderThreadPane(height, width int) string {
 		title = fmt.Sprintf("Thread · %d %s", n, replyWord(n))
 	}
 
-	threadTotal := viewportVisualRows(m.threadView.GetContent(), m.threadView.Width())
-	showScrollbar := threadTotal > m.threadView.Height() && m.threadView.ScrollPercent() < 1.0
+	threadTotal, threadPct := m.threadScrollGeom()
+	showScrollbar := threadTotal > m.threadView.Height() && threadPct < 1.0
 
 	parts := []string{titleStyle.Render(title), m.threadView.View()}
 	if bar := m.renderAttachmentBar(width - 2); bar != "" {
@@ -1139,7 +1169,7 @@ func (m *Model) renderThreadPane(height, width int) string {
 		Width(width - 1).Height(innerH).BorderForeground(borderColor)
 	box := style.Render(content)
 
-	rightBorder := renderRightBorder(innerH, 1, m.threadView.Height(), threadTotal, m.threadView.ScrollPercent(), borderColor, showScrollbar)
+	rightBorder := renderRightBorder(innerH, 1, m.threadView.Height(), threadTotal, threadPct, borderColor, showScrollbar)
 	return lipgloss.JoinHorizontal(lipgloss.Top, box, rightBorder)
 }
 

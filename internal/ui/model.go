@@ -289,6 +289,13 @@ type Model struct {
 	historyRevisions []*model.Post
 	historyView      viewport.Model
 
+	// Keyboard cheatsheet popup (switcher "> Keys"). A scrollable viewport
+	// listing every action grouped by context, showing the user's effective
+	// bindings. While keysSheetMode is true the popup owns every keystroke
+	// (esc/q close, arrows/pgup-pgdn scroll). See cheatsheet.go.
+	keysSheetMode bool
+	keysSheetView viewport.Model
+
 	// Search tab state: live FTS5 search over the persisted message
 	// corpus. Activated by F (all channels) or / (scoped to the current
 	// channel), or by selecting the synthetic "Search" tab. See
@@ -382,6 +389,21 @@ type Model struct {
 	// change. Polls are intentionally not cached — their render depends
 	// on the current selection.
 	postLineCache map[string]postLineCacheEntry
+
+	// msgsContentVer / threadContentVer are bumped whenever renderMessages /
+	// renderThread rebuilds the corresponding viewport's content. The scroll
+	// geometry cache (vcache) keys on them so a per-keystroke render that
+	// didn't touch the message list — typing in the composer — reuses the
+	// previously measured total-rows / scroll-percent instead of re-walking
+	// every wrapped line. See scrollcache.go.
+	msgsContentVer   uint64
+	threadContentVer uint64
+
+	// vcache memoizes layout-heavy render output (scrollbar geometry + the
+	// channels sidebar) that doesn't change on most keystrokes. Behind a
+	// pointer so writes from the value-receiver View path persist across
+	// renders; nil in tests that build Model literals directly.
+	vcache *viewCache
 }
 
 func New(client *mm.Client, cfg *config.Config) Model {
@@ -455,6 +477,8 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	threadView.SoftWrap = true
 	historyView := viewport.New()
 	historyView.SoftWrap = true
+	keysSheetView := viewport.New()
+	keysSheetView.SoftWrap = true
 
 	var reactions []string
 	var teamOrder []string
@@ -537,6 +561,8 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		msgsView:            msgsView,
 		threadView:          threadView,
 		historyView:         historyView,
+		keysSheetView:       keysSheetView,
+		vcache:              &viewCache{},
 		filter:              ti,
 		switcher:            sw,
 		openStats:           stats,

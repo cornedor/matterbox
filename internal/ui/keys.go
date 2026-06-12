@@ -119,6 +119,7 @@ type navRoute struct {
 	vim   key.Binding // ctrl+h/j/k/l (or the user's override)
 	team  bool        // true → team switch, false → channel switch
 	dir   int         // -1 prev, +1 next
+	desc  string      // help description ("next channel"), for the cheatsheet
 }
 
 // actionDef is one row of the action registry: the single source of truth
@@ -247,6 +248,17 @@ func prettyKeyLabel(keys []string) string {
 	}
 }
 
+// prettyKeysAll prettifies every key of a binding and joins them with two
+// spaces. Unlike prettyKeyLabel (footer-only, first two) the cheatsheet shows
+// the full set so a user sees every key an action answers to.
+func prettyKeysAll(keys []string) string {
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, prettyKey(k))
+	}
+	return strings.Join(parts, "  ")
+}
+
 // vimNavMode controls when the ctrl+vim keys (ctrl+h/j/k/l) switch team /
 // channel. The arrow-alias keys always navigate globally regardless of this
 // setting; only the vim keys' schedule changes. The zero value is
@@ -323,7 +335,7 @@ func newKeyMap(navModifier string) keyMap {
 		// and (when enabled) the arrow alias, keyed off navArrow's direction.
 		if def.navArrow != "" {
 			team, dir := navArrowDir(def.navArrow)
-			r := navRoute{vim: key.NewBinding(key.WithKeys(def.keys...)), team: team, dir: dir}
+			r := navRoute{vim: key.NewBinding(key.WithKeys(def.keys...)), team: team, dir: dir, desc: def.desc}
 			if navEnabled {
 				r.arrow = key.NewBinding(key.WithKeys(prefix + def.navArrow))
 			}
@@ -477,6 +489,49 @@ func keyMapForConfig(cfg *config.Config) (keyMap, error) {
 		return km, nil
 	}
 	return applyKeyOverrides(km, cfg.Keybindings.Bindings)
+}
+
+// KeyBinding describes one rebindable action for the `matterbox keys` CLI
+// verb: its config id, help description, built-in default keys (resolved with
+// the configured nav modifier, so a nav action shows its arrow alias), the
+// effective keys after the user's bindings overrides, and whether the user
+// overrode it. Default/Keys are raw bubbletea key strings (e.g. "ctrl+j").
+type KeyBinding struct {
+	ID         string
+	Desc       string
+	Default    []string
+	Keys       []string
+	Overridden bool
+}
+
+// KeybindingsList returns every action's default and effective keys for the
+// given config, in registry order — the data behind `matterbox keys`. Default
+// is the keymap built from defaults + nav modifier only; Keys additionally
+// applies the bindings overrides, so the two differ exactly for overridden
+// actions. Returns the same build error (unknown action / bad chord) the TUI
+// fails on, rather than silently reporting defaults for a broken config.
+func KeybindingsList(cfg *config.Config) ([]KeyBinding, error) {
+	defaults := newKeyMap(navModifierFromConfig(cfg))
+	current, err := keyMapForConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	var overrides map[string]config.StringOrList
+	if cfg != nil {
+		overrides = cfg.Keybindings.Bindings
+	}
+	out := make([]KeyBinding, 0, len(actionDefs))
+	for _, d := range actionDefs {
+		_, ov := overrides[d.id]
+		out = append(out, KeyBinding{
+			ID:         d.id,
+			Desc:       d.desc,
+			Default:    append([]string(nil), d.field(&defaults).Keys()...),
+			Keys:       append([]string(nil), d.field(&current).Keys()...),
+			Overridden: ov,
+		})
+	}
+	return out, nil
 }
 
 // CheckKeybindings validates a config's keybinding overrides before the TUI
