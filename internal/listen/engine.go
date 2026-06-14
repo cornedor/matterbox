@@ -51,6 +51,10 @@ type Options struct {
 	TelegramChatID string
 	// ContextPosts overrides defaultContextPosts when > 0.
 	ContextPosts int
+	// NotifySelf also notifies on the reader's own messages. Off by default
+	// (you don't want pings for what you just sent); handy for testing the
+	// bridge by posting in your own self-DM.
+	NotifySelf bool
 }
 
 // Engine owns the daemon's connection lifecycle and event handling. Construct
@@ -145,7 +149,7 @@ func (e *Engine) handle(ctx context.Context, ev *model.WebSocketEvent) {
 			return
 		}
 		e.ingest(p)
-		if e.opts.NotifyOnMention && e.me != nil && isDirectMention(ev, p, e.me.Id, e.me.Username) {
+		if e.opts.NotifyOnMention && e.me != nil && isDirectMention(ev, p, e.me.Id, e.me.Username, e.opts.NotifySelf) {
 			e.wg.Add(1)
 			go e.notify(ctx, ev, p)
 		}

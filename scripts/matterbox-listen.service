@@ -7,20 +7,25 @@
 # `telegram` and `listen` sections. Run `matterbox login` once beforehand so the
 # saved token exists.
 #
-# Install (as your normal user, no sudo):
-#   mkdir -p ~/.config/systemd/user
-#   cp scripts/matterbox-listen.service ~/.config/systemd/user/
-#   # edit ExecStart below if `matterbox` is not on systemd's PATH (see note)
-#   systemctl --user daemon-reload
+# `make install` copies this unit to ~/.config/systemd/user/ for you, with
+# ExecStart rewritten to the actual install path, and runs daemon-reload. It
+# does NOT enable or start it — do that yourself once Telegram is configured
+# and you've run `matterbox login`:
 #   systemctl --user enable --now matterbox-listen.service
 #   journalctl --user -u matterbox-listen -f          # follow the log
+#
+# Manual install (without make):
+#   mkdir -p ~/.config/systemd/user
+#   cp scripts/matterbox-listen.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now matterbox-listen.service
 #
 # Keep it running after you log out of the graphical session:
 #   loginctl enable-linger "$USER"
 #
-# Note: systemd --user has a minimal PATH, so prefer an absolute ExecStart
-# (e.g. %h/go/bin/matterbox or /usr/local/bin/matterbox). `which matterbox`
-# shows where yours is.
+# Note: systemd --user has a minimal PATH, so ExecStart must be absolute.
+# The default below matches `make install` (~/.local/bin); `make install`
+# rewrites it to your actual PREFIX. `which matterbox` shows where yours is.
 
 [Unit]
 Description=matterbox background sync + Telegram mention bridge
@@ -30,7 +35,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%h/go/bin/matterbox listen
+ExecStart=%h/.local/bin/matterbox listen
 Restart=on-failure
 RestartSec=5s
 # The actual chat/embedding work happens in the (separately launched) llama

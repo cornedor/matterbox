@@ -39,7 +39,7 @@ func TestIsDirectMention(t *testing.T) {
 	t.Run("dm from someone else triggers", func(t *testing.T) {
 		p := &model.Post{Id: "p1", ChannelId: "d1", UserId: "u-bob", Message: "hey"}
 		ev := postedEvent(t, p, map[string]string{"channel_type": "D"})
-		if !isDirectMention(ev, p, meID, meName) {
+		if !isDirectMention(ev, p, meID, meName, false) {
 			t.Fatal("want true for a DM from another user")
 		}
 	})
@@ -47,8 +47,22 @@ func TestIsDirectMention(t *testing.T) {
 	t.Run("my own dm does not trigger", func(t *testing.T) {
 		p := &model.Post{Id: "p2", ChannelId: "d1", UserId: meID, Message: "hey"}
 		ev := postedEvent(t, p, map[string]string{"channel_type": "D"})
-		if isDirectMention(ev, p, meID, meName) {
+		if isDirectMention(ev, p, meID, meName, false) {
 			t.Fatal("want false for my own post")
+		}
+	})
+
+	t.Run("my own self-DM triggers with notifySelf (test affordance)", func(t *testing.T) {
+		p := &model.Post{Id: "p2b", ChannelId: "d-self", UserId: meID, Message: "note to self"}
+		ev := postedEvent(t, p, map[string]string{"channel_type": "D"})
+		if !isDirectMention(ev, p, meID, meName, true) {
+			t.Fatal("want true for my own self-DM when notifySelf is set")
+		}
+		// A system message still never triggers, even with notifySelf.
+		sys := &model.Post{Id: "p2c", ChannelId: "d-self", UserId: meID, Message: "x", Type: model.PostTypeJoinChannel}
+		evSys := postedEvent(t, sys, map[string]string{"channel_type": "D"})
+		if isDirectMention(evSys, sys, meID, meName, true) {
+			t.Fatal("want false for a system message even with notifySelf")
 		}
 	})
 
@@ -58,7 +72,7 @@ func TestIsDirectMention(t *testing.T) {
 			"channel_type": "O",
 			"mentions":     mentionsData(t, meID),
 		})
-		if !isDirectMention(ev, p, meID, meName) {
+		if !isDirectMention(ev, p, meID, meName, false) {
 			t.Fatal("want true for an explicit @username mention")
 		}
 	})
@@ -70,7 +84,7 @@ func TestIsDirectMention(t *testing.T) {
 			"channel_type": "O",
 			"mentions":     mentionsData(t, meID, "u-x", "u-y"),
 		})
-		if isDirectMention(ev, p, meID, meName) {
+		if isDirectMention(ev, p, meID, meName, false) {
 			t.Fatal("want false for a broad @channel mention")
 		}
 	})
@@ -81,7 +95,7 @@ func TestIsDirectMention(t *testing.T) {
 			"channel_type": "O",
 			"mentions":     mentionsData(t, "u-alice"),
 		})
-		if isDirectMention(ev, p, meID, meName) {
+		if isDirectMention(ev, p, meID, meName, false) {
 			t.Fatal("want false when someone else is mentioned")
 		}
 	})
@@ -95,7 +109,7 @@ func TestIsDirectMention(t *testing.T) {
 		}
 		for _, p := range cases {
 			ev := postedEvent(t, p, base)
-			if isDirectMention(ev, p, meID, meName) {
+			if isDirectMention(ev, p, meID, meName, false) {
 				t.Fatalf("want false for post %s", p.Id)
 			}
 		}

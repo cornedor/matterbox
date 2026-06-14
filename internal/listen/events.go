@@ -69,13 +69,18 @@ func eventStr(ev *model.WebSocketEvent, key string) string {
 //     text — which excludes broad @channel/@here/@all mentions that merely
 //     expand to include the reader.
 //
-// The reader's own posts, system messages, deleted posts, and empty bodies
-// never trigger.
-func isDirectMention(ev *model.WebSocketEvent, p *model.Post, meID, meUsername string) bool {
+// System messages, deleted posts, and empty bodies never trigger. The reader's
+// own posts are skipped too, unless notifySelf is set — a testing affordance
+// (post in your self-DM to exercise the whole pipeline) that some also use as a
+// note-to-self relay.
+func isDirectMention(ev *model.WebSocketEvent, p *model.Post, meID, meUsername string, notifySelf bool) bool {
 	if ev == nil || p == nil || meID == "" {
 		return false
 	}
-	if p.UserId == meID || p.DeleteAt != 0 || p.IsSystemMessage() {
+	if p.UserId == meID && !notifySelf {
+		return false
+	}
+	if p.DeleteAt != 0 || p.IsSystemMessage() {
 		return false
 	}
 	if strings.TrimSpace(p.Message) == "" {

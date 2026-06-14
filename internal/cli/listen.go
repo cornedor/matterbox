@@ -18,6 +18,7 @@ import (
 )
 
 func newListenCmd() *cobra.Command {
+	var notifySelf bool
 	cmd := &cobra.Command{
 		Use:   "listen",
 		Short: "Run a background daemon that keeps the cache warm and bridges mentions",
@@ -39,13 +40,15 @@ func newListenCmd() *cobra.Command {
 			"  journalctl --user -u matterbox-listen -f",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runListen(cmd.Context(), cmd.ErrOrStderr())
+			return runListen(cmd.Context(), cmd.ErrOrStderr(), notifySelf)
 		},
 	}
+	cmd.Flags().BoolVar(&notifySelf, "notify-self", false,
+		"also notify on your own messages — post in your self-DM to test the bridge")
 	return cmd
 }
 
-func runListen(ctx context.Context, out io.Writer) error {
+func runListen(ctx context.Context, out io.Writer, notifySelf bool) error {
 	cfg, client, err := dial()
 	if err != nil {
 		return err
@@ -88,11 +91,12 @@ func runListen(ctx context.Context, out io.Writer) error {
 		Summarize:       chatClient != nil,
 		NotifyPrompt:    cfg.Listen.NotifyPrompt,
 		TelegramChatID:  cfg.Telegram.ChatID,
+		NotifySelf:      notifySelf,
 	}
 
 	logger.Printf("matterbox listen: starting as @%s on %s", me.Username, cfg.ServerURL)
-	logger.Printf("matterbox listen: cache=%s notify_on_mention=%t summarize=%t telegram=%s",
-		p, opts.NotifyOnMention, opts.Summarize, telegramState(tgClient, cfg.Telegram.ChatID))
+	logger.Printf("matterbox listen: cache=%s notify_on_mention=%t summarize=%t notify_self=%t telegram=%s",
+		p, opts.NotifyOnMention, opts.Summarize, opts.NotifySelf, telegramState(tgClient, cfg.Telegram.ChatID))
 
 	eng := listen.New(client, st, chatClient, tgClient, me, opts, logger)
 
