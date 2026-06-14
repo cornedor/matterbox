@@ -34,10 +34,15 @@ func newListenCmd() *cobra.Command {
 			"the same chat server as the `summary` command and fall back to the raw\n" +
 			"message text when it is down. With no telegram.bot_token the daemon only\n" +
 			"keeps the cache warm.\n\n" +
-			"Intended to run under a process supervisor. A sample systemd user unit lives\n" +
-			"at scripts/matterbox-listen.service:\n\n" +
+			"Intended to run under a process supervisor. `make install` drops a\n" +
+			"(disabled) service for your OS — systemd --user on Linux, a launchd\n" +
+			"LaunchAgent on macOS — which you then enable once configured:\n\n" +
+			"  # Linux\n" +
 			"  systemctl --user enable --now matterbox-listen.service\n" +
-			"  journalctl --user -u matterbox-listen -f",
+			"  journalctl --user -u matterbox-listen -f\n\n" +
+			"  # macOS\n" +
+			"  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.matterbox.listen.plist\n" +
+			"  tail -f ~/Library/Logs/matterbox-listen.log",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runListen(cmd.Context(), cmd.ErrOrStderr(), notifySelf)

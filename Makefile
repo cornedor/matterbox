@@ -30,11 +30,18 @@ XDG_DATA_HOME ?= $(HOME)/.local/share
 DESKTOP_DIR  := $(XDG_DATA_HOME)/applications
 DESKTOP_FILE := $(DESKTOP_DIR)/matterbox-mmauth.desktop
 
-# systemd --user unit for the `matterbox listen` daemon. Installed disabled;
-# the user enables it explicitly once Telegram + login are configured.
+# Background `matterbox listen` service, installed but not started: systemd
+# --user on Linux, a launchd LaunchAgent on macOS. The user enables/loads it
+# explicitly once Telegram + login are configured.
 SYSTEMD_USER_DIR := $(HOME)/.config/systemd/user
 SERVICE_NAME     := matterbox-listen.service
 SERVICE_SRC      := scripts/$(SERVICE_NAME)
+
+LAUNCHD_LABEL := com.matterbox.listen
+LAUNCHD_DIR   := $(HOME)/Library/LaunchAgents
+LAUNCHD_PLIST := $(LAUNCHD_DIR)/$(LAUNCHD_LABEL).plist
+LAUNCHD_SRC   := scripts/$(LAUNCHD_LABEL).plist
+MACOS_LOG     := $(HOME)/Library/Logs/matterbox-listen.log
 
 .DEFAULT_GOAL := build
 
@@ -92,17 +99,29 @@ install-completion: build ## Generate + install shell completion for the current
 	esac
 
 .PHONY: install-service
-install-service: ## Install the `matterbox listen` systemd --user unit (Linux; disabled)
-	@if [ "$$(uname -s)" != "Linux" ] || ! command -v systemctl >/dev/null 2>&1; then \
-		echo "skipping systemd service: not Linux or systemctl not found"; \
-	else \
-		install -d "$(SYSTEMD_USER_DIR)"; \
-		sed 's#^ExecStart=.*#ExecStart=$(BINDIR)/$(BINARY) listen#' "$(SERVICE_SRC)" > "$(SYSTEMD_USER_DIR)/$(SERVICE_NAME)"; \
-		echo "installed $(SYSTEMD_USER_DIR)/$(SERVICE_NAME)  (ExecStart=$(BINDIR)/$(BINARY) listen)"; \
-		systemctl --user daemon-reload 2>/dev/null || true; \
-		echo "not enabled — after 'matterbox login' + telegram config, run:"; \
-		echo "    systemctl --user enable --now $(SERVICE_NAME)"; \
-	fi
+install-service: ## Install the `matterbox listen` background service (systemd on Linux, launchd on macOS; not started)
+	@case "$$(uname -s)" in \
+	Linux) \
+		if command -v systemctl >/dev/null 2>&1; then \
+			install -d "$(SYSTEMD_USER_DIR)"; \
+			sed 's#^ExecStart=.*#ExecStart=$(BINDIR)/$(BINARY) listen#' "$(SERVICE_SRC)" > "$(SYSTEMD_USER_DIR)/$(SERVICE_NAME)"; \
+			echo "installed $(SYSTEMD_USER_DIR)/$(SERVICE_NAME)  (ExecStart=$(BINDIR)/$(BINARY) listen)"; \
+			systemctl --user daemon-reload 2>/dev/null || true; \
+			echo "not enabled — after 'matterbox login' + telegram config, run:"; \
+			echo "    systemctl --user enable --now $(SERVICE_NAME)"; \
+		else \
+			echo "skipping service: systemctl not found"; \
+		fi ;; \
+	Darwin) \
+		install -d "$(LAUNCHD_DIR)"; \
+		sed -e 's#__EXEC__#$(BINDIR)/$(BINARY)#' -e 's#__LOG__#$(MACOS_LOG)#' "$(LAUNCHD_SRC)" > "$(LAUNCHD_PLIST)"; \
+		echo "installed $(LAUNCHD_PLIST)  (program=$(BINDIR)/$(BINARY) listen)"; \
+		echo "not loaded — after 'matterbox login' + telegram config, run:"; \
+		echo "    launchctl bootstrap gui/$$(id -u) $(LAUNCHD_PLIST)"; \
+		echo "    (older macOS:  launchctl load $(LAUNCHD_PLIST))"; \
+		;; \
+	*) echo "skipping service: unsupported OS $$(uname -s)" ;; \
+	esac
 
 .PHONY: uninstall
 uninstall: ## Remove the installed binary, completion files, login handler, and service
@@ -119,6 +138,11 @@ uninstall: ## Remove the installed binary, completion files, login handler, and 
 		rm -f "$(SYSTEMD_USER_DIR)/$(SERVICE_NAME)"; \
 		command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload 2>/dev/null || true; \
 		echo "removed $(SERVICE_NAME)"; \
+	fi
+	@if [ -f "$(LAUNCHD_PLIST)" ]; then \
+		launchctl bootout gui/$$(id -u)/$(LAUNCHD_LABEL) 2>/dev/null || launchctl unload "$(LAUNCHD_PLIST)" 2>/dev/null || true; \
+		rm -f "$(LAUNCHD_PLIST)"; \
+		echo "removed $(LAUNCHD_LABEL)"; \
 	fi
 
 .PHONY: test
