@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -34,9 +35,6 @@ const defaultContextPosts = 20
 // logBodyCap bounds how much message body is echoed to the log when no Telegram
 // delivery is configured, so a long paste doesn't flood journald.
 const logBodyCap = 200
-
-// defaultReaction is the emoji the 👍 quick-action button adds.
-const defaultReaction = "+1"
 
 // maxReplyTargets caps the in-memory notification→thread map (so a long-running
 // daemon doesn't grow unbounded); oldest entries are evicted first. Replies to
@@ -100,14 +98,17 @@ type Engine struct {
 	// replies maps a sent notification's Telegram message id to the Mattermost
 	// thread a free-text reply should post into. Bounded by maxReplyTargets.
 	repliesMu    sync.Mutex
-	replies      map[int]replyTarget
+	replies      map[int]notifTarget
 	repliesOrder []int
 }
 
-// replyTarget is where a Telegram reply to a notification gets posted.
-type replyTarget struct {
+// notifTarget links a sent notification to the Mattermost message it's about,
+// so a Telegram reply posts into the right thread and a Telegram reaction lands
+// on the right post.
+type notifTarget struct {
 	channelID string
 	rootID    string
+	postID    string
 }
 
 // New builds an Engine. chat and tg may be nil (summarization / delivery are
@@ -122,7 +123,7 @@ func New(client *mm.Client, st *store.Store, ch *chat.Client, tg *telegram.Clien
 	e := &Engine{
 		client: client, store: st, chat: ch, tg: tg, me: me, opts: opts, log: logger,
 		muted:   map[string]bool{},
-		replies: map[int]replyTarget{},
+		replies: map[int]notifTarget{},
 	}
 	if start, end, ok := parseQuietHours(opts.QuietHours); ok {
 		e.quietStart, e.quietEnd, e.quietOn = start, end, true
@@ -262,15 +263,14 @@ func (e *Engine) notify(ctx context.Context, ev *model.WebSocketEvent, p *model.
 		return
 	}
 
-	// With two-way enabled, attach quick-action buttons and remember where a
-	// free-text reply to this notification should land.
+	// With two-way enabled, offer an explicit mark-read button and remember the
+	// Mattermost message so a Telegram reply or emoji reaction can act on it.
 	var keyboard [][]telegram.Button
 	if e.inboundEnabled() {
 		keyboard = [][]telegram.Button{{
-			{Text: "👍", Data: "k:" + p.Id},
 			{Text: "✓ Read", Data: "r:" + p.ChannelId},
 		}}
-		body += "\n\n↩ reply to respond"
+		body += "\n\n↩ reply to respond · react to forward the emoji + mark read"
 	}
 	msgID, err := e.tg.Send(ctx, e.opts.TelegramChatID, "🔔 "+label+"\n"+body, keyboard)
 	if err != nil {
@@ -282,7 +282,7 @@ func (e *Engine) notify(ctx context.Context, ev *model.WebSocketEvent, p *model.
 		if root == "" {
 			root = p.Id
 		}
-		e.rememberReply(msgID, replyTarget{channelID: p.ChannelId, rootID: root})
+		e.rememberReply(msgID, notifTarget{channelID: p.ChannelId, rootID: root, postID: p.Id})
 	}
 	e.log.Printf("notified telegram: %s", label)
 }
@@ -402,7 +402,7 @@ func (e *Engine) inQuietHoursNow() bool {
 }
 
 // rememberReply records (bounded) where a reply to Telegram message msgID posts.
-func (e *Engine) rememberReply(msgID int, t replyTarget) {
+func (e *Engine) rememberReply(msgID int, t notifTarget) {
 	if msgID == 0 {
 		return
 	}
@@ -418,7 +418,7 @@ func (e *Engine) rememberReply(msgID int, t replyTarget) {
 	e.replies[msgID] = t
 }
 
-func (e *Engine) lookupReply(msgID int) (replyTarget, bool) {
+func (e *Engine) lookupReply(msgID int) (notifTarget, bool) {
 	e.repliesMu.Lock()
 	defer e.repliesMu.Unlock()
 	t, ok := e.replies[msgID]
@@ -466,6 +466,8 @@ func (e *Engine) authorized(u telegram.Update) bool {
 	switch {
 	case u.CallbackQuery != nil:
 		from = u.CallbackQuery.From
+	case u.MessageReaction != nil:
+		from = u.MessageReaction.User
 	case u.Message != nil:
 		from = u.Message.From
 	}
@@ -481,6 +483,8 @@ func (e *Engine) handleUpdate(ctx context.Context, u telegram.Update) {
 	switch {
 	case u.CallbackQuery != nil:
 		e.handleCallback(ctx, u.CallbackQuery)
+	case u.MessageReaction != nil:
+		e.handleReaction(ctx, u.MessageReaction)
 	case u.Message != nil && strings.TrimSpace(u.Message.Text) != "":
 		text := strings.TrimSpace(u.Message.Text)
 		switch {
@@ -499,13 +503,6 @@ func (e *Engine) handleCallback(ctx context.Context, cb *telegram.CallbackQuery)
 	action, arg := decodeCallback(cb.Data)
 	note := "done"
 	switch action {
-	case "k": // react 👍
-		if err := e.client.AddReaction(ctx, e.me.Id, arg, defaultReaction); err != nil {
-			e.log.Printf("react failed: %v", err)
-			note = "react failed"
-		} else {
-			note = "👍 reacted"
-		}
 	case "r": // mark channel read
 		if err := e.client.ViewChannel(ctx, e.me.Id, arg); err != nil {
 			e.log.Printf("mark-read failed: %v", err)
@@ -534,8 +531,76 @@ func (e *Engine) handleReply(ctx context.Context, msg *telegram.Message) {
 		e.sendTG(ctx, "Failed to post: "+err.Error())
 		return
 	}
+	// Replying means you've dealt with it — mark the channel read too.
+	if err := e.client.ViewChannel(ctx, e.me.Id, target.channelID); err != nil {
+		e.log.Printf("mark read after reply: %v", err)
+	}
 	e.sendTG(ctx, "↩ posted")
 	e.log.Printf("posted reply to channel %s", target.channelID)
+}
+
+// handleReaction mirrors a Telegram emoji reaction on a notification onto the
+// Mattermost post (add/remove to match), and marks the channel read — reacting
+// is the closest signal the Bot API gives that you saw the message.
+func (e *Engine) handleReaction(ctx context.Context, mr *telegram.MessageReactionUpdated) {
+	target, ok := e.lookupReply(mr.MessageID)
+	if !ok {
+		return // reaction on an unknown/old notification — nothing to map it to
+	}
+	added, removed := reactionEmojiDiff(mr.OldReaction, mr.NewReaction)
+	for _, em := range added {
+		name, ok := mattermostEmojiName(em)
+		if !ok {
+			e.log.Printf("no Mattermost emoji for %q — skipped", em)
+			e.sendTG(ctx, "Couldn't map "+em+" to a Mattermost reaction.")
+			continue
+		}
+		if err := e.client.AddReaction(ctx, e.me.Id, target.postID, name); err != nil {
+			e.log.Printf("add reaction %s: %v", name, err)
+		}
+	}
+	for _, em := range removed {
+		if name, ok := mattermostEmojiName(em); ok {
+			if err := e.client.RemoveReaction(ctx, e.me.Id, target.postID, name); err != nil {
+				e.log.Printf("remove reaction %s: %v", name, err)
+			}
+		}
+	}
+	if len(added) > 0 {
+		if err := e.client.ViewChannel(ctx, e.me.Id, target.channelID); err != nil {
+			e.log.Printf("mark read after reaction: %v", err)
+		}
+		e.log.Printf("forwarded reaction(s) %v + marked read (%s)", added, target.channelID)
+	}
+}
+
+// reactionEmojiDiff returns the emoji added and removed between two reaction
+// sets (only "emoji"-type reactions), each sorted for deterministic handling.
+func reactionEmojiDiff(oldR, newR []telegram.ReactionType) (added, removed []string) {
+	oldSet, newSet := emojiSet(oldR), emojiSet(newR)
+	for em := range newSet {
+		if !oldSet[em] {
+			added = append(added, em)
+		}
+	}
+	for em := range oldSet {
+		if !newSet[em] {
+			removed = append(removed, em)
+		}
+	}
+	sort.Strings(added)
+	sort.Strings(removed)
+	return added, removed
+}
+
+func emojiSet(rs []telegram.ReactionType) map[string]bool {
+	m := make(map[string]bool, len(rs))
+	for _, r := range rs {
+		if r.Type == "emoji" && r.Emoji != "" {
+			m[r.Emoji] = true
+		}
+	}
+	return m
 }
 
 // backoff returns the reconnect delay for the n-th consecutive failure (1 → 1s,

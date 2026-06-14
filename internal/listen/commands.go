@@ -14,8 +14,9 @@ import (
 
 // helpText is sent for /help, /start, and unknown commands.
 const helpText = "matterbox bot:\n" +
-	"• reply to a notification → posts back into that thread\n" +
-	"• 👍 / ✓ buttons → react / mark the channel read\n\n" +
+	"• reply to a notification → posts back into that thread (and marks it read)\n" +
+	"• react with any emoji → forwards it to Mattermost + marks it read\n" +
+	"• ✓ button → just mark the channel read\n\n" +
 	"/unread — channels with unread messages and mentions\n" +
 	"/search <words> — keyword search across your cached messages\n" +
 	"/digest — a short summary of everything unread\n" +

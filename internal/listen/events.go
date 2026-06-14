@@ -9,8 +9,48 @@ import (
 	"strings"
 	"time"
 
+	emoji "github.com/kyokomi/emoji/v2"
 	"github.com/mattermost/mattermost/server/public/model"
 )
+
+// emojiNames maps a unicode emoji (as Telegram sends it, with or without the
+// U+FE0F variation selector) to a Mattermost reaction shortcode. Built once
+// from the shared gemoji data, with stable overrides for the common reactions
+// whose canonical alias would otherwise be a less-recognizable synonym.
+var emojiNames = buildEmojiNames()
+
+func buildEmojiNames() map[string]string {
+	m := make(map[string]string)
+	put := func(ch, name string) {
+		m[ch] = name
+		if stripped := strings.ReplaceAll(ch, "\uFE0F", ""); stripped != ch {
+			m[stripped] = name
+		}
+	}
+	for ch, aliases := range emoji.RevCodeMap() {
+		if len(aliases) > 0 {
+			put(ch, strings.Trim(aliases[0], ":"))
+		}
+	}
+	// Mattermost-preferred names (RevCodeMap may pick a synonym, and its alias
+	// order isn't guaranteed); pin the common reactions.
+	for ch, name := range map[string]string{
+		"👍": "+1", "👎": "-1", "❤\uFE0F": "heart", "🎉": "tada", "😂": "joy", "🔥": "fire",
+	} {
+		put(ch, name)
+	}
+	return m
+}
+
+// mattermostEmojiName converts a Telegram reaction emoji to a Mattermost
+// shortcode (no colons), tolerating the optional variation selector.
+func mattermostEmojiName(tgEmoji string) (string, bool) {
+	if n, ok := emojiNames[tgEmoji]; ok {
+		return n, true
+	}
+	n, ok := emojiNames[strings.ReplaceAll(tgEmoji, "\uFE0F", "")]
+	return n, ok
+}
 
 // postFromEvent decodes the post embedded in a posted/edited websocket event
 // (Mattermost JSON-encodes it into data["post"]). Returns nil if absent or

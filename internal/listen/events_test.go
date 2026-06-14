@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/telegram"
 )
 
 // postedEvent builds a "posted" websocket event carrying p, with optional extra
@@ -277,6 +279,44 @@ func TestParseCommand(t *testing.T) {
 		if cmd != c.cmd || args != c.args {
 			t.Errorf("parseCommand(%q)=(%q,%q) want (%q,%q)", c.in, cmd, args, c.cmd, c.args)
 		}
+	}
+}
+
+func TestMattermostEmojiName(t *testing.T) {
+	want := map[string]string{
+		"👍":  "+1",
+		"❤️": "heart", // with variation selector
+		"❤":  "heart", // without
+		"🔥":  "fire",
+		"🎉":  "tada",
+	}
+	for in, exp := range want {
+		if got, ok := mattermostEmojiName(in); !ok || got != exp {
+			t.Errorf("mattermostEmojiName(%q)=(%q,%v) want %q", in, got, ok, exp)
+		}
+	}
+	if got, ok := mattermostEmojiName("not-an-emoji"); ok {
+		t.Errorf("expected no mapping for a non-emoji, got %q", got)
+	}
+}
+
+func TestReactionEmojiDiff(t *testing.T) {
+	em := func(e string) telegram.ReactionType { return telegram.ReactionType{Type: "emoji", Emoji: e} }
+
+	added, removed := reactionEmojiDiff([]telegram.ReactionType{em("👍")}, []telegram.ReactionType{em("👍"), em("🔥")})
+	if len(added) != 1 || added[0] != "🔥" || len(removed) != 0 {
+		t.Errorf("add case: added=%v removed=%v", added, removed)
+	}
+
+	added, removed = reactionEmojiDiff([]telegram.ReactionType{em("👍")}, nil)
+	if len(removed) != 1 || removed[0] != "👍" || len(added) != 0 {
+		t.Errorf("remove case: added=%v removed=%v", added, removed)
+	}
+
+	// Non-emoji reaction types are ignored.
+	added, _ = reactionEmojiDiff(nil, []telegram.ReactionType{{Type: "custom_emoji"}})
+	if len(added) != 0 {
+		t.Errorf("custom_emoji should be ignored, got %v", added)
 	}
 }
 

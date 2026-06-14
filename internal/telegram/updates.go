@@ -34,12 +34,31 @@ type CallbackQuery struct {
 	Data    string   `json:"data"`
 }
 
-// Update is one item from getUpdates: exactly one of Message / CallbackQuery is
-// set for the kinds we request.
+// ReactionType is one reaction on a message. Type is "emoji" (Emoji holds the
+// unicode reaction), "custom_emoji", or "paid"; we only act on "emoji".
+type ReactionType struct {
+	Type  string `json:"type"`
+	Emoji string `json:"emoji"`
+}
+
+// MessageReactionUpdated reports a change to a user's reactions on a message.
+// OldReaction/NewReaction are the full sets before/after the change, so the
+// difference is the add/remove.
+type MessageReactionUpdated struct {
+	Chat        Chat           `json:"chat"`
+	MessageID   int            `json:"message_id"`
+	User        *User          `json:"user"`
+	OldReaction []ReactionType `json:"old_reaction"`
+	NewReaction []ReactionType `json:"new_reaction"`
+}
+
+// Update is one item from getUpdates: exactly one of the fields below is set for
+// the kinds we request.
 type Update struct {
-	UpdateID      int            `json:"update_id"`
-	Message       *Message       `json:"message"`
-	CallbackQuery *CallbackQuery `json:"callback_query"`
+	UpdateID        int                     `json:"update_id"`
+	Message         *Message                `json:"message"`
+	CallbackQuery   *CallbackQuery          `json:"callback_query"`
+	MessageReaction *MessageReactionUpdated `json:"message_reaction"`
 }
 
 type getUpdatesRequest struct {
@@ -59,9 +78,11 @@ type getUpdatesResponse struct {
 // plus a margin so the long poll isn't cut short by the client.
 func (c *Client) GetUpdates(ctx context.Context, offset, timeoutSec int) ([]Update, error) {
 	req := getUpdatesRequest{
-		Offset:         offset,
-		Timeout:        timeoutSec,
-		AllowedUpdates: []string{"message", "callback_query"},
+		Offset:  offset,
+		Timeout: timeoutSec,
+		// message_reaction must be opted into explicitly; it carries the user's
+		// native emoji reactions on the bot's notifications.
+		AllowedUpdates: []string{"message", "callback_query", "message_reaction"},
 	}
 	var resp getUpdatesResponse
 	deadline := time.Duration(timeoutSec)*time.Second + 15*time.Second
