@@ -1,0 +1,41 @@
+# systemd user unit for the matterbox background daemon.
+#
+# `matterbox listen` holds one Mattermost WebSocket connection, keeps the local
+# message cache (~/.config/matterbox/messages.db) warm, and bridges your direct
+# @mentions and DMs to Telegram (summarizing the context with the chat model
+# first). Configure the bridge in ~/.config/matterbox/config.yaml under the
+# `telegram` and `listen` sections. Run `matterbox login` once beforehand so the
+# saved token exists.
+#
+# Install (as your normal user, no sudo):
+#   mkdir -p ~/.config/systemd/user
+#   cp scripts/matterbox-listen.service ~/.config/systemd/user/
+#   # edit ExecStart below if `matterbox` is not on systemd's PATH (see note)
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now matterbox-listen.service
+#   journalctl --user -u matterbox-listen -f          # follow the log
+#
+# Keep it running after you log out of the graphical session:
+#   loginctl enable-linger "$USER"
+#
+# Note: systemd --user has a minimal PATH, so prefer an absolute ExecStart
+# (e.g. %h/go/bin/matterbox or /usr/local/bin/matterbox). `which matterbox`
+# shows where yours is.
+
+[Unit]
+Description=matterbox background sync + Telegram mention bridge
+# Best-effort ordering; the daemon retries the connection on its own anyway.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/go/bin/matterbox listen
+Restart=on-failure
+RestartSec=5s
+# The actual chat/embedding work happens in the (separately launched) llama
+# server, so a low CPU weight here only nudges the lightweight daemon itself.
+Nice=10
+
+[Install]
+WantedBy=default.target
