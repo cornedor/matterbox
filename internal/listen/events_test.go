@@ -204,6 +204,82 @@ func TestEnsureContains(t *testing.T) {
 	}
 }
 
+func TestParseQuietHours(t *testing.T) {
+	cases := []struct {
+		in         string
+		start, end int
+		ok         bool
+	}{
+		{"22:00-08:00", 1320, 480, true},
+		{"08:00-22:00", 480, 1320, true},
+		{" 9:5 - 10:30 ", 545, 630, true},
+		{"", 0, 0, false},
+		{"22:00", 0, 0, false},
+		{"25:00-08:00", 0, 0, false},
+		{"22:60-08:00", 0, 0, false},
+		{"garbage", 0, 0, false},
+	}
+	for _, c := range cases {
+		s, e, ok := parseQuietHours(c.in)
+		if ok != c.ok || (ok && (s != c.start || e != c.end)) {
+			t.Errorf("parseQuietHours(%q)=(%d,%d,%v) want (%d,%d,%v)", c.in, s, e, ok, c.start, c.end, c.ok)
+		}
+	}
+}
+
+func TestInQuietHours(t *testing.T) {
+	// Wrapping window 22:00–08:00.
+	wrap := func(m int) bool { return inQuietHours(m, 1320, 480) }
+	if !wrap(1380) || !wrap(300) || !wrap(1320) { // 23:00, 05:00, 22:00 (start incl)
+		t.Error("wrap window should include late-night and pre-dawn")
+	}
+	if wrap(600) || wrap(480) { // 10:00, 08:00 (end excl)
+		t.Error("wrap window should exclude daytime and the end boundary")
+	}
+	// Non-wrapping window 08:00–22:00.
+	day := func(m int) bool { return inQuietHours(m, 480, 1320) }
+	if !day(600) || !day(480) || day(400) || day(1320) {
+		t.Error("day window boundaries wrong")
+	}
+	// Empty window is never quiet.
+	if inQuietHours(600, 0, 0) {
+		t.Error("zero-length window should never be quiet")
+	}
+}
+
+func TestDecodeCallback(t *testing.T) {
+	cases := map[string][2]string{
+		"k:abc":     {"k", "abc"},
+		"r:chan123": {"r", "chan123"},
+		"noColon":   {"noColon", ""},
+		"a:b:c":     {"a", "b:c"},
+	}
+	for in, want := range cases {
+		a, arg := decodeCallback(in)
+		if a != want[0] || arg != want[1] {
+			t.Errorf("decodeCallback(%q)=(%q,%q) want (%q,%q)", in, a, arg, want[0], want[1])
+		}
+	}
+}
+
+func TestParseCommand(t *testing.T) {
+	cases := []struct{ in, cmd, args string }{
+		{"/search foo bar", "search", "foo bar"},
+		{"/unread", "unread", ""},
+		{"/Digest", "digest", ""},
+		{"/help@matterbox_bridge_bot", "help", ""},
+		{"  /s   x  ", "s", "x"},
+		{"hello", "", ""},
+		{"", "", ""},
+	}
+	for _, c := range cases {
+		cmd, args := parseCommand(c.in)
+		if cmd != c.cmd || args != c.args {
+			t.Errorf("parseCommand(%q)=(%q,%q) want (%q,%q)", c.in, cmd, args, c.cmd, c.args)
+		}
+	}
+}
+
 func ids(posts []*model.Post) []string {
 	out := make([]string, len(posts))
 	for i, p := range posts {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -173,6 +174,71 @@ func postLine(p *model.Post, names map[string]string) string {
 	}
 	ts := time.UnixMilli(p.CreateAt).Local().Format("15:04")
 	return fmt.Sprintf("[%s] @%s: %s", ts, name, body)
+}
+
+// parseQuietHours parses a "HH:MM-HH:MM" window into start/end minutes-of-day.
+// ok is false for an empty or malformed string (treated as "no quiet hours").
+func parseQuietHours(s string) (start, end int, ok bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, 0, false
+	}
+	a, b, found := strings.Cut(s, "-")
+	if !found {
+		return 0, 0, false
+	}
+	start, ok1 := parseHHMM(a)
+	end, ok2 := parseHHMM(b)
+	if !ok1 || !ok2 {
+		return 0, 0, false
+	}
+	return start, end, true
+}
+
+func parseHHMM(s string) (int, bool) {
+	h, m, found := strings.Cut(strings.TrimSpace(s), ":")
+	if !found {
+		return 0, false
+	}
+	hh, err1 := strconv.Atoi(strings.TrimSpace(h))
+	mm, err2 := strconv.Atoi(strings.TrimSpace(m))
+	if err1 != nil || err2 != nil || hh < 0 || hh > 23 || mm < 0 || mm > 59 {
+		return 0, false
+	}
+	return hh*60 + mm, true
+}
+
+// inQuietHours reports whether minute-of-day m lies in [start, end), handling a
+// window that wraps past midnight (start > end). An empty window is never quiet.
+func inQuietHours(m, start, end int) bool {
+	if start == end {
+		return false
+	}
+	if start < end {
+		return m >= start && m < end
+	}
+	return m >= start || m < end
+}
+
+// decodeCallback splits inline-button callback_data of the form "action:arg".
+func decodeCallback(data string) (action, arg string) {
+	action, arg, _ = strings.Cut(data, ":")
+	return action, arg
+}
+
+// parseCommand splits a "/cmd args" message into the lowercased command (no
+// leading slash, no "@botname" suffix) and the trimmed argument string. Returns
+// empty cmd when text isn't a command.
+func parseCommand(text string) (cmd, args string) {
+	text = strings.TrimSpace(text)
+	if !strings.HasPrefix(text, "/") {
+		return "", ""
+	}
+	cmd, args, _ = strings.Cut(text[1:], " ")
+	if at := strings.IndexByte(cmd, '@'); at >= 0 {
+		cmd = cmd[:at] // Telegram appends @botname in groups
+	}
+	return strings.ToLower(cmd), strings.TrimSpace(args)
 }
 
 // uniqueUserIDs returns the distinct author ids across posts, for a single

@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -33,6 +34,17 @@ const defaultContextPosts = 20
 // logBodyCap bounds how much message body is echoed to the log when no Telegram
 // delivery is configured, so a long paste doesn't flood journald.
 const logBodyCap = 200
+
+// defaultReaction is the emoji the 👍 quick-action button adds.
+const defaultReaction = "+1"
+
+// maxReplyTargets caps the in-memory notification→thread map (so a long-running
+// daemon doesn't grow unbounded); oldest entries are evicted first. Replies to
+// notifications older than this since a restart fall back to a "no context" note.
+const maxReplyTargets = 1000
+
+// pollTimeoutSec is the Telegram long-poll timeout for getUpdates.
+const pollTimeoutSec = 30
 
 // Options tunes the daemon's behaviour. Built from config in the cli layer.
 type Options struct {
@@ -55,6 +67,14 @@ type Options struct {
 	// (you don't want pings for what you just sent); handy for testing the
 	// bridge by posting in your own self-DM.
 	NotifySelf bool
+	// RespectMutes skips notifications for channels muted in Mattermost.
+	RespectMutes bool
+	// QuietHours is the raw "HH:MM-HH:MM" suppression window (local); empty =
+	// always on. Parsed once in New.
+	QuietHours string
+	// TwoWay enables the inbound Telegram channel (replies, buttons, commands).
+	// Requires TelegramChatID, the only sender the bot obeys.
+	TwoWay bool
 }
 
 // Engine owns the daemon's connection lifecycle and event handling. Construct
@@ -68,7 +88,26 @@ type Engine struct {
 	opts   Options
 	log    *log.Logger
 
-	wg sync.WaitGroup // tracks in-flight notify goroutines for clean shutdown
+	wg sync.WaitGroup // tracks in-flight notify + inbound goroutines for shutdown
+
+	// quiet-hours window (minutes-of-day), parsed from opts.QuietHours in New.
+	quietStart, quietEnd int
+	quietOn              bool
+
+	mutedMu sync.RWMutex
+	muted   map[string]bool // channels muted in Mattermost (RespectMutes)
+
+	// replies maps a sent notification's Telegram message id to the Mattermost
+	// thread a free-text reply should post into. Bounded by maxReplyTargets.
+	repliesMu    sync.Mutex
+	replies      map[int]replyTarget
+	repliesOrder []int
+}
+
+// replyTarget is where a Telegram reply to a notification gets posted.
+type replyTarget struct {
+	channelID string
+	rootID    string
 }
 
 // New builds an Engine. chat and tg may be nil (summarization / delivery are
@@ -80,13 +119,27 @@ func New(client *mm.Client, st *store.Store, ch *chat.Client, tg *telegram.Clien
 	if logger == nil {
 		logger = log.Default()
 	}
-	return &Engine{client: client, store: st, chat: ch, tg: tg, me: me, opts: opts, log: logger}
+	e := &Engine{
+		client: client, store: st, chat: ch, tg: tg, me: me, opts: opts, log: logger,
+		muted:   map[string]bool{},
+		replies: map[int]replyTarget{},
+	}
+	if start, end, ok := parseQuietHours(opts.QuietHours); ok {
+		e.quietStart, e.quietEnd, e.quietOn = start, end, true
+	}
+	return e
 }
 
 // Run connects, consumes events, and reconnects with exponential backoff until
 // ctx is cancelled. It returns ctx.Err() once all in-flight notifications have
 // drained, so a caller wiring it to SIGINT/SIGTERM gets a clean shutdown.
 func (e *Engine) Run(ctx context.Context) error {
+	e.refreshMuted(ctx) // best-effort initial mute set, before events flow
+	if e.inboundEnabled() {
+		e.log.Printf("two-way enabled: replies + commands accepted from chat %s", e.opts.TelegramChatID)
+		e.wg.Add(1)
+		go e.pollUpdates(ctx)
+	}
 	attempt := 0
 	for {
 		if err := ctx.Err(); err != nil {
@@ -106,6 +159,7 @@ func (e *Engine) Run(ctx context.Context) error {
 		}
 		attempt = 0
 		e.log.Printf("connected (%s)", e.opts.ServerURL)
+		go e.refreshMuted(ctx) // pick up mute changes made while we were away
 		e.consume(ctx, wsc)
 		wsc.Close()
 		if err := ctx.Err(); err != nil {
@@ -150,8 +204,15 @@ func (e *Engine) handle(ctx context.Context, ev *model.WebSocketEvent) {
 		}
 		e.ingest(p)
 		if e.opts.NotifyOnMention && e.me != nil && isDirectMention(ev, p, e.me.Id, e.me.Username, e.opts.NotifySelf) {
-			e.wg.Add(1)
-			go e.notify(ctx, ev, p)
+			switch {
+			case e.opts.RespectMutes && e.isMuted(p.ChannelId):
+				e.log.Printf("mention in muted channel %s — skipped", p.ChannelId)
+			case e.inQuietHoursNow():
+				e.log.Printf("mention during quiet hours — skipped (cached; use /unread)")
+			default:
+				e.wg.Add(1)
+				go e.notify(ctx, ev, p)
+			}
 		}
 	case model.WebsocketEventPostEdited:
 		if p := postFromEvent(ev); p != nil {
@@ -196,14 +257,32 @@ func (e *Engine) notify(ctx context.Context, ev *model.WebSocketEvent, p *model.
 		}
 	}
 
-	msg := "🔔 " + label + "\n" + body
 	if e.tg == nil {
 		e.log.Printf("mention: %s — %s", label, truncateForLog(body))
 		return
 	}
-	if err := e.tg.SendMessage(ctx, e.opts.TelegramChatID, msg); err != nil {
+
+	// With two-way enabled, attach quick-action buttons and remember where a
+	// free-text reply to this notification should land.
+	var keyboard [][]telegram.Button
+	if e.inboundEnabled() {
+		keyboard = [][]telegram.Button{{
+			{Text: "👍", Data: "k:" + p.Id},
+			{Text: "✓ Read", Data: "r:" + p.ChannelId},
+		}}
+		body += "\n\n↩ reply to respond"
+	}
+	msgID, err := e.tg.Send(ctx, e.opts.TelegramChatID, "🔔 "+label+"\n"+body, keyboard)
+	if err != nil {
 		e.log.Printf("telegram delivery failed for %s: %v", label, err)
 		return
+	}
+	if e.inboundEnabled() {
+		root := p.RootId
+		if root == "" {
+			root = p.Id
+		}
+		e.rememberReply(msgID, replyTarget{channelID: p.ChannelId, rootID: root})
 	}
 	e.log.Printf("notified telegram: %s", label)
 }
@@ -275,6 +354,188 @@ func truncateForLog(s string) string {
 		return s[:logBodyCap] + "…"
 	}
 	return s
+}
+
+// inboundEnabled reports whether the Telegram receive loop (replies, buttons,
+// commands) should run: delivery configured, two-way on, and a chat_id to lock
+// to (the only sender obeyed).
+func (e *Engine) inboundEnabled() bool {
+	return e.tg != nil && e.opts.TwoWay && e.opts.TelegramChatID != ""
+}
+
+// isMuted reports whether the channel is muted in Mattermost.
+func (e *Engine) isMuted(channelID string) bool {
+	e.mutedMu.RLock()
+	defer e.mutedMu.RUnlock()
+	return e.muted[channelID]
+}
+
+// refreshMuted reloads the set of channels muted in Mattermost (notify prop
+// mark_unread = mention). Best-effort: a failure leaves the previous set.
+func (e *Engine) refreshMuted(ctx context.Context) {
+	if !e.opts.RespectMutes || e.me == nil {
+		return
+	}
+	members, err := e.client.ChannelMembers(ctx, e.me.Id)
+	if err != nil {
+		e.log.Printf("refresh muted channels: %v", err)
+		return
+	}
+	set := make(map[string]bool)
+	for _, m := range members {
+		if m.NotifyProps[model.MarkUnreadNotifyProp] == model.ChannelMarkUnreadMention {
+			set[m.ChannelId] = true
+		}
+	}
+	e.mutedMu.Lock()
+	e.muted = set
+	e.mutedMu.Unlock()
+}
+
+// inQuietHoursNow reports whether the current local time is in the quiet window.
+func (e *Engine) inQuietHoursNow() bool {
+	if !e.quietOn {
+		return false
+	}
+	now := time.Now()
+	return inQuietHours(now.Hour()*60+now.Minute(), e.quietStart, e.quietEnd)
+}
+
+// rememberReply records (bounded) where a reply to Telegram message msgID posts.
+func (e *Engine) rememberReply(msgID int, t replyTarget) {
+	if msgID == 0 {
+		return
+	}
+	e.repliesMu.Lock()
+	defer e.repliesMu.Unlock()
+	if _, exists := e.replies[msgID]; !exists {
+		e.repliesOrder = append(e.repliesOrder, msgID)
+		for len(e.repliesOrder) > maxReplyTargets {
+			delete(e.replies, e.repliesOrder[0])
+			e.repliesOrder = e.repliesOrder[1:]
+		}
+	}
+	e.replies[msgID] = t
+}
+
+func (e *Engine) lookupReply(msgID int) (replyTarget, bool) {
+	e.repliesMu.Lock()
+	defer e.repliesMu.Unlock()
+	t, ok := e.replies[msgID]
+	return t, ok
+}
+
+// sendTG sends a plain text message to the configured chat, logging on error.
+func (e *Engine) sendTG(ctx context.Context, text string) {
+	if _, err := e.tg.Send(ctx, e.opts.TelegramChatID, text, nil); err != nil {
+		e.log.Printf("telegram send: %v", err)
+	}
+}
+
+// pollUpdates long-polls Telegram for inbound messages/buttons and dispatches
+// them until ctx is cancelled.
+func (e *Engine) pollUpdates(ctx context.Context) {
+	defer e.wg.Done()
+	offset := 0
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		ups, err := e.tg.GetUpdates(ctx, offset, pollTimeoutSec)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			e.log.Printf("telegram getUpdates: %v", err)
+			if !sleepCtx(ctx, 5*time.Second) {
+				return
+			}
+			continue
+		}
+		for _, u := range ups {
+			offset = u.UpdateID + 1
+			e.handleUpdate(ctx, u)
+		}
+	}
+}
+
+// authorized reports whether an update came from the configured chat_id — the
+// only sender the bot acts on. Everyone else is ignored silently.
+func (e *Engine) authorized(u telegram.Update) bool {
+	var from *telegram.User
+	switch {
+	case u.CallbackQuery != nil:
+		from = u.CallbackQuery.From
+	case u.Message != nil:
+		from = u.Message.From
+	}
+	return from != nil && strconv.FormatInt(from.ID, 10) == e.opts.TelegramChatID
+}
+
+// handleUpdate routes one inbound update: button tap, command, or reply.
+func (e *Engine) handleUpdate(ctx context.Context, u telegram.Update) {
+	if !e.authorized(u) {
+		e.log.Printf("ignoring telegram update from an unauthorized sender")
+		return
+	}
+	switch {
+	case u.CallbackQuery != nil:
+		e.handleCallback(ctx, u.CallbackQuery)
+	case u.Message != nil && strings.TrimSpace(u.Message.Text) != "":
+		text := strings.TrimSpace(u.Message.Text)
+		switch {
+		case strings.HasPrefix(text, "/"):
+			e.handleCommand(ctx, u.Message)
+		case u.Message.ReplyToMessage != nil:
+			e.handleReply(ctx, u.Message)
+		default:
+			e.sendTG(ctx, "Reply to a notification to post back, or try /help.")
+		}
+	}
+}
+
+// handleCallback runs a tapped quick-action button (👍 react / ✓ mark read).
+func (e *Engine) handleCallback(ctx context.Context, cb *telegram.CallbackQuery) {
+	action, arg := decodeCallback(cb.Data)
+	note := "done"
+	switch action {
+	case "k": // react 👍
+		if err := e.client.AddReaction(ctx, e.me.Id, arg, defaultReaction); err != nil {
+			e.log.Printf("react failed: %v", err)
+			note = "react failed"
+		} else {
+			note = "👍 reacted"
+		}
+	case "r": // mark channel read
+		if err := e.client.ViewChannel(ctx, e.me.Id, arg); err != nil {
+			e.log.Printf("mark-read failed: %v", err)
+			note = "mark-read failed"
+		} else {
+			note = "✓ marked read"
+		}
+	default:
+		note = "unknown action"
+	}
+	if err := e.tg.AnswerCallback(ctx, cb.ID, note); err != nil {
+		e.log.Printf("answer callback: %v", err)
+	}
+}
+
+// handleReply posts a free-text Telegram reply back into the Mattermost thread
+// the replied-to notification came from.
+func (e *Engine) handleReply(ctx context.Context, msg *telegram.Message) {
+	target, ok := e.lookupReply(msg.ReplyToMessage.MessageID)
+	if !ok {
+		e.sendTG(ctx, "I no longer have context for that message (the daemon may have restarted) — reply to a newer notification.")
+		return
+	}
+	if _, err := e.client.Send(ctx, target.channelID, target.rootID, msg.Text, nil); err != nil {
+		e.log.Printf("post reply failed: %v", err)
+		e.sendTG(ctx, "Failed to post: "+err.Error())
+		return
+	}
+	e.sendTG(ctx, "↩ posted")
+	e.log.Printf("posted reply to channel %s", target.channelID)
 }
 
 // backoff returns the reconnect delay for the n-th consecutive failure (1 → 1s,

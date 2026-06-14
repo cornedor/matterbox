@@ -119,6 +119,18 @@ type ListenConfig struct {
 	// NotifyPrompt is the system prompt for the notification summary. The
 	// reader's @username and the message source are appended at request time.
 	NotifyPrompt string `yaml:"notify_prompt"`
+	// RespectMutes skips notifications for channels you've muted in Mattermost.
+	// Pointer so an absent key defaults to true.
+	RespectMutes *bool `yaml:"respect_mutes"`
+	// QuietHours suppresses notifications during a daily window, "HH:MM-HH:MM"
+	// in local time (e.g. "22:00-08:00"; may wrap past midnight). Empty = always
+	// on. Messages are still cached — catch up with the bot's /unread command.
+	QuietHours string `yaml:"quiet_hours"`
+	// TwoWay enables the inbound Telegram channel: reply to a notification to
+	// post back, tap the 👍 / ✓ buttons, and run /search /unread /digest. Needs
+	// telegram.chat_id (the only sender the bot obeys). Pointer so an absent key
+	// defaults to true; set false for notify-only.
+	TwoWay *bool `yaml:"two_way"`
 }
 
 // GiphyConfig configures pasted-Giphy-link expansion. Defaults in fillDefaults.
@@ -434,7 +446,7 @@ func Load() (*Config, error) {
 	// and rewrite the file once so the discovered model + prompt show up as
 	// editable defaults. Best-effort: a failed rewrite only means the file
 	// keeps working off in-memory defaults.
-	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == ""
+	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.TwoWay == nil
 	cfg.fillDefaults()
 	if addDefaults {
 		if werr := writeConfig(p, cfg); werr != nil {
@@ -535,6 +547,14 @@ func (c *Config) fillDefaults() {
 	}
 	if c.Listen.NotifyPrompt == "" {
 		c.Listen.NotifyPrompt = defaultListenNotifyPrompt
+	}
+	if c.Listen.RespectMutes == nil {
+		t := true
+		c.Listen.RespectMutes = &t
+	}
+	if c.Listen.TwoWay == nil {
+		t := true
+		c.Listen.TwoWay = &t
 	}
 }
 
@@ -637,6 +657,12 @@ func writeConfig(p string, cfg *Config) error {
 		"#             summarize (default true) sends an LLM summary of the\n" +
 		"#             surrounding context (via the summary endpoint+model, falling\n" +
 		"#             back to raw text when it's down) instead of the bare message;\n" +
-		"#             notify_prompt is that summary's system prompt.\n"
+		"#             notify_prompt is that summary's system prompt;\n" +
+		"#             respect_mutes (default true) skips channels you muted in\n" +
+		"#             Mattermost; quiet_hours (e.g. \"22:00-08:00\", local, may wrap\n" +
+		"#             midnight; empty = always on) suppresses pushes in that window\n" +
+		"#             (messages are still cached — use the bot's /unread);\n" +
+		"#             two_way (default true) enables replying from Telegram and the\n" +
+		"#             /search /unread /digest commands (needs telegram.chat_id).\n"
 	return os.WriteFile(p, append([]byte(header), body...), 0o644)
 }
