@@ -123,11 +123,30 @@ CREATE TRIGGER IF NOT EXISTS posts_delete_vector AFTER DELETE ON posts BEGIN
 END;
 `
 
+// listenSchemaSQL backs the `matterbox listen` daemon. meta is a tiny key/value
+// store (currently the catch-up cursor — the timestamp up to which mentions have
+// been notified, so a restart neither loses nor replays them). notif_targets
+// maps a sent Telegram notification to the Mattermost message it's about, so a
+// reply or emoji reaction survives a daemon restart instead of losing context.
+const listenSchemaSQL = `
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS notif_targets (
+    tg_msg_id  INTEGER PRIMARY KEY,
+    channel_id TEXT NOT NULL,
+    root_id    TEXT NOT NULL,
+    post_id    TEXT NOT NULL,
+    created_at INTEGER NOT NULL    -- unix-ms when the notification was sent
+);
+`
+
 // schemaSQL is run once per Open. Every statement is idempotent so a
 // migration is just "execute the latest schema" — no version table
 // needed for the current shape. Order matters: posts → posts_fts → triggers,
 // then post_vectors (its delete trigger references posts).
-const schemaSQL = postsSchemaSQL + ftsCreateSQL + triggersSQL + vectorsSchemaSQL
+const schemaSQL = postsSchemaSQL + ftsCreateSQL + triggersSQL + vectorsSchemaSQL + listenSchemaSQL
 
 func (s *Store) migrate() error {
 	if _, err := s.db.Exec(schemaSQL); err != nil {

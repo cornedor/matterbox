@@ -36,11 +36,6 @@ const defaultContextPosts = 20
 // delivery is configured, so a long paste doesn't flood journald.
 const logBodyCap = 200
 
-// maxReplyTargets caps the in-memory notification→thread map (so a long-running
-// daemon doesn't grow unbounded); oldest entries are evicted first. Replies to
-// notifications older than this since a restart fall back to a "no context" note.
-const maxReplyTargets = 1000
-
 // pollTimeoutSec is the Telegram long-poll timeout for getUpdates.
 const pollTimeoutSec = 30
 
@@ -95,12 +90,31 @@ type Engine struct {
 	mutedMu sync.RWMutex
 	muted   map[string]bool // channels muted in Mattermost (RespectMutes)
 
-	// replies maps a sent notification's Telegram message id to the Mattermost
-	// thread a free-text reply should post into. Bounded by maxReplyTargets.
-	repliesMu    sync.Mutex
-	replies      map[int]notifTarget
-	repliesOrder []int
+	// lastSeenMs is the catch-up cursor: mentions at or before it have already
+	// been notified. Persisted in the store (key cursorKey) so a restart neither
+	// loses nor replays missed mentions.
+	seenMu     sync.Mutex
+	lastSeenMs int64
+
+	// teams maps team id → URL name for building post permalinks; defaultTeam is
+	// the fallback when a post carries no team (DMs). Loaded once at startup.
+	teamsMu     sync.RWMutex
+	teams       map[string]string
+	defaultTeam string
 }
+
+// cursorKey is the meta-table key for the catch-up cursor.
+const cursorKey = "listen.last_seen_ms"
+
+// catchupMaxAge bounds how far back catch-up looks, so a daemon that was off for
+// weeks doesn't surface a flood of stale mentions on its first reconnect.
+const catchupMaxAge = 7 * 24 * time.Hour
+
+// maxPhotoBytes is the largest image forwarded via Telegram sendPhoto.
+const maxPhotoBytes = 10 << 20
+
+// captionCap is Telegram's photo-caption length limit.
+const captionCap = 1024
 
 // notifTarget links a sent notification to the Mattermost message it's about,
 // so a Telegram reply posts into the right thread and a Telegram reaction lands
@@ -122,8 +136,8 @@ func New(client *mm.Client, st *store.Store, ch *chat.Client, tg *telegram.Clien
 	}
 	e := &Engine{
 		client: client, store: st, chat: ch, tg: tg, me: me, opts: opts, log: logger,
-		muted:   map[string]bool{},
-		replies: map[int]notifTarget{},
+		muted: map[string]bool{},
+		teams: map[string]string{},
 	}
 	if start, end, ok := parseQuietHours(opts.QuietHours); ok {
 		e.quietStart, e.quietEnd, e.quietOn = start, end, true
@@ -135,6 +149,8 @@ func New(client *mm.Client, st *store.Store, ch *chat.Client, tg *telegram.Clien
 // ctx is cancelled. It returns ctx.Err() once all in-flight notifications have
 // drained, so a caller wiring it to SIGINT/SIGTERM gets a clean shutdown.
 func (e *Engine) Run(ctx context.Context) error {
+	e.loadCursor()      // catch-up watermark (set to now on first ever run)
+	e.refreshTeams(ctx) // team names for permalinks
 	e.refreshMuted(ctx) // best-effort initial mute set, before events flow
 	if e.inboundEnabled() {
 		e.log.Printf("two-way enabled: replies + commands accepted from chat %s", e.opts.TelegramChatID)
@@ -149,6 +165,13 @@ func (e *Engine) Run(ctx context.Context) error {
 		}
 		wsc, err := e.client.DialWS()
 		if err != nil {
+			// An expired/revoked token never recovers by retrying — alert and
+			// exit cleanly so the supervisor doesn't restart-loop forever.
+			if IsUnauthorized(err) {
+				e.alertTokenExpired(ctx)
+				e.wg.Wait()
+				return nil
+			}
 			attempt++
 			d := backoff(attempt)
 			e.log.Printf("websocket dial failed (retry in %s): %v", d, err)
@@ -161,6 +184,7 @@ func (e *Engine) Run(ctx context.Context) error {
 		attempt = 0
 		e.log.Printf("connected (%s)", e.opts.ServerURL)
 		go e.refreshMuted(ctx) // pick up mute changes made while we were away
+		e.catchUp(ctx)         // notify mentions that arrived while disconnected
 		e.consume(ctx, wsc)
 		wsc.Close()
 		if err := ctx.Err(); err != nil {
@@ -260,6 +284,7 @@ func (e *Engine) notify(ctx context.Context, ev *model.WebSocketEvent, p *model.
 
 	if e.tg == nil {
 		e.log.Printf("mention: %s — %s", label, truncateForLog(body))
+		e.advanceCursor(p.CreateAt)
 		return
 	}
 
@@ -272,7 +297,29 @@ func (e *Engine) notify(ctx context.Context, ev *model.WebSocketEvent, p *model.
 		}}
 		body += "\n\n↩ reply to respond · react to forward the emoji + mark read"
 	}
-	msgID, err := e.tg.Send(ctx, e.opts.TelegramChatID, "🔔 "+label+"\n"+body, keyboard)
+	text := "🔔 " + label + "\n" + body
+	if link := e.permalink(ev, p.Id); link != "" {
+		text += "\n" + link
+	}
+
+	// Forward an image attachment as a photo (caption-capped); fall back to a
+	// text notification when there's no image or the upload fails.
+	var (
+		msgID int
+		err   error
+	)
+	if name, data, ok := e.imageAttachment(ctx, p); ok {
+		caption := text
+		if len(caption) > captionCap {
+			caption = caption[:captionCap-1] + "…"
+		}
+		if msgID, err = e.tg.SendPhoto(ctx, e.opts.TelegramChatID, caption, name, data, keyboard); err != nil {
+			e.log.Printf("send photo failed for %s, falling back to text: %v", label, err)
+			msgID, err = e.tg.Send(ctx, e.opts.TelegramChatID, text, keyboard)
+		}
+	} else {
+		msgID, err = e.tg.Send(ctx, e.opts.TelegramChatID, text, keyboard)
+	}
 	if err != nil {
 		e.log.Printf("telegram delivery failed for %s: %v", label, err)
 		return
@@ -282,8 +329,9 @@ func (e *Engine) notify(ctx context.Context, ev *model.WebSocketEvent, p *model.
 		if root == "" {
 			root = p.Id
 		}
-		e.rememberReply(msgID, notifTarget{channelID: p.ChannelId, rootID: root, postID: p.Id})
+		e.rememberNotif(msgID, notifTarget{channelID: p.ChannelId, rootID: root, postID: p.Id})
 	}
+	e.advanceCursor(p.CreateAt)
 	e.log.Printf("notified telegram: %s", label)
 }
 
@@ -401,28 +449,24 @@ func (e *Engine) inQuietHoursNow() bool {
 	return inQuietHours(now.Hour()*60+now.Minute(), e.quietStart, e.quietEnd)
 }
 
-// rememberReply records (bounded) where a reply to Telegram message msgID posts.
-func (e *Engine) rememberReply(msgID int, t notifTarget) {
+// rememberNotif persists which Mattermost message a sent notification (msgID)
+// referenced, so a later reply or reaction works across daemon restarts.
+func (e *Engine) rememberNotif(msgID int, t notifTarget) {
 	if msgID == 0 {
 		return
 	}
-	e.repliesMu.Lock()
-	defer e.repliesMu.Unlock()
-	if _, exists := e.replies[msgID]; !exists {
-		e.repliesOrder = append(e.repliesOrder, msgID)
-		for len(e.repliesOrder) > maxReplyTargets {
-			delete(e.replies, e.repliesOrder[0])
-			e.repliesOrder = e.repliesOrder[1:]
-		}
+	if err := e.store.PutNotifTarget(msgID, t.channelID, t.rootID, t.postID); err != nil {
+		e.log.Printf("persist notif target: %v", err)
 	}
-	e.replies[msgID] = t
 }
 
-func (e *Engine) lookupReply(msgID int) (notifTarget, bool) {
-	e.repliesMu.Lock()
-	defer e.repliesMu.Unlock()
-	t, ok := e.replies[msgID]
-	return t, ok
+func (e *Engine) lookupNotif(msgID int) (notifTarget, bool) {
+	ch, root, post, ok, err := e.store.GetNotifTarget(msgID)
+	if err != nil {
+		e.log.Printf("lookup notif target: %v", err)
+		return notifTarget{}, false
+	}
+	return notifTarget{channelID: ch, rootID: root, postID: post}, ok
 }
 
 // sendTG sends a plain text message to the configured chat, logging on error.
@@ -521,7 +565,7 @@ func (e *Engine) handleCallback(ctx context.Context, cb *telegram.CallbackQuery)
 // handleReply posts a free-text Telegram reply back into the Mattermost thread
 // the replied-to notification came from.
 func (e *Engine) handleReply(ctx context.Context, msg *telegram.Message) {
-	target, ok := e.lookupReply(msg.ReplyToMessage.MessageID)
+	target, ok := e.lookupNotif(msg.ReplyToMessage.MessageID)
 	if !ok {
 		e.sendTG(ctx, "I no longer have context for that message (the daemon may have restarted) — reply to a newer notification.")
 		return
@@ -543,7 +587,7 @@ func (e *Engine) handleReply(ctx context.Context, msg *telegram.Message) {
 // Mattermost post (add/remove to match), and marks the channel read — reacting
 // is the closest signal the Bot API gives that you saw the message.
 func (e *Engine) handleReaction(ctx context.Context, mr *telegram.MessageReactionUpdated) {
-	target, ok := e.lookupReply(mr.MessageID)
+	target, ok := e.lookupNotif(mr.MessageID)
 	if !ok {
 		return // reaction on an unknown/old notification — nothing to map it to
 	}
@@ -601,6 +645,215 @@ func emojiSet(rs []telegram.ReactionType) map[string]bool {
 		}
 	}
 	return m
+}
+
+// loadCursor reads the catch-up watermark from the store. On the first ever run
+// (no stored value) it is set to now, so existing unread isn't replayed as
+// "missed".
+func (e *Engine) loadCursor() {
+	if v, ok, err := e.store.GetMeta(cursorKey); err != nil {
+		e.log.Printf("load cursor: %v", err)
+	} else if ok {
+		if ms, perr := strconv.ParseInt(v, 10, 64); perr == nil {
+			e.lastSeenMs = ms
+			return
+		}
+	}
+	e.lastSeenMs = time.Now().UnixMilli()
+	if err := e.store.SetMeta(cursorKey, strconv.FormatInt(e.lastSeenMs, 10)); err != nil {
+		e.log.Printf("init cursor: %v", err)
+	}
+}
+
+func (e *Engine) cursor() int64 {
+	e.seenMu.Lock()
+	defer e.seenMu.Unlock()
+	return e.lastSeenMs
+}
+
+// advanceCursor moves the catch-up watermark forward (never back) and persists.
+func (e *Engine) advanceCursor(ms int64) {
+	e.seenMu.Lock()
+	if ms <= e.lastSeenMs {
+		e.seenMu.Unlock()
+		return
+	}
+	e.lastSeenMs = ms
+	e.seenMu.Unlock()
+	if err := e.store.SetMeta(cursorKey, strconv.FormatInt(ms, 10)); err != nil {
+		e.log.Printf("persist cursor: %v", err)
+	}
+}
+
+// catchUp delivers (as one consolidated message) the direct mentions / DMs that
+// arrived while the daemon was disconnected — unread, newer than the cursor, and
+// within catchupMaxAge — then advances the cursor. Runs after every connect.
+func (e *Engine) catchUp(ctx context.Context) {
+	if !e.opts.NotifyOnMention || e.me == nil || e.tg == nil {
+		return
+	}
+	cursor := e.cursor()
+	if floor := time.Now().Add(-catchupMaxAge).UnixMilli(); cursor < floor {
+		cursor = floor
+	}
+	chByID, members, err := e.channelsAndMembers(ctx)
+	if err != nil {
+		e.log.Printf("catch-up: %v", err)
+		return
+	}
+	type item struct {
+		channelID string
+		post      *model.Post
+	}
+	var (
+		items            []item
+		chIDs, authorIDs []string
+	)
+	for _, mb := range members {
+		ch := chByID[mb.ChannelId]
+		if ch == nil {
+			continue
+		}
+		isDM := ch.Type == model.ChannelTypeDirect
+		if isDM {
+			if int(ch.TotalMsgCountRoot-mb.MsgCountRoot) <= 0 {
+				continue
+			}
+		} else if mb.MentionCountRoot == 0 {
+			continue
+		}
+		var pl *model.PostList
+		if mb.LastViewedAt > 0 {
+			pl, _ = e.client.PostsSince(ctx, mb.ChannelId, mb.LastViewedAt)
+		} else {
+			pl, _ = e.client.Posts(ctx, mb.ChannelId, 50)
+		}
+		for _, p := range unreadPosts(pl, mb.LastViewedAt) {
+			if p.UserId == e.me.Id || p.CreateAt <= cursor {
+				continue
+			}
+			if !isDM && !mentionsName(p.Message, e.me.Username) {
+				continue
+			}
+			items = append(items, item{mb.ChannelId, p})
+			chIDs = append(chIDs, mb.ChannelId)
+			authorIDs = append(authorIDs, p.UserId)
+		}
+	}
+	now := time.Now().UnixMilli()
+	if len(items) == 0 {
+		e.advanceCursor(now)
+		return
+	}
+	sort.SliceStable(items, func(i, j int) bool { return items[i].post.CreateAt < items[j].post.CreateAt })
+	lbl := e.buildLabeler(ctx, chIDs, authorIDs)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "📥 While you were away — %s:", plural(len(items), "mention", "mentions"))
+	const show = 20
+	for i, it := range items {
+		if i >= show {
+			fmt.Fprintf(&b, "\n…and %d more — /unread for the rest", len(items)-show)
+			break
+		}
+		name := lbl.names[it.post.UserId]
+		if name == "" {
+			name = it.post.UserId
+		}
+		fmt.Fprintf(&b, "\n• %s · @%s · %s", lbl.label(it.channelID), name, snippet(it.post.Message, 140))
+	}
+	e.sendTG(ctx, b.String())
+	e.advanceCursor(now)
+	e.log.Printf("catch-up: %d missed mention(s)", len(items))
+}
+
+// refreshTeams loads team id → URL name (for permalinks) once at startup.
+func (e *Engine) refreshTeams(ctx context.Context) {
+	if e.me == nil {
+		return
+	}
+	teams, err := e.client.Teams(ctx, e.me.Id)
+	if err != nil {
+		e.log.Printf("load teams: %v", err)
+		return
+	}
+	m := make(map[string]string, len(teams))
+	for _, t := range teams {
+		m[t.Id] = t.Name
+	}
+	e.teamsMu.Lock()
+	e.teams = m
+	if e.defaultTeam == "" && len(teams) > 0 {
+		e.defaultTeam = teams[0].Name
+	}
+	e.teamsMu.Unlock()
+}
+
+// permalink builds a Mattermost permalink (server/<team>/pl/<id>) to the post,
+// using the post's team and falling back to any team for DMs. "" if no team.
+func (e *Engine) permalink(ev *model.WebSocketEvent, postID string) string {
+	if e.opts.ServerURL == "" || postID == "" {
+		return ""
+	}
+	e.teamsMu.RLock()
+	team := e.teams[eventStr(ev, "team_id")]
+	if team == "" {
+		team = e.defaultTeam
+	}
+	e.teamsMu.RUnlock()
+	if team == "" {
+		return ""
+	}
+	return strings.TrimRight(e.opts.ServerURL, "/") + "/" + team + "/pl/" + postID
+}
+
+// imageAttachment returns the first image attachment on the post (filename +
+// bytes) if present and within maxPhotoBytes, for forwarding to Telegram.
+func (e *Engine) imageAttachment(ctx context.Context, p *model.Post) (string, []byte, bool) {
+	var files []*model.FileInfo
+	if p.Metadata != nil {
+		files = p.Metadata.Files
+	}
+	if len(files) == 0 && len(p.FileIds) > 0 {
+		if fi, err := e.client.FileInfosForPost(ctx, p.Id); err == nil {
+			files = fi
+		}
+	}
+	for _, f := range files {
+		if f == nil || !strings.HasPrefix(f.MimeType, "image/") || f.Size <= 0 || f.Size > maxPhotoBytes {
+			continue
+		}
+		data, err := e.client.DownloadFile(ctx, f.Id)
+		if err != nil {
+			e.log.Printf("download attachment %s: %v", f.Id, err)
+			return "", nil, false
+		}
+		name := f.Name
+		if name == "" {
+			name = "image"
+		}
+		return name, data, true
+	}
+	return "", nil, false
+}
+
+// IsUnauthorized reports whether err looks like a 401 from Mattermost (an
+// expired or revoked session token). Mirrors the TUI's check.
+func IsUnauthorized(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "401") || strings.Contains(s, "unauthorized")
+}
+
+// alertTokenExpired warns (log + Telegram) that the session token is dead and
+// re-login is needed.
+func (e *Engine) alertTokenExpired(ctx context.Context) {
+	e.log.Printf("Mattermost session expired (401) — run `matterbox login` on the host and restart")
+	if e.tg != nil {
+		e.sendTG(ctx, "⚠️ matterbox: your Mattermost session expired. Run `matterbox login` on the host and restart the daemon.")
+	}
 }
 
 // backoff returns the reconnect delay for the n-th consecutive failure (1 → 1s,

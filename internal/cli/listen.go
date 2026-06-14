@@ -58,8 +58,27 @@ func runListen(ctx context.Context, out io.Writer, notifySelf bool) error {
 	if err != nil {
 		return err
 	}
+	logger := log.New(out, "", log.LstdFlags)
+
+	// Deliver to Telegram only when a bot token is set; otherwise the daemon
+	// still warms the cache and logs mentions. Built before the first API call
+	// so a startup auth failure can be reported over Telegram too.
+	var tgClient *telegram.Client
+	if cfg.Telegram.BotToken != "" {
+		tgClient = telegram.New(cfg.Telegram.BotToken)
+	}
+
 	me, err := client.Me(ctx)
 	if err != nil {
+		if listen.IsUnauthorized(err) {
+			if tgClient != nil && cfg.Telegram.ChatID != "" {
+				_ = tgClient.SendMessage(ctx, cfg.Telegram.ChatID,
+					"⚠️ matterbox: your Mattermost session expired. Run `matterbox login` on the host and restart the daemon.")
+			}
+			// Exit cleanly so a supervisor doesn't restart-loop on a dead token.
+			logger.Printf("matterbox listen: session expired — run `matterbox login` and restart")
+			return nil
+		}
 		return err
 	}
 
@@ -73,21 +92,12 @@ func runListen(ctx context.Context, out io.Writer, notifySelf bool) error {
 	}
 	defer st.Close()
 
-	logger := log.New(out, "", log.LstdFlags)
-
 	// Summarize only when enabled and a chat endpoint is configured; otherwise
 	// notifications carry the raw message text.
 	summarize := cfg.Listen.Summarize != nil && *cfg.Listen.Summarize
 	var chatClient *chat.Client
 	if summarize && cfg.Summary.Endpoint != "" {
 		chatClient = chat.New(cfg.Summary.Endpoint, cfg.Summary.APIKey, cfg.Summary.Model)
-	}
-
-	// Deliver to Telegram only when a bot token is set; otherwise the daemon
-	// still warms the cache and logs mentions.
-	var tgClient *telegram.Client
-	if cfg.Telegram.BotToken != "" {
-		tgClient = telegram.New(cfg.Telegram.BotToken)
 	}
 
 	opts := listen.Options{

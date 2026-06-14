@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"strings"
 	"time"
@@ -90,18 +91,7 @@ func (c *Client) Send(ctx context.Context, chatID, text string, keyboard [][]But
 		return 0, fmt.Errorf("telegram: no chat_id configured")
 	}
 
-	req := sendRequest{ChatID: chatID, Text: text, DisableWebPagePreview: true}
-	if len(keyboard) > 0 {
-		rm := &replyMarkup{}
-		for _, row := range keyboard {
-			var r []inlineButton
-			for _, b := range row {
-				r = append(r, inlineButton{Text: b.Text, CallbackData: b.Data})
-			}
-			rm.InlineKeyboard = append(rm.InlineKeyboard, r)
-		}
-		req.ReplyMarkup = rm
-	}
+	req := sendRequest{ChatID: chatID, Text: text, DisableWebPagePreview: true, ReplyMarkup: buildReplyMarkup(keyboard)}
 
 	var resp sendResponse
 	if err := c.call(ctx, "sendMessage", requestTimeout, req, &resp); err != nil {
@@ -111,6 +101,82 @@ func (c *Client) Send(ctx context.Context, chatID, text string, keyboard [][]But
 		return 0, fmt.Errorf("telegram sendMessage: %s", firstNonEmpty(resp.Description, "not ok"))
 	}
 	return resp.Result.MessageID, nil
+}
+
+// buildReplyMarkup converts the public Button grid into the wire form, or nil
+// for an empty keyboard (so reply_markup is omitted).
+func buildReplyMarkup(keyboard [][]Button) *replyMarkup {
+	if len(keyboard) == 0 {
+		return nil
+	}
+	rm := &replyMarkup{}
+	for _, row := range keyboard {
+		var r []inlineButton
+		for _, b := range row {
+			r = append(r, inlineButton{Text: b.Text, CallbackData: b.Data})
+		}
+		rm.InlineKeyboard = append(rm.InlineKeyboard, r)
+	}
+	return rm
+}
+
+// SendPhoto uploads an image (multipart) with a caption and optional inline
+// keyboard, returning the sent message's id. Used to forward image attachments;
+// the Mattermost file URL needs auth, so the bytes are uploaded directly.
+func (c *Client) SendPhoto(ctx context.Context, chatID, caption, filename string, data []byte, keyboard [][]Button) (int, error) {
+	if c == nil {
+		return 0, fmt.Errorf("telegram: nil client")
+	}
+	if c.token == "" {
+		return 0, fmt.Errorf("telegram: no bot token configured")
+	}
+	if strings.TrimSpace(chatID) == "" {
+		return 0, fmt.Errorf("telegram: no chat_id configured")
+	}
+
+	body := &bytes.Buffer{}
+	mw := multipart.NewWriter(body)
+	_ = mw.WriteField("chat_id", chatID)
+	if caption != "" {
+		_ = mw.WriteField("caption", caption)
+	}
+	if rm := buildReplyMarkup(keyboard); rm != nil {
+		if j, err := json.Marshal(rm); err == nil {
+			_ = mw.WriteField("reply_markup", string(j))
+		}
+	}
+	fw, err := mw.CreateFormFile("photo", filename)
+	if err != nil {
+		return 0, fmt.Errorf("create form file: %w", err)
+	}
+	if _, err := fw.Write(data); err != nil {
+		return 0, fmt.Errorf("write photo: %w", err)
+	}
+	if err := mw.Close(); err != nil {
+		return 0, fmt.Errorf("close multipart: %w", err)
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+	url := fmt.Sprintf("%s/bot%s/sendPhoto", strings.TrimRight(c.base, "/"), c.token)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, body)
+	if err != nil {
+		return 0, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("call telegram sendPhoto: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	var sr sendResponse
+	_ = json.Unmarshal(respBody, &sr)
+	if resp.StatusCode != http.StatusOK || !sr.OK {
+		return 0, fmt.Errorf("telegram sendPhoto failed (%s): %s", resp.Status, firstNonEmpty(sr.Description, resp.Status))
+	}
+	return sr.Result.MessageID, nil
 }
 
 // call POSTs reqBody as JSON to the given Bot API method and decodes the
