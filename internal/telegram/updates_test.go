@@ -77,6 +77,62 @@ func TestGetUpdates(t *testing.T) {
 	}
 }
 
+func TestGetUpdatesPhotoMessage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// A photo reply: empty text, words in caption, photo as a size ladder.
+		io.WriteString(w, `{"ok":true,"result":[
+			{"update_id":1,"message":{"message_id":5,"from":{"id":99},"chat":{"id":99},
+				"caption":"here you go","reply_to_message":{"message_id":4},
+				"photo":[
+					{"file_id":"small","width":90,"height":60,"file_size":1000},
+					{"file_id":"big","width":1280,"height":853,"file_size":99000}
+				]}}
+		]}`)
+	}))
+	defer srv.Close()
+
+	c := New("tok")
+	c.base = srv.URL
+	ups, err := c.GetUpdates(context.Background(), 0, 0)
+	if err != nil {
+		t.Fatalf("GetUpdates: %v", err)
+	}
+	if len(ups) != 1 || ups[0].Message == nil {
+		t.Fatalf("got %d updates", len(ups))
+	}
+	m := ups[0].Message
+	if m.Text != "" || m.Caption != "here you go" {
+		t.Errorf("text=%q caption=%q (caption should carry the words)", m.Text, m.Caption)
+	}
+	if m.ReplyToMessage == nil || m.ReplyToMessage.MessageID != 4 {
+		t.Errorf("reply_to = %+v", m.ReplyToMessage)
+	}
+	ph := m.LargestPhoto()
+	if ph == nil || ph.FileID != "big" {
+		t.Errorf("LargestPhoto = %+v, want the highest-resolution size", ph)
+	}
+}
+
+func TestLargestPhoto(t *testing.T) {
+	if (&Message{}).LargestPhoto() != nil {
+		t.Error("no photo should yield nil")
+	}
+	var m *Message
+	if m.LargestPhoto() != nil {
+		t.Error("nil message should yield nil")
+	}
+	// Picks by size even when the ladder isn't ordered smallest-first.
+	got := (&Message{Photo: []PhotoSize{
+		{FileID: "mid", FileSize: 500},
+		{FileID: "big", FileSize: 9000},
+		{FileID: "small", FileSize: 100},
+	}}).LargestPhoto()
+	if got == nil || got.FileID != "big" {
+		t.Errorf("LargestPhoto = %+v", got)
+	}
+}
+
 func TestAnswerCallback(t *testing.T) {
 	var gotPath string
 	var gotReq answerCallbackRequest

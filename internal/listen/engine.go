@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -112,6 +113,10 @@ const catchupMaxAge = 7 * 24 * time.Hour
 
 // maxPhotoBytes is the largest image forwarded via Telegram sendPhoto.
 const maxPhotoBytes = 10 << 20
+
+// maxInboundBytes caps a file pulled from a Telegram reply and re-uploaded to
+// Mattermost. Telegram's Bot API won't serve downloads over 20 MB anyway.
+const maxInboundBytes = 20 << 20
 
 // captionCap is Telegram's photo-caption length limit.
 const captionCap = 1024
@@ -529,17 +534,41 @@ func (e *Engine) handleUpdate(ctx context.Context, u telegram.Update) {
 		e.handleCallback(ctx, u.CallbackQuery)
 	case u.MessageReaction != nil:
 		e.handleReaction(ctx, u.MessageReaction)
-	case u.Message != nil && strings.TrimSpace(u.Message.Text) != "":
-		text := strings.TrimSpace(u.Message.Text)
-		switch {
-		case strings.HasPrefix(text, "/"):
-			e.handleCommand(ctx, u.Message)
-		case u.Message.ReplyToMessage != nil:
-			e.handleReply(ctx, u.Message)
-		default:
-			e.sendTG(ctx, "Reply to a notification to post back, or try /help.")
-		}
+	case u.Message != nil:
+		e.handleMessage(ctx, u.Message)
 	}
+}
+
+// handleMessage routes one inbound chat message: a command, a reply (text and/or
+// an image/file attachment), or — for anything that isn't a reply — a usage
+// hint. A photo/document message carries an empty Text (words ride in Caption),
+// so gating on Text alone would silently drop image replies; gate on a usable
+// payload instead.
+func (e *Engine) handleMessage(ctx context.Context, msg *telegram.Message) {
+	text := strings.TrimSpace(msg.Text)
+	_, _, hasFile := inboundFile(msg)
+	switch {
+	case strings.HasPrefix(text, "/"):
+		e.handleCommand(ctx, msg)
+	case msg.ReplyToMessage != nil:
+		e.handleReply(ctx, msg)
+	case text != "" || hasFile:
+		e.sendTG(ctx, "Reply to a notification to post back, or try /help.")
+	}
+}
+
+// inboundFile returns the file_id and a suggested filename for a photo or
+// document on msg, and ok=false when msg carries no forwardable file. A document
+// (image sent "as a file", PDF, …) brings its own name; a photo doesn't, so the
+// name is derived later from the download path.
+func inboundFile(msg *telegram.Message) (fileID, filename string, ok bool) {
+	if d := msg.Document; d != nil && d.FileID != "" {
+		return d.FileID, d.FileName, true
+	}
+	if ph := msg.LargestPhoto(); ph != nil && ph.FileID != "" {
+		return ph.FileID, "", true
+	}
+	return "", "", false
 }
 
 // handleCallback runs a tapped quick-action button (👍 react / ✓ mark read).
@@ -562,15 +591,27 @@ func (e *Engine) handleCallback(ctx context.Context, cb *telegram.CallbackQuery)
 	}
 }
 
-// handleReply posts a free-text Telegram reply back into the Mattermost thread
-// the replied-to notification came from.
+// handleReply posts a Telegram reply back into the Mattermost thread the
+// replied-to notification came from. The reply may be text, an image/file, or
+// both (a photo/document with a caption); any attachment is pulled from Telegram
+// and re-uploaded to Mattermost, since the Telegram file id means nothing there.
 func (e *Engine) handleReply(ctx context.Context, msg *telegram.Message) {
 	target, ok := e.lookupNotif(msg.ReplyToMessage.MessageID)
 	if !ok {
 		e.sendTG(ctx, "I no longer have context for that message (the daemon may have restarted) — reply to a newer notification.")
 		return
 	}
-	if _, err := e.client.Send(ctx, target.channelID, target.rootID, msg.Text, nil); err != nil {
+	fileIDs, err := e.uploadInboundFile(ctx, target.channelID, msg)
+	if err != nil {
+		e.log.Printf("forward attachment failed: %v", err)
+		e.sendTG(ctx, "Couldn't forward the attachment: "+err.Error())
+		return
+	}
+	body := msg.Text
+	if body == "" {
+		body = msg.Caption // photo/document captions ride here, not in Text
+	}
+	if _, err := e.client.Send(ctx, target.channelID, target.rootID, body, fileIDs); err != nil {
 		e.log.Printf("post reply failed: %v", err)
 		e.sendTG(ctx, "Failed to post: "+err.Error())
 		return
@@ -835,6 +876,32 @@ func (e *Engine) imageAttachment(ctx context.Context, p *model.Post) (string, []
 		return name, data, true
 	}
 	return "", nil, false
+}
+
+// uploadInboundFile downloads any photo/document on a Telegram reply and
+// re-uploads it to the Mattermost channel, returning the resulting file ids to
+// attach to the post (nil when the reply carries no attachment). The bytes flow
+// through us because a Telegram file id is meaningless to Mattermost.
+func (e *Engine) uploadInboundFile(ctx context.Context, channelID string, msg *telegram.Message) ([]string, error) {
+	fileID, name, ok := inboundFile(msg)
+	if !ok {
+		return nil, nil
+	}
+	data, fpath, err := e.tg.FetchFile(ctx, fileID, maxInboundBytes)
+	if err != nil {
+		return nil, err
+	}
+	if name == "" {
+		name = path.Base(fpath) // photos carry no name; the path ends in e.g. file_42.jpg
+	}
+	if name == "" || name == "." || name == "/" {
+		name = "image"
+	}
+	fi, err := e.client.UploadFile(ctx, channelID, name, data)
+	if err != nil {
+		return nil, err
+	}
+	return []string{fi.Id}, nil
 }
 
 // IsUnauthorized reports whether err looks like a 401 from Mattermost (an

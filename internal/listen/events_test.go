@@ -320,6 +320,34 @@ func TestReactionEmojiDiff(t *testing.T) {
 	}
 }
 
+func TestInboundFile(t *testing.T) {
+	// Plain text: nothing to forward.
+	if _, _, ok := inboundFile(&telegram.Message{Text: "hi"}); ok {
+		t.Error("text-only message should have no file")
+	}
+	// Photo: highest-resolution size, no filename (derived later from the path).
+	id, name, ok := inboundFile(&telegram.Message{Photo: []telegram.PhotoSize{
+		{FileID: "small", FileSize: 100},
+		{FileID: "big", FileSize: 9000},
+	}})
+	if !ok || id != "big" || name != "" {
+		t.Errorf("photo: id=%q name=%q ok=%v", id, name, ok)
+	}
+	// Document: its own file id and filename.
+	id, name, ok = inboundFile(&telegram.Message{Document: &telegram.Document{FileID: "doc1", FileName: "report.pdf"}})
+	if !ok || id != "doc1" || name != "report.pdf" {
+		t.Errorf("document: id=%q name=%q ok=%v", id, name, ok)
+	}
+	// Document takes precedence over a photo (an image sent "as a file").
+	id, _, ok = inboundFile(&telegram.Message{
+		Document: &telegram.Document{FileID: "doc1"},
+		Photo:    []telegram.PhotoSize{{FileID: "p1", FileSize: 1}},
+	})
+	if !ok || id != "doc1" {
+		t.Errorf("document should win over photo, got id=%q", id)
+	}
+}
+
 func ids(posts []*model.Post) []string {
 	out := make([]string, len(posts))
 	for i, p := range posts {

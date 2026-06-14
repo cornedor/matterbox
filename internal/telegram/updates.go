@@ -17,13 +17,52 @@ type Chat struct {
 	ID int64 `json:"id"`
 }
 
-// Message is an inbound text message (or the message a button is attached to).
+// PhotoSize is one rendition of a photo. Telegram delivers a photo as a ladder
+// of sizes (thumbnail … original); the largest is the full image. See
+// (*Message).LargestPhoto.
+type PhotoSize struct {
+	FileID   string `json:"file_id"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
+	FileSize int    `json:"file_size"`
+}
+
+// Document is a non-photo file attachment: an image sent "as a file", a PDF, a
+// voice note, etc. Unlike a photo it carries its own filename and mime type.
+type Document struct {
+	FileID   string `json:"file_id"`
+	FileName string `json:"file_name"`
+	MimeType string `json:"mime_type"`
+	FileSize int    `json:"file_size"`
+}
+
+// Message is an inbound message (or the message a button is attached to). A
+// photo/document message has an empty Text — the user's words ride in Caption.
 type Message struct {
-	MessageID      int      `json:"message_id"`
-	From           *User    `json:"from"`
-	Chat           *Chat    `json:"chat"`
-	Text           string   `json:"text"`
-	ReplyToMessage *Message `json:"reply_to_message"`
+	MessageID      int         `json:"message_id"`
+	From           *User       `json:"from"`
+	Chat           *Chat       `json:"chat"`
+	Text           string      `json:"text"`
+	Caption        string      `json:"caption"`
+	Photo          []PhotoSize `json:"photo"`
+	Document       *Document   `json:"document"`
+	ReplyToMessage *Message    `json:"reply_to_message"`
+}
+
+// LargestPhoto returns the highest-resolution PhotoSize on the message, or nil
+// when it carries no photo. Telegram orders the ladder smallest-first, but we
+// pick by file size so we don't depend on that ordering.
+func (m *Message) LargestPhoto() *PhotoSize {
+	if m == nil || len(m.Photo) == 0 {
+		return nil
+	}
+	best := &m.Photo[0]
+	for i := range m.Photo {
+		if m.Photo[i].FileSize > best.FileSize {
+			best = &m.Photo[i]
+		}
+	}
+	return best
 }
 
 // CallbackQuery is an inline-button tap. Data is the button's callback_data.

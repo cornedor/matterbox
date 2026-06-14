@@ -179,6 +179,104 @@ func (c *Client) SendPhoto(ctx context.Context, chatID, caption, filename string
 	return sr.Result.MessageID, nil
 }
 
+type getFileRequest struct {
+	FileID string `json:"file_id"`
+}
+
+type getFileResponse struct {
+	OK          bool   `json:"ok"`
+	Description string `json:"description"`
+	Result      struct {
+		FilePath string `json:"file_path"`
+		FileSize int    `json:"file_size"`
+	} `json:"result"`
+}
+
+// File is an inbound file resolved via getFile: a server-side path (valid for at
+// least an hour) plus its size (0 when Telegram omits it). Pass Path to
+// downloadFile to fetch the bytes.
+type File struct {
+	Path string
+	Size int
+}
+
+// GetFile resolves a Telegram file_id to a downloadable file path. Inbound
+// photos/documents arrive as ids only, so this is the first step before reading
+// the bytes — see FetchFile, which chains both.
+func (c *Client) GetFile(ctx context.Context, fileID string) (File, error) {
+	if c == nil {
+		return File{}, fmt.Errorf("telegram: nil client")
+	}
+	if c.token == "" {
+		return File{}, fmt.Errorf("telegram: no bot token configured")
+	}
+	if strings.TrimSpace(fileID) == "" {
+		return File{}, fmt.Errorf("telegram: empty file_id")
+	}
+	var resp getFileResponse
+	if err := c.call(ctx, "getFile", requestTimeout, getFileRequest{FileID: fileID}, &resp); err != nil {
+		return File{}, err
+	}
+	if !resp.OK || resp.Result.FilePath == "" {
+		return File{}, fmt.Errorf("telegram getFile: %s", firstNonEmpty(resp.Description, "no file path"))
+	}
+	return File{Path: resp.Result.FilePath, Size: resp.Result.FileSize}, nil
+}
+
+// FetchFile resolves a file_id and downloads its bytes, returning the data and
+// the server-side file path (whose extension is a good filename hint). limit
+// caps the download: GetFile's size is checked first (cheap reject) and the read
+// is bounded too. Used to pull an inbound photo/document back so it can be
+// re-uploaded to Mattermost.
+func (c *Client) FetchFile(ctx context.Context, fileID string, limit int64) ([]byte, string, error) {
+	f, err := c.GetFile(ctx, fileID)
+	if err != nil {
+		return nil, "", err
+	}
+	if limit > 0 && f.Size > 0 && int64(f.Size) > limit {
+		return nil, "", fmt.Errorf("telegram file too large: %d bytes (limit %d)", f.Size, limit)
+	}
+	data, err := c.downloadFile(ctx, f.Path, limit)
+	if err != nil {
+		return nil, "", err
+	}
+	return data, f.Path, nil
+}
+
+// downloadFile GETs the raw bytes for a path returned by GetFile. The download
+// endpoint differs from the API method endpoint: .../file/bot<token>/<path>.
+// The read is bounded by limit (0 → a 20 MB default) so a mis-sized file can't
+// exhaust memory.
+func (c *Client) downloadFile(ctx context.Context, filePath string, limit int64) ([]byte, error) {
+	if strings.TrimSpace(filePath) == "" {
+		return nil, fmt.Errorf("telegram: empty file path")
+	}
+	if limit <= 0 {
+		limit = 20 << 20
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+	url := fmt.Sprintf("%s/file/bot%s/%s", strings.TrimRight(c.base, "/"), c.token, filePath)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("download telegram file: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		// The path embeds nothing secret, but the URL embeds the token: don't echo.
+		return nil, fmt.Errorf("download telegram file failed: %s", resp.Status)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, limit))
+	if err != nil {
+		return nil, fmt.Errorf("read telegram file: %w", err)
+	}
+	return data, nil
+}
+
 // call POSTs reqBody as JSON to the given Bot API method and decodes the
 // response into out (which may be nil). timeout bounds the single call. The bot
 // token lives in the URL, so it is never included in returned errors.
