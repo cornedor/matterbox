@@ -965,18 +965,20 @@ func (m Model) renderLoadMoreRow(width int, selected bool) string {
 // outer width minus the two border columns); each body line is expected
 // to already be rendered to at most inner-2 columns (the interior minus
 // the single-space left/right padding) and is padded out here. The
-// border is drawn in borderColor, the header in titleStyle. Shared by
-// the Search and Feed tabs so their bubbles stay visually identical.
-func bubbleBox(inner int, header string, bodyLines []string, borderColor color.Color) string {
+// border is drawn in borderColor, the header in titleStyle. When selected,
+// the header is rendered with inverted colours for visual contrast.
+// Shared by the Search and Feed tabs so their bubbles stay visually identical.
+func bubbleBox(inner int, header string, bodyLines []string, borderColor color.Color, selected bool) string {
 	if inner < 6 {
 		inner = 6
 	}
 	bs := lipgloss.NewStyle().Foreground(borderColor)
 
-	// Top border: "┌─ <header> ──...──┐". If the header is too long, truncate.
-	const topPrefix = "┌─ "
-	const topMidGap = " "
-	prefixW := lipgloss.Width(topPrefix) + lipgloss.Width(topMidGap)
+	// Top border: "┌─ <header> ──...──┐". The space on each side of the header
+	// is rendered inside hdrStyle so its background covers the padding too.
+	const topPrefix = "┌─"
+	const hdrPad = " " // one space left and right, inside the header style
+	prefixW := lipgloss.Width(topPrefix) + 2*lipgloss.Width(hdrPad)
 	maxHdr := inner - prefixW - 1 // -1 reserves space for at least one fill char
 	if maxHdr < 1 {
 		maxHdr = 1
@@ -985,12 +987,16 @@ func bubbleBox(inner int, header string, bodyLines []string, borderColor color.C
 	if lipgloss.Width(hdr) > maxHdr {
 		hdr = truncate(hdr, maxHdr)
 	}
-	used := lipgloss.Width(topPrefix) + lipgloss.Width(hdr) + lipgloss.Width(topMidGap)
+	used := lipgloss.Width(topPrefix) + lipgloss.Width(hdrPad+hdr+hdrPad)
 	fillN := inner - used + 1
 	if fillN < 0 {
 		fillN = 0
 	}
-	topRow := bs.Render(topPrefix) + titleStyle.Render(hdr) + bs.Render(topMidGap+strings.Repeat("─", fillN)+"┐")
+	hdrStyle := titleStyle
+	if selected {
+		hdrStyle = titleStyle.Reverse(true)
+	}
+	topRow := bs.Render(topPrefix) + hdrStyle.Render(hdrPad+hdr+hdrPad) + bs.Render(strings.Repeat("─", fillN)+"┐")
 
 	contentW := inner - 2
 	if contentW < 1 {
@@ -1049,7 +1055,7 @@ func (m Model) renderSearchBubble(outerW int, hit store.SearchHit, selected bool
 	for _, p := range hit.After {
 		bodyLines = append(bodyLines, m.renderHitLine(p, contentW, true, false))
 	}
-	return bubbleBox(inner, header, bodyLines, borderColor)
+	return bubbleBox(inner, header, bodyLines, borderColor, selected)
 }
 
 // renderHitLine formats one post as a single line "user · time  message"

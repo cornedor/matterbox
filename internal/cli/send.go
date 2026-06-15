@@ -21,11 +21,15 @@ func newSendCmd() *cobra.Command {
 		Short: "Post a message to a channel",
 		Long: "Post a message to a channel.\n\n" +
 			"The channel is team/channel (e.g. eng/general) or @user for a direct\n" +
-			"message. The message is the remaining arguments joined by spaces; if no\n" +
-			"message is given it is read from standard input, so this works:\n\n" +
+			"message. A comma-separated list of users (@a,@b[,@c…]) addresses the\n" +
+			"group DM you share with all of them, creating it if it doesn't exist\n" +
+			"yet — a group DM holds you plus 2–7 others. The message is the\n" +
+			"remaining arguments joined by spaces; if no message is given it is\n" +
+			"read from standard input, so this works:\n\n" +
 			"  matterbox send eng/general \"deploy is done\"\n" +
 			"  echo \"deploy is done\" | matterbox send eng/general\n" +
-			"  matterbox send @alice \"ping\"\n\n" +
+			"  matterbox send @alice \"ping\"\n" +
+			"  matterbox send @alice,@bob \"standup in 5\"\n\n" +
 			"Attach files with --file (repeatable, max 5). With an attachment the\n" +
 			"message is optional, so a caption-less upload works:\n\n" +
 			"  matterbox send @alice --file diagram.png \"see attached\"\n" +

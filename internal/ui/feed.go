@@ -673,7 +673,7 @@ func (m Model) renderFeedBubble(outerW int, e feedEntry, selected bool) string {
 	for _, p := range shown {
 		bodyLines = append(bodyLines, m.renderHitLine(p, contentW, false, false))
 	}
-	return bubbleBox(inner, header, bodyLines, borderColor)
+	return bubbleBox(inner, header, bodyLines, borderColor, selected)
 }
 
 // feedDivider renders the "new" separator drawn between the read context

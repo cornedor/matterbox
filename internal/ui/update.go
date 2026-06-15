@@ -168,6 +168,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 
+	case groupDMResolvedMsg:
+		return m.applyGroupDMResolved(msg)
+
 	case statusesLoadedMsg:
 		for id, st := range msg.statuses {
 			m.statuses[id] = st
@@ -1958,6 +1961,21 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.selectLastMessage()
 		m.renderMessages()
 		return m, nil
+	case key.Matches(msg, m.keys.ClearInput):
+		// Wipe the whole draft in one keystroke. The textarea's emacs keys
+		// only kill to the line start / end; this is the "start over" hatch
+		// that also lets esc leave (esc is disabled while text is present,
+		// see LeaveInput below). No-op on an empty input so a stray ctrl+g
+		// doesn't flash a misleading status.
+		if m.input.Value() == "" {
+			return m, nil
+		}
+		m.input.Reset()
+		m.syncInputHeight()
+		m.closeMention()
+		m.closeEmoji()
+		m.status = "draft cleared"
+		return m, nil
 	case key.Matches(msg, m.keys.LeaveInput):
 		// While composing a new message, esc only leaves the input when
 		// the textarea is empty — a stray esc shouldn't yank focus away
@@ -1966,9 +1984,14 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// which is the more useful escape hatch even with text present.
 		editing := m.editingPostID != ""
 		if !editing && strings.TrimSpace(m.input.Value()) != "" {
-			// A stray esc shouldn't yank focus away from a half-typed draft;
-			// say so instead of silently swallowing the key.
-			m.status = "draft kept — esc leaves only when the input is empty"
+			// A stray esc shouldn't yank focus away from a half-typed draft
+			// (and turn the next keystrokes into nav commands — q quits);
+			// point at the clear shortcut instead of silently swallowing it.
+			clearKey := "ctrl+g"
+			if ks := m.keys.ClearInput.Keys(); len(ks) > 0 {
+				clearKey = prettyKey(ks[0])
+			}
+			m.status = "esc disabled while composing — " + clearKey + " to clear, then esc to leave"
 			return m, nil
 		}
 		m.closeMention()

@@ -6,6 +6,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/mm"
 )
 
 // switcherCommand is a > command listed inside the ctrl+k modal when
@@ -31,6 +33,13 @@ func builtinCommands() []switcherCommand {
 			// No argPrompt: the command opens its own duration picker (or, on
 			// the Feed tab, summarizes all unread messages straight away).
 			run: runSummarize,
+		},
+		{
+			name:           "Start group DM",
+			desc:           "open (creating if new) a group DM with the people you name",
+			argPrompt:      "users: ",
+			argPlaceholder: "@alice, @bob  (2–7 people)",
+			run:            runStartGroupDM,
 		},
 		{
 			name: "Keys",
@@ -112,6 +121,59 @@ func runKeyDebug(m *Model, _ string) tea.Cmd {
 func runShowKeys(m *Model, _ string) tea.Cmd {
 	m.openKeysSheet()
 	return nil
+}
+
+// groupDMResolvedMsg carries the result of resolving the "Start group DM"
+// command's user list into a channel (ch is nil when err is set).
+type groupDMResolvedMsg struct {
+	ch  *model.Channel
+	err error
+}
+
+// runStartGroupDM resolves the comma-separated @usernames the user typed into
+// a DM (one other) or group-DM (2–7 others) channel, creating it on the
+// server if it doesn't exist yet. Resolution touches the network, so it runs
+// in the returned Cmd; applyGroupDMResolved then switches to the channel.
+func runStartGroupDM(m *Model, arg string) tea.Cmd {
+	spec := strings.TrimSpace(arg)
+	if spec == "" {
+		m.status = "group DM: name at least one user (e.g. @alice, @bob)"
+		return nil
+	}
+	if m.me == nil {
+		m.status = "group DM: user not loaded yet"
+		return nil
+	}
+	m.status = "opening group DM…"
+	client, ctx, meID := m.client, m.ctx, m.me.Id
+	return func() tea.Msg {
+		ch, err := mm.ResolveRecipients(ctx, client, meID, spec)
+		return groupDMResolvedMsg{ch: ch, err: err}
+	}
+}
+
+// applyGroupDMResolved switches to the channel produced by "Start group DM".
+// A freshly-created group DM isn't in the sidebar yet (matterbox has no
+// WebSocket handler for channel-added events), so it's inserted into the DM
+// bucket before the jump so the row is selectable. The composer takes focus,
+// matching the switcher's "jump there and start typing" behaviour.
+func (m Model) applyGroupDMResolved(msg groupDMResolvedMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		m.status = "group DM: " + msg.err.Error()
+		return m, nil
+	}
+	ch := msg.ch
+	if m.findChannel(ch.Id) == nil {
+		m.channels[dmTeamID] = append(m.channels[dmTeamID], ch)
+		m.hasDMs = true
+		m.sortDMBucket()
+	}
+	m.switchToChannelHomeTeam(ch)
+	m.filterValue = ""
+	m.filter.SetValue("")
+	m.focus = focusInput
+	m.status = ""
+	return m, tea.Batch(m.input.Focus(), m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id))
 }
 
 func runIndexChannel(m *Model, arg string) tea.Cmd {

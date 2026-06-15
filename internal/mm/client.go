@@ -526,3 +526,17 @@ func (c *Client) DirectChannel(ctx context.Context, userID1, userID2 string) (*m
 	}
 	return ch, nil
 }
+
+// GroupChannel returns the group-DM channel shared by the given users,
+// creating it if it does not yet exist. Mattermost group DMs hold 3–8
+// users; the server adds the requesting user to the set if it isn't
+// already listed. The call is idempotent: the same membership always
+// maps to the same channel, so an existing group DM is returned
+// unchanged rather than duplicated.
+func (c *Client) GroupChannel(ctx context.Context, userIDs []string) (*model.Channel, error) {
+	ch, _, err := c.c.CreateGroupChannel(ctx, userIDs)
+	if err != nil {
+		return nil, fmt.Errorf("create group channel: %w", err)
+	}
+	return ch, nil
+}

@@ -100,6 +100,7 @@ type keyMap struct {
 	Send       key.Binding
 	NewLine    key.Binding
 	LeaveInput key.Binding
+	ClearInput key.Binding
 	ApplyOpen  key.Binding
 	CancelEdit key.Binding
 
@@ -212,6 +213,7 @@ var actionDefs = []actionDef{
 	{id: "send", field: func(k *keyMap) *key.Binding { return &k.Send }, keys: []string{"enter"}, desc: "send"},
 	{id: "newline", field: func(k *keyMap) *key.Binding { return &k.NewLine }, keys: []string{"alt+enter", "shift+enter"}, desc: "newline"},
 	{id: "leave_input", field: func(k *keyMap) *key.Binding { return &k.LeaveInput }, keys: []string{"esc"}, desc: "leave"},
+	{id: "clear_input", field: func(k *keyMap) *key.Binding { return &k.ClearInput }, keys: []string{"ctrl+g"}, desc: "clear composer"},
 	{id: "apply_open", field: func(k *keyMap) *key.Binding { return &k.ApplyOpen }, keys: []string{"enter"}, desc: "apply + open"},
 	{id: "cancel_edit", field: func(k *keyMap) *key.Binding { return &k.CancelEdit }, keys: []string{"esc"}, desc: "cancel"},
 

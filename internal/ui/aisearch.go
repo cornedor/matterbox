@@ -377,7 +377,7 @@ func (m *Model) renderAIBanner(innerW int) []string {
 		m.aiSearch.followup.SetWidth(contentW - 2)
 		bodyLines = append(bodyLines, sep, m.aiSearch.followup.View())
 	}
-	return strings.Split(bubbleBox(inner, header, bodyLines, borderColor), "\n")
+	return strings.Split(bubbleBox(inner, header, bodyLines, borderColor, m.search.idx < 0), "\n")
 }
 
 // renderAIResults draws the finished AI run: the answer banner, then the

@@ -185,7 +185,8 @@ var keyContexts = []keyContext{
 			// rest are the composer's own keys.
 			return []key.Binding{
 				m.keys.Send, m.keys.NewLine, m.keys.Paste, m.keys.LeaveInput,
-				m.keys.Tab, m.keys.ShiftTab, m.keys.InputUp, m.keys.InputDown,
+				m.keys.ClearInput, m.keys.Tab, m.keys.ShiftTab,
+				m.keys.InputUp, m.keys.InputDown,
 			}
 		},
 	},
