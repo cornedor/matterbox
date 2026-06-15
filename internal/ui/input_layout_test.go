@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
 
@@ -66,5 +67,34 @@ func TestInputBottomAligned(t *testing.T) {
 	if shrank := baseView - m.msgsView.Height(); shrank != grewBy {
 		t.Errorf("viewport shrank by %d but input grew by %d; input is not bottom-aligned",
 			shrank, grewBy)
+	}
+}
+
+// TestComposerNewlinePastMaxHeight verifies that the textarea accepts newlines
+// beyond MaxHeight (6 visible rows). The textarea must scroll internally, not
+// block input once the logical line count reaches the visible height cap.
+// Regression: bubbles/v2 textarea's atContentLimit() checks len(value) >= MaxHeight
+// when MaxContentHeight is unset, blocking newlines at 6 lines.
+func TestComposerNewlinePastMaxHeight(t *testing.T) {
+	m := New(nil, nil)
+	m.width, m.height = 120, 40
+	m.focus = focusInput
+	m.input.Focus()
+	m.resizeMessagesViewport()
+	m.resizeInput()
+
+	shiftEnter := tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter, Mod: tea.ModShift})
+	for i := 0; i < 10; i++ {
+		out, _ := m.handleInputKey(shiftEnter)
+		m = out.(Model)
+	}
+
+	lines := strings.Count(m.input.Value(), "\n") + 1
+	if lines <= 6 {
+		t.Fatalf("composer blocked newlines at %d lines; want > 6", lines)
+	}
+	// The visible height stays capped at MaxHeight.
+	if m.input.Height() > maxInputHeight {
+		t.Fatalf("input height %d exceeds cap %d", m.input.Height(), maxInputHeight)
 	}
 }

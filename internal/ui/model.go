@@ -518,6 +518,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	ta.DynamicHeight = true
 	ta.MinHeight = 1
 	ta.MaxHeight = maxInputHeight
+	ta.MaxContentHeight = 10000
 	ta.SetHeight(1)
 	// PromptFunc only renders "> " on the first wrapped row of the input
 	// and pads continuation lines with two spaces so multi-line content
