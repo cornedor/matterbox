@@ -17,6 +17,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -34,32 +35,41 @@ const issueFields = "summary,status,assignee,reporter,issuetype,priority,labels,
 // Config is the subset of the user config this package needs. BaseURL is the
 // instance root (https://your-instance.atlassian.net); Email + APIToken are the
 // Cloud Basic-auth pair; Projects is the allowlist that gates bare-ID detection
-// (see detect.go).
+// (see detect.go). StoryPointsField optionally pins the custom-field id for
+// story points (e.g. "customfield_10016"); empty auto-detects it.
 type Config struct {
-	BaseURL  string
-	Email    string
-	APIToken string
-	Projects []string
+	BaseURL          string
+	Email            string
+	APIToken         string
+	Projects         []string
+	StoryPointsField string
 }
 
 // Client fetches and caches issues for one instance. The zero value is not
 // usable; use New. Safe for concurrent use.
 type Client struct {
-	baseURL string // trimmed of any trailing slash
-	auth    string // pre-encoded "Basic …" header value, empty when unconfigured
-	http    *http.Client
+	baseURL    string // trimmed of any trailing slash
+	auth       string // pre-encoded "Basic …" header value, empty when unconfigured
+	spOverride string // configured story-points custom-field id, "" to auto-detect
+	http       *http.Client
 
 	mu    sync.Mutex
 	cache map[string]*Issue
+	// spFields are the resolved story-points custom-field ids (a configured
+	// override, or every field named "story point…" from the field metadata).
+	// spResolved guards the one-time resolution; both are behind mu.
+	spFields   []string
+	spResolved bool
 }
 
 // New builds a Client from cfg. The returned client is always non-nil; call
 // Enabled to see whether it has enough configuration to actually fetch.
 func New(cfg Config) *Client {
 	c := &Client{
-		baseURL: strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/"),
-		http:    &http.Client{Timeout: requestTimeout},
-		cache:   map[string]*Issue{},
+		baseURL:    strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/"),
+		spOverride: strings.TrimSpace(cfg.StoryPointsField),
+		http:       &http.Client{Timeout: requestTimeout},
+		cache:      map[string]*Issue{},
 	}
 	if cfg.Email != "" && cfg.APIToken != "" {
 		raw := cfg.Email + ":" + cfg.APIToken
@@ -107,6 +117,7 @@ type Issue struct {
 	Updated     time.Time
 	URL         string
 	Description string
+	StoryPoints string // formatted estimate (e.g. "5", "2.5"), "" when unset
 }
 
 // apiIssue mirrors the slice of the REST response we read. Optional objects are
@@ -168,10 +179,19 @@ func (c *Client) Invalidate(key string) {
 }
 
 func (c *Client) fetch(ctx context.Context, key string) (*Issue, error) {
+	// Resolve the story-points custom field(s) first so we can request them
+	// alongside the standard fields. A failure here is non-fatal — the issue
+	// still loads, just without story points.
+	spFields := c.resolveStoryPointFields(ctx)
+	fields := issueFields
+	for _, f := range spFields {
+		fields += "," + f
+	}
+
 	reqCtx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
-	endpoint := c.baseURL + "/rest/api/3/issue/" + url.PathEscape(key) + "?fields=" + url.QueryEscape(issueFields)
+	endpoint := c.baseURL + "/rest/api/3/issue/" + url.PathEscape(key) + "?fields=" + url.QueryEscape(fields)
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
@@ -197,7 +217,9 @@ func (c *Client) fetch(ctx context.Context, key string) (*Issue, error) {
 	if err := json.Unmarshal(body, &decoded); err != nil {
 		return nil, fmt.Errorf("decode issue: %w", err)
 	}
-	return c.toIssue(decoded), nil
+	iss := c.toIssue(decoded)
+	iss.StoryPoints = extractStoryPoints(body, spFields)
+	return iss, nil
 }
 
 // statusError turns a non-200 into a message the panel can show, special-casing
@@ -248,4 +270,109 @@ func (c *Client) toIssue(a apiIssue) *Issue {
 		iss.Updated = t
 	}
 	return iss
+}
+
+// resolveStoryPointFields returns the custom-field id(s) that hold story
+// points: the configured override if set, otherwise every field whose name
+// contains "story point" (case-insensitive) from the instance's field
+// metadata. The result is resolved once and cached. A failed lookup is cached
+// as "none" only when an override is set; for auto-detect it stays unresolved
+// so a later fetch retries (the metadata endpoint may have been transiently
+// down). Returns nil when there's nothing to request.
+func (c *Client) resolveStoryPointFields(ctx context.Context) []string {
+	c.mu.Lock()
+	if c.spResolved {
+		f := c.spFields
+		c.mu.Unlock()
+		return f
+	}
+	c.mu.Unlock()
+
+	if c.spOverride != "" {
+		c.mu.Lock()
+		c.spFields = []string{c.spOverride}
+		c.spResolved = true
+		f := c.spFields
+		c.mu.Unlock()
+		return f
+	}
+
+	ids, err := c.fetchStoryPointFieldIDs(ctx)
+	if err != nil {
+		return nil // leave unresolved so the next fetch retries
+	}
+	c.mu.Lock()
+	c.spFields = ids
+	c.spResolved = true
+	c.mu.Unlock()
+	return ids
+}
+
+// fetchStoryPointFieldIDs reads the instance field metadata and returns the ids
+// of every field named like story points. Order follows the API response, so
+// extractStoryPoints prefers whichever candidate the issue actually populates.
+func (c *Client) fetchStoryPointFieldIDs(ctx context.Context) ([]string, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, c.baseURL+"/rest/api/3/field", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", c.auth)
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("jira field metadata: %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return nil, err
+	}
+	var fields []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(body, &fields); err != nil {
+		return nil, err
+	}
+	var ids []string
+	for _, f := range fields {
+		if strings.Contains(strings.ToLower(f.Name), "story point") {
+			ids = append(ids, f.ID)
+		}
+	}
+	return ids, nil
+}
+
+// extractStoryPoints pulls the first non-null numeric value among the candidate
+// field ids out of the raw issue JSON, formatted without trailing zeros ("5",
+// "2.5"). Returns "" when none is set.
+func extractStoryPoints(body []byte, ids []string) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	var wrap struct {
+		Fields map[string]json.RawMessage `json:"fields"`
+	}
+	if err := json.Unmarshal(body, &wrap); err != nil {
+		return ""
+	}
+	for _, id := range ids {
+		raw, ok := wrap.Fields[id]
+		if !ok || len(raw) == 0 || string(raw) == "null" {
+			continue
+		}
+		var v float64
+		if err := json.Unmarshal(raw, &v); err != nil {
+			continue
+		}
+		return strconv.FormatFloat(v, 'f', -1, 64)
+	}
+	return ""
 }

@@ -244,6 +244,7 @@ func (m *Model) renderJiraIssue(iss *jira.Issue, width int) string {
 	}
 	meta("Status", iss.Status)
 	meta("Priority", iss.Priority)
+	meta("Points", iss.StoryPoints)
 	meta("Assignee", iss.Assignee)
 	meta("Reporter", iss.Reporter)
 	if len(iss.Labels) > 0 {

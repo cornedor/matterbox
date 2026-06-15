@@ -610,10 +610,11 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		}
 		jiraProjects = append([]string(nil), cfg.Jira.Projects...)
 		jiraCfg = jira.Config{
-			BaseURL:  cfg.Jira.BaseURL,
-			Email:    cfg.Jira.Email,
-			APIToken: cfg.Jira.APIToken,
-			Projects: cfg.Jira.Projects,
+			BaseURL:          cfg.Jira.BaseURL,
+			Email:            cfg.Jira.Email,
+			APIToken:         cfg.Jira.APIToken,
+			Projects:         cfg.Jira.Projects,
+			StoryPointsField: cfg.Jira.StoryPointsField,
 		}
 	}
 	// The GIPHY_API_KEY env var overrides the config key (handy for keeping a

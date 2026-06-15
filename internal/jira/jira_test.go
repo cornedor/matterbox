@@ -137,9 +137,115 @@ func TestGetParsesIssue(t *testing.T) {
 	}
 }
 
-func TestGetCachesAndInvalidates(t *testing.T) {
-	var calls int
+func TestStoryPointsAutoDetected(t *testing.T) {
+	const fieldMeta = `[
+		{"id":"summary","name":"Summary"},
+		{"id":"customfield_10016","name":"Story point estimate"},
+		{"id":"customfield_99","name":"Sprint"}
+	]`
+	const issueBody = `{"key":"ABC-7","fields":{"summary":"s","assignee":{"displayName":"x"},"customfield_10016":5}}`
+
+	var gotIssueQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/rest/api/3/field":
+			_, _ = w.Write([]byte(fieldMeta))
+		case strings.HasPrefix(r.URL.Path, "/rest/api/3/issue/"):
+			gotIssueQuery = r.URL.RawQuery
+			_, _ = w.Write([]byte(issueBody))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c := New(Config{BaseURL: srv.URL, Email: "me@x.test", APIToken: "tok"})
+	iss, err := c.Get(context.Background(), "ABC-7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if iss.StoryPoints != "5" {
+		t.Errorf("StoryPoints = %q, want 5", iss.StoryPoints)
+	}
+	if !strings.Contains(gotIssueQuery, "customfield_10016") {
+		t.Errorf("issue request did not include the detected field: %q", gotIssueQuery)
+	}
+}
+
+func TestStoryPointsOverrideSkipsMetadata(t *testing.T) {
+	var metaCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/rest/api/3/field":
+			metaCalls++
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			_, _ = w.Write([]byte(`{"key":"ABC-8","fields":{"summary":"s","assignee":{"displayName":"x"},"customfield_42":2.5}}`))
+		}
+	}))
+	defer srv.Close()
+
+	c := New(Config{BaseURL: srv.URL, Email: "me@x.test", APIToken: "tok", StoryPointsField: "customfield_42"})
+	iss, err := c.Get(context.Background(), "ABC-8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if iss.StoryPoints != "2.5" {
+		t.Errorf("StoryPoints = %q, want 2.5", iss.StoryPoints)
+	}
+	if metaCalls != 0 {
+		t.Errorf("expected no field-metadata call with an override, got %d", metaCalls)
+	}
+}
+
+func TestStoryPointsAbsent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/rest/api/3/field" {
+			_, _ = w.Write([]byte(`[{"id":"customfield_10016","name":"Story point estimate"}]`))
+			return
+		}
+		// Issue has no story-points value set (null).
+		_, _ = w.Write([]byte(`{"key":"ABC-9","fields":{"summary":"s","assignee":{"displayName":"x"},"customfield_10016":null}}`))
+	}))
+	defer srv.Close()
+
+	c := New(Config{BaseURL: srv.URL, Email: "me@x.test", APIToken: "tok"})
+	iss, err := c.Get(context.Background(), "ABC-9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if iss.StoryPoints != "" {
+		t.Errorf("StoryPoints = %q, want empty", iss.StoryPoints)
+	}
+}
+
+func TestStoryPointsMetadataFailureIsNonFatal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/rest/api/3/field" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte(`{"key":"ABC-1","fields":{"summary":"s","assignee":{"displayName":"x"}}}`))
+	}))
+	defer srv.Close()
+
+	c := New(Config{BaseURL: srv.URL, Email: "me@x.test", APIToken: "tok"})
+	iss, err := c.Get(context.Background(), "ABC-1")
+	if err != nil {
+		t.Fatalf("a down field-metadata endpoint must not fail the issue fetch: %v", err)
+	}
+	if iss.StoryPoints != "" || iss.Summary != "s" {
+		t.Errorf("unexpected issue %+v", iss)
+	}
+}
+
+func TestGetCachesAndInvalidates(t *testing.T) {
+	var calls int // issue fetches only — the field-metadata probe is routed apart
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/rest/api/3/field" {
+			_, _ = w.Write([]byte(`[]`))
+			return
+		}
 		calls++
 		_, _ = w.Write([]byte(`{"key":"ABC-1","fields":{"summary":"s","assignee":{"displayName":"x"}}}`))
 	}))

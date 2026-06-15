@@ -116,6 +116,11 @@ type JiraConfig struct {
 	// default) means only full atlassian.net/browse/KEY links are detected — no
 	// bare-id guessing, so look-alikes like "UTF-8" never trigger.
 	Projects []string `yaml:"projects"`
+	// StoryPointsField pins the custom-field id that holds story points (e.g.
+	// "customfield_10016"). Empty (the default) auto-detects it from the
+	// instance's field metadata — set this only if auto-detection picks the
+	// wrong field.
+	StoryPointsField string `yaml:"story_points_field"`
 }
 
 // TelegramConfig holds the credentials for the Telegram bridge. Both fields are
@@ -697,6 +702,8 @@ func writeConfig(p string, cfg *Config) error {
 		"#             token from id.atlassian.com, or the JIRA_API_TOKEN env var).\n" +
 		"#             projects allowlists project keys (e.g. [ABC, PROJ]) whose\n" +
 		"#             bare ids (ABC-123) open the panel; empty means only full\n" +
-		"#             atlassian.net/browse/KEY links are detected.\n"
+		"#             atlassian.net/browse/KEY links are detected.\n" +
+		"#             story_points_field pins the story-points custom field id\n" +
+		"#             (e.g. customfield_10016); empty auto-detects it.\n"
 	return os.WriteFile(p, append([]byte(header), body...), 0o644)
 }
