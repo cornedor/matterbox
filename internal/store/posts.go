@@ -954,3 +954,35 @@ LIMIT 1`
 	}
 	return id, createAt, nil
 }
+
+// DistinctUserIDs returns up to limit distinct author ids from cached posts,
+// most-recently-active first, so a caller can resolve usernames for the people
+// who actually appear in the cache (e.g. to label agentic-search results). A
+// limit <= 0 returns every distinct author.
+func (s *Store) DistinctUserIDs(limit int) ([]string, error) {
+	if s == nil {
+		return nil, nil
+	}
+	q := `
+SELECT user_id FROM posts
+WHERE user_id <> '' AND delete_at = 0
+GROUP BY user_id
+ORDER BY MAX(create_at) DESC`
+	if limit > 0 {
+		q += fmt.Sprintf("\nLIMIT %d", limit)
+	}
+	rows, err := s.db.Query(q)
+	if err != nil {
+		return nil, fmt.Errorf("distinct user ids: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan user id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}

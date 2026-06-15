@@ -17,6 +17,7 @@ const helpText = "matterbox bot:\n" +
 	"• reply to a notification → posts back into that thread (and marks it read)\n" +
 	"• react with any emoji → forwards it to Mattermost + marks it read\n" +
 	"• ✓ button → just mark the channel read\n\n" +
+	"/ask <question> — AI search: I'll dig through your cache and answer (reply to follow up)\n" +
 	"/unread — channels with unread messages and mentions\n" +
 	"/search <words> — keyword search across your cached messages\n" +
 	"/digest — a short summary of everything unread\n" +
@@ -31,6 +32,8 @@ func (e *Engine) handleCommand(ctx context.Context, msg *telegram.Message) {
 	switch cmd {
 	case "help", "start":
 		e.sendTG(ctx, helpText)
+	case "ask", "a":
+		e.cmdAsk(ctx, args)
 	case "search", "s":
 		e.cmdSearch(ctx, args)
 	case "unread", "u":

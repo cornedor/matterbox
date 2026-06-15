@@ -8,10 +8,12 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"matterbox/internal/chat"
+	"matterbox/internal/embed"
 	"matterbox/internal/listen"
 	"matterbox/internal/store"
 	"matterbox/internal/telegram"
@@ -100,6 +102,14 @@ func runListen(ctx context.Context, out io.Writer, notifySelf bool) error {
 		chatClient = chat.New(cfg.Summary.Endpoint, cfg.Summary.APIKey, cfg.Summary.Model)
 	}
 
+	// The /ask agentic search reuses the summary chat server (independent of
+	// whether mention summaries are on) plus the optional embeddings server for
+	// semantic/hybrid modes — mirroring how the TUI wires AI search.
+	var embedClient *embed.Client
+	if cfg.Embeddings.Endpoint != "" && cfg.Embeddings.Model != "" {
+		embedClient = embed.New(cfg.Embeddings.Endpoint, cfg.Embeddings.APIKey, cfg.Embeddings.Model, cfg.Embeddings.Dim)
+	}
+
 	opts := listen.Options{
 		ServerURL:       cfg.ServerURL,
 		NotifyOnMention: cfg.Listen.NotifyOnMention != nil && *cfg.Listen.NotifyOnMention,
@@ -110,11 +120,22 @@ func runListen(ctx context.Context, out io.Writer, notifySelf bool) error {
 		RespectMutes:    cfg.Listen.RespectMutes != nil && *cfg.Listen.RespectMutes,
 		QuietHours:      cfg.Listen.QuietHours,
 		TwoWay:          cfg.Listen.TwoWay != nil && *cfg.Listen.TwoWay,
+
+		AskEndpoint: cfg.Summary.Endpoint,
+		AskAPIKey:   cfg.Summary.APIKey,
+		AskModel:    cfg.Summary.Model,
+		AskPrompt:   cfg.AISearch.Prompt,
+		AskMaxSteps: cfg.AISearch.MaxSteps,
+		AskTimeout:  time.Duration(cfg.AISearch.TimeoutMinutes) * time.Minute,
+		EmbedClient: embedClient,
+		EmbedModel:  cfg.Embeddings.Model,
+		EmbedDim:    cfg.Embeddings.Dim,
 	}
 
 	logger.Printf("matterbox listen: starting as @%s on %s", me.Username, cfg.ServerURL)
-	logger.Printf("matterbox listen: cache=%s notify_on_mention=%t summarize=%t notify_self=%t respect_mutes=%t two_way=%t quiet_hours=%q telegram=%s",
-		p, opts.NotifyOnMention, opts.Summarize, opts.NotifySelf, opts.RespectMutes, opts.TwoWay, cfg.Listen.QuietHours, telegramState(tgClient, cfg.Telegram.ChatID))
+	logger.Printf("matterbox listen: cache=%s notify_on_mention=%t summarize=%t notify_self=%t respect_mutes=%t two_way=%t ask=%t quiet_hours=%q telegram=%s",
+		p, opts.NotifyOnMention, opts.Summarize, opts.NotifySelf, opts.RespectMutes, opts.TwoWay,
+		opts.AskEndpoint != "" && opts.AskModel != "", cfg.Listen.QuietHours, telegramState(tgClient, cfg.Telegram.ChatID))
 
 	eng := listen.New(client, st, chatClient, tgClient, me, opts, logger)
 

@@ -5,6 +5,7 @@ import (
 
 	"github.com/mattermost/mattermost/server/public/model"
 
+	"matterbox/internal/aisearch"
 	"matterbox/internal/store"
 )
 
@@ -179,7 +180,7 @@ type summaryChunkMsg struct {
 // matches m.aiSearch.seq.
 type aiSearchOpenedMsg struct {
 	seq    int
-	ch     chan aiSearchUpdate
+	ch     chan aisearch.Update
 	cancel context.CancelFunc
 }
 
@@ -188,7 +189,7 @@ type aiSearchOpenedMsg struct {
 // m.aiSearch.seq.
 type aiSearchUpdateMsg struct {
 	seq int
-	u   aiSearchUpdate
+	u   aisearch.Update
 }
 
 // mentionDebounceMsg fires after mentionDebounce; if `seq` still matches

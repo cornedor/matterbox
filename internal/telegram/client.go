@@ -103,6 +103,42 @@ func (c *Client) Send(ctx context.Context, chatID, text string, keyboard [][]But
 	return resp.Result.MessageID, nil
 }
 
+type editRequest struct {
+	ChatID                string `json:"chat_id"`
+	MessageID             int    `json:"message_id"`
+	Text                  string `json:"text"`
+	DisableWebPagePreview bool   `json:"disable_web_page_preview"`
+}
+
+// EditMessageText replaces the text of an already-sent message (editMessageText).
+// Used to update an in-place "searching…" placeholder with progress and then the
+// final answer. Edits don't trigger a push notification, so send a fresh message
+// when you need the user's device to ping. A no-op edit (same text) returns the
+// Telegram "message is not modified" error, which the caller can ignore.
+func (c *Client) EditMessageText(ctx context.Context, chatID string, messageID int, text string) error {
+	if c == nil {
+		return fmt.Errorf("telegram: nil client")
+	}
+	if c.token == "" {
+		return fmt.Errorf("telegram: no bot token configured")
+	}
+	if strings.TrimSpace(chatID) == "" {
+		return fmt.Errorf("telegram: no chat_id configured")
+	}
+	if messageID == 0 {
+		return fmt.Errorf("telegram: no message_id to edit")
+	}
+	req := editRequest{ChatID: chatID, MessageID: messageID, Text: text, DisableWebPagePreview: true}
+	var resp sendResponse
+	if err := c.call(ctx, "editMessageText", requestTimeout, req, &resp); err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("telegram editMessageText: %s", firstNonEmpty(resp.Description, "not ok"))
+	}
+	return nil
+}
+
 // buildReplyMarkup converts the public Button grid into the wire form, or nil
 // for an empty keyboard (so reply_markup is omitted).
 func buildReplyMarkup(keyboard [][]Button) *replyMarkup {

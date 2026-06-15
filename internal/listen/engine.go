@@ -23,7 +23,9 @@ import (
 
 	"github.com/mattermost/mattermost/server/public/model"
 
+	"matterbox/internal/aisearch"
 	"matterbox/internal/chat"
+	"matterbox/internal/embed"
 	"matterbox/internal/mm"
 	"matterbox/internal/store"
 	"matterbox/internal/telegram"
@@ -69,6 +71,21 @@ type Options struct {
 	// TwoWay enables the inbound Telegram channel (replies, buttons, commands).
 	// Requires TelegramChatID, the only sender the bot obeys.
 	TwoWay bool
+
+	// /ask agentic search. AskEndpoint+AskModel come from the summary chat
+	// server (set regardless of Summarize); empty disables /ask. AskPrompt frames
+	// the agent, AskMaxSteps bounds its tool-call rounds, AskTimeout bounds the
+	// whole run. EmbedClient (+EmbedModel/EmbedDim) powers semantic/hybrid modes;
+	// nil makes them fall back to keyword.
+	AskEndpoint string
+	AskAPIKey   string
+	AskModel    string
+	AskPrompt   string
+	AskMaxSteps int
+	AskTimeout  time.Duration
+	EmbedClient *embed.Client
+	EmbedModel  string
+	EmbedDim    int
 }
 
 // Engine owns the daemon's connection lifecycle and event handling. Construct
@@ -102,7 +119,39 @@ type Engine struct {
 	teamsMu     sync.RWMutex
 	teams       map[string]string
 	defaultTeam string
+
+	// askCatalog caches the channel/team/user snapshot for /ask, rebuilt after
+	// askCatalogTTL so newly-joined channels eventually appear.
+	askMu        sync.Mutex
+	askCatalog   aisearch.Catalog
+	askCatalogAt time.Time
+	askReady     bool
+
+	// convos remembers recent /ask transcripts keyed by the answer's Telegram
+	// message id, so replying to an answer continues that conversation. In-memory
+	// and capped (convoIDs is the insertion order for eviction); a restart drops
+	// them, after which a reply falls through to the thread-reply path.
+	convoMu  sync.Mutex
+	convos   map[int][]aisearch.Message
+	convoIDs []int
 }
+
+// askCatalogTTL bounds how long the /ask channel/team/user snapshot is reused
+// before a rebuild picks up new channels.
+const askCatalogTTL = 10 * time.Minute
+
+// askConvoCap is how many recent /ask conversations are remembered for
+// follow-ups; older ones are evicted.
+const askConvoCap = 50
+
+// askAuthorCap bounds how many distinct message authors are resolved to
+// usernames for the /ask catalog (best-effort citation quality without an
+// org-wide user fetch).
+const askAuthorCap = 4000
+
+// askProgressInterval throttles how often the live "searching…" placeholder is
+// edited with the current step, to stay well under Telegram's edit rate limit.
+const askProgressInterval = 2 * time.Second
 
 // cursorKey is the meta-table key for the catch-up cursor.
 const cursorKey = "listen.last_seen_ms"
@@ -551,6 +600,11 @@ func (e *Engine) handleMessage(ctx context.Context, msg *telegram.Message) {
 	case strings.HasPrefix(text, "/"):
 		e.handleCommand(ctx, msg)
 	case msg.ReplyToMessage != nil:
+		// A reply to an /ask answer continues that conversation; anything else
+		// is a reply to a notification, posted back into its thread.
+		if e.maybeAskFollowup(ctx, msg) {
+			return
+		}
 		e.handleReply(ctx, msg)
 	case text != "" || hasFile:
 		e.sendTG(ctx, "Reply to a notification to post back, or try /help.")
