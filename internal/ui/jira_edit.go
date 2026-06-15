@@ -404,8 +404,8 @@ func (m Model) handleJiraMutated(msg jiraMutatedMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.status = fmt.Sprintf("%s %s updated", msg.key, msg.field)
-	if m.jiraOpen && m.jiraRefIdx >= 0 && m.jiraRefIdx < len(m.jiraRefs) && m.jiraRefs[m.jiraRefIdx] == msg.key {
-		return m, m.loadJiraIssue(msg.key)
+	if r := m.currentRef(); r != nil && r.kind == refJira && r.jiraKey == msg.key {
+		return m, m.loadCurrentRef()
 	}
 	return m, nil
 }
@@ -438,13 +438,13 @@ func (m *Model) renderJiraPicker(maxH int) string {
 
 	switch {
 	case m.jiraPicker.loading:
-		parts = append(parts, "", jiraDimStyle.Render("loading…"))
+		parts = append(parts, "", refDimStyle.Render("loading…"))
 	case m.jiraPicker.err != nil:
-		parts = append(parts, "", jiraErrStyle.Render(m.jiraPicker.err.Error()))
+		parts = append(parts, "", refErrStyle.Render(m.jiraPicker.err.Error()))
 	default:
 		vis := m.jiraPicker.items
 		if len(vis) == 0 {
-			parts = append(parts, "", jiraDimStyle.Render("no matches"))
+			parts = append(parts, "", refDimStyle.Render("no matches"))
 			break
 		}
 		// Window a long set (e.g. assignable users) around the selection so the
@@ -502,11 +502,11 @@ func (m *Model) renderJiraPicker(maxH int) string {
 		// sized assuming both can appear, so the popup stays within maxH).
 		parts = append(parts, "")
 		if start > 0 {
-			parts = append(parts, jiraDimStyle.Render(fmt.Sprintf("  ↑ %d more", start)))
+			parts = append(parts, refDimStyle.Render(fmt.Sprintf("  ↑ %d more", start)))
 		}
 		parts = append(parts, strings.Join(rows, "\n"))
 		if end < len(vis) {
-			parts = append(parts, jiraDimStyle.Render(fmt.Sprintf("  ↓ %d more", len(vis)-end)))
+			parts = append(parts, refDimStyle.Render(fmt.Sprintf("  ↓ %d more", len(vis)-end)))
 		}
 	}
 

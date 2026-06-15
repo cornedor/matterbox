@@ -131,15 +131,15 @@ func (m *Model) layoutPanes() {
 	}
 	msgsW := rightW
 	threadW := 0
-	jiraW := 0
-	// The thread sidebar and the Jira panel share the single right slot — at
-	// most one is ever open — so each splits rightW the same way.
+	refW := 0
+	// The thread sidebar and the reference panel share the single right slot —
+	// at most one is ever open — so each splits rightW the same way.
 	if m.threadOpen {
 		threadW = splitRightPane(rightW)
 		msgsW = rightW - threadW
-	} else if m.jiraOpen {
-		jiraW = splitRightPane(rightW)
-		msgsW = rightW - jiraW
+	} else if m.refOpen {
+		refW = splitRightPane(rightW)
+		msgsW = rightW - refW
 	}
 	// The scrollbar overlays the right border column (rendered by
 	// renderMessagesPane / renderThreadPane), so the viewport fills the
@@ -150,11 +150,11 @@ func (m *Model) layoutPanes() {
 		tw = 1
 	}
 	m.threadView.SetWidth(tw)
-	jw := jiraW - 4
-	if jw < 1 {
-		jw = 1
+	rw := refW - 4
+	if rw < 1 {
+		rw = 1
 	}
-	m.jiraView.SetWidth(jw)
+	m.refView.SetWidth(rw)
 	// When the thread sidebar is open the compose textarea moves into
 	// the thread pane; the messages pane only needs room for its title
 	// + viewport, while the thread pane has to make room for the input
@@ -194,14 +194,14 @@ func (m *Model) layoutPanes() {
 			th = 1
 		}
 		m.threadView.SetHeight(th)
-		// The Jira panel is read-only (no composer), so its viewport fills the
-		// whole body below its title row: bodyH minus the title and the pane's
-		// bottom border.
-		jh := bodyH - 2
-		if jh < 1 {
-			jh = 1
+		// The reference panel is read-only (no composer), so its viewport fills
+		// the whole body below its title row: bodyH minus the title and the
+		// pane's bottom border.
+		rh := bodyH - 2
+		if rh < 1 {
+			rh = 1
 		}
-		m.jiraView.SetHeight(jh)
+		m.refView.SetHeight(rh)
 	}
 	if m.historyMode {
 		m.sizeHistoryView()
@@ -234,7 +234,7 @@ func (m *Model) renderAllPanes() {
 	m.renderFeedResults()
 	m.renderMessages()
 	m.renderThread()
-	m.renderJira()
+	m.renderRef()
 }
 
 const threadPaneMinWidth = 24
@@ -276,9 +276,9 @@ func (m *Model) resizeInput() {
 		m.input.SetWidth(w)
 		return
 	}
-	if m.jiraOpen {
+	if m.refOpen {
 		// The composer stays under the (now narrower) messages pane; match its
-		// width to the Jira split so the input doesn't overhang the pane above.
+		// width to the reference split so the input doesn't overhang the pane above.
 		rightW := m.width - channelsWidth - 2
 		if rightW < 10 {
 			rightW = 10
@@ -931,20 +931,20 @@ func (m *Model) viewContent() string {
 		}
 		msgsW := rightW
 		threadW := 0
-		jiraW := 0
+		refW := 0
 		if m.threadOpen {
 			threadW = splitRightPane(rightW)
 			msgsW = rightW - threadW
-		} else if m.jiraOpen {
-			jiraW = splitRightPane(rightW)
-			msgsW = rightW - jiraW
+		} else if m.refOpen {
+			refW = splitRightPane(rightW)
+			msgsW = rightW - refW
 		}
 		messagesPane := m.renderMessagesPane(bodyH, msgsW)
 		panes := []string{channelsPane, messagesPane}
 		if m.threadOpen {
 			panes = append(panes, m.renderThreadPane(bodyH, threadW))
-		} else if m.jiraOpen {
-			panes = append(panes, m.renderJiraPane(bodyH, jiraW))
+		} else if m.refOpen {
+			panes = append(panes, m.renderRefPane(bodyH, refW))
 		}
 		body = lipgloss.JoinHorizontal(lipgloss.Top, panes...)
 	}
@@ -971,6 +971,9 @@ func (m *Model) viewContent() string {
 	}
 	if m.jiraPointsActive {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderJiraPointsInput())
+	}
+	if m.glConfirm.active {
+		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderGitLabConfirm())
 	}
 	if m.openPickerActive() {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderOpenPicker())

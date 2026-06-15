@@ -95,6 +95,11 @@ type Config struct {
 	// inline. An empty base_url/email/api_token disables the panel. See
 	// internal/jira and internal/ui.
 	Jira JiraConfig `yaml:"jira"`
+	// GitLab configures the merge-request side panel: press the open-reference
+	// key (v) on a message linking a merge request to fetch it from GitLab and
+	// show it inline. An empty base_url (with no usable token) disables the
+	// panel. See internal/gitlab and internal/ui.
+	GitLab GitLabConfig `yaml:"gitlab"`
 }
 
 // JiraConfig holds the Jira Cloud connection used by the issue side panel. All
@@ -121,6 +126,21 @@ type JiraConfig struct {
 	// instance's field metadata — set this only if auto-detection picks the
 	// wrong field.
 	StoryPointsField string `yaml:"story_points_field"`
+}
+
+// GitLabConfig holds the GitLab connection used by the merge-request side
+// panel. base_url is required; token may be left empty to fall back to an
+// existing glab CLI login (or the GITLAB_TOKEN env var).
+type GitLabConfig struct {
+	// BaseURL is the instance root, e.g. https://git.example.com. Also used to
+	// recognise /-/merge_requests/N links that point at this instance.
+	BaseURL string `yaml:"base_url"`
+	// Token is a personal or project access token (read_api is enough to view;
+	// api is needed for the approve/merge actions). Empty falls back to the
+	// GITLAB_TOKEN env var, then to the token glab stored for this host in
+	// ~/.config/glab-cli/config.yml — so an existing `glab auth login` just
+	// works without copying the secret into this file.
+	Token string `yaml:"token"`
 }
 
 // TelegramConfig holds the credentials for the Telegram bridge. Both fields are
@@ -704,6 +724,13 @@ func writeConfig(p string, cfg *Config) error {
 		"#             bare ids (ABC-123) open the panel; empty means only full\n" +
 		"#             atlassian.net/browse/KEY links are detected.\n" +
 		"#             story_points_field pins the story-points custom field id\n" +
-		"#             (e.g. customfield_10016); empty auto-detects it.\n"
+		"#             (e.g. customfield_10016); empty auto-detects it.\n" +
+		"# gitlab:     the merge-request side panel. Press v on a message linking a\n" +
+		"#             merge request to fetch it from GitLab and view it inline\n" +
+		"#             (title, pipeline status, merge readiness, approvals).\n" +
+		"#             base_url is the instance root (https://git.example.com);\n" +
+		"#             token is a personal/project access token (read_api to view,\n" +
+		"#             api to approve/merge). Empty token falls back to GITLAB_TOKEN\n" +
+		"#             or an existing glab CLI login for the same host.\n"
 	return os.WriteFile(p, append([]byte(header), body...), 0o644)
 }

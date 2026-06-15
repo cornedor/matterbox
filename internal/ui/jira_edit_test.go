@@ -21,10 +21,10 @@ func loadedJiraModel(t *testing.T) Model {
 	m.posts = []*model.Post{{Message: "https://example.atlassian.net/browse/ABC-1"}}
 	m.postIdx = 0
 	m.focus = focusMessages
-	updated, _ := m.openJiraForPost(m.posts[0])
+	updated, _ := m.openRefForPost(m.posts[0])
 	got := updated.(Model)
 	final, _ := got.handleJiraLoaded(jiraLoadedMsg{
-		gen: got.jiraGen,
+		gen: got.refGen,
 		key: "ABC-1",
 		issue: &jira.Issue{
 			Key: "ABC-1", Summary: "Fix the widget", Status: "To Do",
@@ -38,7 +38,7 @@ func loadedJiraModel(t *testing.T) Model {
 
 func TestJiraHotkeyOpensStatusPicker(t *testing.T) {
 	m := loadedJiraModel(t)
-	updated, cmd := m.handleJiraKey(keyStr("s"))
+	updated, cmd := m.handleRefKey(keyStr("s"))
 	got := updated.(Model)
 	if !got.jiraPicker.active || got.jiraPicker.kind != jiraPickStatus {
 		t.Fatalf("status picker not active: %+v", got.jiraPicker)
@@ -59,9 +59,9 @@ func TestJiraHotkeyNoIssueIsNoop(t *testing.T) {
 	// open a picker — they fall through to the viewport.
 	m := configuredJiraModel(t, "ABC")
 	post := &model.Post{Message: "https://example.atlassian.net/browse/ABC-1"}
-	updated, _ := m.openJiraForPost(post)
+	updated, _ := m.openRefForPost(post)
 	got := updated.(Model) // jiraIssue is nil (fetch not run)
-	updated, _ = got.handleJiraKey(keyStr("p"))
+	updated, _ = got.handleRefKey(keyStr("p"))
 	if updated.(Model).jiraPicker.active {
 		t.Error("picker should not open before an issue is loaded")
 	}
@@ -69,7 +69,7 @@ func TestJiraHotkeyNoIssueIsNoop(t *testing.T) {
 
 func TestJiraHotkeyOpensPointsInput(t *testing.T) {
 	m := loadedJiraModel(t)
-	updated, _ := m.handleJiraKey(keyStr("P"))
+	updated, _ := m.handleRefKey(keyStr("P"))
 	got := updated.(Model)
 	if !got.jiraPointsActive {
 		t.Fatal("points input not active")
@@ -295,11 +295,11 @@ func TestApplyJiraPointsClears(t *testing.T) {
 
 func TestHandleJiraMutatedReloadsOnSuccess(t *testing.T) {
 	m := loadedJiraModel(t)
-	prevGen := m.jiraGen
+	prevGen := m.refGen
 	updated, cmd := m.handleJiraMutated(jiraMutatedMsg{key: "ABC-1", field: "status"})
 	got := updated.(Model)
-	if cmd == nil || got.jiraGen == prevGen {
-		t.Error("success should reload the issue (bump jiraGen, return a fetch Cmd)")
+	if cmd == nil || got.refGen == prevGen {
+		t.Error("success should reload the issue (bump refGen, return a fetch Cmd)")
 	}
 	if !strings.Contains(got.status, "updated") {
 		t.Errorf("status = %q", got.status)

@@ -44,7 +44,7 @@ type keyContext struct {
 // focuses (where the global:reading layer and the per-pane handlers run).
 func (m *Model) contentFocus() bool {
 	switch m.focus {
-	case focusMessages, focusThread, focusJira, focusAttachments, focusTeams, focusFeed:
+	case focusMessages, focusThread, focusRef, focusAttachments, focusTeams, focusFeed:
 		return true
 	}
 	return false
@@ -247,12 +247,13 @@ var keyContexts = []keyContext{
 		},
 	},
 	{
-		// Jira issue side panel (open-reference key on a message). The
-		// open-reference key toggles it shut, ←/→ cycle issues, r refetches, o
-		// opens the issue in a browser; esc (hardwired) also closes. Scrolling
-		// falls through to the viewport.
-		name:     "focus:jira",
-		active:   func(m *Model) bool { return m.focus == focusJira },
+		// Reference side panel (open-reference key on a message naming a Jira
+		// issue or GitLab MR). The open-reference key toggles it shut, ←/→ cycle
+		// references, r refetches, o opens it in a browser; esc (hardwired) also
+		// closes. Provider keys (Jira s/p/P/a, GitLab A/M) and scrolling fall
+		// through to the focused handler / viewport.
+		name:     "focus:ref",
+		active:   func(m *Model) bool { return m.focus == focusRef },
 		terminal: true,
 		claims: func(m *Model) []key.Binding {
 			return []key.Binding{
@@ -308,7 +309,7 @@ var shadowProbeStates = []struct {
 	{"search", func(m *Model) { m.focus = focusSearch }},
 	{"messages", func(m *Model) { m.focus = focusMessages }},
 	{"thread", func(m *Model) { m.focus = focusThread; m.threadOpen = true }},
-	{"jira", func(m *Model) { m.focus = focusJira; m.jiraOpen = true }},
+	{"ref", func(m *Model) { m.focus = focusRef; m.refOpen = true }},
 	{"attachments", func(m *Model) { m.focus = focusAttachments }},
 	{"teams", func(m *Model) { m.focus = focusTeams }},
 	{"feed", func(m *Model) { m.focus = focusFeed }},

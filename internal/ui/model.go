@@ -21,6 +21,7 @@ import (
 
 	"matterbox/internal/config"
 	"matterbox/internal/embed"
+	"matterbox/internal/gitlab"
 	"matterbox/internal/jira"
 	"matterbox/internal/mm"
 	"matterbox/internal/opener"
@@ -53,7 +54,7 @@ const (
 	focusTeams
 	focusSearch
 	focusFeed
-	focusJira
+	focusRef
 )
 
 const numFocus = 9
@@ -266,32 +267,45 @@ type Model struct {
 	threadLoading   bool
 	threadView      viewport.Model
 
-	// Jira issue side panel (open-reference key `v` on a message naming a Jira
-	// issue). jiraOpen toggles the panel; it's mutually exclusive with the
-	// thread panel — opening one closes the other (the right slot hosts one
-	// detail pane). jiraRefs are the issue keys found on the source post (←/→
-	// cycle them); jiraRefIdx is the one shown. jiraGen drops a stale async
-	// fetch the user already cycled/closed past. jiraClient (may be nil/disabled)
-	// fetches + caches issues. See jira.go.
-	jiraOpen     bool
-	jiraView     viewport.Model
-	jiraRefs     []string
-	jiraRefIdx   int
-	jiraIssue    *jira.Issue
-	jiraLoading  bool
-	jiraErr      error
-	jiraGen      int
+	// Reference side panel (open-reference key `v` on a message naming a Jira
+	// issue or linking a GitLab merge request). refOpen toggles the panel; it's
+	// mutually exclusive with the thread panel — opening one closes the other
+	// (the right slot hosts one detail pane). refs are the references found on
+	// the source post (←/→ cycle them, across both providers in appearance
+	// order); refIdx is the one shown. refGen drops a stale async fetch the user
+	// already cycled/closed past. refLoading/refErr are the shared load state of
+	// whichever ref is current. See ref.go; the per-provider data + rendering
+	// live in jira.go and gitlab.go.
+	refOpen      bool
+	refView      viewport.Model
+	refs         []reference
+	refIdx       int
+	refLoading   bool
+	refErr       error
+	refGen       int
+	jiraIssue    *jira.Issue // loaded data when the current ref is a Jira issue
 	jiraClient   *jira.Client
 	jiraProjects []string
+	glMR         *gitlab.MR // loaded data when the current ref is a GitLab MR
+	glClient     *gitlab.Client
 
-	// Jira field editors, opened with s/p/a/P while the panel has focus.
-	// jiraPicker is the modal list picker for Status / Priority / Assignee;
-	// the points editor is a separate numeric text input. Both are modal —
-	// they own every keystroke while open (see jira_edit.go).
+	// Jira field editors, opened with s/p/a/P while the panel shows a Jira
+	// issue. jiraPicker is the modal list picker for Status / Priority /
+	// Assignee; the points editor is a separate numeric text input. Both are
+	// modal — they own every keystroke while open (see jira_edit.go).
 	jiraPicker       jiraPickerState
 	jiraPointsActive bool
 	jiraPointsKey    string
 	jiraPointsInput  textinput.Model
+
+	// GitLab action confirm, opened with A (approve) / M (merge) while the panel
+	// shows a merge request. Modal — owns every keystroke while open (gitlab.go).
+	glConfirm glConfirmState
+	// glJobsExpanded toggles (with `t`) between showing the first few jobs per
+	// pipeline stage and all of them — long pipelines stay readable by default,
+	// and each stage header carries an aggregate status so a hidden failing job
+	// is never missed.
+	glJobsExpanded bool
 
 	// editingPostID is non-empty while the user is editing an existing
 	// post: the textarea is preloaded with that post's message and Send
@@ -471,7 +485,7 @@ type Model struct {
 	// every wrapped line. See scrollcache.go.
 	msgsContentVer   uint64
 	threadContentVer uint64
-	jiraContentVer   uint64
+	refContentVer    uint64
 
 	// vcache memoizes layout-heavy render output (scrollbar geometry + the
 	// channels sidebar) that doesn't change on most keystrokes. Behind a
@@ -549,8 +563,8 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	msgsView.SoftWrap = true
 	threadView := viewport.New()
 	threadView.SoftWrap = true
-	jiraView := viewport.New()
-	jiraView.SoftWrap = true
+	refView := viewport.New()
+	refView.SoftWrap = true
 	historyView := viewport.New()
 	historyView.SoftWrap = true
 	keysSheetView := viewport.New()
@@ -578,6 +592,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	giphyRendition := "fixed_height" // mirrors config.defaultGiphyRendition
 	var jiraCfg jira.Config
 	var jiraProjects []string
+	var gitlabCfg gitlab.Config
 	if cfg != nil {
 		vimNav = parseVimNav(cfg.Keybindings.VimNav)
 		reactions = append([]string(nil), cfg.Reactions...)
@@ -625,6 +640,10 @@ func New(client *mm.Client, cfg *config.Config) Model {
 			Projects:         cfg.Jira.Projects,
 			StoryPointsField: cfg.Jira.StoryPointsField,
 		}
+		gitlabCfg = gitlab.Config{
+			BaseURL: cfg.GitLab.BaseURL,
+			Token:   cfg.GitLab.Token,
+		}
 	}
 	// The GIPHY_API_KEY env var overrides the config key (handy for keeping a
 	// secret out of the YAML file).
@@ -637,6 +656,18 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		jiraCfg.APIToken = env
 	}
 	jiraClient := jira.New(jiraCfg)
+	// GitLab token resolution: config token, else GITLAB_TOKEN, else the token
+	// an existing `glab auth login` stored for this host — so the panel works
+	// out of the box for a glab user without copying the secret into config.
+	if env := os.Getenv("GITLAB_TOKEN"); env != "" {
+		gitlabCfg.Token = env
+	}
+	if gitlabCfg.Token == "" {
+		if h := hostFromURL(gitlabCfg.BaseURL); h != "" {
+			gitlabCfg.Token = gitlab.TokenFromGlab(h)
+		}
+	}
+	gitlabClient := gitlab.New(gitlabCfg)
 	// Unless the sidebar nav uses the ctrl modifier itself, ctrl+←/→ never
 	// reach the global dispatch, so let them word-jump in the composer (the
 	// textarea otherwise only binds alt+←/→ for that — ctrl+arrows would do
@@ -675,9 +706,10 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		focus:               focusMessages,
 		msgsView:            msgsView,
 		threadView:          threadView,
-		jiraView:            jiraView,
+		refView:             refView,
 		jiraClient:          jiraClient,
 		jiraProjects:        jiraProjects,
+		glClient:            gitlabClient,
 		historyView:         historyView,
 		keysSheetView:       keysSheetView,
 		vcache:              &viewCache{},
@@ -757,7 +789,7 @@ func (m Model) ShortHelp() []key.Binding {
 		return []key.Binding{k.Compose, k.OpenThread, k.SearchHere, k.Filter, k.NavTeam, k.Help}
 	case m.focus == focusThread:
 		return []key.Binding{k.Compose, k.SearchHere, k.CloseThread, k.NavTeam, k.Help}
-	case m.focus == focusJira:
+	case m.focus == focusRef:
 		return []key.Binding{k.Up, k.Down, k.OpenAttach, k.Refresh, k.OpenRef, k.NavTeam, k.Help}
 	case m.focus == focusAttachments:
 		return []key.Binding{k.Left, k.Right, k.OpenAttach, k.AttachRemove, k.Tab, k.NavTeam, k.Help, k.Quit}
