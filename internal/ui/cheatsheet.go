@@ -30,6 +30,7 @@ var keysSheetSections = []struct {
 	{title: "Sidebar navigation", rows: (*Model).navSheetRows},
 	{title: "Messages", contexts: []string{"focus:messages"}},
 	{title: "Thread", contexts: []string{"focus:thread"}},
+	{title: "Jira issue", contexts: []string{"focus:jira"}},
 	// The preview modal's own keys are hardwired in handlePreviewKey (not bound
 	// through the registry), so list them from a synthetic source (rows func),
 	// like navSheetRows above.

@@ -26,6 +26,7 @@ import (
 type viewCache struct {
 	msgs    scrollGeom
 	thread  scrollGeom
+	jira    scrollGeom
 	sidebar sidebarCache
 }
 
@@ -78,6 +79,14 @@ func (m *Model) threadScrollGeom() (int, float64) {
 		g = &m.vcache.thread
 	}
 	return scrollGeomFor(g, &m.threadView, m.threadContentVer)
+}
+
+func (m *Model) jiraScrollGeom() (int, float64) {
+	var g *scrollGeom
+	if m.vcache != nil {
+		g = &m.vcache.jira
+	}
+	return scrollGeomFor(g, &m.jiraView, m.jiraContentVer)
 }
 
 // sidebarCache memoizes renderChannelsPane's rendered string. fp is a

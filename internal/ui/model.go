@@ -21,6 +21,7 @@ import (
 
 	"matterbox/internal/config"
 	"matterbox/internal/embed"
+	"matterbox/internal/jira"
 	"matterbox/internal/mm"
 	"matterbox/internal/opener"
 	"matterbox/internal/semindex"
@@ -52,9 +53,10 @@ const (
 	focusTeams
 	focusSearch
 	focusFeed
+	focusJira
 )
 
-const numFocus = 8
+const numFocus = 9
 
 // dmTeamID is a synthetic team identifier used to bucket DMs / group-DMs,
 // which carry an empty Channel.TeamId on the server.
@@ -264,6 +266,24 @@ type Model struct {
 	threadLoading   bool
 	threadView      viewport.Model
 
+	// Jira issue side panel (open-reference key `v` on a message naming a Jira
+	// issue). jiraOpen toggles the panel; it's mutually exclusive with the
+	// thread panel — opening one closes the other (the right slot hosts one
+	// detail pane). jiraRefs are the issue keys found on the source post (←/→
+	// cycle them); jiraRefIdx is the one shown. jiraGen drops a stale async
+	// fetch the user already cycled/closed past. jiraClient (may be nil/disabled)
+	// fetches + caches issues. See jira.go.
+	jiraOpen     bool
+	jiraView     viewport.Model
+	jiraRefs     []string
+	jiraRefIdx   int
+	jiraIssue    *jira.Issue
+	jiraLoading  bool
+	jiraErr      error
+	jiraGen      int
+	jiraClient   *jira.Client
+	jiraProjects []string
+
 	// editingPostID is non-empty while the user is editing an existing
 	// post: the textarea is preloaded with that post's message and Send
 	// patches it on the server instead of creating a new post. Cleared
@@ -442,6 +462,7 @@ type Model struct {
 	// every wrapped line. See scrollcache.go.
 	msgsContentVer   uint64
 	threadContentVer uint64
+	jiraContentVer   uint64
 
 	// vcache memoizes layout-heavy render output (scrollbar geometry + the
 	// channels sidebar) that doesn't change on most keystrokes. Behind a
@@ -519,6 +540,8 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	msgsView.SoftWrap = true
 	threadView := viewport.New()
 	threadView.SoftWrap = true
+	jiraView := viewport.New()
+	jiraView.SoftWrap = true
 	historyView := viewport.New()
 	historyView.SoftWrap = true
 	keysSheetView := viewport.New()
@@ -544,6 +567,8 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	animatePreview := true
 	var giphyAPIKey string
 	giphyRendition := "fixed_height" // mirrors config.defaultGiphyRendition
+	var jiraCfg jira.Config
+	var jiraProjects []string
 	if cfg != nil {
 		vimNav = parseVimNav(cfg.Keybindings.VimNav)
 		reactions = append([]string(nil), cfg.Reactions...)
@@ -583,12 +608,25 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		if cfg.Giphy.Rendition != "" {
 			giphyRendition = cfg.Giphy.Rendition
 		}
+		jiraProjects = append([]string(nil), cfg.Jira.Projects...)
+		jiraCfg = jira.Config{
+			BaseURL:  cfg.Jira.BaseURL,
+			Email:    cfg.Jira.Email,
+			APIToken: cfg.Jira.APIToken,
+			Projects: cfg.Jira.Projects,
+		}
 	}
 	// The GIPHY_API_KEY env var overrides the config key (handy for keeping a
 	// secret out of the YAML file).
 	if env := os.Getenv("GIPHY_API_KEY"); env != "" {
 		giphyAPIKey = env
 	}
+	// JIRA_API_TOKEN overrides the config token, same rationale — keep the
+	// secret out of the YAML file.
+	if env := os.Getenv("JIRA_API_TOKEN"); env != "" {
+		jiraCfg.APIToken = env
+	}
+	jiraClient := jira.New(jiraCfg)
 	// Unless the sidebar nav uses the ctrl modifier itself, ctrl+←/→ never
 	// reach the global dispatch, so let them word-jump in the composer (the
 	// textarea otherwise only binds alt+←/→ for that — ctrl+arrows would do
@@ -627,6 +665,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		focus:               focusMessages,
 		msgsView:            msgsView,
 		threadView:          threadView,
+		jiraView:            jiraView,
+		jiraClient:          jiraClient,
+		jiraProjects:        jiraProjects,
 		historyView:         historyView,
 		keysSheetView:       keysSheetView,
 		vcache:              &viewCache{},
@@ -706,6 +747,8 @@ func (m Model) ShortHelp() []key.Binding {
 		return []key.Binding{k.Compose, k.OpenThread, k.SearchHere, k.Filter, k.NavTeam, k.Help}
 	case m.focus == focusThread:
 		return []key.Binding{k.Compose, k.SearchHere, k.CloseThread, k.NavTeam, k.Help}
+	case m.focus == focusJira:
+		return []key.Binding{k.Up, k.Down, k.OpenAttach, k.Refresh, k.OpenRef, k.NavTeam, k.Help}
 	case m.focus == focusAttachments:
 		return []key.Binding{k.Left, k.Right, k.OpenAttach, k.AttachRemove, k.Tab, k.NavTeam, k.Help, k.Quit}
 	case m.focus == focusTeams:
@@ -726,7 +769,7 @@ func (m Model) FullHelp() [][]key.Binding {
 		{k.Tab, k.ShiftTab, k.NavTeam, k.NavDM, k.NavFeed, k.Switcher, k.Search, k.SearchHere, k.Help, k.Quit},
 		{k.Up, k.Down, k.Home, k.End, k.Left, k.Right, k.PageDown, k.PageUp, k.NextHit, k.PrevHit},
 		{k.NavChanPrev, k.NavChanNext, k.NavTeamPrev, k.NavTeamNext},
-		{k.Filter, k.ClearFilter, k.OpenChannel, k.OpenThread, k.ReplyInThread, k.CloseThread},
+		{k.Filter, k.ClearFilter, k.OpenChannel, k.OpenThread, k.ReplyInThread, k.OpenRef, k.CloseThread},
 		{k.OpenAttach, k.CopyMD, k.EditPost, k.DeletePost, k.React, k.ShowHistory, k.Compose, k.Send, k.NewLine, k.LeaveInput},
 		{k.Paste, k.AttachRemove},
 	}

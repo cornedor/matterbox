@@ -44,7 +44,7 @@ type keyContext struct {
 // focuses (where the global:reading layer and the per-pane handlers run).
 func (m *Model) contentFocus() bool {
 	switch m.focus {
-	case focusMessages, focusThread, focusAttachments, focusTeams, focusFeed:
+	case focusMessages, focusThread, focusJira, focusAttachments, focusTeams, focusFeed:
 		return true
 	}
 	return false
@@ -230,7 +230,7 @@ var keyContexts = []keyContext{
 			return []key.Binding{
 				m.keys.Up, m.keys.Down, m.keys.Home, m.keys.End, m.keys.PageUp, m.keys.PageDown,
 				m.keys.NextHit, m.keys.PrevHit, m.keys.OpenThread, m.keys.ReplyInThread,
-				m.keys.EditPost, m.keys.DeletePost, m.keys.OpenAttach, m.keys.Preview, m.keys.CopyMD,
+				m.keys.EditPost, m.keys.DeletePost, m.keys.OpenAttach, m.keys.OpenRef, m.keys.Preview, m.keys.CopyMD,
 				m.keys.ShowHistory, m.keys.React,
 			}
 		},
@@ -241,8 +241,23 @@ var keyContexts = []keyContext{
 		terminal: true,
 		claims: func(m *Model) []key.Binding {
 			return []key.Binding{
-				m.keys.Up, m.keys.Down, m.keys.Home, m.keys.End, m.keys.OpenAttach, m.keys.Preview,
+				m.keys.Up, m.keys.Down, m.keys.Home, m.keys.End, m.keys.OpenAttach, m.keys.OpenRef, m.keys.Preview,
 				m.keys.CopyMD, m.keys.ShowHistory, m.keys.EditPost, m.keys.DeletePost, m.keys.React,
+			}
+		},
+	},
+	{
+		// Jira issue side panel (open-reference key on a message). The
+		// open-reference key toggles it shut, ←/→ cycle issues, r refetches, o
+		// opens the issue in a browser; esc (hardwired) also closes. Scrolling
+		// falls through to the viewport.
+		name:     "focus:jira",
+		active:   func(m *Model) bool { return m.focus == focusJira },
+		terminal: true,
+		claims: func(m *Model) []key.Binding {
+			return []key.Binding{
+				m.keys.Up, m.keys.Down, m.keys.Left, m.keys.Right,
+				m.keys.OpenRef, m.keys.Refresh, m.keys.OpenAttach,
 			}
 		},
 	},
@@ -293,6 +308,7 @@ var shadowProbeStates = []struct {
 	{"search", func(m *Model) { m.focus = focusSearch }},
 	{"messages", func(m *Model) { m.focus = focusMessages }},
 	{"thread", func(m *Model) { m.focus = focusThread; m.threadOpen = true }},
+	{"jira", func(m *Model) { m.focus = focusJira; m.jiraOpen = true }},
 	{"attachments", func(m *Model) { m.focus = focusAttachments }},
 	{"teams", func(m *Model) { m.focus = focusTeams }},
 	{"feed", func(m *Model) { m.focus = focusFeed }},

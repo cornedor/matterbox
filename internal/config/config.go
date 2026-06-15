@@ -90,6 +90,32 @@ type Config struct {
 	// notify on direct mentions / DMs, whether to summarize the surrounding
 	// context with the chat model, and the summary prompt. See internal/listen.
 	Listen ListenConfig `yaml:"listen"`
+	// Jira configures the issue side panel: press the open-reference key (v) on
+	// a message naming a Jira issue to fetch it from Jira Cloud and show it
+	// inline. An empty base_url/email/api_token disables the panel. See
+	// internal/jira and internal/ui.
+	Jira JiraConfig `yaml:"jira"`
+}
+
+// JiraConfig holds the Jira Cloud connection used by the issue side panel. All
+// fields empty by default (the panel is opt-in). base_url + email + api_token
+// must all be set for the panel to fetch; projects gates bare-ID detection.
+type JiraConfig struct {
+	// BaseURL is the instance root, e.g. https://your-instance.atlassian.net.
+	// Also used to recognise /browse/KEY links that point at this instance.
+	BaseURL string `yaml:"base_url"`
+	// Email is the Atlassian account email — the username half of the Cloud
+	// Basic-auth pair.
+	Email string `yaml:"email"`
+	// APIToken is an Atlassian API token (id.atlassian.com → Security → API
+	// tokens). The JIRA_API_TOKEN environment variable overrides this, handy for
+	// keeping the secret out of the YAML file.
+	APIToken string `yaml:"api_token"`
+	// Projects is the allowlist of project keys (e.g. ["ABC", "PROJ"]) for which
+	// a BARE id like ABC-123 in message text opens the panel. Empty (the
+	// default) means only full atlassian.net/browse/KEY links are detected — no
+	// bare-id guessing, so look-alikes like "UTF-8" never trigger.
+	Projects []string `yaml:"projects"`
 }
 
 // TelegramConfig holds the credentials for the Telegram bridge. Both fields are
@@ -663,6 +689,14 @@ func writeConfig(p string, cfg *Config) error {
 		"#             midnight; empty = always on) suppresses pushes in that window\n" +
 		"#             (messages are still cached — use the bot's /unread);\n" +
 		"#             two_way (default true) enables replying from Telegram and the\n" +
-		"#             /search /unread /digest commands (needs telegram.chat_id).\n"
+		"#             /search /unread /digest commands (needs telegram.chat_id).\n" +
+		"# jira:       the issue side panel. Press v on a message naming a Jira\n" +
+		"#             issue to fetch it from Jira Cloud and view it inline.\n" +
+		"#             base_url is the instance root (https://you.atlassian.net);\n" +
+		"#             email + api_token are the Cloud Basic-auth pair (an API\n" +
+		"#             token from id.atlassian.com, or the JIRA_API_TOKEN env var).\n" +
+		"#             projects allowlists project keys (e.g. [ABC, PROJ]) whose\n" +
+		"#             bare ids (ABC-123) open the panel; empty means only full\n" +
+		"#             atlassian.net/browse/KEY links are detected.\n"
 	return os.WriteFile(p, append([]byte(header), body...), 0o644)
 }

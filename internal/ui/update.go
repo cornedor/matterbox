@@ -458,6 +458,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.renderThread()
 		return m, nil
 
+	case jiraLoadedMsg:
+		return m.handleJiraLoaded(msg)
+
 	case fileInfosLoadedMsg:
 		var persistCmd tea.Cmd
 		for _, p := range m.posts {
@@ -1398,10 +1401,15 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case msg.String() == "esc":
-		// Close the open thread first — it's the visually dominant thing on
-		// screen, so esc should dismiss it before touching the sidebar filter.
+		// Close the open thread / Jira panel first — whichever is the visually
+		// dominant thing on screen, so esc dismisses it before touching the
+		// sidebar filter.
 		if m.threadOpen {
 			m.closeThread()
+			return m, nil
+		}
+		if m.jiraOpen {
+			m.closeJira()
 			return m, nil
 		}
 		if m.filterValue != "" {
@@ -1418,6 +1426,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleMessagesKey(msg)
 	case focusThread:
 		return m.handleThreadKey(msg)
+	case focusJira:
+		return m.handleJiraKey(msg)
 	case focusAttachments:
 		return m.handleAttachmentsKey(msg)
 	case focusTeams:
@@ -1507,6 +1517,12 @@ func (m Model) handleThreadKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.openFromPost(m.threadPosts[m.threadIdx])
+	case key.Matches(msg, m.keys.OpenRef):
+		if m.threadIdx < 0 || m.threadIdx >= len(m.threadPosts) {
+			m.status = "no message selected"
+			return m, nil
+		}
+		return m.openJiraForPost(m.threadPosts[m.threadIdx])
 	case key.Matches(msg, m.keys.Preview):
 		if m.threadIdx < 0 || m.threadIdx >= len(m.threadPosts) {
 			m.status = "no message selected"
@@ -1760,6 +1776,9 @@ func (m Model) cycleFocus(step int) (tea.Model, tea.Cmd) {
 		if m.focus == focusThread && !m.threadOpen {
 			continue
 		}
+		if m.focus == focusJira && !m.jiraOpen {
+			continue
+		}
 		if m.focus == focusAttachments && len(m.attachments) == 0 {
 			continue
 		}
@@ -1802,6 +1821,7 @@ func (m Model) cycleFocus(step int) (tea.Model, tea.Cmd) {
 	// Bar visibility depends on whether messages pane has focus.
 	m.renderMessages()
 	m.renderThread()
+	m.renderJira()
 	return m, tea.Batch(cmd, buildCmd)
 }
 
@@ -2246,6 +2266,12 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.openFromPost(m.posts[m.postIdx])
+	case key.Matches(msg, m.keys.OpenRef):
+		if m.postIdx < 0 || m.postIdx >= len(m.posts) {
+			m.status = "no message selected"
+			return m, nil
+		}
+		return m.openJiraForPost(m.posts[m.postIdx])
 	case key.Matches(msg, m.keys.Preview):
 		if m.postIdx < 0 || m.postIdx >= len(m.posts) {
 			m.status = "no message selected"
