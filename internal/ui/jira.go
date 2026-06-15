@@ -62,7 +62,7 @@ func (m Model) openJiraForPost(p *model.Post) (tea.Model, tea.Cmd) {
 	m.jiraRefs = refs
 	m.jiraRefIdx = 0
 	m.focus = focusJira
-	m.status = "esc closes · o opens in browser · r refreshes" + jiraCycleHint(len(refs))
+	m.status = "s/p/P/a edit fields · o browser · r refresh · esc closes" + jiraCycleHint(len(refs))
 	cmd := m.loadJiraIssue(refs[0])
 	m.resizeMessagesViewport()
 	return m, cmd
@@ -130,6 +130,9 @@ func (m *Model) closeJira() {
 	m.jiraErr = nil
 	m.jiraLoading = false
 	m.jiraGen++
+	// Tear down any open field editor so it can't outlive the panel.
+	m.closeJiraPicker()
+	m.closeJiraPoints()
 	if m.focus == focusJira {
 		m.focus = focusMessages
 	}
@@ -187,6 +190,17 @@ func (m Model) handleJiraKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		o := openable{name: m.jiraIssue.Key, url: m.jiraIssue.URL}
 		m.status = "opening " + o.url + "…"
 		return m, m.openOpenable(o)
+	// Field editors — only once an issue is loaded; otherwise these keys fall
+	// through to scroll the viewport. See jira_edit.go.
+	case m.jiraIssue != nil && msg.String() == "s":
+		return m, m.openJiraStatusPicker()
+	case m.jiraIssue != nil && msg.String() == "p":
+		return m, m.openJiraPriorityPicker()
+	case m.jiraIssue != nil && msg.String() == "P":
+		m.openJiraPointsInput()
+		return m, nil
+	case m.jiraIssue != nil && msg.String() == "a":
+		return m, m.openJiraAssigneePicker()
 	}
 	var cmd tea.Cmd
 	m.jiraView, cmd = m.jiraView.Update(msg)
@@ -253,6 +267,9 @@ func (m *Model) renderJiraIssue(iss *jira.Issue, width int) string {
 	if !iss.Updated.IsZero() {
 		meta("Updated", iss.Updated.Format("2006-01-02 15:04"))
 	}
+
+	// Edit affordances for the four changeable fields (see jira_edit.go).
+	b.WriteString("\n" + jiraDimStyle.Render("s status · p priority · P points · a assignee") + "\n")
 
 	if desc := strings.TrimSpace(iss.Description); desc != "" {
 		divW := width

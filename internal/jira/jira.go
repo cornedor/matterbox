@@ -10,6 +10,7 @@
 package jira
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -22,6 +23,10 @@ import (
 	"sync"
 	"time"
 )
+
+// errNotConfigured is returned by every call when the client lacks a base URL
+// or credentials (Enabled would report false).
+var errNotConfigured = fmt.Errorf("jira: not configured (need base_url, email, api_token)")
 
 // requestTimeout bounds a single issue fetch. Generous for a slow instance; a
 // stalled server fails the call rather than hanging the UI's fetch goroutine.
@@ -60,6 +65,12 @@ type Client struct {
 	// spResolved guards the one-time resolution; both are behind mu.
 	spFields   []string
 	spResolved bool
+	// priorities is the instance-wide priority list, fetched once and cached
+	// (it's global, not per-issue). myself is the authenticated account, also
+	// cached (used for "Assign to me"). Both are behind mu and nil until first
+	// resolved. See Priorities / Myself.
+	priorities []Option
+	myself     *User
 }
 
 // New builds a Client from cfg. The returned client is always non-nil; call
@@ -118,6 +129,26 @@ type Issue struct {
 	URL         string
 	Description string
 	StoryPoints string // formatted estimate (e.g. "5", "2.5"), "" when unset
+
+	// IDs of the current selection, so the field pickers can mark the active
+	// row. Display-only fields (Status, Reporter) don't need one here: status
+	// changes go through Transitions, not by id.
+	PriorityID        string
+	AssigneeAccountID string
+}
+
+// Option is a pickable choice with a stable id and a human label — a workflow
+// transition (id = transition id, Name = the resulting status) or a priority.
+type Option struct {
+	ID   string
+	Name string
+}
+
+// User is an assignable account: AccountID is what SetAssignee writes,
+// DisplayName is shown in the picker.
+type User struct {
+	AccountID   string
+	DisplayName string
 }
 
 // apiIssue mirrors the slice of the REST response we read. Optional objects are
@@ -138,10 +169,12 @@ type apiIssue struct {
 }
 
 type named struct {
+	ID   string `json:"id"`
 	Name string `json:"name"`
 }
 
 type user struct {
+	AccountID   string `json:"accountId"`
 	DisplayName string `json:"displayName"`
 }
 
@@ -149,7 +182,7 @@ type user struct {
 // Invalidate (then Get) to force a refetch.
 func (c *Client) Get(ctx context.Context, key string) (*Issue, error) {
 	if !c.Enabled() {
-		return nil, fmt.Errorf("jira: not configured (need base_url, email, api_token)")
+		return nil, errNotConfigured
 	}
 	c.mu.Lock()
 	if hit, ok := c.cache[key]; ok {
@@ -188,29 +221,10 @@ func (c *Client) fetch(ctx context.Context, key string) (*Issue, error) {
 		fields += "," + f
 	}
 
-	reqCtx, cancel := context.WithTimeout(ctx, requestTimeout)
-	defer cancel()
-
-	endpoint := c.baseURL + "/rest/api/3/issue/" + url.PathEscape(key) + "?fields=" + url.QueryEscape(fields)
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, endpoint, nil)
+	path := "/rest/api/3/issue/" + url.PathEscape(key) + "?fields=" + url.QueryEscape(fields)
+	body, err := c.doRaw(ctx, http.MethodGet, path, key, nil)
 	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
-	}
-	req.Header.Set("Authorization", c.auth)
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("call jira: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, statusError(resp.StatusCode, key, body)
+		return nil, err
 	}
 
 	var decoded apiIssue
@@ -222,14 +236,74 @@ func (c *Client) fetch(ctx context.Context, key string) (*Issue, error) {
 	return iss, nil
 }
 
-// statusError turns a non-200 into a message the panel can show, special-casing
-// the auth/visibility cases that a user can actually act on.
-func statusError(code int, key string, body []byte) error {
+// doRaw performs an authenticated request to path (relative to baseURL, which
+// must begin with "/" and may carry a query string), sending body as JSON when
+// non-nil, and returns the raw response body. A non-2xx status becomes a
+// statusError; what labels the request in that error (an issue key, or e.g.
+// "priorities"). Each call carries its own requestTimeout.
+func (c *Client) doRaw(ctx context.Context, method, path, what string, body any) ([]byte, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+
+	var rdr io.Reader
+	if body != nil {
+		buf, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("encode request: %w", err)
+		}
+		rdr = bytes.NewReader(buf)
+	}
+	req, err := http.NewRequestWithContext(reqCtx, method, c.baseURL+path, rdr)
+	if err != nil {
+		return nil, fmt.Errorf("build request: %w", err)
+	}
+	req.Header.Set("Authorization", c.auth)
+	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("call jira: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, statusError(resp.StatusCode, what, respBody)
+	}
+	return respBody, nil
+}
+
+// do is doRaw plus JSON decode into out (skip with out=nil, e.g. a 204 mutation
+// response).
+func (c *Client) do(ctx context.Context, method, path, what string, body, out any) error {
+	respBody, err := c.doRaw(ctx, method, path, what, body)
+	if err != nil {
+		return err
+	}
+	if out == nil || len(respBody) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(respBody, out); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	return nil
+}
+
+// statusError turns a non-2xx into a message the panel can show, special-casing
+// the auth/visibility cases that a user can actually act on. what labels the
+// request (an issue key, or e.g. "priorities").
+func statusError(code int, what string, body []byte) error {
 	switch code {
 	case http.StatusUnauthorized, http.StatusForbidden:
-		return fmt.Errorf("jira: not authorized for %s — check email / api_token", key)
+		return fmt.Errorf("jira: not authorized for %s — check email / api_token", what)
 	case http.StatusNotFound:
-		return fmt.Errorf("jira: %s not found (or no access)", key)
+		return fmt.Errorf("jira: %s not found (or no access)", what)
 	}
 	msg := strings.TrimSpace(string(body))
 	if len(msg) > 200 {
@@ -255,12 +329,14 @@ func (c *Client) toIssue(a apiIssue) *Issue {
 	}
 	if a.Fields.Priority != nil {
 		iss.Priority = a.Fields.Priority.Name
+		iss.PriorityID = a.Fields.Priority.ID
 	}
 	if a.Fields.IssueType != nil {
 		iss.Type = a.Fields.IssueType.Name
 	}
 	if a.Fields.Assignee != nil && a.Fields.Assignee.DisplayName != "" {
 		iss.Assignee = a.Fields.Assignee.DisplayName
+		iss.AssigneeAccountID = a.Fields.Assignee.AccountID
 	}
 	if a.Fields.Reporter != nil {
 		iss.Reporter = a.Fields.Reporter.DisplayName
@@ -312,33 +388,11 @@ func (c *Client) resolveStoryPointFields(ctx context.Context) []string {
 // of every field named like story points. Order follows the API response, so
 // extractStoryPoints prefers whichever candidate the issue actually populates.
 func (c *Client) fetchStoryPointFieldIDs(ctx context.Context) ([]string, error) {
-	reqCtx, cancel := context.WithTimeout(ctx, requestTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, c.baseURL+"/rest/api/3/field", nil)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Authorization", c.auth)
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("jira field metadata: %s", resp.Status)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if err != nil {
-		return nil, err
-	}
 	var fields []struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
 	}
-	if err := json.Unmarshal(body, &fields); err != nil {
+	if err := c.do(ctx, http.MethodGet, "/rest/api/3/field", "field metadata", nil, &fields); err != nil {
 		return nil, err
 	}
 	var ids []string
@@ -375,4 +429,193 @@ func extractStoryPoints(body []byte, ids []string) string {
 		return strconv.FormatFloat(v, 'f', -1, 64)
 	}
 	return ""
+}
+
+// Transitions returns the workflow transitions available from the issue's
+// current status — the only status changes Jira will accept. Each Option's ID
+// is the transition id (pass to DoTransition); Name is the resulting status.
+func (c *Client) Transitions(ctx context.Context, key string) ([]Option, error) {
+	if !c.Enabled() {
+		return nil, errNotConfigured
+	}
+	var resp struct {
+		Transitions []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+			To   named  `json:"to"`
+		} `json:"transitions"`
+	}
+	path := "/rest/api/3/issue/" + url.PathEscape(key) + "/transitions"
+	if err := c.do(ctx, http.MethodGet, path, key, nil, &resp); err != nil {
+		return nil, err
+	}
+	out := make([]Option, 0, len(resp.Transitions))
+	for _, t := range resp.Transitions {
+		name := t.To.Name // the status the transition lands on
+		if name == "" {
+			name = t.Name
+		}
+		out = append(out, Option{ID: t.ID, Name: name})
+	}
+	return out, nil
+}
+
+// DoTransition moves the issue along the given transition, then invalidates the
+// cache so the next Get reflects the new status (and any cascading fields like
+// resolution).
+func (c *Client) DoTransition(ctx context.Context, key, transitionID string) error {
+	if !c.Enabled() {
+		return errNotConfigured
+	}
+	body := map[string]any{"transition": map[string]string{"id": transitionID}}
+	path := "/rest/api/3/issue/" + url.PathEscape(key) + "/transitions"
+	if err := c.do(ctx, http.MethodPost, path, key, body, nil); err != nil {
+		return err
+	}
+	c.Invalidate(key)
+	return nil
+}
+
+// Priorities returns the instance's global priority list (Highest…Lowest),
+// cached after the first call.
+func (c *Client) Priorities(ctx context.Context) ([]Option, error) {
+	if !c.Enabled() {
+		return nil, errNotConfigured
+	}
+	c.mu.Lock()
+	if c.priorities != nil {
+		p := c.priorities
+		c.mu.Unlock()
+		return p, nil
+	}
+	c.mu.Unlock()
+
+	var resp []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/rest/api/3/priority", "priorities", nil, &resp); err != nil {
+		return nil, err
+	}
+	out := make([]Option, 0, len(resp))
+	for _, p := range resp {
+		out = append(out, Option{ID: p.ID, Name: p.Name})
+	}
+	c.mu.Lock()
+	c.priorities = out
+	c.mu.Unlock()
+	return out, nil
+}
+
+// SetPriority sets the issue's priority and invalidates the cache.
+func (c *Client) SetPriority(ctx context.Context, key, priorityID string) error {
+	if !c.Enabled() {
+		return errNotConfigured
+	}
+	body := map[string]any{"fields": map[string]any{"priority": map[string]string{"id": priorityID}}}
+	path := "/rest/api/3/issue/" + url.PathEscape(key)
+	if err := c.do(ctx, http.MethodPut, path, key, body, nil); err != nil {
+		return err
+	}
+	c.Invalidate(key)
+	return nil
+}
+
+// AssignableUsers returns users who can be assigned to the issue, optionally
+// narrowed by query (matched server-side against name/email). An empty query
+// returns the default page. Jira caps the response (50 by default), so a large
+// project must search rather than rely on the first page.
+func (c *Client) AssignableUsers(ctx context.Context, key, query string) ([]User, error) {
+	if !c.Enabled() {
+		return nil, errNotConfigured
+	}
+	var resp []struct {
+		AccountID   string `json:"accountId"`
+		DisplayName string `json:"displayName"`
+	}
+	path := "/rest/api/3/user/assignable/search?issueKey=" + url.QueryEscape(key)
+	if q := strings.TrimSpace(query); q != "" {
+		path += "&query=" + url.QueryEscape(q)
+	}
+	if err := c.do(ctx, http.MethodGet, path, key, nil, &resp); err != nil {
+		return nil, err
+	}
+	out := make([]User, 0, len(resp))
+	for _, u := range resp {
+		out = append(out, User{AccountID: u.AccountID, DisplayName: u.DisplayName})
+	}
+	return out, nil
+}
+
+// Myself returns the authenticated account (for "Assign to me"), cached.
+func (c *Client) Myself(ctx context.Context) (User, error) {
+	if !c.Enabled() {
+		return User{}, errNotConfigured
+	}
+	c.mu.Lock()
+	if c.myself != nil {
+		u := *c.myself
+		c.mu.Unlock()
+		return u, nil
+	}
+	c.mu.Unlock()
+
+	var resp struct {
+		AccountID   string `json:"accountId"`
+		DisplayName string `json:"displayName"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/rest/api/3/myself", "current user", nil, &resp); err != nil {
+		return User{}, err
+	}
+	u := User{AccountID: resp.AccountID, DisplayName: resp.DisplayName}
+	c.mu.Lock()
+	c.myself = &u
+	c.mu.Unlock()
+	return u, nil
+}
+
+// SetAssignee assigns the issue to accountID, or unassigns it when accountID is
+// "" (sends accountId:null). Invalidates the cache.
+func (c *Client) SetAssignee(ctx context.Context, key, accountID string) error {
+	if !c.Enabled() {
+		return errNotConfigured
+	}
+	body := map[string]any{"accountId": nil}
+	if accountID != "" {
+		body["accountId"] = accountID
+	}
+	path := "/rest/api/3/issue/" + url.PathEscape(key) + "/assignee"
+	if err := c.do(ctx, http.MethodPut, path, key, body, nil); err != nil {
+		return err
+	}
+	c.Invalidate(key)
+	return nil
+}
+
+// SetStoryPoints writes raw (a number, or "" to clear) to the issue's
+// story-points custom field, then invalidates the cache. Errors clearly when no
+// such field is detected or raw isn't numeric.
+func (c *Client) SetStoryPoints(ctx context.Context, key, raw string) error {
+	if !c.Enabled() {
+		return errNotConfigured
+	}
+	fields := c.resolveStoryPointFields(ctx)
+	if len(fields) == 0 {
+		return fmt.Errorf("jira: no story-points field detected — set jira.story_points_field")
+	}
+	var value any // nil clears the field
+	if raw = strings.TrimSpace(raw); raw != "" {
+		v, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			return fmt.Errorf("jira: story points must be a number, got %q", raw)
+		}
+		value = v
+	}
+	body := map[string]any{"fields": map[string]any{fields[0]: value}}
+	path := "/rest/api/3/issue/" + url.PathEscape(key)
+	if err := c.do(ctx, http.MethodPut, path, key, body, nil); err != nil {
+		return err
+	}
+	c.Invalidate(key)
+	return nil
 }

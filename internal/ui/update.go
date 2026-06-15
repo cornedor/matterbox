@@ -461,6 +461,15 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case jiraLoadedMsg:
 		return m.handleJiraLoaded(msg)
 
+	case jiraPickerLoadedMsg:
+		return m.handleJiraPickerLoaded(msg)
+
+	case jiraAssigneeDebounceMsg:
+		return m.handleJiraAssigneeDebounce(msg)
+
+	case jiraMutatedMsg:
+		return m.handleJiraMutated(msg)
+
 	case fileInfosLoadedMsg:
 		var persistCmd tea.Cmd
 		for _, p := range m.posts {
@@ -1238,6 +1247,14 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Reaction picker modal owns every keystroke while open.
 	if m.reactionPickerPostID != "" {
 		return m.handleReactionPickerKey(msg)
+	}
+	// Jira field editors (status/priority/assignee picker, points input) own
+	// every keystroke while open.
+	if m.jiraPicker.active {
+		return m.handleJiraPickerKey(msg)
+	}
+	if m.jiraPointsActive {
+		return m.handleJiraPointsKey(msg)
 	}
 	// Open-target picker modal owns every keystroke while open.
 	if m.openPickerActive() {

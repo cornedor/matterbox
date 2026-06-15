@@ -284,6 +284,15 @@ type Model struct {
 	jiraClient   *jira.Client
 	jiraProjects []string
 
+	// Jira field editors, opened with s/p/a/P while the panel has focus.
+	// jiraPicker is the modal list picker for Status / Priority / Assignee;
+	// the points editor is a separate numeric text input. Both are modal —
+	// they own every keystroke while open (see jira_edit.go).
+	jiraPicker       jiraPickerState
+	jiraPointsActive bool
+	jiraPointsKey    string
+	jiraPointsInput  textinput.Model
+
 	// editingPostID is non-empty while the user is editing an existing
 	// post: the textarea is preloaded with that post's message and Send
 	// patches it on the server instead of creating a new post. Cleared

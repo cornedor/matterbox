@@ -966,6 +966,12 @@ func (m *Model) viewContent() string {
 	if m.reactionPickerPostID != "" {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderReactionPicker())
 	}
+	if m.jiraPicker.active {
+		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderJiraPicker(bodyH))
+	}
+	if m.jiraPointsActive {
+		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderJiraPointsInput())
+	}
 	if m.openPickerActive() {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderOpenPicker())
 	}
