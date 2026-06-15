@@ -288,6 +288,9 @@ type Model struct {
 	jiraProjects []string
 	glMR         *gitlab.MR // loaded data when the current ref is a GitLab MR
 	glClient     *gitlab.Client
+	mrStatus         *mrStatusManager // inline MR badge state; nil when gitlab not configured
+	mrFetchGen       int              // bumped on navigation to debounce scroll fetches
+	mrFetchSettledGen int             // set by settle tick; fetches fire when gen == settledGen
 
 	// Jira field editors, opened with s/p/a/P while the panel shows a Jira
 	// issue. jiraPicker is the modal list picker for Status / Priority /
@@ -711,6 +714,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		jiraClient:          jiraClient,
 		jiraProjects:        jiraProjects,
 		glClient:            gitlabClient,
+		mrStatus:            newMRStatusManager(gitlabCfg.BaseURL),
 		historyView:         historyView,
 		keysSheetView:       keysSheetView,
 		vcache:              &viewCache{},

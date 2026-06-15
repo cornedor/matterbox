@@ -31,6 +31,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if fetch := nm.fetchPendingEmoji(); fetch != nil {
 		cmd = tea.Batch(cmd, fetch)
 	}
+	if fetch := nm.fetchPendingMRStatus(); fetch != nil {
+		cmd = tea.Batch(cmd, fetch)
+	}
 	return nm, cmd
 }
 
@@ -364,6 +367,20 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		delete(m.mentions, msg.channelID)
 		m.viewSettled = true
 		return m, m.markChannelViewed(msg.channelID)
+
+	case mrFetchSettleMsg:
+		if msg.gen != m.mrFetchGen {
+			return m, nil // stale tick from an earlier nav burst
+		}
+		// Gen matched: scrolling has paused. Mark settled so the next outer
+		// Update wrapper call to fetchPendingMRStatus drains the accumulated
+		// pending sightings.
+		m.mrFetchSettledGen = m.mrFetchGen
+		return m, nil
+
+	case mrStatusLoadedMsg:
+		nm, cmd := m.handleMRStatusLoaded(msg)
+		return nm, cmd
 
 	case errMsg:
 		m.loading = false
@@ -2159,10 +2176,11 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	switch {
 	case key.Matches(msg, m.keys.Up):
+		settle := m.bumpMRFetch()
 		if m.postIdx > 0 {
 			m.postIdx--
 			m.renderMessages()
-			return m, nil
+			return m, settle
 		}
 		// At the top. Paint the next cached page immediately for instant
 		// feedback, then ask the server for the page strictly older than the
@@ -2173,7 +2191,7 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// continuing past the oldest cached post into history the cache
 		// never held.
 		if len(m.posts) == 0 {
-			return m, nil
+			return m, settle
 		}
 		oldestID := m.posts[0].Id
 		older := m.loadOlderFromStore(m.posts[0].ChannelId, m.posts[0].CreateAt)
@@ -2188,18 +2206,19 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.status = "loading older messages…"
 		}
 		if oldestID == "" {
-			return m, nil
+			return m, settle
 		}
-		return m, m.fetchOlder(m.openChannelID, oldestID)
+		return m, tea.Batch(settle, m.fetchOlder(m.openChannelID, oldestID))
 	case key.Matches(msg, m.keys.Down):
+		settle := m.bumpMRFetch()
 		if m.postIdx < len(m.posts)-1 {
 			m.postIdx++
 			m.renderMessages()
-			return m, nil
+			return m, settle
 		}
 		// At the bottom of the loaded window.
 		if len(m.posts) == 0 {
-			return m, nil
+			return m, settle
 		}
 		last := m.posts[len(m.posts)-1]
 		newer := m.loadNewerFromStore(last.ChannelId, last.CreateAt)
@@ -2208,7 +2227,8 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			// cache — the absolute last message. ↓ here drops into the
 			// composer (the inverse of ↑-on-the-first-composer-row selecting
 			// it).
-			return m.focusComposer()
+			nm, focusCmd := m.focusComposer()
+			return nm, tea.Batch(settle, focusCmd)
 		}
 		// More cached history sits below the loaded window (e.g. reading
 		// forward from a search hit centred on an old post): paint the next
@@ -2226,17 +2246,17 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.anchorMsgSelBottom = true
 		m.renderMessages()
 		if newestID == "" {
-			return m, nil
+			return m, settle
 		}
-		return m, m.fetchNewer(m.openChannelID, newestID)
+		return m, tea.Batch(settle, m.fetchNewer(m.openChannelID, newestID))
 	case key.Matches(msg, m.keys.Home):
 		m.postIdx = 0
 		m.renderMessages()
-		return m, nil
+		return m, m.bumpMRFetch()
 	case key.Matches(msg, m.keys.End):
 		m.selectLastMessage()
 		m.renderMessages()
-		return m, nil
+		return m, m.bumpMRFetch()
 	case key.Matches(msg, m.keys.PageDown):
 		if len(m.posts) == 0 {
 			return m, nil
@@ -2246,7 +2266,7 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.postIdx = len(m.posts) - 1
 		}
 		m.renderMessages()
-		return m, nil
+		return m, m.bumpMRFetch()
 	case key.Matches(msg, m.keys.PageUp):
 		if len(m.posts) == 0 {
 			return m, nil
@@ -2256,7 +2276,7 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.postIdx = 0
 		}
 		m.renderMessages()
-		return m, nil
+		return m, m.bumpMRFetch()
 	case key.Matches(msg, m.keys.NextHit):
 		return m.gotoSearchHit(1)
 	case key.Matches(msg, m.keys.PrevHit):

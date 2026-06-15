@@ -137,7 +137,7 @@ func (m *Model) renderGitLabMR(mr *gitlab.MR, width int) string {
 			divW = 1
 		}
 		b.WriteString("\n" + refDimStyle.Render(strings.Repeat("─", divW)) + "\n")
-		b.WriteString(renderMarkdown(desc, m.emojiImg))
+		b.WriteString(renderMarkdown(desc, m.emojiImg, nil))
 	}
 	return b.String()
 }

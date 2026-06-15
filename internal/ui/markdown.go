@@ -7,6 +7,8 @@ import (
 
 	"charm.land/lipgloss/v2"
 	emoji "github.com/kyokomi/emoji/v2"
+
+	"matterbox/internal/gitlab"
 )
 
 var (
@@ -63,11 +65,18 @@ func trimTrailingURLPunct(u string) (clean, trailing string) {
 	return u[:i], u[i:]
 }
 
+// mrInlineFn resolves a bare GitLab MR URL to an inline badge string.
+// When it returns ok=true the badge replaces the raw URL entirely (including
+// any OSC 8 link); when ok=false the URL is rendered as a normal hyperlink.
+// A nil mrInlineFn means MR badge substitution is disabled (e.g. in ref-panel
+// descriptions and tests).
+type mrInlineFn func(rawURL string) (badge string, ok bool)
+
 // renderMarkdown renders a Mattermost message body. Each output line is
 // already indented with the two-space message gutter. ei (may be nil) resolves
-// custom server emoji to inline Kitty-graphics placeholders; a nil manager
-// leaves them as literal :name: text.
-func renderMarkdown(msg string, ei *emojiImages) string {
+// custom server emoji to inline Kitty-graphics placeholders; mr (may be nil)
+// rewrites GitLab MR URLs to inline badge pills.
+func renderMarkdown(msg string, ei *emojiImages, mr mrInlineFn) string {
 	lines := strings.Split(strings.TrimRight(msg, "\n"), "\n")
 	out := make([]string, 0, len(lines))
 	inFence := false
@@ -84,10 +93,10 @@ func renderMarkdown(msg string, ei *emojiImages) string {
 		}
 		if strings.HasPrefix(raw, ">") {
 			content := strings.TrimPrefix(strings.TrimPrefix(raw, ">"), " ")
-			out = append(out, "  "+mdQuoteBarStyle.Render("┃")+" "+renderInline(content, ei))
+			out = append(out, "  "+mdQuoteBarStyle.Render("┃")+" "+renderInline(content, ei, mr))
 			continue
 		}
-		out = append(out, "  "+renderInline(raw, ei))
+		out = append(out, "  "+renderInline(raw, ei, mr))
 	}
 	return strings.Join(out, "\n")
 }
@@ -97,7 +106,7 @@ func renderMarkdown(msg string, ei *emojiImages) string {
 // charset; code spans are already stashed before this runs.
 var emojiShortcodeRe = regexp.MustCompile(`:([a-zA-Z0-9_+\-]+):`)
 
-func renderInline(s string, ei *emojiImages) string {
+func renderInline(s string, ei *emojiImages, mr mrInlineFn) string {
 	if s == "" {
 		return ""
 	}
@@ -143,15 +152,37 @@ func renderInline(s string, ei *emojiImages) string {
 	// URL characters aren't reinterpreted by the styling passes below and
 	// so the styling passes don't run on URLs already claimed by a
 	// markdown link. They're restored as OSC 8 hyperlinks at the end.
-	var links []struct{ url, text string }
+	//
+	// Bare GitLab MR URLs are handled specially: when mr is set and the URL
+	// matches a merge-request link, it is replaced with an inline badge pill
+	// rather than a plain hyperlink. The badge is inserted directly (not
+	// stashed) so its ANSI escapes survive the later styling passes unchanged.
+	type linkEntry struct{ url, text string }
+	var links []linkEntry
+	var mrBadges []struct {
+		sentinel string
+		badge    string
+	}
 	s = mdLinkRe.ReplaceAllStringFunc(s, func(m string) string {
 		sub := mdLinkRe.FindStringSubmatch(m)
-		links = append(links, struct{ url, text string }{sub[2], sub[1]})
+		links = append(links, linkEntry{sub[2], sub[1]})
 		return mdLinkSentinel + strconv.Itoa(len(links)-1) + "\x00"
 	})
+	const mrBadgeSentinel = "\x00MRBADGE"
 	s = mdURLRe.ReplaceAllStringFunc(s, func(m string) string {
 		clean, trailing := trimTrailingURLPunct(m)
-		links = append(links, struct{ url, text string }{clean, clean})
+		if mr != nil {
+			if badge, ok := mr(clean); ok {
+				// Stash badge separately — its ANSI bytes must not be styled.
+				idx := len(mrBadges)
+				mrBadges = append(mrBadges, struct {
+					sentinel string
+					badge    string
+				}{mrBadgeSentinel + strconv.Itoa(idx) + "\x00", badge})
+				return mrBadgeSentinel + strconv.Itoa(idx) + "\x00" + trailing
+			}
+		}
+		links = append(links, linkEntry{clean, clean})
 		return mdLinkSentinel + strconv.Itoa(len(links)-1) + "\x00" + trailing
 	})
 
@@ -171,5 +202,18 @@ func renderInline(s string, ei *emojiImages) string {
 	for i, l := range links {
 		s = strings.Replace(s, mdLinkSentinel+strconv.Itoa(i)+"\x00", osc8Link(l.url, mdLinkStyle.Render(l.text)), 1)
 	}
+	for _, b := range mrBadges {
+		s = strings.Replace(s, b.sentinel, b.badge, 1)
+	}
 	return s
+}
+
+// parseMRURL parses a raw URL and returns its GitLab project path and MR iid
+// when the URL matches the configured instance. Used by mrInlineFn closures.
+func parseMRURL(rawURL, baseURL string) (project string, iid int, ok bool) {
+	refs := gitlab.Refs(rawURL, baseURL)
+	if len(refs) == 0 {
+		return "", 0, false
+	}
+	return refs[0].Project, refs[0].IID, true
 }
