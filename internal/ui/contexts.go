@@ -80,7 +80,8 @@ var keyContexts = []keyContext{
 		name:     "modal:reaction-picker",
 		active:   func(m *Model) bool { return m.reactionPickerPostID != "" },
 		terminal: true,
-		claims:   func(m *Model) []key.Binding { return []key.Binding{m.keys.Up, m.keys.Down} },
+		typing:   true, // has a free-text search box at its foot
+		claims:   func(m *Model) []key.Binding { return []key.Binding{m.keys.InputUp, m.keys.InputDown} },
 	},
 	{
 		name:     "modal:open-picker",

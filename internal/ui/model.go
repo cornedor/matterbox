@@ -406,11 +406,18 @@ type Model struct {
 	embedBatch  int
 
 	// Reaction-picker modal. While reactionPickerPostID is non-empty the
-	// modal owns every keystroke (digit selects + fires, ↑/↓+↵ navigate,
-	// esc cancels). reactionPickerIdx is the cursor position within
-	// reactionEmojis.
+	// modal owns every keystroke (↑/↓+↵ navigate/fire, esc cancels; digit
+	// accelerators and typing-to-search via reactionSearch below).
+	// reactionPickerIdx is the cursor position within the currently-shown
+	// list (reactionPickerNames).
 	reactionPickerPostID string
 	reactionPickerIdx    int
+	// reactionSearch is the free-text box at the foot of the picker. While its
+	// value is empty the picker shows the configured reactionEmojis with digit
+	// accelerators (the quick path); once the user types it filters the full
+	// unicode + custom emoji set via emojiMatches — the same matcher the
+	// `:`-autocomplete uses — so any emoji can be sent as a reaction.
+	reactionSearch textinput.Model
 
 	// Open-target picker modal. When a post has more than one openable
 	// target (attachments + links), `o` raises this list instead of
@@ -509,6 +516,11 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	sw.Placeholder = "switch to channel or > for commands…"
 	sw.CharLimit = 64
 	sw.SetWidth(switcherWidth - 6)
+
+	rs := textinput.New()
+	rs.Prompt = "search "
+	rs.Placeholder = "any emoji…"
+	rs.CharLimit = 64
 
 	ta := textarea.New()
 	ta.Placeholder = "message…"
@@ -720,6 +732,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		vcache:              &viewCache{},
 		filter:              ti,
 		switcher:            sw,
+		reactionSearch:      rs,
 		openStats:           stats,
 		store:               st,
 		lastActiveTeamID:    la.teamID(),

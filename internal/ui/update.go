@@ -1623,8 +1623,7 @@ func (m Model) handleThreadKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.status = "message hasn't landed yet"
 			return m, nil
 		}
-		m.openReactionPicker(p.Id)
-		return m, nil
+		return m, m.openReactionPicker(p.Id)
 	}
 	var cmd tea.Cmd
 	m.threadView, cmd = m.threadView.Update(msg)
@@ -2374,8 +2373,7 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.status = "message hasn't landed yet"
 			return m, nil
 		}
-		m.openReactionPicker(p.Id)
-		return m, nil
+		return m, m.openReactionPicker(p.Id)
 	}
 	// Anything else (pgup/pgdn, half-page, etc.) falls through to viewport.
 	var cmd tea.Cmd

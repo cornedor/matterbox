@@ -121,25 +121,46 @@ func (m *Model) renderReactions(p *model.Post) string {
 	return "  " + strings.Join(parts, " ")
 }
 
-// openReactionPicker enters the picker modal for the given post. The
-// caller is responsible for guarding against empty Ids (optimistic
-// stubs can't be reacted to until the canonical post lands).
-func (m *Model) openReactionPicker(postID string) {
+// openReactionPicker enters the picker modal for the given post and focuses
+// the search box (returning its blink cmd). The caller is responsible for
+// guarding against empty Ids (optimistic stubs can't be reacted to until the
+// canonical post lands). No configured-reactions guard: the search box can
+// reach any emoji even when reactions: is empty in config.yaml.
+func (m *Model) openReactionPicker(postID string) tea.Cmd {
 	if postID == "" {
-		return
-	}
-	if len(m.reactionEmojis) == 0 {
-		m.status = "no reactions configured in config.yaml"
-		return
+		return nil
 	}
 	m.reactionPickerPostID = postID
 	m.reactionPickerIdx = 0
+	m.reactionSearch.SetValue("")
+	return m.reactionSearch.Focus()
 }
 
 // closeReactionPicker tears down picker state without firing anything.
 func (m *Model) closeReactionPicker() {
 	m.reactionPickerPostID = ""
 	m.reactionPickerIdx = 0
+	m.reactionSearch.SetValue("")
+	m.reactionSearch.Blur()
+}
+
+// reactionPickerNames returns the emoji names currently shown in the picker,
+// in display order. With the search box empty that's the configured quick
+// list (reactionEmojis); once the user types it's the live matches for the
+// query against the full unicode + custom set, ranked by emojiMatches. Both
+// the renderer and the apply path index this by reactionPickerIdx so they
+// always agree on what the cursor points at.
+func (m Model) reactionPickerNames() []string {
+	q := strings.ToLower(strings.TrimSpace(m.reactionSearch.Value()))
+	if q == "" {
+		return m.reactionEmojis
+	}
+	items := m.emojiMatches(q)
+	names := make([]string, len(items))
+	for i, it := range items {
+		names[i] = it.name
+	}
+	return names
 }
 
 // findPostByID returns the post with the given Id from either the main
@@ -181,10 +202,11 @@ func (m *Model) applyReactionPick() tea.Cmd {
 	if m.reactionPickerPostID == "" || m.me == nil {
 		return nil
 	}
-	if m.reactionPickerIdx < 0 || m.reactionPickerIdx >= len(m.reactionEmojis) {
+	names := m.reactionPickerNames()
+	if m.reactionPickerIdx < 0 || m.reactionPickerIdx >= len(names) {
 		return nil
 	}
-	name := m.reactionEmojis[m.reactionPickerIdx]
+	name := names[m.reactionPickerIdx]
 	postID := m.reactionPickerPostID
 	p := m.findPostByID(postID)
 	hasIt := m.userHasReacted(p, name)
@@ -322,22 +344,41 @@ func (m *Model) renderReactionPicker() string {
 		Align(lipgloss.Center).
 		Foreground(dimColor).
 		Italic(true).
-		Render("digit/↵ toggles · ↑/↓ navigates · esc cancels")
+		Render("type to search · ↑/↓ move · ↵ react · esc cancel")
+
+	// While the search box is empty the configured quick list is shown with
+	// digit accelerators; once typing, the rows are the live matches and the
+	// digits become part of the query, so the accelerator column is dropped.
+	searching := strings.TrimSpace(m.reactionSearch.Value()) != ""
+	names := m.reactionPickerNames()
 
 	rowStyle := lipgloss.NewStyle()
 	cursorStyle := lipgloss.NewStyle().Foreground(focusedColor).Bold(true)
-	rows := make([]string, 0, len(m.reactionEmojis))
-	for i, name := range m.reactionEmojis {
-		glyph := m.renderEmojiGlyph(name)
-		accel := " "
-		if i < 9 {
-			accel = fmt.Sprintf("%d", i+1)
+	dimRow := lipgloss.NewStyle().Foreground(dimColor).Italic(true)
+	rows := make([]string, 0, len(names)+1)
+	if len(names) == 0 {
+		empty := "no reactions configured — type to search"
+		if searching {
+			empty = "no matching emoji"
 		}
+		rows = append(rows, dimRow.Render("  "+empty))
+	}
+	for i, name := range names {
+		glyph := m.renderEmojiGlyph(name)
 		marker := " "
 		if m.userHasReacted(p, name) {
 			marker = "✓"
 		}
-		text := fmt.Sprintf("[%s] %s  %s  :%s:", accel, marker, glyph, name)
+		var text string
+		if searching {
+			text = fmt.Sprintf("%s  %s  :%s:", marker, glyph, name)
+		} else {
+			accel := " "
+			if i < 9 {
+				accel = fmt.Sprintf("%d", i+1)
+			}
+			text = fmt.Sprintf("[%s] %s  %s  :%s:", accel, marker, glyph, name)
+		}
 		if i == m.reactionPickerIdx {
 			rows = append(rows, cursorStyle.Render("▸ "+text))
 		} else {
@@ -345,11 +386,14 @@ func (m *Model) renderReactionPicker() string {
 		}
 	}
 
+	m.reactionSearch.SetWidth(inner - 2)
 	body := lipgloss.JoinVertical(lipgloss.Left,
 		header,
 		hint,
 		"",
 		strings.Join(rows, "\n"),
+		"",
+		m.reactionSearch.View(),
 	)
 
 	return lipgloss.NewStyle().
@@ -359,40 +403,58 @@ func (m *Model) renderReactionPicker() string {
 		Render(body)
 }
 
-// handleReactionPickerKey owns every keystroke while the picker is
-// open. Digit accelerators 1-9 immediately fire; arrow keys navigate;
-// enter fires the highlighted entry; esc cancels.
+// handleReactionPickerKey owns every keystroke while the picker is open.
+// esc cancels, enter fires the highlighted entry, ↑/↓ (and ctrl+p/ctrl+n)
+// navigate. With the search box empty, digit accelerators 1-9 immediately
+// fire against the configured list; any other printable char starts a search.
+// Once searching, every printable key (digits included) feeds the search box
+// and the rows become live emoji matches. Navigation uses InputUp/InputDown
+// rather than Up/Down so the vim j/k can be typed into the query.
 func (m Model) handleReactionPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	names := m.reactionPickerNames()
+	empty := strings.TrimSpace(m.reactionSearch.Value()) == ""
+
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
-	case "esc", "q":
+	case "esc":
 		m.closeReactionPicker()
 		return m, nil
 	case "enter":
-		cmd := m.applyReactionPick()
-		return m, cmd
+		return m, m.applyReactionPick()
 	}
-	if key.Matches(msg, m.keys.Up) {
+	if key.Matches(msg, m.keys.InputUp) {
 		if m.reactionPickerIdx > 0 {
 			m.reactionPickerIdx--
 		}
 		return m, nil
 	}
-	if key.Matches(msg, m.keys.Down) {
-		if m.reactionPickerIdx < len(m.reactionEmojis)-1 {
+	if key.Matches(msg, m.keys.InputDown) {
+		if m.reactionPickerIdx < len(names)-1 {
 			m.reactionPickerIdx++
 		}
 		return m, nil
 	}
-	// Digit accelerators 1..9 → pick the matching index directly.
-	if s := msg.String(); len(s) == 1 && s[0] >= '1' && s[0] <= '9' {
-		idx := int(s[0] - '1')
-		if idx < len(m.reactionEmojis) {
-			m.reactionPickerIdx = idx
-			cmd := m.applyReactionPick()
-			return m, cmd
+	// Empty box: digit accelerators 1..9 pick the matching configured entry
+	// directly. An out-of-range digit is a no-op rather than starting a search
+	// (the intent was clearly to accelerate).
+	if empty {
+		if s := msg.String(); len(s) == 1 && s[0] >= '1' && s[0] <= '9' {
+			idx := int(s[0] - '1')
+			if idx < len(names) {
+				m.reactionPickerIdx = idx
+				return m, m.applyReactionPick()
+			}
+			return m, nil
 		}
 	}
-	return m, nil
+	// Otherwise feed the keystroke to the search box and re-filter. Resetting
+	// the cursor to the top on any change keeps it in bounds as matches shrink.
+	prev := m.reactionSearch.Value()
+	var cmd tea.Cmd
+	m.reactionSearch, cmd = m.reactionSearch.Update(msg)
+	if m.reactionSearch.Value() != prev {
+		m.reactionPickerIdx = 0
+	}
+	return m, cmd
 }
