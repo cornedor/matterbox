@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"image"
+	"image/draw"
 	_ "image/gif"  // GIF attachments (decoded via decodeImageFrames)
 	_ "image/jpeg" // JPEG attachments
 	_ "image/png"  // PNG attachments
@@ -312,7 +313,7 @@ func (m Model) handlePreviewLoaded(msg previewImageLoadedMsg) (tea.Model, tea.Cm
 	if m.preview.id == 0 {
 		m.preview.id = m.emojiImg.allocID()
 	}
-	seq, err := kittyTransmitImage(m.preview.id, m.preview.frames[0], m.preview.rows, m.preview.cols)
+	seq, err := m.kittyPreviewSeq(m.preview.frames[0])
 	if err != nil {
 		m.preview.err = err
 		return m, nil
@@ -344,7 +345,7 @@ func (m Model) handlePreviewTick(msg previewTickMsg) (tea.Model, tea.Cmd) {
 	if rem < 0 {
 		rem = 0
 	}
-	seq, err := kittyTransmitImage(m.preview.id, m.preview.frames[m.preview.frameIdx], m.preview.rows, m.preview.cols)
+	seq, err := m.kittyPreviewSeq(m.preview.frames[m.preview.frameIdx])
 	if err != nil {
 		// Transient encode failure: skip this frame, keep the loop alive.
 		return m, previewTickCmd(m.previewGen, rem)
@@ -432,7 +433,7 @@ func (m *Model) resizePreview() tea.Cmd {
 		return nil
 	}
 	m.sizePreview()
-	seq, err := kittyTransmitImage(m.preview.id, m.preview.frames[m.preview.frameIdx], m.preview.rows, m.preview.cols)
+	seq, err := m.kittyPreviewSeq(m.preview.frames[m.preview.frameIdx])
 	if err != nil {
 		return nil
 	}
@@ -468,26 +469,29 @@ func (m *Model) sizePreview() {
 // fill the chosen box, so the box aspect is what keeps it undistorted.
 //
 // When the terminal reported its cell size (cellPxW, cellPxH both > 0) we work
-// in real pixels and cap the scale at 1, so an image smaller than the box keeps
-// its native size instead of being blown up to fill it. Without that figure we
-// fall back to filling the box at an assumed ~1:2 cell aspect (cells are about
-// twice as tall as wide) — which can upscale, but it's the best we can do blind.
+// in real pixels. On HiDPI displays (e.g. Apple Silicon) the terminal reports
+// physical pixels, so cellPxW ≈ 14 instead of 7. The scale cap is therefore
+// floor(cellPxW/7), i.e. the device pixel ratio, so the image renders at its
+// natural logical size (same cell count on 1x and 2x displays) rather than at
+// half size. Without cell metrics we fall back to filling the box at an assumed
+// ~1:2 cell aspect.
 func fitImageCells(wPx, hPx, maxCols, maxRows, cellPxW, cellPxH int) (cols, rows int) {
 	if wPx <= 0 || hPx <= 0 {
 		return maxCols, maxRows
 	}
 	if cellPxW > 0 && cellPxH > 0 {
-		// Scale to fit the box, but never above 1:1 — that cap is what stops a
-		// small image from being upsized when the modal is larger than it.
+		// Cap scale at the estimated device pixel ratio so the image renders at
+		// its natural logical size without upscaling beyond 1:1 logical pixels.
+		dpr := math.Max(1.0, math.Floor(float64(cellPxW)/7.0))
 		scale := math.Min(
 			float64(maxCols*cellPxW)/float64(wPx),
 			float64(maxRows*cellPxH)/float64(hPx),
 		)
-		if scale > 1 {
-			scale = 1
+		if scale > dpr {
+			scale = dpr
 		}
-		cols = int(math.Round(float64(wPx) * scale / float64(cellPxW)))
-		rows = int(math.Round(float64(hPx) * scale / float64(cellPxH)))
+		cols = int(math.Ceil(float64(wPx) * scale / float64(cellPxW)))
+		rows = int(math.Ceil(float64(hPx) * scale / float64(cellPxH)))
 	} else {
 		// (cols·cellW)/(rows·cellH) = wPx/hPx, with cellH ≈ 2·cellW ⇒ cols/rows = 2·wPx/hPx.
 		ratio := 2.0 * float64(wPx) / float64(hPx)
@@ -511,6 +515,40 @@ func fitImageCells(wPx, hPx, maxCols, maxRows, cellPxW, cellPxH int) (cols, rows
 		rows = maxRows
 	}
 	return cols, rows
+}
+
+// padImageForCells pads img with transparent pixels so it exactly fills the
+// cols×rows cell area, eliminating any Kitty-side scaling. The target size in
+// image-pixel space is cols*cellPxW/dpr × rows*cellPxH/dpr. If the target
+// would be smaller than the image (downscale case, e.g. image bigger than modal)
+// the original is returned unchanged and Kitty handles the scale; the ~1px
+// rounding error is acceptable in that case. Also a no-op when cell dimensions
+// are unknown (cellPxW/cellPxH == 0).
+func padImageForCells(img image.Image, cols, rows, cellPxW, cellPxH int) image.Image {
+	if cellPxW <= 0 || cellPxH <= 0 {
+		return img
+	}
+	dpr := math.Max(1.0, math.Floor(float64(cellPxW)/7.0))
+	targetW := int(math.Round(float64(cols*cellPxW) / dpr))
+	targetH := int(math.Round(float64(rows*cellPxH) / dpr))
+	b := img.Bounds()
+	if targetW == b.Dx() && targetH == b.Dy() {
+		return img
+	}
+	if targetW < b.Dx() || targetH < b.Dy() {
+		return img // downscale case; Kitty scales, accept the tiny rounding error
+	}
+	out := image.NewNRGBA(image.Rect(0, 0, targetW, targetH))
+	// out is zero-initialized (fully transparent); draw original at top-left.
+	draw.Draw(out, b, img, b.Min, draw.Src)
+	return out
+}
+
+// kittyPreviewSeq pads frame to the current preview cell area so Kitty renders
+// it without internal scaling, then returns the transmit sequence.
+func (m *Model) kittyPreviewSeq(frame image.Image) (string, error) {
+	padded := padImageForCells(frame, m.preview.cols, m.preview.rows, m.cellPxW, m.cellPxH)
+	return kittyTransmitImage(m.preview.id, padded, m.preview.rows, m.preview.cols)
 }
 
 // previewImageBlock builds the placeholder grid (rows×cols cells pointing at the
