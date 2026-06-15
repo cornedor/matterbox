@@ -182,6 +182,19 @@ type ListenConfig struct {
 	// telegram.chat_id (the only sender the bot obeys). Pointer so an absent key
 	// defaults to true; set false for notify-only.
 	TwoWay *bool `yaml:"two_way"`
+	// NotifyDMs controls whether direct-message channels trigger notifications.
+	// When false (the default), only explicit channel @mentions are forwarded —
+	// a DM conversation you are actively reading no longer pings you on Telegram.
+	// Set true to restore the original behaviour. Pointer so an absent key
+	// defaults to false.
+	NotifyDMs *bool `yaml:"notify_dms"`
+	// NotifyDelaySeconds is how long (in seconds) the daemon waits after seeing
+	// a mention before sending the Telegram notification. During that window it
+	// checks the Mattermost server's LastViewedAt for the channel: if any client
+	// (TUI, mobile, web — on any machine) has since marked it read, the
+	// notification is suppressed. 0 = deliver immediately. Pointer so an absent
+	// key defaults to 60.
+	NotifyDelaySeconds *int `yaml:"notify_delay_seconds"`
 }
 
 // GiphyConfig configures pasted-Giphy-link expansion. Defaults in fillDefaults.
@@ -497,7 +510,7 @@ func Load() (*Config, error) {
 	// and rewrite the file once so the discovered model + prompt show up as
 	// editable defaults. Best-effort: a failed rewrite only means the file
 	// keeps working off in-memory defaults.
-	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.TwoWay == nil
+	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.TwoWay == nil || cfg.Listen.NotifyDMs == nil || cfg.Listen.NotifyDelaySeconds == nil
 	cfg.fillDefaults()
 	if addDefaults {
 		if werr := writeConfig(p, cfg); werr != nil {
@@ -607,6 +620,14 @@ func (c *Config) fillDefaults() {
 		t := true
 		c.Listen.TwoWay = &t
 	}
+	if c.Listen.NotifyDMs == nil {
+		f := false
+		c.Listen.NotifyDMs = &f
+	}
+	if c.Listen.NotifyDelaySeconds == nil {
+		d := 60
+		c.Listen.NotifyDelaySeconds = &d
+	}
 }
 
 // SaveTeamOrder persists the given left-to-right team-tab ordering to
@@ -714,7 +735,13 @@ func writeConfig(p string, cfg *Config) error {
 		"#             midnight; empty = always on) suppresses pushes in that window\n" +
 		"#             (messages are still cached — use the bot's /unread);\n" +
 		"#             two_way (default true) enables replying from Telegram and the\n" +
-		"#             /search /unread /digest commands (needs telegram.chat_id).\n" +
+		"#             /search /unread /digest commands (needs telegram.chat_id);\n" +
+		"#             notify_dms (default false) also forwards DM messages — off by\n" +
+		"#             default so chatting in a DM you're actively reading stays quiet;\n" +
+		"#             notify_delay_seconds (default 60) waits this long before sending\n" +
+		"#             the notification, then checks the server's read state — if any\n" +
+		"#             client marked the channel read during the window the notification\n" +
+		"#             is suppressed (0 = deliver immediately, no read-check).\n" +
 		"# jira:       the issue side panel. Press v on a message naming a Jira\n" +
 		"#             issue to fetch it from Jira Cloud and view it inline.\n" +
 		"#             base_url is the instance root (https://you.atlassian.net);\n" +

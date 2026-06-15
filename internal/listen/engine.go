@@ -63,6 +63,15 @@ type Options struct {
 	// (you don't want pings for what you just sent); handy for testing the
 	// bridge by posting in your own self-DM.
 	NotifySelf bool
+	// NotifyDMs controls whether direct-message channels trigger
+	// notifications. When false, only channel @mentions fire. Default false.
+	NotifyDMs bool
+	// NotifyDelaySeconds is how long to wait before delivering a notification.
+	// After the delay the daemon fetches the channel-member record from the
+	// Mattermost server and skips the notification if LastViewedAt ≥ the
+	// post's timestamp — i.e. any client (TUI, mobile, web) marked it read.
+	// 0 delivers immediately with no read-check. Default 60.
+	NotifyDelaySeconds int
 	// RespectMutes skips notifications for channels muted in Mattermost.
 	RespectMutes bool
 	// QuietHours is the raw "HH:MM-HH:MM" suppression window (local); empty =
@@ -283,7 +292,10 @@ func (e *Engine) handle(ctx context.Context, ev *model.WebSocketEvent) {
 		}
 		e.ingest(p)
 		if e.opts.NotifyOnMention && e.me != nil && isDirectMention(ev, p, e.me.Id, e.me.Username, e.opts.NotifySelf) {
+			isDM := eventStr(ev, "channel_type") == string(model.ChannelTypeDirect)
 			switch {
+			case isDM && !e.opts.NotifyDMs:
+				// DM notifications disabled; still cached for /unread.
 			case e.opts.RespectMutes && e.isMuted(p.ChannelId):
 				e.log.Printf("mention in muted channel %s — skipped", p.ChannelId)
 			case e.inQuietHoursNow():
@@ -318,6 +330,22 @@ func (e *Engine) ingest(p *model.Post) {
 // its own goroutine; respects ctx (cancelled on shutdown).
 func (e *Engine) notify(ctx context.Context, ev *model.WebSocketEvent, p *model.Post) {
 	defer e.wg.Done()
+
+	// Delay-then-read-check: wait the configured window, then query the
+	// Mattermost server for the channel's LastViewedAt. Any client — TUI,
+	// mobile, web — that viewed the channel during the window updates
+	// LastViewedAt on the server, so this works even when the daemon runs on
+	// a different machine than the client.
+	if e.opts.NotifyDelaySeconds > 0 {
+		if !sleepCtx(ctx, time.Duration(e.opts.NotifyDelaySeconds)*time.Second) {
+			return // shutdown
+		}
+		if e.wasRead(ctx, p) {
+			e.log.Printf("mention in channel %s read within %ds — skipped", p.ChannelId, e.opts.NotifyDelaySeconds)
+			e.advanceCursor(p.CreateAt)
+			return
+		}
+	}
 
 	senderFallback := ""
 	if names, err := e.client.UsernamesByIDs(ctx, []string{p.UserId}); err == nil {
@@ -501,6 +529,21 @@ func (e *Engine) inQuietHoursNow() bool {
 	}
 	now := time.Now()
 	return inQuietHours(now.Hour()*60+now.Minute(), e.quietStart, e.quietEnd)
+}
+
+// wasRead reports whether the channel was viewed (by any client) after the
+// post arrived, by querying LastViewedAt from the Mattermost server. On error
+// it returns false so the notification fires rather than being silently lost.
+func (e *Engine) wasRead(ctx context.Context, p *model.Post) bool {
+	if e.me == nil {
+		return false
+	}
+	m, err := e.client.ChannelMember(ctx, p.ChannelId, e.me.Id)
+	if err != nil {
+		e.log.Printf("check read state for channel %s: %v — notifying anyway", p.ChannelId, err)
+		return false
+	}
+	return m.LastViewedAt >= p.CreateAt
 }
 
 // rememberNotif persists which Mattermost message a sent notification (msgID)
@@ -810,6 +853,9 @@ func (e *Engine) catchUp(ctx context.Context) {
 			continue
 		}
 		isDM := ch.Type == model.ChannelTypeDirect
+		if isDM && !e.opts.NotifyDMs {
+			continue
+		}
 		if isDM {
 			if int(ch.TotalMsgCountRoot-mb.MsgCountRoot) <= 0 {
 				continue

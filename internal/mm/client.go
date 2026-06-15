@@ -506,6 +506,16 @@ func (c *Client) UserByUsername(ctx context.Context, username string) (*model.Us
 	return u, nil
 }
 
+// ChannelMember fetches the member record for a single user/channel pair.
+// Used by the listen daemon to check LastViewedAt after a notify delay.
+func (c *Client) ChannelMember(ctx context.Context, channelID, userID string) (*model.ChannelMember, error) {
+	m, _, err := c.c.GetChannelMember(ctx, channelID, userID, "")
+	if err != nil {
+		return nil, fmt.Errorf("get channel member: %w", err)
+	}
+	return m, nil
+}
+
 // DirectChannel returns the direct-message channel between two users,
 // creating it if it does not yet exist. The call is idempotent: an
 // existing DM is returned unchanged.
