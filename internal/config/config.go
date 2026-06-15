@@ -81,6 +81,56 @@ type Config struct {
 	// api_key is set the line is then upgraded in place with the GIF's real
 	// title and the chosen rendition. See internal/ui.
 	Giphy GiphyConfig `yaml:"giphy"`
+	// Telegram configures the outbound Telegram bridge used by the
+	// `matterbox listen` daemon: a bot token (from @BotFather) and the chat id
+	// that receives notifications. An empty bot_token disables delivery (the
+	// daemon still keeps the local cache warm). See internal/listen.
+	Telegram TelegramConfig `yaml:"telegram"`
+	// Listen configures the `matterbox listen` background daemon: whether to
+	// notify on direct mentions / DMs, whether to summarize the surrounding
+	// context with the chat model, and the summary prompt. See internal/listen.
+	Listen ListenConfig `yaml:"listen"`
+}
+
+// TelegramConfig holds the credentials for the Telegram bridge. Both fields are
+// empty by default (the bridge is opt-in); set them to forward mentions.
+type TelegramConfig struct {
+	// BotToken is the bot token from @BotFather. Empty disables delivery.
+	BotToken string `yaml:"bot_token"`
+	// ChatID is the destination: a numeric chat id (message the bot, then read
+	// it from https://api.telegram.org/bot<token>/getUpdates) or an
+	// @channelusername.
+	ChatID string `yaml:"chat_id"`
+}
+
+// ListenConfig holds the behaviour of the `matterbox listen` daemon. Defaults
+// in fillDefaults.
+type ListenConfig struct {
+	// NotifyOnMention forwards a notification when you are directly @mentioned
+	// or sent a DM. Pointer so an absent key defaults to true while an explicit
+	// false runs the daemon as a cache-warmer only.
+	NotifyOnMention *bool `yaml:"notify_on_mention"`
+	// Summarize controls whether the notification is an LLM summary of the
+	// surrounding conversation (true) — using the `summary` endpoint+model — or
+	// just the raw message text (false). A summary automatically falls back to
+	// raw text when the chat server is down. Pointer so an absent key defaults
+	// to true.
+	Summarize *bool `yaml:"summarize"`
+	// NotifyPrompt is the system prompt for the notification summary. The
+	// reader's @username and the message source are appended at request time.
+	NotifyPrompt string `yaml:"notify_prompt"`
+	// RespectMutes skips notifications for channels you've muted in Mattermost.
+	// Pointer so an absent key defaults to true.
+	RespectMutes *bool `yaml:"respect_mutes"`
+	// QuietHours suppresses notifications during a daily window, "HH:MM-HH:MM"
+	// in local time (e.g. "22:00-08:00"; may wrap past midnight). Empty = always
+	// on. Messages are still cached — catch up with the bot's /unread command.
+	QuietHours string `yaml:"quiet_hours"`
+	// TwoWay enables the inbound Telegram channel: reply to a notification to
+	// post back, tap the 👍 / ✓ buttons, and run /search /unread /digest. Needs
+	// telegram.chat_id (the only sender the bot obeys). Pointer so an absent key
+	// defaults to true; set false for notify-only.
+	TwoWay *bool `yaml:"two_way"`
 }
 
 // GiphyConfig configures pasted-Giphy-link expansion. Defaults in fillDefaults.
@@ -331,6 +381,14 @@ const (
 		"- When you can answer, call finish with a one- or two-sentence answer that names the channel(s) where the information was found. If you found nothing relevant, say so plainly."
 )
 
+// defaultListenNotifyPrompt frames the notification summary for the
+// `matterbox listen` Telegram bridge. Kept short: the output is a push
+// notification, not a report.
+const defaultListenNotifyPrompt = "You are a notification assistant for a Mattermost user. " +
+	"Summarize the conversation below in one or two short sentences suitable for a phone push " +
+	"notification: who said what, and what (if anything) the reader needs to do. Be concise and " +
+	"concrete, refer to people by their @username, and never invent details that aren't in the text."
+
 // defaultReactions is the picker list used when the user hasn't
 // configured their own. Names match Mattermost's emoji shortcodes.
 var defaultReactions = []string{
@@ -388,7 +446,7 @@ func Load() (*Config, error) {
 	// and rewrite the file once so the discovered model + prompt show up as
 	// editable defaults. Best-effort: a failed rewrite only means the file
 	// keeps working off in-memory defaults.
-	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Giphy.Rendition == ""
+	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.TwoWay == nil
 	cfg.fillDefaults()
 	if addDefaults {
 		if werr := writeConfig(p, cfg); werr != nil {
@@ -478,6 +536,25 @@ func (c *Config) fillDefaults() {
 	}
 	if c.Giphy.Rendition == "" {
 		c.Giphy.Rendition = defaultGiphyRendition
+	}
+	if c.Listen.NotifyOnMention == nil {
+		t := true
+		c.Listen.NotifyOnMention = &t
+	}
+	if c.Listen.Summarize == nil {
+		t := true
+		c.Listen.Summarize = &t
+	}
+	if c.Listen.NotifyPrompt == "" {
+		c.Listen.NotifyPrompt = defaultListenNotifyPrompt
+	}
+	if c.Listen.RespectMutes == nil {
+		t := true
+		c.Listen.RespectMutes = &t
+	}
+	if c.Listen.TwoWay == nil {
+		t := true
+		c.Listen.TwoWay = &t
 	}
 }
 
@@ -571,6 +648,21 @@ func writeConfig(p string, cfg *Config) error {
 		"#             GIPHY_API_KEY env var) the line is then upgraded with the\n" +
 		"#             GIF's real title. rendition picks the size: fixed_height\n" +
 		"#             (default, 200px), fixed_height_small (100px), fixed_width,\n" +
-		"#             downsized / downsized_medium (need api_key), or original.\n"
+		"#             downsized / downsized_medium (need api_key), or original.\n" +
+		"# telegram:   outbound bridge for `matterbox listen`. bot_token is a\n" +
+		"#             @BotFather token; chat_id is the destination (numeric id, or\n" +
+		"#             @channelusername). Empty bot_token disables delivery.\n" +
+		"# listen:     the `matterbox listen` daemon. notify_on_mention (default\n" +
+		"#             true) forwards direct @mentions and DMs to Telegram;\n" +
+		"#             summarize (default true) sends an LLM summary of the\n" +
+		"#             surrounding context (via the summary endpoint+model, falling\n" +
+		"#             back to raw text when it's down) instead of the bare message;\n" +
+		"#             notify_prompt is that summary's system prompt;\n" +
+		"#             respect_mutes (default true) skips channels you muted in\n" +
+		"#             Mattermost; quiet_hours (e.g. \"22:00-08:00\", local, may wrap\n" +
+		"#             midnight; empty = always on) suppresses pushes in that window\n" +
+		"#             (messages are still cached — use the bot's /unread);\n" +
+		"#             two_way (default true) enables replying from Telegram and the\n" +
+		"#             /search /unread /digest commands (needs telegram.chat_id).\n"
 	return os.WriteFile(p, append([]byte(header), body...), 0o644)
 }

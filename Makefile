@@ -3,8 +3,9 @@
 # Targets:
 #   make            build ./matterbox
 #   make install    build, copy to ~/.local/bin, install shell completion,
-#                    and (on Linux) register the mmauth:// login handler
-#   make uninstall  remove the binary, completion files, and login handler
+#                    register the mmauth:// login handler, and (on Linux) drop
+#                    the `matterbox listen` systemd --user unit (disabled)
+#   make uninstall  remove the binary, completion files, login handler, service
 #   make test/vet/fmt/clean/run  the usual dev helpers
 #
 # Override the install location with PREFIX, e.g.  make install PREFIX=~/apps
@@ -29,6 +30,19 @@ XDG_DATA_HOME ?= $(HOME)/.local/share
 DESKTOP_DIR  := $(XDG_DATA_HOME)/applications
 DESKTOP_FILE := $(DESKTOP_DIR)/matterbox-mmauth.desktop
 
+# Background `matterbox listen` service, installed but not started: systemd
+# --user on Linux, a launchd LaunchAgent on macOS. The user enables/loads it
+# explicitly once Telegram + login are configured.
+SYSTEMD_USER_DIR := $(HOME)/.config/systemd/user
+SERVICE_NAME     := matterbox-listen.service
+SERVICE_SRC      := scripts/$(SERVICE_NAME)
+
+LAUNCHD_LABEL := com.matterbox.listen
+LAUNCHD_DIR   := $(HOME)/Library/LaunchAgents
+LAUNCHD_PLIST := $(LAUNCHD_DIR)/$(LAUNCHD_LABEL).plist
+LAUNCHD_SRC   := scripts/$(LAUNCHD_LABEL).plist
+MACOS_LOG     := $(HOME)/Library/Logs/matterbox-listen.log
+
 .DEFAULT_GOAL := build
 
 .PHONY: build
@@ -36,7 +50,7 @@ build: ## Build the matterbox binary into the repo root
 	$(GO) build -o $(BINARY) $(PKG)
 
 .PHONY: install
-install: build install-completion ## Install binary + completion (+ login handler on Linux)
+install: build install-completion install-service ## Install binary + completion (+ login handler & listen service on Linux)
 	@install -d "$(BINDIR)"
 	@install -m 0755 "$(BINARY)" "$(BINDIR)/$(BINARY)"
 	@echo "installed $(BINDIR)/$(BINARY)"
@@ -84,8 +98,33 @@ install-completion: build ## Generate + install shell completion for the current
 		;; \
 	esac
 
+.PHONY: install-service
+install-service: ## Install the `matterbox listen` background service (systemd on Linux, launchd on macOS; not started)
+	@case "$$(uname -s)" in \
+	Linux) \
+		if command -v systemctl >/dev/null 2>&1; then \
+			install -d "$(SYSTEMD_USER_DIR)"; \
+			sed 's#^ExecStart=.*#ExecStart=$(BINDIR)/$(BINARY) listen#' "$(SERVICE_SRC)" > "$(SYSTEMD_USER_DIR)/$(SERVICE_NAME)"; \
+			echo "installed $(SYSTEMD_USER_DIR)/$(SERVICE_NAME)  (ExecStart=$(BINDIR)/$(BINARY) listen)"; \
+			systemctl --user daemon-reload 2>/dev/null || true; \
+			echo "not enabled — after 'matterbox login' + telegram config, run:"; \
+			echo "    systemctl --user enable --now $(SERVICE_NAME)"; \
+		else \
+			echo "skipping service: systemctl not found"; \
+		fi ;; \
+	Darwin) \
+		install -d "$(LAUNCHD_DIR)"; \
+		sed -e 's#__EXEC__#$(BINDIR)/$(BINARY)#' -e 's#__LOG__#$(MACOS_LOG)#' "$(LAUNCHD_SRC)" > "$(LAUNCHD_PLIST)"; \
+		echo "installed $(LAUNCHD_PLIST)  (program=$(BINDIR)/$(BINARY) listen)"; \
+		echo "not loaded — after 'matterbox login' + telegram config, run:"; \
+		echo "    launchctl bootstrap gui/$$(id -u) $(LAUNCHD_PLIST)"; \
+		echo "    (older macOS:  launchctl load $(LAUNCHD_PLIST))"; \
+		;; \
+	*) echo "skipping service: unsupported OS $$(uname -s)" ;; \
+	esac
+
 .PHONY: uninstall
-uninstall: ## Remove the installed binary, completion files, and login handler
+uninstall: ## Remove the installed binary, completion files, login handler, and service
 	@rm -f "$(BINDIR)/$(BINARY)" && echo "removed $(BINDIR)/$(BINARY)" || true
 	@rm -f "$(ZSH_COMPDIR)/_$(BINARY)" "$(BASH_COMPDIR)/$(BINARY)" "$(FISH_COMPDIR)/$(BINARY).fish" 2>/dev/null || true
 	@echo "removed completion scripts (the fpath line in ~/.zshrc, if added, is left for you to remove)"
@@ -93,6 +132,17 @@ uninstall: ## Remove the installed binary, completion files, and login handler
 		rm -f "$(DESKTOP_FILE)"; \
 		command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$(DESKTOP_DIR)" 2>/dev/null || true; \
 		echo "removed mmauth:// login handler"; \
+	fi
+	@if [ -f "$(SYSTEMD_USER_DIR)/$(SERVICE_NAME)" ]; then \
+		command -v systemctl >/dev/null 2>&1 && systemctl --user disable --now $(SERVICE_NAME) 2>/dev/null || true; \
+		rm -f "$(SYSTEMD_USER_DIR)/$(SERVICE_NAME)"; \
+		command -v systemctl >/dev/null 2>&1 && systemctl --user daemon-reload 2>/dev/null || true; \
+		echo "removed $(SERVICE_NAME)"; \
+	fi
+	@if [ -f "$(LAUNCHD_PLIST)" ]; then \
+		launchctl bootout gui/$$(id -u)/$(LAUNCHD_LABEL) 2>/dev/null || launchctl unload "$(LAUNCHD_PLIST)" 2>/dev/null || true; \
+		rm -f "$(LAUNCHD_PLIST)"; \
+		echo "removed $(LAUNCHD_LABEL)"; \
 	fi
 
 .PHONY: test

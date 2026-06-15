@@ -23,8 +23,8 @@ type jsonPost struct {
 	UserID    string `json:"user_id"`
 	Username  string `json:"username"`
 	Message   string `json:"message"`
-	CreateAt  int64  `json:"create_at"`        // unix-ms, as Mattermost stores it
-	Time      string `json:"time"`             // RFC3339 (local tz), for humans / jq
+	CreateAt  int64  `json:"create_at"`         // unix-ms, as Mattermost stores it
+	Time      string `json:"time"`              // RFC3339 (local tz), for humans / jq
 	RootID    string `json:"root_id,omitempty"` // set when the post is a thread reply
 }
 

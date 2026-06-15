@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd LaunchAgent for the `matterbox listen` daemon (macOS) — the launchd
+  equivalent of scripts/matterbox-listen.service.
+
+  `make install` copies this to ~/Library/LaunchAgents/com.matterbox.listen.plist
+  with __EXEC__ (the matterbox binary path) and __LOG__ (a log file path)
+  substituted, but does NOT load it. After configuring Telegram and running
+  `matterbox login`, load it yourself:
+
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.matterbox.listen.plist
+    # older macOS:  launchctl load ~/Library/LaunchAgents/com.matterbox.listen.plist
+
+  Follow the log:  tail -f ~/Library/Logs/matterbox-listen.log
+  Stop / unload:   launchctl bootout gui/$(id -u)/com.matterbox.listen
+                   # older macOS:  launchctl unload ~/Library/LaunchAgents/com.matterbox.listen.plist
+
+  Manual install without make: replace __EXEC__ with the absolute path to the
+  matterbox binary (e.g. /Users/you/.local/bin/matterbox) and __LOG__ with an
+  absolute log path — launchd does not expand ~ or environment variables here.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.matterbox.listen</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__EXEC__</string>
+        <string>listen</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <!-- Restart on crash but not after a clean exit — mirrors the systemd
+         unit's Restart=on-failure. launchd throttles respawns to ~10s. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>__LOG__</string>
+    <key>StandardErrorPath</key>
+    <string>__LOG__</string>
+</dict>
+</plist>
