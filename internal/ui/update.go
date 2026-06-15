@@ -723,6 +723,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case feedLoadedMsg:
 		return m.applyFeedResults(msg)
 
+	case feedWaveTickMsg:
+		return m, m.applyFeedWaveTick()
+
 	case reactionErrMsg:
 		m.status = "reaction: " + msg.err.Error()
 		return m, nil

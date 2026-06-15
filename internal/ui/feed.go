@@ -56,6 +56,12 @@ type feedState struct {
 	built   bool // we've assembled the feed at least once this session
 	err     string
 	seq     int // bumps on every build; stale feedLoadedMsg are dropped
+
+	// Empty-state splash animation. wavePhase advances each frame to drift
+	// the water; waveActive guards against running more than one tick loop.
+	// Both only matter while the feed has no entries (see feedart.go).
+	wavePhase  int
+	waveActive bool
 }
 
 // newFeedState constructs the viewport used by the Feed tab. Called once
@@ -338,7 +344,8 @@ func (m Model) applyFeedResults(msg feedLoadedMsg) (tea.Model, tea.Cmd) {
 		m.feed.idx = 0
 	}
 	m.renderFeedResults()
-	return m, nil
+	// An empty build lands on the calm-water splash — start the waves.
+	return m, m.maybeStartFeedWaves()
 }
 
 // handleFeedKey owns the keystrokes routed to focus == focusFeed that
@@ -432,7 +439,8 @@ func (m Model) markFeedEntryRead() (tea.Model, tea.Cmd) {
 	m.removeFeedEntry(e.channelID)
 	m.status = "marked read"
 	m.renderFeedResults()
-	return m, m.markChannelViewed(e.channelID)
+	// Reading the last entry reveals the splash — animate it.
+	return m, tea.Batch(m.markChannelViewed(e.channelID), m.maybeStartFeedWaves())
 }
 
 // removeFeedEntry drops the bubble for channelID and clamps the selection.
@@ -571,11 +579,14 @@ func (m *Model) renderFeedResults() {
 		return
 	}
 	if len(m.feed.entries) == 0 {
-		hint := "  all caught up — nothing unread"
 		if m.feed.loading {
-			hint = "  gathering unread messages…"
+			m.feed.view.SetContent(
+				lipgloss.NewStyle().Foreground(dimColor).Render("  gathering unread messages…"))
+			return
 		}
-		m.feed.view.SetContent(lipgloss.NewStyle().Foreground(dimColor).Render(hint))
+		// Nothing unread: the calm ship-on-water splash, with slowly
+		// drifting waves (animation armed by maybeStartFeedWaves).
+		m.feed.view.SetContent(m.feedEmptyContent())
 		return
 	}
 
