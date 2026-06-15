@@ -1350,17 +1350,7 @@ func (m *Model) renderTeamTabs() string {
 		return footerStyle.Render(" (no teams) ") + blank
 	}
 	// Pre-compute distinct counts for the Feed tab badge.
-	unreadCh, mentionCh := 0, 0
-	for _, n := range m.unread {
-		if n > 0 {
-			unreadCh++
-		}
-	}
-	for _, n := range m.mentions {
-		if n > 0 {
-			mentionCh++
-		}
-	}
+	unreadCh, mentionCh := m.feedBadgeCounts()
 
 	maxIdx := m.maxTeamIdx()
 

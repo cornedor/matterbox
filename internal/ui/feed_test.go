@@ -182,6 +182,31 @@ func TestChannelMuted(t *testing.T) {
 	}
 }
 
+func TestFeedBadgeCountsSkipsMuted(t *testing.T) {
+	muted := model.ChannelMember{ChannelId: "c-muted", NotifyProps: model.StringMap{
+		model.MarkUnreadNotifyProp: model.ChannelMarkUnreadMention,
+	}}
+	loud := model.ChannelMember{ChannelId: "c-loud", NotifyProps: model.StringMap{
+		model.MarkUnreadNotifyProp: model.ChannelMarkUnreadAll,
+	}}
+	m := Model{
+		members: model.ChannelMembersWithTeamData{
+			{ChannelMember: muted},
+			{ChannelMember: loud},
+		},
+		// Both channels carry unread + a mention; only the loud one counts.
+		unread:   map[string]int{"c-muted": 3, "c-loud": 1},
+		mentions: map[string]int{"c-muted": 2, "c-loud": 1},
+	}
+	unread, mention := m.feedBadgeCounts()
+	if unread != 1 {
+		t.Errorf("unread badge = %d; want 1 (muted channel excluded)", unread)
+	}
+	if mention != 1 {
+		t.Errorf("mention badge = %d; want 1 (muted channel excluded)", mention)
+	}
+}
+
 func TestMuteCommand(t *testing.T) {
 	member := func(muted bool) model.ChannelMemberWithTeamData {
 		level := model.ChannelMarkUnreadAll

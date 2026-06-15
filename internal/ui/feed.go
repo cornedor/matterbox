@@ -121,6 +121,24 @@ func (m Model) channelMuted(channelID string) bool {
 	return false
 }
 
+// feedBadgeCounts returns the number of distinct channels with unread
+// messages and with mentions for the Feed tab badge. Muted channels are
+// skipped to match buildFeed: they keep their unread/mention counts for the
+// sidebar, but the feed is the "things to read" list they're opted out of.
+func (m Model) feedBadgeCounts() (unread, mention int) {
+	for id, n := range m.unread {
+		if n > 0 && !m.channelMuted(id) {
+			unread++
+		}
+	}
+	for id, n := range m.mentions {
+		if n > 0 && !m.channelMuted(id) {
+			mention++
+		}
+	}
+	return unread, mention
+}
+
 // buildFeed snapshots the current unread channels and fires the worker
 // that fetches each channel's unread posts. Bumps the seq so any earlier
 // in-flight build is ignored when it lands. Muted channels are skipped —
