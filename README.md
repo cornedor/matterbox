@@ -18,9 +18,17 @@ local LLM.
 - **Semantic search** — optional vector search over your message history using a
   local embeddings model (no data leaves your machine). Blended with keyword
   results via hybrid ranking.
+- **Feed tab** — aggregated view of all unread messages across channels and DMs,
+  excluding muted channels.
+- **Jira integration** — press `v` on a Jira issue link to open a side panel; edit
+  Status, Priority, Story points, and Assignee inline without leaving the TUI.
+- **GitLab integration** — press `v` on a GitLab MR link to open a merge-request
+  side panel with diff and status.
 - **AI summaries** — summarize a channel or thread with a local LLM (Ctrl+K in the TUI).
 - **Agentic search** — end a query with `?` on the Search tab and a local model
   uses tools to dig through your channels to answer it.
+- **Clipboard paste** — paste images and files from the clipboard directly into
+  the composer (macOS and Linux with wl-clipboard/xclip).
 
 The AI features (summaries, semantic/agentic search) are entirely optional and talk
 to any OpenAI-compatible endpoint — point them at a local
@@ -96,6 +104,8 @@ scripting:
 | `matterbox digest` | Show your own recent messages in a time range |
 | `matterbox whoami` | Print the authenticated user |
 | `matterbox embed` | Backfill semantic-search embeddings for cached messages |
+| `matterbox listen` | Background daemon: keeps cache warm and bridges @mentions/DMs to Telegram |
+| `matterbox keys` | List all keyboard actions, default keys, and your config overrides |
 
 Channels are addressed as `team/channel` (e.g. `eng/general`) or `@username` for a DM.
 
@@ -144,3 +154,31 @@ embeddings server is in [`scripts/llama-embeddings.sh`](scripts/llama-embeddings
 
 Once an embeddings server is running, build the index with `matterbox embed` (or let
 the TUI index in the background), then search with `matterbox search --semantic`.
+
+## listen daemon (optional)
+
+`matterbox listen` holds a persistent WebSocket connection to your Mattermost
+server and writes every incoming message into the local cache — so the TUI
+reopens warm and `search`/`digest` stay fresh without launching the UI.
+
+When configured, it also bridges your @mentions and DMs to Telegram, optionally
+summarising the surrounding conversation via the chat model first. Two-way mode
+lets you reply from Telegram back into Mattermost. The daemon also accepts `/ask`
+commands from Telegram to run agentic search against your message history.
+
+Run it under a process supervisor. `make install` drops a disabled service for
+your platform:
+
+```sh
+# Linux (systemd --user)
+systemctl --user enable --now matterbox-listen.service
+journalctl --user -u matterbox-listen -f
+
+# macOS (launchd)
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.matterbox.listen.plist
+tail -f ~/Library/Logs/matterbox-listen.log
+```
+
+Configure under the `telegram` and `listen` sections in `config.yaml`
+(set `telegram.bot_token` from @BotFather and `telegram.chat_id`). The daemon is
+safe to run alongside the TUI — both write idempotent rows into the WAL-mode store.
