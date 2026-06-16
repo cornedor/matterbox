@@ -152,6 +152,50 @@ func TestJiraPanelRendersIssue(t *testing.T) {
 	}
 }
 
+func TestOpenReferenceMarkdownBareKey(t *testing.T) {
+	// Bare keys wrapped in markdown formatting should open the panel.
+	m := configuredJiraModel(t, "ABC")
+	m.posts = []*model.Post{{Message: "blocked by **ABC-42**"}}
+	m.postIdx = 0
+	m.focus = focusMessages
+
+	updated, cmd := m.openRefForPost(m.posts[0])
+	got := updated.(Model)
+
+	if !got.refOpen {
+		t.Fatal("expected reference panel to open for markdown bare key")
+	}
+	if len(got.refs) != 1 || got.refs[0].jiraKey != "ABC-42" {
+		t.Errorf("refs = %+v, want one Jira ABC-42", got.refs)
+	}
+	if cmd == nil {
+		t.Error("expected a fetch Cmd")
+	}
+}
+
+func TestOpenReferenceBareKeyPos(t *testing.T) {
+	// Positions should be accurate for bare keys, not relying on strings.Index.
+	m := configuredJiraModel(t, "ABC")
+	m.posts = []*model.Post{{Message: "ABC-1 and https://example.atlassian.net/browse/ABC-2"}}
+	m.postIdx = 0
+	m.focus = focusMessages
+
+	updated, _ := m.openRefForPost(m.posts[0])
+	got := updated.(Model)
+
+	if len(got.refs) != 2 {
+		t.Fatalf("expected 2 refs, got %d", len(got.refs))
+	}
+	// Bare key ABC-1 is at position 0.
+	if got.refs[0].jiraKey != "ABC-1" || got.refs[0].pos != 0 {
+		t.Errorf("first ref = %+v, want jiraKey=ABC-1 pos=0", got.refs[0])
+	}
+	// URL ABC-2 is at position 10.
+	if got.refs[1].jiraKey != "ABC-2" || got.refs[1].pos != 10 {
+		t.Errorf("second ref = %+v, want jiraKey=ABC-2 pos=10", got.refs[1])
+	}
+}
+
 func TestCloseRefRestoresFocus(t *testing.T) {
 	m := configuredJiraModel(t)
 	post := &model.Post{Message: "https://example.atlassian.net/browse/ABC-1"}

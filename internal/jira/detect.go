@@ -21,6 +21,18 @@ var browseURLRe = regexp.MustCompile(`https?://([^/\s]+)/browse/([A-Z][A-Z0-9]+-
 // caller trims punctuation, but "ABC-123-foo" does not).
 var bareKeyRe = regexp.MustCompile(`^[A-Z][A-Z0-9]+-[0-9]+$`)
 
+// bareKeySearchRe is the unanchored form used to find bare issue IDs anywhere
+// in text (including inside markdown formatting like **ABC-123** or `ABC-123`).
+// Word boundaries prevent matching inside longer tokens like "ABC-123foo".
+var bareKeySearchRe = regexp.MustCompile(`\b[A-Z][A-Z0-9]+-[0-9]+\b`)
+
+// IssueRef is a detected Jira issue key with its byte offset in the source
+// text, so the UI can order references by first appearance.
+type IssueRef struct {
+	Key string
+	Pos int
+}
+
 // Refs extracts the Jira issue keys named in text, in order of first
 // appearance, deduplicated. Two forms are detected:
 //
@@ -32,43 +44,45 @@ var bareKeyRe = regexp.MustCompile(`^[A-Z][A-Z0-9]+-[0-9]+$`)
 //
 // baseURL may be empty (then only *.atlassian.net URLs and allowlisted bare
 // keys match).
-func Refs(text, baseURL string, projects []string) []string {
-	var keys []string
+func Refs(text, baseURL string, projects []string) []IssueRef {
+	var refs []IssueRef
 	seen := map[string]bool{}
-	add := func(k string) {
+	add := func(k string, pos int) {
 		if k == "" || seen[k] {
 			return
 		}
 		seen[k] = true
-		keys = append(keys, k)
+		refs = append(refs, IssueRef{Key: k, Pos: pos})
 	}
 
 	baseHost := hostOf(baseURL)
 
 	// URL form first so a linked key is captured before the bare-key scan sees
 	// the same token inside the URL.
-	for _, m := range browseURLRe.FindAllStringSubmatch(text, -1) {
-		host, key := m[1], m[2]
+	for _, m := range browseURLRe.FindAllStringSubmatchIndex(text, -1) {
+		// browseURLRe has 2 capture groups → 3 pairs (6 indices).
+		if len(m) < 6 {
+			continue
+		}
+		host := text[m[2]:m[3]]
+		key := text[m[4]:m[5]]
 		if hostMatches(host, baseHost) {
-			add(key)
+			add(key, m[0])
 		}
 	}
 
 	// Bare keys, gated by the project allowlist.
 	allow := projectSet(projects)
 	if len(allow) > 0 {
-		for _, tok := range strings.Fields(text) {
-			tok = strings.Trim(tok, "().,;:!?\"'[]<>")
-			if !bareKeyRe.MatchString(tok) {
-				continue
-			}
+		for _, m := range bareKeySearchRe.FindAllStringIndex(text, -1) {
+			tok := text[m[0]:m[1]]
 			proj := tok[:strings.IndexByte(tok, '-')]
 			if allow[strings.ToUpper(proj)] {
-				add(tok)
+				add(tok, m[0])
 			}
 		}
 	}
-	return keys
+	return refs
 }
 
 // hostOf returns the lowercased host of a URL, or "" if it doesn't parse to one.

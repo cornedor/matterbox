@@ -94,8 +94,8 @@ func (m Model) openRefForPost(p *model.Post) (tea.Model, tea.Cmd) {
 
 	var refs []reference
 	if jiraOK {
-		for _, k := range jira.Refs(p.Message, m.jiraClient.BaseURL(), m.jiraProjects) {
-			refs = append(refs, reference{kind: refJira, jiraKey: k, pos: strings.Index(p.Message, k)})
+		for _, r := range jira.Refs(p.Message, m.jiraClient.BaseURL(), m.jiraProjects) {
+			refs = append(refs, reference{kind: refJira, jiraKey: r.Key, pos: r.Pos})
 		}
 	}
 	if glOK {
