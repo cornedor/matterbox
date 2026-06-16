@@ -279,6 +279,14 @@ type emojiImgEntry struct {
 	delays     []time.Duration // per-frame display time, parallel to frameSeqs
 	frameIdx   int             // frame currently transmitted under id
 	frameStart time.Time       // when frameIdx began showing (zero until first tick)
+
+	// visible is true while this emoji appears in an on-screen post (main
+	// window or open thread); only visible animated emoji drive the animation
+	// loop. Without this, advanceFrame would keep ticking — and forcing a full
+	// re-render per tick — for every animated emoji ever cached this session,
+	// even after the user navigated away, pegging the CPU for the rest of the
+	// session. Recomputed by recomputeVisibleAnimatedEmoji on content changes.
+	visible bool
 }
 
 // emojiImages manages rendering custom (server) emoji as inline Kitty
@@ -478,6 +486,12 @@ func (e *emojiImages) advanceFrame(now time.Time) (seq string, next time.Duratio
 		if ent.state != emojiReady || len(ent.frameSeqs) <= 1 {
 			continue
 		}
+		// Only animate emoji that are actually on screen. An off-screen
+		// animated emoji keeps its cached frame; re-transmitting it would be
+		// invisible work and, worse, each tick forces a full re-render.
+		if !ent.visible {
+			continue
+		}
 		animating = true
 		if ent.frameStart.IsZero() {
 			ent.frameStart = now
@@ -502,6 +516,45 @@ func (e *emojiImages) advanceFrame(now time.Time) (seq string, next time.Duratio
 		}
 	}
 	return sb.String(), next, animating
+}
+
+// readyAnimatedNames returns the names of every ready emoji with more than one
+// frame (i.e. the candidates the animation loop would drive). Used to scope the
+// on-screen visibility scan to just the animated emoji.
+func (e *emojiImages) readyAnimatedNames() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var out []string
+	for n, ent := range e.entries {
+		if ent.state == emojiReady && len(ent.frameSeqs) > 1 {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// setVisibleAnimated marks exactly the named entries visible and clears the
+// flag on all others, so advanceFrame animates only on-screen emoji.
+func (e *emojiImages) setVisibleAnimated(names map[string]struct{}) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for n, ent := range e.entries {
+		_, ok := names[n]
+		ent.visible = ok
+	}
+}
+
+// hasVisibleAnimated reports whether any ready animated emoji is currently on
+// screen — the cheap check used to (re-)arm the animation loop.
+func (e *emojiImages) hasVisibleAnimated() bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, ent := range e.entries {
+		if ent.visible && ent.state == emojiReady && len(ent.frameSeqs) > 1 {
+			return true
+		}
+	}
+	return false
 }
 
 // markFailed records names that aren't custom emoji (or whose fetch failed):
@@ -723,7 +776,10 @@ func (m Model) handleEmojiImagesFetched(msg emojiImagesFetchedMsg) (Model, tea.C
 	if transmit.Len() > 0 {
 		cmds = append(cmds, tea.Raw(transmit.String()))
 	}
-	if animated && !m.emojiAnimating {
+	// renderMessages above refreshed the visibility set; only arm the loop when
+	// a newly-ready animated emoji is actually on screen. The Update-level
+	// kicker (maybeStartEmojiAnim) handles the scroll/switch-in case.
+	if animated && !m.emojiAnimating && m.emojiImg.hasVisibleAnimated() {
 		m.emojiAnimating = true
 		cmds = append(cmds, emojiAnimTickCmd(0))
 	}
@@ -816,6 +872,9 @@ func (m *Model) advanceEmojiAnim() tea.Cmd {
 	if m.emojiImg == nil || !m.emojiAnimating {
 		return nil
 	}
+	// Re-check visibility each tick so an emoji scrolled out of view stops the
+	// loop (the YOffset can move without a content re-render).
+	m.refreshAnimVisibility()
 	seq, next, animating := m.emojiImg.advanceFrame(time.Now())
 	if !animating {
 		m.emojiAnimating = false
@@ -825,4 +884,95 @@ func (m *Model) advanceEmojiAnim() tea.Cmd {
 		return emojiAnimTickCmd(next)
 	}
 	return tea.Batch(tea.Raw(seq), emojiAnimTickCmd(next))
+}
+
+// viewportVisibleAnimatedEmoji returns the ready animated emoji whose posts are
+// currently within a viewport's visible rows — the main message pane plus the
+// open thread. It maps the live YOffset back to on-screen posts through the row
+// spans captured by renderMessages/renderThread, so it tracks scrolling without
+// a re-render. Short-circuits to nil (the overwhelmingly common case) when no
+// animated emoji are cached, and only string-scans posts actually in view.
+func (m *Model) viewportVisibleAnimatedEmoji() map[string]struct{} {
+	if m.emojiImg == nil {
+		return nil
+	}
+	names := m.emojiImg.readyAnimatedNames()
+	if len(names) == 0 {
+		return nil
+	}
+	visible := make(map[string]struct{}, len(names))
+	scan := func(posts []*model.Post, starts []int, top, height int) {
+		if height <= 0 || len(starts) != len(posts)+1 {
+			return
+		}
+		bot := top + height
+		for i, p := range posts {
+			if starts[i] >= bot {
+				break // this post and all later ones start below the viewport
+			}
+			if starts[i+1] <= top {
+				continue // entirely scrolled above the viewport
+			}
+			if p == nil {
+				continue
+			}
+			for _, name := range names {
+				if _, done := visible[name]; done {
+					continue
+				}
+				if strings.Contains(p.Message, ":"+name+":") {
+					visible[name] = struct{}{}
+					continue
+				}
+				if p.Metadata != nil {
+					for _, r := range p.Metadata.Reactions {
+						if r != nil && r.EmojiName == name {
+							visible[name] = struct{}{}
+							break
+						}
+					}
+				}
+			}
+			if len(visible) == len(names) {
+				return
+			}
+		}
+	}
+	scan(m.posts, m.msgRowStarts, m.msgsView.YOffset(), m.msgsView.Height())
+	if m.threadOpen && len(visible) < len(names) {
+		scan(m.threadPosts, m.threadRowStarts, m.threadView.YOffset(), m.threadView.Height())
+	}
+	return visible
+}
+
+// refreshAnimVisibility recomputes the on-screen animated-emoji set and applies
+// it, returning whether any animated emoji is visible. Cheap unless animated
+// emoji are cached. Called wherever scrolling or content may have changed what's
+// on screen: renderMessages/renderThread, the animation tick, and the per-event
+// kicker.
+func (m *Model) refreshAnimVisibility() bool {
+	if m.emojiImg == nil {
+		return false
+	}
+	visible := m.viewportVisibleAnimatedEmoji()
+	m.emojiImg.setVisibleAnimated(visible)
+	return len(visible) > 0
+}
+
+// maybeStartEmojiAnim (re-)arms the GIF-emoji animation loop when an animated
+// emoji is on screen but the loop is stopped. The loop self-stops via
+// advanceFrame whenever nothing animated is visible (switching channels,
+// scrolling the emoji out of view), so this is what restarts it on the way back.
+// Batched from Update after every event, mirroring the other pending-work
+// kickers; refreshAnimVisibility short-circuits when no animated emoji exist, so
+// the common typing path stays cheap.
+func (m *Model) maybeStartEmojiAnim() tea.Cmd {
+	if m.emojiImg == nil || m.emojiAnimating {
+		return nil
+	}
+	if !m.refreshAnimVisibility() {
+		return nil
+	}
+	m.emojiAnimating = true
+	return emojiAnimTickCmd(0)
 }

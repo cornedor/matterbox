@@ -341,6 +341,8 @@ func (m *Model) renderMessages() {
 	m.msgsContentVer++
 	if len(m.posts) == 0 {
 		m.msgsView.SetContent(lipgloss.NewStyle().Foreground(dimColor).Render("no messages"))
+		m.msgRowStarts = nil
+		m.refreshAnimVisibility() // nothing on screen → stop any animation
 		return
 	}
 	// Clamp the selection in case posts were deleted out from under it.
@@ -362,7 +364,9 @@ func (m *Model) renderMessages() {
 	// so we can place the selection without re-measuring every line on
 	// each keystroke (visAcc is the running visual-row offset).
 	selVisStart, selVisRows, visAcc := -1, 0, 0
+	rowStarts := make([]int, len(m.posts)+1)
 	for i, p := range m.posts {
+		rowStarts[i] = visAcc
 		var prev *model.Post
 		if i > 0 {
 			prev = m.posts[i-1]
@@ -393,6 +397,8 @@ func (m *Model) renderMessages() {
 		allLines = append(allLines, chunk...)
 		visAcc += rows
 	}
+	rowStarts[len(m.posts)] = visAcc
+	m.msgRowStarts = rowStarts
 	m.msgsView.SetContent(strings.Join(allLines, "\n"))
 
 	if h := m.msgsView.Height(); h > 0 && selVisStart >= 0 {
@@ -416,6 +422,8 @@ func (m *Model) renderMessages() {
 	}
 	m.anchorMsgSelTop = false
 	m.anchorMsgSelBottom = false
+	// YOffset is final; refresh which animated emoji are actually in view.
+	m.refreshAnimVisibility()
 }
 
 // renderThread populates the thread viewport with the loaded thread
@@ -429,10 +437,14 @@ func (m *Model) renderThread() {
 	m.threadContentVer++
 	if m.threadLoading && len(m.threadPosts) == 0 {
 		m.threadView.SetContent(lipgloss.NewStyle().Foreground(dimColor).Render("loading…"))
+		m.threadRowStarts = nil
+		m.refreshAnimVisibility()
 		return
 	}
 	if len(m.threadPosts) == 0 {
 		m.threadView.SetContent(lipgloss.NewStyle().Foreground(dimColor).Render("no messages"))
+		m.threadRowStarts = nil
+		m.refreshAnimVisibility()
 		return
 	}
 	if m.threadIdx >= len(m.threadPosts) {
@@ -446,7 +458,9 @@ func (m *Model) renderThread() {
 	width := m.threadView.Width()
 	var allLines []string
 	selVisStart, selVisRows, visAcc := -1, 0, 0
+	rowStarts := make([]int, len(m.threadPosts)+1)
 	for i, p := range m.threadPosts {
+		rowStarts[i] = visAcc
 		var prev *model.Post
 		if i > 0 {
 			prev = m.threadPosts[i-1]
@@ -472,6 +486,8 @@ func (m *Model) renderThread() {
 		allLines = append(allLines, chunk...)
 		visAcc += rows
 	}
+	rowStarts[len(m.threadPosts)] = visAcc
+	m.threadRowStarts = rowStarts
 	m.threadView.SetContent(strings.Join(allLines, "\n"))
 
 	if h := m.threadView.Height(); h > 0 && selVisStart >= 0 {
@@ -489,6 +505,7 @@ func (m *Model) renderThread() {
 		}
 		m.threadView.SetYOffset(off)
 	}
+	m.refreshAnimVisibility()
 }
 
 // wrapBodyLine wraps a single rendered line to fit within width while

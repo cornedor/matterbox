@@ -497,6 +497,15 @@ type Model struct {
 	threadContentVer uint64
 	refContentVer    uint64
 
+	// msgRowStarts / threadRowStarts hold the cumulative visual-row offset of
+	// each post in the corresponding viewport's content (len = nposts+1, the
+	// last entry is the total). Captured by renderMessages / renderThread so the
+	// emoji-animation visibility check can map the live YOffset back to the
+	// posts actually on screen without re-rendering. See
+	// viewportVisibleAnimatedEmoji.
+	msgRowStarts    []int
+	threadRowStarts []int
+
 	// vcache memoizes layout-heavy render output (scrollbar geometry + the
 	// channels sidebar) that doesn't change on most keystrokes. Behind a
 	// pointer so writes from the value-receiver View path persist across
@@ -548,6 +557,12 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	taStyles := ta.Styles()
 	taStyles.Focused.CursorLine = lipgloss.NewStyle()
 	taStyles.Blurred.CursorLine = lipgloss.NewStyle()
+	// Static (non-blinking) cursor. In blink mode the textarea fires a
+	// cursor.blinkCanceled Msg on every keystroke, and bubbletea renders a full
+	// View per Msg — so a blinking cursor costs a second full render per keypress
+	// while typing (pprof 2026-06-16). The cursor already shows solid, so this
+	// drops the redundant render with no visible change.
+	taStyles.Cursor.Blink = false
 	ta.SetStyles(taStyles)
 	// Enter sends; alt+enter / shift+enter insert a newline. ctrl+j is
 	// deliberately NOT bound here — it's the global "next channel" nav, and a

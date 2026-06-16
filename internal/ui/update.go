@@ -34,6 +34,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if fetch := nm.fetchPendingMRStatus(); fetch != nil {
 		cmd = tea.Batch(cmd, fetch)
 	}
+	if anim := nm.maybeStartEmojiAnim(); anim != nil {
+		cmd = tea.Batch(cmd, anim)
+	}
 	return nm, cmd
 }
 

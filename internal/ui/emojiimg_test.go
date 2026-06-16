@@ -358,10 +358,17 @@ func TestAdvanceFrame(t *testing.T) {
 
 	base := time.Unix(0, 0)
 
+	// Off screen, even a ready animated emoji must not animate.
+	if _, _, animating := e.advanceFrame(base); animating {
+		t.Fatal("advanceFrame animated an off-screen emoji")
+	}
+	// Mark it on screen; now it drives the loop.
+	e.setVisibleAnimated(map[string]struct{}{"anim": {}})
+
 	// First tick anchors frameStart; nothing is due yet.
 	seq, next, animating := e.advanceFrame(base)
 	if !animating {
-		t.Fatal("advanceFrame reported not animating with a ready animated emoji")
+		t.Fatal("advanceFrame reported not animating with a ready, on-screen animated emoji")
 	}
 	if seq != "" {
 		t.Errorf("first tick emitted %q, want nothing (not yet due)", seq)
@@ -386,6 +393,7 @@ func TestAdvanceFrameCatchUp(t *testing.T) {
 	e := newEmojiImages("auto", true)
 	const d = 50 * time.Millisecond
 	e.markReady("anim", 1, "PH", []string{"F0", "F1", "F2", "F3"}, []time.Duration{d, d, d, d})
+	e.setVisibleAnimated(map[string]struct{}{"anim": {}})
 
 	base := time.Unix(0, 0)
 	e.advanceFrame(base) // anchor
@@ -420,8 +428,9 @@ func TestHandleEmojiImagesFetchedArmsAnimation(t *testing.T) {
 		t.Error("still emoji armed the animation loop")
 	}
 
-	// An animated GIF must arm it.
+	// An on-screen animated GIF must arm it.
 	anim := newModel()
+	anim.posts = []*model.Post{{Id: "p1", Message: ":a:"}} // emoji referenced on screen
 	animRE, err := anim.buildReadyEmoji(animatedGIF(t))
 	if err != nil {
 		t.Fatalf("buildReadyEmoji(anim): %v", err)
@@ -431,9 +440,62 @@ func TestHandleEmojiImagesFetchedArmsAnimation(t *testing.T) {
 	}
 	anim, cmd := anim.handleEmojiImagesFetched(emojiImagesFetchedMsg{ready: map[string]readyEmoji{"a": animRE}})
 	if !anim.emojiAnimating {
-		t.Error("animated emoji did not arm the animation loop")
+		t.Error("on-screen animated emoji did not arm the animation loop")
 	}
 	if cmd == nil {
 		t.Fatal("expected a command (transmit + tick)")
+	}
+
+	// Regression (the bug this fix targets): an animated GIF that is NOT on
+	// screen must leave the loop dormant. The old code latched the 20Hz loop on
+	// for any cached animated emoji, pegging the CPU for the rest of the session.
+	off := newModel() // no posts → nothing on screen references the emoji
+	offRE, err := off.buildReadyEmoji(animatedGIF(t))
+	if err != nil {
+		t.Fatalf("buildReadyEmoji(off): %v", err)
+	}
+	off, _ = off.handleEmojiImagesFetched(emojiImagesFetchedMsg{ready: map[string]readyEmoji{"a": offRE}})
+	if off.emojiAnimating {
+		t.Error("off-screen animated emoji armed the animation loop (regression)")
+	}
+}
+
+// Test 6d: visibility is viewport-precise — an animated emoji loaded in a post
+// that is scrolled out of the visible rows must NOT count as visible (the bug:
+// it stayed "loaded" and kept the 20Hz loop running after scrolling past it).
+func TestViewportVisibleAnimatedEmojiScroll(t *testing.T) {
+	const d = 100 * time.Millisecond
+	m := Model{emojiImg: newEmojiImages("auto", true)}
+	m.emojiImg.setColorProfile(true)
+	m.emojiImg.setProbeResult(true)
+	m.emojiImg.markReady("a", 1, "PH", []string{"F0", "F1"}, []time.Duration{d, d})
+
+	m.msgsView = viewport.New()
+	m.msgsView.SetWidth(40)
+	m.msgsView.SetHeight(10)
+	m.msgsView.SetContent(strings.Repeat("x\n", 30)) // 30 rows so YOffset can reach 20
+
+	// Three 10-row posts; the animated emoji lives in post 1 (rows 10..20).
+	m.posts = []*model.Post{
+		{Id: "p0", Message: "top"},
+		{Id: "p1", Message: "look :a:"},
+		{Id: "p2", Message: "bottom"},
+	}
+	m.msgRowStarts = []int{0, 10, 20, 30}
+
+	// Viewport on rows [0,10): emoji post off-screen below → not visible.
+	m.msgsView.SetYOffset(0)
+	if v := m.viewportVisibleAnimatedEmoji(); len(v) != 0 {
+		t.Errorf("emoji post below the viewport reported visible: %v", v)
+	}
+	// Scroll onto rows [10,20): emoji post in view → visible.
+	m.msgsView.SetYOffset(10)
+	if _, ok := m.viewportVisibleAnimatedEmoji()["a"]; !ok {
+		t.Error("emoji post in the viewport not reported visible")
+	}
+	// Scroll past to rows [20,30): emoji post above the viewport → not visible.
+	m.msgsView.SetYOffset(20)
+	if v := m.viewportVisibleAnimatedEmoji(); len(v) != 0 {
+		t.Errorf("emoji post scrolled above the viewport still visible: %v", v)
 	}
 }
