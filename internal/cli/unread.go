@@ -22,10 +22,11 @@ const unreadFetchPage = 50
 
 func newUnreadCmd() *cobra.Command {
 	var (
-		perChannel int
-		wait       bool
-		timeout    time.Duration
-		asJSONFn   func() (bool, error)
+		perChannel   int
+		wait         bool
+		timeout      time.Duration
+		includeMuted bool
+		asJSONFn     func() (bool, error)
 	)
 	cmd := &cobra.Command{
 		Use:   "unread",
@@ -39,6 +40,7 @@ func newUnreadCmd() *cobra.Command {
 			"and exits — so an existing backlog doesn't make it return instantly:\n\n" +
 			"  matterbox unread\n" +
 			"  matterbox unread --limit 10\n" +
+			"  matterbox unread --muted\n" +
 			"  matterbox unread --wait --timeout 15m",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -49,7 +51,7 @@ func newUnreadCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return runUnread(cmd.Context(), perChannel, wait, timeout, asJSON, cmd.OutOrStdout())
+			return runUnread(cmd.Context(), perChannel, wait, timeout, includeMuted, asJSON, cmd.OutOrStdout())
 		},
 	}
 	cmd.Flags().IntVarP(&perChannel, "limit", "n", 0,
@@ -58,6 +60,8 @@ func newUnreadCmd() *cobra.Command {
 		"after printing, block on the websocket until a new message arrives, then exit")
 	cmd.Flags().DurationVar(&timeout, "timeout", 0,
 		"with --wait, give up after this duration (e.g. 30s, 15m); 0 waits forever")
+	cmd.Flags().BoolVar(&includeMuted, "muted", false,
+		"include muted channels in the unread list (default excludes them, matching the feed)")
 	asJSONFn = addOutputFlags(cmd)
 	return cmd
 }
@@ -79,7 +83,7 @@ func (g unreadGroup) lastActivity() int64 {
 	return 0
 }
 
-func runUnread(ctx context.Context, perChannel int, wait bool, timeout time.Duration, asJSON bool, out io.Writer) error {
+func runUnread(ctx context.Context, perChannel int, wait bool, timeout time.Duration, includeMuted bool, asJSON bool, out io.Writer) error {
 	_, client, err := dial()
 	if err != nil {
 		return err
@@ -124,7 +128,7 @@ func runUnread(ctx context.Context, perChannel int, wait bool, timeout time.Dura
 		}
 	}
 
-	groups, err := gatherUnread(ctx, client, chByID, members, perChannel)
+	groups, err := gatherUnread(ctx, client, chByID, members, perChannel, includeMuted)
 	if err != nil {
 		return err
 	}
@@ -186,11 +190,16 @@ func runUnread(ctx context.Context, perChannel int, wait bool, timeout time.Dura
 // read boundary, filters them, and caps to perChannel. Channels that turn
 // out to have nothing genuinely unread are dropped. Groups come back
 // sorted mentions-first, then most-recent activity.
-func gatherUnread(ctx context.Context, client *mm.Client, chByID map[string]*model.Channel, members model.ChannelMembersWithTeamData, perChannel int) ([]unreadGroup, error) {
+func gatherUnread(ctx context.Context, client *mm.Client, chByID map[string]*model.Channel, members model.ChannelMembersWithTeamData, perChannel int, includeMuted bool) ([]unreadGroup, error) {
 	var groups []unreadGroup
 	for _, mb := range members {
 		ch := chByID[mb.ChannelId]
 		if ch == nil {
+			continue
+		}
+		// Muted channels are excluded from the unread list by default,
+		// matching the feed UI behaviour. The --muted flag overrides this.
+		if !includeMuted && mb.IsChannelMuted() {
 			continue
 		}
 		// Root counters, not the legacy non-root ones: collapsed reply
