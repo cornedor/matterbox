@@ -182,12 +182,24 @@ type ListenConfig struct {
 	// telegram.chat_id (the only sender the bot obeys). Pointer so an absent key
 	// defaults to true; set false for notify-only.
 	TwoWay *bool `yaml:"two_way"`
-	// NotifyDMs controls whether direct-message channels trigger notifications.
-	// When false (the default), only explicit channel @mentions are forwarded —
-	// a DM conversation you are actively reading no longer pings you on Telegram.
-	// Set true to restore the original behaviour. Pointer so an absent key
-	// defaults to false.
+	// NotifyDMs is the legacy on/off switch for DM notifications, kept for
+	// backward compatibility: it seeds dm_mode when that is unset (true→"always",
+	// false→"never"). Prefer dm_mode. Pointer so an absent key defaults to false.
 	NotifyDMs *bool `yaml:"notify_dms"`
+	// DMMode gates DM notifications: "always", "never", or "idle". "idle" forwards
+	// a DM only when no other Mattermost client (TUI, mobile, web) has been active
+	// within active_window_seconds — so a DM you're actively reading stays quiet,
+	// but the same message reaches Telegram once you step away. Empty falls back
+	// to notify_dms.
+	DMMode string `yaml:"dm_mode"`
+	// MentionMode gates channel @mention notifications the same way: "always"
+	// (the default), "never", or "idle". Empty defaults to "always".
+	MentionMode string `yaml:"mention_mode"`
+	// ActiveWindowSeconds is the idle-mode activity window: how long after the
+	// last sign of activity at another client (typing, viewing a channel, coming
+	// online) you're still considered "active" and idle-gated notifications stay
+	// quiet. Pointer so an absent key defaults to 300 (5 minutes).
+	ActiveWindowSeconds *int `yaml:"active_window_seconds"`
 	// NotifyDelaySeconds is how long (in seconds) the daemon waits after seeing
 	// a mention before sending the Telegram notification. During that window it
 	// checks the Mattermost server's LastViewedAt for the channel: if any client
@@ -510,7 +522,7 @@ func Load() (*Config, error) {
 	// and rewrite the file once so the discovered model + prompt show up as
 	// editable defaults. Best-effort: a failed rewrite only means the file
 	// keeps working off in-memory defaults.
-	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.TwoWay == nil || cfg.Listen.NotifyDMs == nil || cfg.Listen.NotifyDelaySeconds == nil
+	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.TwoWay == nil || cfg.Listen.NotifyDMs == nil || cfg.Listen.NotifyDelaySeconds == nil || cfg.Listen.ActiveWindowSeconds == nil
 	cfg.fillDefaults()
 	if addDefaults {
 		if werr := writeConfig(p, cfg); werr != nil {
@@ -628,6 +640,10 @@ func (c *Config) fillDefaults() {
 		d := 60
 		c.Listen.NotifyDelaySeconds = &d
 	}
+	if c.Listen.ActiveWindowSeconds == nil {
+		d := 300
+		c.Listen.ActiveWindowSeconds = &d
+	}
 }
 
 // SaveTeamOrder persists the given left-to-right team-tab ordering to
@@ -736,8 +752,13 @@ func writeConfig(p string, cfg *Config) error {
 		"#             (messages are still cached — use the bot's /unread);\n" +
 		"#             two_way (default true) enables replying from Telegram and the\n" +
 		"#             /search /unread /digest commands (needs telegram.chat_id);\n" +
-		"#             notify_dms (default false) also forwards DM messages — off by\n" +
-		"#             default so chatting in a DM you're actively reading stays quiet;\n" +
+		"#             dm_mode / mention_mode set per-type forwarding: \"always\",\n" +
+		"#             \"never\", or \"idle\" (forward only when no other client — TUI,\n" +
+		"#             mobile, web — has been active within active_window_seconds,\n" +
+		"#             default 300, so a conversation you're actively reading stays\n" +
+		"#             quiet but still reaches Telegram once you step away);\n" +
+		"#             dm_mode defaults from notify_dms (default false → \"never\"),\n" +
+		"#             mention_mode defaults to \"always\";\n" +
 		"#             notify_delay_seconds (default 60) waits this long before sending\n" +
 		"#             the notification, then checks the server's read state — if any\n" +
 		"#             client marked the channel read during the window the notification\n" +

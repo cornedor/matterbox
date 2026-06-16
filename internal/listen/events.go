@@ -94,6 +94,31 @@ func wsMentions(ev *model.WebSocketEvent) map[string]bool {
 	return out
 }
 
+// viewedChannels returns the set of channel ids in a multiple_channels_viewed
+// event. The server encodes them as a channel_id→timestamp map under
+// "channel_times"; this tolerates both the decoded-map form and a JSON-string
+// form, returning an empty set when the field is absent or unparseable.
+func viewedChannels(ev *model.WebSocketEvent) map[string]bool {
+	out := map[string]bool{}
+	if ev == nil {
+		return out
+	}
+	switch m := ev.GetData()["channel_times"].(type) {
+	case map[string]any:
+		for ch := range m {
+			out[ch] = true
+		}
+	case string:
+		var parsed map[string]any
+		if json.Unmarshal([]byte(m), &parsed) == nil {
+			for ch := range parsed {
+				out[ch] = true
+			}
+		}
+	}
+	return out
+}
+
 // eventStr reads a string field from the event's data map ("" if absent).
 func eventStr(ev *model.WebSocketEvent, key string) string {
 	if ev == nil {

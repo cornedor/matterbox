@@ -182,3 +182,13 @@ tail -f ~/Library/Logs/matterbox-listen.log
 Configure under the `telegram` and `listen` sections in `config.yaml`
 (set `telegram.bot_token` from @BotFather and `telegram.chat_id`). The daemon is
 safe to run alongside the TUI — both write idempotent rows into the WAL-mode store.
+
+`dm_mode` and `mention_mode` choose, per message type, when a notification is
+forwarded: `always`, `never`, or `idle`. In `idle` mode the daemon only pushes to
+Telegram when no other Mattermost client (TUI, mobile, web) has been active within
+`active_window_seconds` (default 300) — so a conversation you're actively reading
+stays quiet, but the same message still reaches Telegram once you step away.
+Activity is inferred from the events on the daemon's own WebSocket (you typing,
+viewing a channel, or coming online elsewhere); the daemon's own mark-reads are
+filtered out. For example, to get DMs on Telegram only when you're away from every
+client, set `dm_mode: idle`.

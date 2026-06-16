@@ -115,6 +115,24 @@ func runListen(ctx context.Context, out io.Writer, notifySelf bool) error {
 		notifyDelay = *cfg.Listen.NotifyDelaySeconds
 	}
 
+	// Per-type forwarding modes. dm_mode/mention_mode win when set; otherwise
+	// fall back to the legacy notify_dms switch (DMs) and "always" (mentions).
+	dmMode := listen.ModeNever
+	if cfg.Listen.NotifyDMs != nil && *cfg.Listen.NotifyDMs {
+		dmMode = listen.ModeAlways
+	}
+	if m, ok := listen.ParseMode(cfg.Listen.DMMode); ok {
+		dmMode = m
+	}
+	mentionMode := listen.ModeAlways
+	if m, ok := listen.ParseMode(cfg.Listen.MentionMode); ok {
+		mentionMode = m
+	}
+	activeWindow := time.Duration(0)
+	if cfg.Listen.ActiveWindowSeconds != nil {
+		activeWindow = time.Duration(*cfg.Listen.ActiveWindowSeconds) * time.Second
+	}
+
 	opts := listen.Options{
 		ServerURL:          cfg.ServerURL,
 		NotifyOnMention:    cfg.Listen.NotifyOnMention != nil && *cfg.Listen.NotifyOnMention,
@@ -122,7 +140,9 @@ func runListen(ctx context.Context, out io.Writer, notifySelf bool) error {
 		NotifyPrompt:       cfg.Listen.NotifyPrompt,
 		TelegramChatID:     cfg.Telegram.ChatID,
 		NotifySelf:         notifySelf,
-		NotifyDMs:          cfg.Listen.NotifyDMs != nil && *cfg.Listen.NotifyDMs,
+		DMMode:             dmMode,
+		MentionMode:        mentionMode,
+		ActiveWindow:       activeWindow,
 		NotifyDelaySeconds: notifyDelay,
 		RespectMutes:       cfg.Listen.RespectMutes != nil && *cfg.Listen.RespectMutes,
 		QuietHours:         cfg.Listen.QuietHours,
@@ -140,8 +160,8 @@ func runListen(ctx context.Context, out io.Writer, notifySelf bool) error {
 	}
 
 	logger.Printf("matterbox listen: starting as @%s on %s", me.Username, cfg.ServerURL)
-	logger.Printf("matterbox listen: cache=%s notify_on_mention=%t notify_dms=%t notify_delay=%ds summarize=%t notify_self=%t respect_mutes=%t two_way=%t ask=%t quiet_hours=%q telegram=%s",
-		p, opts.NotifyOnMention, opts.NotifyDMs, opts.NotifyDelaySeconds, opts.Summarize, opts.NotifySelf, opts.RespectMutes, opts.TwoWay,
+	logger.Printf("matterbox listen: cache=%s notify_on_mention=%t dm_mode=%s mention_mode=%s active_window=%s notify_delay=%ds summarize=%t notify_self=%t respect_mutes=%t two_way=%t ask=%t quiet_hours=%q telegram=%s",
+		p, opts.NotifyOnMention, opts.DMMode, opts.MentionMode, opts.ActiveWindow, opts.NotifyDelaySeconds, opts.Summarize, opts.NotifySelf, opts.RespectMutes, opts.TwoWay,
 		opts.AskEndpoint != "" && opts.AskModel != "", cfg.Listen.QuietHours, telegramState(tgClient, cfg.Telegram.ChatID))
 
 	eng := listen.New(client, st, chatClient, tgClient, me, opts, logger)

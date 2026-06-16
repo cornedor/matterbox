@@ -42,6 +42,47 @@ const logBodyCap = 200
 // pollTimeoutSec is the Telegram long-poll timeout for getUpdates.
 const pollTimeoutSec = 30
 
+// Mode gates a class of notification (DMs, channel @mentions) on whether the
+// user is active at another Mattermost client.
+type Mode int
+
+const (
+	// ModeNever never forwards this notification type (it is still cached).
+	ModeNever Mode = iota
+	// ModeAlways always forwards (subject to mutes / quiet-hours / read-check).
+	ModeAlways
+	// ModeIdle forwards only when no other client has been active within the
+	// active window.
+	ModeIdle
+)
+
+// ParseMode maps a config string to a Mode. "idle"/"away"/"inactive" are
+// synonyms, as are "always"/"on" and "never"/"off". ok is false for an
+// unrecognized value, so the caller keeps its default.
+func ParseMode(s string) (Mode, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "always", "on", "true":
+		return ModeAlways, true
+	case "never", "off", "false":
+		return ModeNever, true
+	case "idle", "away", "inactive":
+		return ModeIdle, true
+	}
+	return ModeNever, false
+}
+
+// String renders a Mode for the startup log.
+func (m Mode) String() string {
+	switch m {
+	case ModeAlways:
+		return "always"
+	case ModeIdle:
+		return "idle"
+	default:
+		return "never"
+	}
+}
+
 // Options tunes the daemon's behaviour. Built from config in the cli layer.
 type Options struct {
 	// ServerURL is shown in the startup log line only.
@@ -63,9 +104,17 @@ type Options struct {
 	// (you don't want pings for what you just sent); handy for testing the
 	// bridge by posting in your own self-DM.
 	NotifySelf bool
-	// NotifyDMs controls whether direct-message channels trigger
-	// notifications. When false, only channel @mentions fire. Default false.
-	NotifyDMs bool
+	// DMMode and MentionMode gate DM and channel-@mention notifications
+	// respectively. ModeNever drops them (still cached), ModeAlways forwards them,
+	// and ModeIdle forwards only when no other Mattermost client (TUI, mobile,
+	// web) has been active within ActiveWindow — so a conversation you're actively
+	// reading stays quiet but the same message reaches Telegram once you step away.
+	DMMode      Mode
+	MentionMode Mode
+	// ActiveWindow is how long after the last sign of activity at another client
+	// the user is still considered "active" for ModeIdle gating. <= 0 disables the
+	// activity check, making ModeIdle behave like ModeAlways.
+	ActiveWindow time.Duration
 	// NotifyDelaySeconds is how long to wait before delivering a notification.
 	// After the delay the daemon fetches the channel-member record from the
 	// Mattermost server and skips the notification if LastViewedAt ≥ the
@@ -117,6 +166,15 @@ type Engine struct {
 	mutedMu sync.RWMutex
 	muted   map[string]bool // channels muted in Mattermost (RespectMutes)
 
+	// activity tracks the most recent evidence that the user is active at another
+	// Mattermost client (typing, viewing channels, or coming online), so
+	// ModeIdle notifications can tell whether anyone is actually reading.
+	// selfViewed filters the daemon's own mark-reads, which echo back as viewed
+	// events and would otherwise look like the user reading elsewhere.
+	activityMu    sync.Mutex
+	lastForeignAt time.Time
+	selfViewed    map[string]time.Time // channelID → when the daemon marked it read
+
 	// lastSeenMs is the catch-up cursor: mentions at or before it have already
 	// been notified. Persisted in the store (key cursorKey) so a restart neither
 	// loses nor replays missed mentions.
@@ -165,6 +223,11 @@ const askProgressInterval = 2 * time.Second
 // cursorKey is the meta-table key for the catch-up cursor.
 const cursorKey = "listen.last_seen_ms"
 
+// selfViewTTL is how long a daemon-issued mark-read is remembered, so the
+// viewed event it echoes back isn't mistaken for the user reading at another
+// client. Comfortably longer than the round-trip from REST call to broadcast.
+const selfViewTTL = 30 * time.Second
+
 // catchupMaxAge bounds how far back catch-up looks, so a daemon that was off for
 // weeks doesn't surface a flood of stale mentions on its first reconnect.
 const catchupMaxAge = 7 * 24 * time.Hour
@@ -199,8 +262,9 @@ func New(client *mm.Client, st *store.Store, ch *chat.Client, tg *telegram.Clien
 	}
 	e := &Engine{
 		client: client, store: st, chat: ch, tg: tg, me: me, opts: opts, log: logger,
-		muted: map[string]bool{},
-		teams: map[string]string{},
+		muted:      map[string]bool{},
+		teams:      map[string]string{},
+		selfViewed: map[string]time.Time{},
 	}
 	if start, end, ok := parseQuietHours(opts.QuietHours); ok {
 		e.quietStart, e.quietEnd, e.quietOn = start, end, true
@@ -293,18 +357,28 @@ func (e *Engine) handle(ctx context.Context, ev *model.WebSocketEvent) {
 		e.ingest(p)
 		if e.opts.NotifyOnMention && e.me != nil && isDirectMention(ev, p, e.me.Id, e.me.Username, e.opts.NotifySelf) {
 			isDM := eventStr(ev, "channel_type") == string(model.ChannelTypeDirect)
+			mode, kind := e.opts.MentionMode, "mention"
+			if isDM {
+				mode, kind = e.opts.DMMode, "DM"
+			}
 			switch {
-			case isDM && !e.opts.NotifyDMs:
-				// DM notifications disabled; still cached for /unread.
+			case mode == ModeNever:
+				// This type is never forwarded; still cached for /unread.
+			case mode == ModeIdle && e.activeElsewhere(e.opts.ActiveWindow):
+				e.log.Printf("%s while you're active at another client — skipped (cached; use /unread)", kind)
 			case e.opts.RespectMutes && e.isMuted(p.ChannelId):
-				e.log.Printf("mention in muted channel %s — skipped", p.ChannelId)
+				e.log.Printf("%s in muted channel %s — skipped", kind, p.ChannelId)
 			case e.inQuietHoursNow():
-				e.log.Printf("mention during quiet hours — skipped (cached; use /unread)")
+				e.log.Printf("%s during quiet hours — skipped (cached; use /unread)", kind)
 			default:
 				e.wg.Add(1)
 				go e.notify(ctx, ev, p)
 			}
 		}
+	case model.WebsocketEventTyping, model.WebsocketEventStatusChange:
+		e.observeActivity(ev)
+	case model.WebsocketEventMultipleChannelsViewed:
+		e.observeViewed(ev)
 	case model.WebsocketEventPostEdited:
 		if p := postFromEvent(ev); p != nil {
 			e.ingest(p)
@@ -500,6 +574,93 @@ func (e *Engine) isMuted(channelID string) bool {
 	return e.muted[channelID]
 }
 
+// markForeignActivity records that the user is active at another Mattermost
+// client right now (used to gate ModeIdle notifications).
+func (e *Engine) markForeignActivity() {
+	e.activityMu.Lock()
+	e.lastForeignAt = time.Now()
+	e.activityMu.Unlock()
+}
+
+// activeElsewhere reports whether the user has been active at another client
+// within window. A window <= 0 disables the check (never "active"), making
+// ModeIdle behave like ModeAlways.
+func (e *Engine) activeElsewhere(window time.Duration) bool {
+	if window <= 0 {
+		return false
+	}
+	e.activityMu.Lock()
+	defer e.activityMu.Unlock()
+	return !e.lastForeignAt.IsZero() && time.Since(e.lastForeignAt) < window
+}
+
+// noteSelfView remembers a channel the daemon itself just marked read, so the
+// viewed event it echoes back isn't counted as the user reading elsewhere.
+func (e *Engine) noteSelfView(channelID string) {
+	e.activityMu.Lock()
+	e.selfViewed[channelID] = time.Now()
+	e.activityMu.Unlock()
+}
+
+// recentSelfView reports whether the daemon marked channelID read within
+// selfViewTTL, pruning stale entries as it goes.
+func (e *Engine) recentSelfView(channelID string) bool {
+	e.activityMu.Lock()
+	defer e.activityMu.Unlock()
+	now := time.Now()
+	for c, ts := range e.selfViewed {
+		if now.Sub(ts) > selfViewTTL {
+			delete(e.selfViewed, c)
+		}
+	}
+	ts, ok := e.selfViewed[channelID]
+	return ok && now.Sub(ts) < selfViewTTL
+}
+
+// viewChannel marks a channel read on the user's behalf, recording it first so
+// the resulting viewed event isn't mistaken for activity at another client.
+func (e *Engine) viewChannel(ctx context.Context, channelID string) error {
+	e.noteSelfView(channelID)
+	return e.client.ViewChannel(ctx, e.me.Id, channelID)
+}
+
+// observeActivity records foreign activity from a typing or status_change event
+// the user themselves generated at another client. The daemon never types or
+// changes its own status, so a self-authored event here unambiguously means a
+// human is at another Mattermost client; other users' typing in shared channels
+// is filtered out by user id.
+func (e *Engine) observeActivity(ev *model.WebSocketEvent) {
+	if e.me == nil {
+		return
+	}
+	id := eventStr(ev, "user_id")
+	if id == "" {
+		if b := ev.GetBroadcast(); b != nil {
+			id = b.UserId // status_change broadcasts target the user, not a channel
+		}
+	}
+	if id != e.me.Id {
+		return
+	}
+	if ev.EventType() == model.WebsocketEventStatusChange && eventStr(ev, "status") == model.StatusOffline {
+		return // going offline is the opposite of active
+	}
+	e.markForeignActivity()
+}
+
+// observeViewed records foreign activity when the user marks channels read at
+// another client. A multiple_channels_viewed event is addressed to the user, so
+// receiving one means some client viewed — but the daemon's own mark-reads echo
+// back here too, so they're filtered via recentSelfView.
+func (e *Engine) observeViewed(ev *model.WebSocketEvent) {
+	for ch := range viewedChannels(ev) {
+		if !e.recentSelfView(ch) {
+			e.markForeignActivity()
+			return
+		}
+	}
+}
+
 // refreshMuted reloads the set of channels muted in Mattermost (notify prop
 // mark_unread = mention). Best-effort: a failure leaves the previous set.
 func (e *Engine) refreshMuted(ctx context.Context) {
@@ -674,7 +835,7 @@ func (e *Engine) handleCallback(ctx context.Context, cb *telegram.CallbackQuery)
 	note := "done"
 	switch action {
 	case "r": // mark channel read
-		if err := e.client.ViewChannel(ctx, e.me.Id, arg); err != nil {
+		if err := e.viewChannel(ctx, arg); err != nil {
 			e.log.Printf("mark-read failed: %v", err)
 			note = "mark-read failed"
 		} else {
@@ -714,7 +875,7 @@ func (e *Engine) handleReply(ctx context.Context, msg *telegram.Message) {
 		return
 	}
 	// Replying means you've dealt with it — mark the channel read too.
-	if err := e.client.ViewChannel(ctx, e.me.Id, target.channelID); err != nil {
+	if err := e.viewChannel(ctx, target.channelID); err != nil {
 		e.log.Printf("mark read after reply: %v", err)
 	}
 	e.sendTG(ctx, "↩ posted")
@@ -749,7 +910,7 @@ func (e *Engine) handleReaction(ctx context.Context, mr *telegram.MessageReactio
 		}
 	}
 	if len(added) > 0 {
-		if err := e.client.ViewChannel(ctx, e.me.Id, target.channelID); err != nil {
+		if err := e.viewChannel(ctx, target.channelID); err != nil {
 			e.log.Printf("mark read after reaction: %v", err)
 		}
 		e.log.Printf("forwarded reaction(s) %v + marked read (%s)", added, target.channelID)
@@ -853,7 +1014,7 @@ func (e *Engine) catchUp(ctx context.Context) {
 			continue
 		}
 		isDM := ch.Type == model.ChannelTypeDirect
-		if isDM && !e.opts.NotifyDMs {
+		if isDM && e.opts.DMMode == ModeNever {
 			continue
 		}
 		if isDM {
