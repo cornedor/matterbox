@@ -61,6 +61,13 @@ type Config struct {
 	// defaults to true; an explicit false hides the custom-status glyph and
 	// text everywhere, leaving only the presence dots. See internal/ui.
 	CustomStatus *bool `yaml:"custom_status"`
+	// Mouse enables mouse support: the scroll wheel scrolls the message feed
+	// (and inside a message taller than the pane) and the open thread. Pointer
+	// so an absent key defaults to true; set `mouse: false` to keep the
+	// terminal's native click-drag text selection / copy, which capturing the
+	// mouse otherwise disables (most terminals fall back to shift-drag). See
+	// internal/ui.
+	Mouse *bool `yaml:"mouse"`
 	// Keybindings holds optional keymap tweaks. See internal/ui.
 	Keybindings KeybindingsConfig `yaml:"keybindings"`
 	// EmojiImages controls whether custom (server) emoji render as real

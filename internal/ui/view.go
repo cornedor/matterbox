@@ -406,6 +406,14 @@ func (m *Model) renderMessages() {
 		visEnd := selVisStart + selVisRows
 		off := m.msgsView.YOffset()
 		switch {
+		case m.msgScrollFree:
+			// Mouse free-scroll: keep the wheel's offset, clamped to content,
+			// rather than anchoring to the selection. Sticky until a keypress
+			// (see handleKey).
+			off = m.msgFreeOffset
+			if max := m.msgRowStarts[len(m.msgRowStarts)-1] - h; off > max {
+				off = max
+			}
 		case m.keepMsgOffset:
 			// Intra-message scroll set the offset explicitly; keep it, clamped
 			// to the selected post's scrollable range below.
@@ -506,6 +514,12 @@ func (m *Model) renderThread() {
 		visEnd := selVisStart + selVisRows
 		off := m.threadView.YOffset()
 		switch {
+		case m.threadScrollFree:
+			// Mouse free-scroll: keep the wheel's offset, clamped to content.
+			off = m.threadFreeOffset
+			if max := m.threadRowStarts[len(m.threadRowStarts)-1] - h; off > max {
+				off = max
+			}
 		case visStart < off:
 			off = visStart
 		case visEnd > off+h:
@@ -929,6 +943,12 @@ func humanSize(n int64) string {
 func (m Model) View() tea.View {
 	v := tea.NewView(m.viewContent())
 	v.AltScreen = true
+	// Cell-motion mouse reporting is enough for the scroll wheel (and drags);
+	// it's gated by config because capturing the mouse disables the terminal's
+	// native text selection. See handleMouseWheel.
+	if m.mouseEnabled {
+		v.MouseMode = tea.MouseModeCellMotion
+	}
 	return v
 }
 

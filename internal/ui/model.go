@@ -114,6 +114,11 @@ type Model struct {
 	showCustomStatus  bool
 	statusPollStarted bool
 
+	// mouseEnabled mirrors config.Mouse: when true, View requests mouse
+	// reporting and the wheel scrolls the focused message/thread pane (see
+	// handleMouseWheel). Off keeps the terminal's native text selection.
+	mouseEnabled bool
+
 	teamIdx    int
 	channelIdx int
 	chanOff    int
@@ -171,10 +176,22 @@ type Model struct {
 	// rather than moving the selection. pendingMsgOffset is an absolute
 	// visual-row offset; it stays valid because the selection doesn't move
 	// during an intra-scroll, so the posts above it keep identical heights and
-	// the post's start row is unchanged between renders. This is also the hook
-	// a future mouse-wheel handler would reuse. Cleared on each render.
+	// the post's start row is unchanged between renders. Cleared on each render.
 	keepMsgOffset    bool
 	pendingMsgOffset int
+
+	// msgScrollFree / threadScrollFree are sticky flags set while the mouse
+	// wheel free-scrolls the feed / open thread, decoupled from the selection.
+	// While set, renderMessages / renderThread keep msgFreeOffset /
+	// threadFreeOffset (clamped to content) instead of anchoring to the
+	// selection, so a background re-render (e.g. a new message arriving) doesn't
+	// yank the view back mid-scroll. The next keypress re-syncs the selection to
+	// the post on screen and clears the flag (see handleKey). Unlike
+	// keepMsgOffset these are NOT cleared per render.
+	msgScrollFree    bool
+	msgFreeOffset    int
+	threadScrollFree bool
+	threadFreeOffset int
 
 	// channel filter
 	filter      textinput.Model
@@ -634,6 +651,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	markReadDelay := defaultMarkReadDelay
 	groupWindow := defaultGroupWindow
 	showCustomStatus := true
+	mouseEnabled := true
 	navModifier := navModifierFromConfig(cfg)
 	vimNav := vimNavGlobal
 	emojiMode := "auto"
@@ -669,6 +687,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		}
 		if cfg.CustomStatus != nil {
 			showCustomStatus = *cfg.CustomStatus
+		}
+		if cfg.Mouse != nil {
+			mouseEnabled = *cfg.Mouse
 		}
 		if cfg.EmojiImages != "" {
 			emojiMode = cfg.EmojiImages
@@ -754,6 +775,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		statuses:            map[string]string{},
 		customStatuses:      map[string]model.CustomStatus{},
 		showCustomStatus:    showCustomStatus,
+		mouseEnabled:        mouseEnabled,
 		focus:               focusMessages,
 		msgsView:            msgsView,
 		threadView:          threadView,
