@@ -56,6 +56,37 @@ func TestRenderInlineBalancedParensKept(t *testing.T) {
 	}
 }
 
+// All three CommonMark code-block forms — ``` fences, ~~~ fences, and
+// four-space indented blocks — must render with the code-block style.
+func TestRenderMarkdownCodeBlockForms(t *testing.T) {
+	wantLine := "  " + mdCodeBlockStyle.Render("code here")
+	tests := []struct {
+		name string
+		msg  string
+	}{
+		{"backtick fence", "```js\ncode here\n```"},
+		{"tilde fence", "~~~\ncode here\n~~~"},
+		{"indented block", "intro\n\n    code here"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := renderMarkdown(tt.msg, nil, nil)
+			if !strings.Contains(got, wantLine) {
+				t.Errorf("renderMarkdown(%q) = %q, want a line %q", tt.msg, got, wantLine)
+			}
+		})
+	}
+}
+
+// A backtick line inside a ~~~ fence is content, not a closing fence, so it
+// must keep the code-block style rather than the dim fence style.
+func TestRenderMarkdownBacktickInsideTildeFence(t *testing.T) {
+	got := renderMarkdown("~~~\n```\n~~~", nil, nil)
+	if want := "  " + mdCodeBlockStyle.Render("```"); !strings.Contains(got, want) {
+		t.Errorf("``` inside ~~~ not rendered as content: %q", got)
+	}
+}
+
 // A wrapped URL must stay a single hyperlink: the OSC 8 open lands on the
 // first visual row and the close on the last, so Ghostty keeps every cell
 // in between clickable.

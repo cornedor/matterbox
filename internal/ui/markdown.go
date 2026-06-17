@@ -72,6 +72,114 @@ func trimTrailingURLPunct(u string) (clean, trailing string) {
 // descriptions and tests).
 type mrInlineFn func(rawURL string) (badge string, ok bool)
 
+// leadingSpaces counts the run of leading space characters in s.
+func leadingSpaces(s string) int {
+	n := 0
+	for n < len(s) && s[n] == ' ' {
+		n++
+	}
+	return n
+}
+
+// fenceMarker reports whether line opens a code fence and returns the fence
+// character ('`' or '~') and its run length. Per CommonMark a fence may be
+// indented up to three spaces and must be at least three characters long; a
+// backtick fence's info string may not itself contain a backtick (so a stray
+// ``` mid-line isn't an opening fence).
+func fenceMarker(line string) (ch byte, runLen int, ok bool) {
+	indent := leadingSpaces(line)
+	if indent > 3 {
+		return 0, 0, false
+	}
+	t := line[indent:]
+	if len(t) == 0 || (t[0] != '`' && t[0] != '~') {
+		return 0, 0, false
+	}
+	c := t[0]
+	n := 0
+	for n < len(t) && t[n] == c {
+		n++
+	}
+	if n < 3 {
+		return 0, 0, false
+	}
+	if c == '`' && strings.ContainsRune(t[n:], '`') {
+		return 0, 0, false
+	}
+	return c, n, true
+}
+
+// fenceLang returns the info string (language tag) after an opening fence.
+func fenceLang(line string, runLen int) string {
+	return strings.TrimSpace(line[leadingSpaces(line)+runLen:])
+}
+
+// isClosingFence reports whether line closes a fence opened with ch repeated
+// openLen times: the same character, at least as long, nothing but whitespace
+// after it, and indented no more than three spaces. Matching the open character
+// keeps a ``` line inside a ~~~ block as content rather than a closer.
+func isClosingFence(line string, ch byte, openLen int) bool {
+	indent := leadingSpaces(line)
+	if indent > 3 {
+		return false
+	}
+	t := line[indent:]
+	n := 0
+	for n < len(t) && t[n] == ch {
+		n++
+	}
+	return n >= openLen && strings.TrimSpace(t[n:]) == ""
+}
+
+// isIndentedCode reports whether line begins with the four-space (or single-tab)
+// markup indent of an indented code block. Callers gate this on block context:
+// indented code may not interrupt a paragraph, so it must follow a blank line.
+func isIndentedCode(line string) bool {
+	return strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "\t")
+}
+
+// stripIndent removes the four-space (or single-tab) markup indent from one line
+// of an indented code block, leaving any further indentation as content.
+func stripIndent(line string) string {
+	if strings.HasPrefix(line, "\t") {
+		return line[1:]
+	}
+	return line[4:]
+}
+
+// indentedCodeRun, given lines and a start index i where lines[i] opens an
+// indented code block, returns the de-indented body lines and the index of the
+// first line past the block. Interior blank lines are kept; trailing ones are
+// dropped and left for normal processing so they still render as blanks.
+func indentedCodeRun(lines []string, i int) (body []string, next int) {
+	for i < len(lines) {
+		ln := lines[i]
+		if isIndentedCode(ln) {
+			body = append(body, stripIndent(ln))
+			i++
+			continue
+		}
+		if strings.TrimSpace(ln) == "" {
+			// A blank line stays inside the block only if more indented code
+			// follows before any non-indented, non-blank line.
+			j := i + 1
+			for j < len(lines) && strings.TrimSpace(lines[j]) == "" {
+				j++
+			}
+			if j < len(lines) && isIndentedCode(lines[j]) {
+				body = append(body, "")
+				i++
+				continue
+			}
+		}
+		break
+	}
+	for len(body) > 0 && body[len(body)-1] == "" {
+		body = body[:len(body)-1]
+	}
+	return body, i
+}
+
 // renderMarkdown renders a Mattermost message body. Each output line is
 // already indented with the two-space message gutter. ei (may be nil) resolves
 // custom server emoji to inline Kitty-graphics placeholders; mr (may be nil)
@@ -79,24 +187,46 @@ type mrInlineFn func(rawURL string) (badge string, ok bool)
 func renderMarkdown(msg string, ei *emojiImages, mr mrInlineFn) string {
 	lines := strings.Split(strings.TrimRight(msg, "\n"), "\n")
 	out := make([]string, 0, len(lines))
-	inFence := false
-	for _, raw := range lines {
-		if strings.HasPrefix(strings.TrimLeft(raw, " "), "```") {
-			marker := strings.TrimSpace(raw)
-			out = append(out, "  "+mdFenceStyle.Render(marker))
-			inFence = !inFence
+	prevBlank := true // start of message counts as preceded by a blank line
+	for i := 0; i < len(lines); i++ {
+		raw := lines[i]
+
+		// Fenced code block: ``` or ~~~ (CommonMark allows either fence
+		// character; the closer must use the same character and be at least as
+		// long, so a ``` inside a ~~~ block stays content).
+		if ch, runLen, ok := fenceMarker(raw); ok {
+			out = append(out, "  "+mdFenceStyle.Render(strings.TrimSpace(raw)))
+			for i++; i < len(lines); i++ {
+				if isClosingFence(lines[i], ch, runLen) {
+					out = append(out, "  "+mdFenceStyle.Render(strings.TrimSpace(lines[i])))
+					break
+				}
+				out = append(out, "  "+mdCodeBlockStyle.Render(lines[i]))
+			}
+			prevBlank = false
 			continue
 		}
-		if inFence {
-			out = append(out, "  "+mdCodeBlockStyle.Render(raw))
+
+		// Indented code block: a run of lines indented four spaces (or a tab)
+		// that follows a blank line.
+		if prevBlank && isIndentedCode(raw) {
+			body, next := indentedCodeRun(lines, i)
+			for _, b := range body {
+				out = append(out, "  "+mdCodeBlockStyle.Render(b))
+			}
+			i = next - 1 // the outer loop's i++ lands on the terminating line
+			prevBlank = false
 			continue
 		}
+
 		if strings.HasPrefix(raw, ">") {
 			content := strings.TrimPrefix(strings.TrimPrefix(raw, ">"), " ")
 			out = append(out, "  "+mdQuoteBarStyle.Render("┃")+" "+renderInline(content, ei, mr))
+			prevBlank = false
 			continue
 		}
 		out = append(out, "  "+renderInline(raw, ei, mr))
+		prevBlank = strings.TrimSpace(raw) == ""
 	}
 	return strings.Join(out, "\n")
 }

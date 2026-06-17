@@ -18,36 +18,40 @@ type codeBlock struct {
 	content string
 }
 
-// extractCodeBlocks pulls every fenced code block out of a post's raw
-// markdown, mirroring renderMarkdown's fence state-machine (markdown.go):
-// a line whose first non-space run is ``` toggles the fence, the opening
-// fence's trailing token is the language, and the lines in between are the
-// content. A fence left unclosed at end-of-message still yields its block so
-// a half-typed snippet can be copied.
+// extractCodeBlocks pulls every code block out of a post's raw markdown,
+// mirroring renderMarkdown's parsing (markdown.go). It recognises all three
+// CommonMark forms: ``` and ~~~ fences (the opening fence's trailing token is
+// the language; content is preserved verbatim) and four-space/tab indented
+// blocks (the markup indent is stripped, and the block must follow a blank
+// line). A fence left unclosed at end-of-message still yields its block so a
+// half-typed snippet can be copied.
 func extractCodeBlocks(msg string) []codeBlock {
 	lines := strings.Split(strings.TrimRight(msg, "\n"), "\n")
 	var blocks []codeBlock
-	inFence := false
-	var lang string
-	var content []string
-	for _, raw := range lines {
-		if strings.HasPrefix(strings.TrimLeft(raw, " "), "```") {
-			if !inFence {
-				lang = strings.TrimSpace(strings.TrimPrefix(strings.TrimLeft(raw, " "), "```"))
-				content = content[:0]
-				inFence = true
-				continue
+	prevBlank := true
+	for i := 0; i < len(lines); i++ {
+		raw := lines[i]
+
+		if ch, runLen, ok := fenceMarker(raw); ok {
+			lang := fenceLang(raw, runLen)
+			var content []string
+			for i++; i < len(lines) && !isClosingFence(lines[i], ch, runLen); i++ {
+				content = append(content, lines[i])
 			}
 			blocks = append(blocks, codeBlock{lang: lang, content: strings.Join(content, "\n")})
-			inFence = false
+			prevBlank = false
 			continue
 		}
-		if inFence {
-			content = append(content, raw)
+
+		if prevBlank && isIndentedCode(raw) {
+			body, next := indentedCodeRun(lines, i)
+			blocks = append(blocks, codeBlock{content: strings.Join(body, "\n")})
+			i = next - 1
+			prevBlank = false
+			continue
 		}
-	}
-	if inFence {
-		blocks = append(blocks, codeBlock{lang: lang, content: strings.Join(content, "\n")})
+
+		prevBlank = strings.TrimSpace(raw) == ""
 	}
 	return blocks
 }
