@@ -176,7 +176,7 @@ func (m Model) openImagePreview(p *model.Post) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if m.emojiImg == nil || !m.emojiImg.active() {
-		m.status = "image preview needs a Kitty-capable terminal — press o to open"
+		m.status = "image preview unavailable: " + m.emojiImg.statusReason() + " — press o to open"
 		return m, nil
 	}
 	m.preview = previewState{active: true, items: items, idx: 0, loading: true}

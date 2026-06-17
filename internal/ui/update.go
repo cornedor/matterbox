@@ -91,6 +91,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Reply to the startup graphics-support probe (see emojiProbeCmd).
 		// Transmits use q=2, so only the probe reply should reach here.
 		if m.emojiImg != nil && msg.Options.ID == kittyProbeID {
+			m.emojiImg.setProbeReply(string(msg.Payload))
 			m.emojiImg.setProbeResult(strings.HasPrefix(string(msg.Payload), "OK"))
 		}
 		return m, nil

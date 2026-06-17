@@ -138,7 +138,7 @@ func TestOpenImagePreviewNoImage(t *testing.T) {
 }
 
 func TestOpenImagePreviewNoGraphics(t *testing.T) {
-	// emojiImg nil → Kitty graphics unavailable → modal declines with a hint.
+	// emojiImg nil → Kitty graphics unavailable → modal declines, points to `o`.
 	m := Model{}
 	mm, cmd := m.openImagePreview(imagePost("image/png"))
 	got := mm.(Model)
@@ -148,8 +148,47 @@ func TestOpenImagePreviewNoGraphics(t *testing.T) {
 	if cmd != nil {
 		t.Error("no load command expected without graphics support")
 	}
-	if !strings.Contains(got.status, "Kitty") {
-		t.Errorf("status = %q, want a Kitty-capable hint", got.status)
+	if !strings.Contains(got.status, "unavailable") || !strings.Contains(got.status, "press o") {
+		t.Errorf("status = %q, want an 'unavailable … press o' hint", got.status)
+	}
+}
+
+func TestEmojiImagesStatusReason(t *testing.T) {
+	tests := []struct {
+		name string
+		set  func(e *emojiImages)
+		want string // substring the reason must contain
+	}{
+		{"nil", nil, "disabled in this build"},
+		{"off", func(e *emojiImages) { e.mode = "off" }, "off in config"},
+		{"probing", func(e *emojiImages) {}, "still probing"},
+		{"silent probe", func(e *emojiImages) { e.setColorProfile(true); e.setProbeResult(false) }, "didn't answer"},
+		{"non-ok reply", func(e *emojiImages) {
+			e.setColorProfile(true)
+			e.setProbeReply("ENOTSUPPORTED")
+			e.setProbeResult(false)
+		}, "not with OK"},
+		{"no truecolor", func(e *emojiImages) { e.setProbeReply("OK"); e.setProbeResult(true); e.setColorProfile(false) }, "not detected as truecolor"},
+		{"active", func(e *emojiImages) { e.setProbeReply("OK"); e.setProbeResult(true); e.setColorProfile(true) }, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var e *emojiImages
+			if tc.set != nil {
+				e = newEmojiImages("auto", true)
+				tc.set(e)
+			}
+			got := e.statusReason()
+			if tc.want == "" {
+				if got != "" {
+					t.Errorf("statusReason() = %q, want empty (active)", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("statusReason() = %q, want substring %q", got, tc.want)
+			}
+		})
 	}
 }
 

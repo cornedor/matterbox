@@ -305,6 +305,8 @@ type emojiImages struct {
 	// cell renderer would otherwise quantise the id away.
 	probeDone    bool
 	probeOK      bool
+	probeReplied bool   // a KittyGraphicsEvent reply actually arrived (vs timeout)
+	probePayload string // raw probe reply payload, for statusReason diagnostics
 	profileKnown bool
 	truecolor    bool
 
@@ -418,6 +420,44 @@ func (e *emojiImages) markUnsupported() {
 	defer e.mu.Unlock()
 	e.probeDone = true
 	e.probeOK = false
+}
+
+// setProbeReply records that the terminal answered the graphics probe and with
+// what payload, so statusReason can tell a silent terminal (timeout) apart from
+// one that replied something other than OK. Call before setProbeResult.
+func (e *emojiImages) setProbeReply(payload string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.probeReplied = true
+	e.probePayload = payload
+}
+
+// statusReason names the specific gate keeping image features inactive, for a
+// human-facing status line — so a user whose terminal "should" work can see
+// which check failed (config / probe / tmux / truecolor) rather than a generic
+// "needs a Kitty-capable terminal". Returns "" when active. nil-safe.
+func (e *emojiImages) statusReason() string {
+	if e == nil {
+		return "disabled in this build"
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	switch {
+	case e.mode == "off":
+		return "turned off in config (emoji_images: off)"
+	case !e.probeDone:
+		return "still probing the terminal — try again in a moment"
+	case !e.probeOK:
+		if e.probeReplied {
+			return fmt.Sprintf("terminal answered the graphics probe but not with OK (%q)", e.probePayload)
+		}
+		return "terminal didn't answer the Kitty graphics probe (tmux, or no Kitty graphics support)"
+	case !e.profileKnown:
+		return "terminal color profile not reported — can't confirm truecolor"
+	case !e.truecolor:
+		return "terminal not detected as truecolor (set COLORTERM=truecolor)"
+	}
+	return ""
 }
 
 // takePending drains the names sighted since the last call and marks them
