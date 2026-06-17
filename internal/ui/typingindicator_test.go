@@ -161,29 +161,83 @@ func TestRenderTypingDots(t *testing.T) {
 }
 
 // overlayTypingDots preserves the full rule width (so the layout never
-// shifts), insets the dots by typingDotOffset, and falls back to a plain
-// rule when the pane is too narrow.
+// shifts), places the dots two columns in (─ •••), and falls back to a
+// plain rule when the pane is too narrow.
 func TestOverlayTypingDotsWidth(t *testing.T) {
-	for _, width := range []int{0, 2, typingDotOffset + typingDotCount, 10, 40} {
-		got := overlayTypingDots(0, width, dimColor)
+	for _, width := range []int{0, 2, typingDotLeadWidth, typingDotLeadWidth + 1, 10, 40} {
+		got := overlayTypingDots(0, width, dimColor, "")
 		if w := lipgloss.Width(got); w != width {
 			t.Fatalf("width %d: rendered display width %d", width, w)
 		}
 	}
-	// Wide enough: the dots are present, inset by typingDotOffset columns
-	// of rule (──•••…).
-	wide := overlayTypingDots(0, 40, dimColor)
+	// Wide enough: the dots are present, two columns in ("─ •••…"), keeping
+	// them where they sat before the spacing was added.
+	wide := overlayTypingDots(0, 40, dimColor, "")
 	if strings.Count(wide, statusDot) != typingDotCount {
 		t.Fatal("wide rule should carry the dots")
 	}
 	if idx := strings.Index(wide, statusDot); idx < 0 {
 		t.Fatal("expected a dot in the wide rule")
-	} else if lead := lipgloss.Width(wide[:idx]); lead != typingDotOffset {
-		t.Fatalf("dots inset by %d columns, want %d", lead, typingDotOffset)
+	} else if lead := lipgloss.Width(wide[:idx]); lead != typingDotOffset+1 {
+		t.Fatalf("dots start at column %d, want %d", lead, typingDotOffset+1)
 	}
 	// Too narrow: plain rule, no dots crowding the prompt.
-	narrow := overlayTypingDots(0, typingDotOffset+typingDotCount-1, dimColor)
+	narrow := overlayTypingDots(0, typingDotLeadWidth, dimColor, "")
 	if strings.Contains(narrow, statusDot) {
 		t.Fatal("narrow rule should drop the dots")
+	}
+}
+
+// overlayTypingDots renders the typer names after the dots, still
+// preserving the full width, and truncates them when the pane is narrow.
+func TestOverlayTypingDotsLabel(t *testing.T) {
+	const label = "@johndoe, @somename"
+	got := overlayTypingDots(0, 40, dimColor, label)
+	if w := lipgloss.Width(got); w != 40 {
+		t.Fatalf("with label: display width %d, want 40", w)
+	}
+	if !strings.Contains(got, "@johndoe") || !strings.Contains(got, "@somename") {
+		t.Fatalf("expected both names in %q", got)
+	}
+	// Narrow pane: the names are truncated with an ellipsis but the width
+	// (and the dots) survive.
+	tight := overlayTypingDots(0, typingDotLeadWidth+6, dimColor, label)
+	if w := lipgloss.Width(tight); w != typingDotLeadWidth+6 {
+		t.Fatalf("tight: display width %d, want %d", w, typingDotLeadWidth+6)
+	}
+	if !strings.Contains(tight, "…") {
+		t.Fatalf("expected an ellipsis in the truncated label %q", tight)
+	}
+	if strings.Count(tight, statusDot) != typingDotCount {
+		t.Fatal("truncation must not drop the dots")
+	}
+}
+
+// typingLabel names typers in channels and group chats (sorted, resolved
+// from the username cache), and stays empty in 1:1 DMs.
+func TestTypingLabel(t *testing.T) {
+	mk := func(chType model.ChannelType) Model {
+		return Model{
+			openChannelID: "chan1",
+			channels: map[string][]*model.Channel{
+				"team": {{Id: "chan1", Type: chType}},
+			},
+			userNames: map[string]string{"u1": "bob", "u2": "alice", "u3": ""},
+		}
+	}
+	for _, chType := range []model.ChannelType{model.ChannelTypeOpen, model.ChannelTypePrivate, model.ChannelTypeGroup} {
+		m := mk(chType)
+		m.noteTyping("chan1", "u1", time.Now())
+		m.noteTyping("chan1", "u2", time.Now())
+		m.noteTyping("chan1", "u3", time.Now()) // unresolved → omitted
+		if got, want := m.typingLabel(), "@alice, @bob"; got != want {
+			t.Fatalf("type %s: label = %q, want %q (sorted, resolved only)", chType, got, want)
+		}
+	}
+	// 1:1 DM: no names, just the dots.
+	dm := mk(model.ChannelTypeDirect)
+	dm.noteTyping("chan1", "u1", time.Now())
+	if got := dm.typingLabel(); got != "" {
+		t.Fatalf("DM label = %q, want empty", got)
 	}
 }

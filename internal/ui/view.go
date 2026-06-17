@@ -1321,7 +1321,7 @@ func (m *Model) renderInputBox(width int) string {
 	// the top border; replacing it keeps every other line untouched.
 	if m.typingIndicatorVisible() {
 		if i := strings.IndexByte(box, '\n'); i >= 0 {
-			box = overlayTypingDots(m.typingIndicator.phase, width, inputBorder) + box[i:]
+			box = overlayTypingDots(m.typingIndicator.phase, width, inputBorder, m.typingLabel()) + box[i:]
 		}
 	}
 	return box

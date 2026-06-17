@@ -2,11 +2,13 @@ package ui
 
 import (
 	"image/color"
+	"sort"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
@@ -43,9 +45,10 @@ const typingIndicatorInterval = 400 * time.Millisecond
 // typingDotCount is how many dots the indicator draws.
 const typingDotCount = 3
 
-// typingDotOffset insets the dots from the left edge of the rule so they
-// sit just past the "> " prompt rather than on top of it: ──•••────────.
-const typingDotOffset = 2
+// typingDotOffset is how many rule dashes precede the leading space and
+// dots. One dash plus the space keeps the dots two columns in — just past
+// the "> " prompt — while leaving them balanced by spaces: ─ ••• ───────.
+const typingDotOffset = 1
 
 // typingIndicatorTickMsg advances the dot animation by one frame.
 type typingIndicatorTickMsg struct{}
@@ -56,6 +59,8 @@ var (
 	// without shouting.
 	typingDotDimStyle = lipgloss.NewStyle().Foreground(dimColor)
 	typingDotLitStyle = lipgloss.NewStyle().Foreground(focusedColor)
+	// Typer names ride the rule too, so keep them quiet (grey).
+	typingNameStyle = lipgloss.NewStyle().Foreground(dimColor)
 )
 
 // applyTypingEvent records a `typing` WebSocket event. Events for any
@@ -75,7 +80,57 @@ func (m *Model) applyTypingEvent(ev *model.WebSocketEvent) tea.Cmd {
 		return nil
 	}
 	m.noteTyping(b.ChannelId, uid, time.Now())
-	return m.maybeStartTypingAnim()
+
+	cmds := []tea.Cmd{m.maybeStartTypingAnim()}
+	// In channels and group chats the cue names the typer, so resolve any
+	// username we don't have cached yet (the result lands in m.userNames
+	// via usersResolvedMsg and the next frame renders it).
+	if m.typingNamesShown() {
+		if _, known := m.userNames[uid]; !known {
+			cmds = append(cmds, m.resolveTypingName(uid))
+		}
+	}
+	return tea.Batch(cmds...)
+}
+
+// typingNamesShown reports whether the open channel should name its
+// typers. Channels (public/private) and group chats do; a 1:1 DM doesn't,
+// since the only other party is already obvious.
+func (m *Model) typingNamesShown() bool {
+	c := m.findChannel(m.openChannelID)
+	return c != nil && c.Type != model.ChannelTypeDirect
+}
+
+// typingLabel is the "@john, @jane" list of currently-typing users for the
+// composer cue, resolved from the username cache and sorted for a stable
+// order. It is empty in 1:1 DMs and omits anyone not yet resolved (the
+// fetch armed in applyTypingEvent fills them in shortly).
+func (m *Model) typingLabel() string {
+	if !m.typingNamesShown() {
+		return ""
+	}
+	names := make([]string, 0, len(m.typingIndicator.users))
+	for uid := range m.typingIndicator.users {
+		if n := m.userNames[uid]; n != "" {
+			names = append(names, "@"+n)
+		}
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
+// resolveTypingName fetches a single typer's username in the background,
+// reusing the shared usersResolvedMsg path (UsernamesByIDs is
+// singleflight-deduped, so repeated calls for the same id coalesce).
+func (m Model) resolveTypingName(uid string) tea.Cmd {
+	ids := []string{uid}
+	return func() tea.Msg {
+		names, err := m.client.UsernamesByIDs(m.ctx, ids)
+		if err != nil {
+			return usersResolvedMsg{ids: ids, err: err}
+		}
+		return usersResolvedMsg{ids: ids, users: names}
+	}
 }
 
 // noteTyping records that user uid is typing in channelID as of now,
@@ -161,19 +216,46 @@ func renderTypingDots(phase int) string {
 	return b.String()
 }
 
-// overlayTypingDots returns the composer's separator rule with the
-// animated dots inset typingDotOffset columns from the left — just past
-// the "> " prompt (──•••────────) — so the indicator costs no extra
-// vertical space. ruleColor matches the surrounding border so the dashes
-// on either side are indistinguishable from a plain rule. width is the
+// typingDotLeadWidth is the fixed run before the typer names: the offset
+// dashes, a space, the dots, and a trailing space — "─ ••• ".
+const typingDotLeadWidth = typingDotOffset + 1 + typingDotCount + 1
+
+// overlayTypingDots returns the composer's separator rule with the dots
+// (and, when set, the typer names) laid over it — "─ ••• @john ───────" —
+// so the cue costs no extra vertical space. The dots sit two columns in,
+// spaced for balance; label is the already-resolved "@name" list (empty
+// for a 1:1 DM). ruleColor matches the surrounding border so the dashes on
+// either side are indistinguishable from a plain rule, and width is the
 // full rule width.
-func overlayTypingDots(phase, width int, ruleColor color.Color) string {
+func overlayTypingDots(phase, width int, ruleColor color.Color, label string) string {
 	ruleStyle := lipgloss.NewStyle().Foreground(ruleColor)
-	rule := func(n int) string { return ruleStyle.Render(strings.Repeat("─", n)) }
-	if width < typingDotOffset+typingDotCount {
-		// Too narrow to fit the inset dots; fall back to a plain rule
-		// rather than overflow it.
+	rule := func(n int) string {
+		if n < 0 {
+			n = 0
+		}
+		return ruleStyle.Render(strings.Repeat("─", n))
+	}
+	if width < typingDotLeadWidth+1 {
+		// Too narrow for the spaced dots plus a trailing dash; fall back to
+		// a plain rule rather than overflow it.
 		return rule(max(width, 0))
 	}
-	return rule(typingDotOffset) + renderTypingDots(phase) + rule(width-typingDotOffset-typingDotCount)
+	lead := rule(typingDotOffset) + " " + renderTypingDots(phase) + " "
+
+	// Fit the typer names when there's room, truncating to keep a couple of
+	// trailing dashes so the cue still reads as riding the rule.
+	if label != "" {
+		const minRight = 2
+		avail := width - typingDotLeadWidth - 1 - minRight // -1 for the space after the names
+		if avail >= 1 {
+			shown := label
+			if lipgloss.Width(shown) > avail {
+				shown = ansi.Truncate(shown, avail, "…")
+			}
+			if w := lipgloss.Width(shown); w > 0 {
+				return lead + typingNameStyle.Render(shown) + " " + rule(width-typingDotLeadWidth-w-1)
+			}
+		}
+	}
+	return lead + rule(width-typingDotLeadWidth)
 }
