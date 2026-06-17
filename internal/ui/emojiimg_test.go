@@ -144,6 +144,26 @@ func TestEmojiImagesProbeFailedGating(t *testing.T) {
 	}
 }
 
+// Test 3c: a graphics-probe OK that arrives *after* the timeout already marked
+// the probe failed (macOS Ghostty answers the startup query late) must still
+// win and activate the feature — regression for the dropped late reply.
+func TestEmojiImagesLateProbeOKWins(t *testing.T) {
+	e := newEmojiImages("auto", true)
+	e.setColorProfile(true)
+	e.setProbeResult(false) // timeout fires first
+	if e.active() {
+		t.Fatal("active before the OK reply")
+	}
+	e.setProbeReply("OK")
+	e.setProbeOK() // late reply
+	if !e.active() {
+		t.Fatal("late OK reply did not activate the feature")
+	}
+	if got := e.statusReason(); got != "" {
+		t.Errorf("statusReason after late OK = %q, want empty", got)
+	}
+}
+
 // Test 4: a still image decodes to a single frame; junk errors.
 func TestDecodeEmojiFramesStill(t *testing.T) {
 	img := image.NewRGBA(image.Rect(0, 0, 4, 4))

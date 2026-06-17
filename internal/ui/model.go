@@ -858,11 +858,13 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// emojiProbeTimeout bounds how long we wait for the terminal to answer the
-// custom-emoji graphics probe before giving up and treating images as
-// unsupported. One second is ample for a local reply; a slow ssh hop just
-// degrades to literal :name: text.
-const emojiProbeTimeout = time.Second
+// emojiProbeTimeout bounds how long we wait before *provisionally* treating
+// images as unsupported (falling back to literal :name: text). A late OK reply
+// still wins and enables the feature (see setProbeOK) — macOS Ghostty can answer
+// the startup query well after a second during first-launch warmup — so this is
+// only the point at which we stop assuming support, not a hard cutoff. Kept
+// generous so a supported terminal doesn't flash text emoji before its reply.
+const emojiProbeTimeout = 3 * time.Second
 
 // emojiProbeCmd kicks off custom-emoji image support detection: a Kitty
 // graphics query plus a timeout fallback. Returns nil (leaving the manager

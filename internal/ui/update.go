@@ -92,7 +92,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Transmits use q=2, so only the probe reply should reach here.
 		if m.emojiImg != nil && msg.Options.ID == kittyProbeID {
 			m.emojiImg.setProbeReply(string(msg.Payload))
-			m.emojiImg.setProbeResult(strings.HasPrefix(string(msg.Payload), "OK"))
+			// A late OK overrides a prior timeout (setProbeOK); only a genuine
+			// non-OK reply locks the probe as failed.
+			if strings.HasPrefix(string(msg.Payload), "OK") {
+				m.emojiImg.setProbeOK()
+			} else {
+				m.emojiImg.setProbeResult(false)
+			}
 		}
 		return m, nil
 

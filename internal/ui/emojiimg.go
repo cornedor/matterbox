@@ -404,6 +404,18 @@ func (e *emojiImages) setProbeResult(ok bool) {
 	e.probeOK = ok
 }
 
+// setProbeOK records a successful probe reply. Unlike setProbeResult it overrides
+// a prior result, because macOS Ghostty can answer the startup query *after* the
+// timeout already marked the probe done-and-failed — a late OK must still win and
+// enable the feature, rather than being dropped on the floor.
+func (e *emojiImages) setProbeOK() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.probeDone = true
+	e.probeOK = true
+	e.probeReplied = true
+}
+
 // setColorProfile records whether the terminal is truecolor. May arrive before
 // or after the graphics probe; active() reads both.
 func (e *emojiImages) setColorProfile(truecolor bool) {
