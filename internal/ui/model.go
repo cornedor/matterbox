@@ -209,6 +209,12 @@ type Model struct {
 	// inside a code-block box, animated by editing one post per frame.
 	ball ballAnim
 
+	// typingIndicator drives the animated three-dot cue on the composer
+	// separator when someone else is typing in the open channel. Unlike
+	// `typing` above, it's fed by inbound `typing` WebSocket events, not a
+	// local command. See typingindicator.go.
+	typingIndicator typingIndicator
+
 	// Persisted per-channel usage counters (loaded from
 	// ~/.config/matterbox/channel_stats.json). Used as a sort signal in
 	// the switcher so frequently-opened channels float to the top.

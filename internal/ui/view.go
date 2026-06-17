@@ -1309,11 +1309,22 @@ func (m *Model) renderInputBox(width int) string {
 	if m.focus == focusInput {
 		inputBorder = focusedColor
 	}
-	return lipgloss.NewStyle().
+	box := lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder(), true, false, false, false).
 		BorderForeground(inputBorder).
 		Width(width).
 		Render(m.input.View())
+
+	// When someone is typing in the open channel, lay the animated dots
+	// over the top rule (the separator) so the cue rides the line it
+	// already draws and costs no extra height. The first rendered line is
+	// the top border; replacing it keeps every other line untouched.
+	if m.typingIndicatorVisible() {
+		if i := strings.IndexByte(box, '\n'); i >= 0 {
+			box = overlayTypingDots(m.typingIndicator.phase, width, inputBorder) + box[i:]
+		}
+	}
+	return box
 }
 
 // attachmentBarHeight returns the rendered height of the chip strip

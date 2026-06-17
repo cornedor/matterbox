@@ -130,6 +130,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case emojiAnimTickMsg:
 		return m, m.advanceEmojiAnim()
 
+	case typingIndicatorTickMsg:
+		return m, m.applyTypingIndicatorTick()
+
 	case previewImageLoadedMsg:
 		return m.handlePreviewLoaded(msg)
 
@@ -782,6 +785,8 @@ func (m *Model) handleWSEvent(ev *model.WebSocketEvent) tea.Cmd {
 	case model.WebsocketEventOpenDialog:
 		m.applyOpenDialog(ev)
 		return nil
+	case model.WebsocketEventTyping:
+		return m.applyTypingEvent(ev)
 	}
 	return nil
 }
