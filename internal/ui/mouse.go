@@ -312,13 +312,15 @@ func (m *Model) armTextSel(pane focus, line, col int) {
 
 // selectPostAt moves the message selection to post idx and focuses the messages
 // pane, clearing any wheel free-scroll so the selection follows again. Render
-// is left to the caller.
+// is left to the caller. Blurs the composer so its cursor stops rendering once
+// focus has left it — mirrors the keyboard escape-to-transcript path.
 func (m *Model) selectPostAt(idx int) {
 	if idx < 0 || idx >= len(m.posts) {
 		return
 	}
 	m.postIdx = idx
 	m.focus = focusMessages
+	m.input.Blur()
 	m.msgScrollFree = false
 }
 
@@ -329,6 +331,7 @@ func (m *Model) selectThreadPostAt(idx int) {
 	}
 	m.threadIdx = idx
 	m.focus = focusThread
+	m.input.Blur()
 	m.threadScrollFree = false
 }
 

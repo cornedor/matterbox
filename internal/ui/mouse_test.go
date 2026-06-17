@@ -119,10 +119,12 @@ func TestHitTestMessageRow(t *testing.T) {
 }
 
 // TestClickSelectsMessage: a left click on a message row moves the selection
-// there and focuses the messages pane.
+// there, focuses the messages pane, and blurs the composer so its cursor stops
+// rendering — otherwise the click leaves the textarea looking focused.
 func TestClickSelectsMessage(t *testing.T) {
 	m := mouseModel(shortPosts(80))
 	m.focus = focusInput // start elsewhere to prove the click takes focus
+	m.input.Focus()      // composer cursor showing before the click
 	out, _ := m.handleMouseClick(click(tea.MouseLeft, 30, 6))
 	m = out.(Model)
 	if m.postIdx != 1 {
@@ -130,6 +132,9 @@ func TestClickSelectsMessage(t *testing.T) {
 	}
 	if m.focus != focusMessages {
 		t.Fatalf("click left focus=%v want focusMessages", m.focus)
+	}
+	if m.input.Focused() {
+		t.Fatal("click left the composer focused; its cursor would keep rendering")
 	}
 }
 
