@@ -23,7 +23,7 @@ local LLM.
 - **Jira integration** — press `v` on a Jira issue link to open a side panel; edit
   Status, Priority, Story points, and Assignee inline without leaving the TUI.
 - **GitLab integration** — press `v` on a GitLab MR link to open a merge-request
-  side panel with diff and status.
+  side panel with pipeline, approvals, and status; approve or merge inline.
 - **AI summaries** — summarize a channel or thread with a local LLM (Ctrl+K in the TUI).
 - **Agentic search** — end a query with `?` on the Search tab and a local model
   uses tools to dig through your channels to answer it.
@@ -144,6 +144,58 @@ typo fails loud rather than silently shadowing a key.
 > Some chords only arrive on terminals that speak the Kitty keyboard protocol
 > (Ghostty, kitty, WezTerm). `shift+enter` for example *sends* the message on a
 > legacy terminal instead of inserting a newline — use `alt+enter` there.
+
+## Jira & GitLab integration (optional)
+
+Press `v` on a message that names a Jira issue or links a GitLab merge request to
+open it in a side panel — read-only by default, with inline editing/actions when
+the token allows it. Both are opt-in and configured in `config.yaml`.
+
+### GitLab
+
+```yaml
+gitlab:
+  base_url: https://git.example.com
+  token: glpat-…            # optional — see fallbacks below
+```
+
+`token` may be a **personal access token** or a **project access token**, with
+these scopes:
+
+| Scope | Covers |
+|---|---|
+| `read_api` | Everything read-only: the MR panel, inline `!iid` badges, pipeline/stage status, approval state. |
+| `api` | The above **plus** the approve and merge actions. GitLab has no narrower scope for MR writes (`write_repository` is git-over-HTTPS only and does **not** cover the MR API). |
+
+Use `read_api` unless you actually approve/merge from the TUI. If `token` is left
+empty, matterbox falls back to the `GITLAB_TOKEN` env var, then to an existing
+`glab` login (the token `glab auth login` stored for this host in
+`~/.config/glab-cli/config.yml`) — so a working `glab` setup needs no secret in
+this file.
+
+### Jira (Cloud only)
+
+```yaml
+jira:
+  base_url: https://your-instance.atlassian.net
+  email: you@example.com
+  api_token: …             # or the JIRA_API_TOKEN env var
+  projects: [ABC, PROJ]    # optional: enable bare-id detection (ABC-123)
+```
+
+Authentication is HTTP Basic with your Atlassian account email + an API token
+(id.atlassian.com → Security → API tokens). What you need depends on the **kind**
+of token:
+
+- **Classic API token** (the default) — unscoped; it acts as your user, so access
+  is gated by your Jira **project permissions**, not token scopes. *Browse
+  Projects* is enough to view; *Transition Issues*, *Assign Issues*, and *Edit
+  Issues* enable the inline status / assignee / priority / story-points edits.
+- **Scoped API token** (the newer option) — select `read:jira-work` and
+  `read:jira-user` for viewing, and add `write:jira-work` for the inline edits.
+
+This integration targets Jira **Cloud** — it uses the `/rest/api/3` endpoints, so
+Server/Data Center instances won't work as-is.
 
 ## AI features (optional)
 
