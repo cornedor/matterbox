@@ -79,6 +79,15 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseWheelMsg:
 		return m.handleMouseWheel(msg)
 
+	case tea.MouseClickMsg:
+		return m.handleMouseClick(msg)
+
+	case tea.MouseReleaseMsg:
+		return m.handleMouseRelease(msg)
+
+	case tea.MouseMotionMsg:
+		return m.handleMouseMotion(msg)
+
 	case tea.PasteMsg:
 		return m.handlePaste(msg)
 
@@ -1286,6 +1295,11 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.threadScrollFree {
 		m.syncThreadSelToViewport()
 		m.threadScrollFree = false
+	}
+	// A keypress also dismisses a mouse text selection so its highlight doesn't
+	// linger over content the keyboard is now acting on.
+	if m.textSel.active || m.textSel.dragging {
+		m.clearTextSel()
 	}
 	// Key inspector is fully modal and checked first: it echoes every decoded
 	// keystroke instead of acting on it (esc closes, ctrl+c still quits), so a
