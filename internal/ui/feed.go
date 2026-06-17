@@ -63,6 +63,15 @@ type feedState struct {
 	wavePhase  int
 	waveActive bool
 
+	// Gull fly-bys, advanced once per wave frame (see advanceFeedBird). A bird
+	// crosses a few times an hour: birdWait counts down the random idle frames
+	// until the next fly-by; while birdActive, birdStep advances the crossing
+	// and birdYOff holds that fly-by's random sky height.
+	birdActive bool
+	birdStep   int
+	birdWait   int
+	birdYOff   int
+
 	// zones maps viewport visual rows to feed-entry indices for mouse
 	// hit-testing; zonesTotal is the rendered list's full height. Both are
 	// rebuilt by renderFeedResults on every repaint and cleared in its
@@ -76,7 +85,9 @@ type feedState struct {
 func newFeedState() feedState {
 	vp := viewport.New()
 	vp.SoftWrap = true
-	return feedState{view: vp}
+	// Seed a short initial idle so the first gull appears soon after the splash
+	// is first viewed, then settles into the rare random cadence.
+	return feedState{view: vp, birdWait: int(birdGapFirst / feedWaveInterval)}
 }
 
 // feedTarget is a snapshot of one unread channel taken on the UI
