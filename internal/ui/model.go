@@ -427,6 +427,14 @@ type Model struct {
 	openPickerItems []openable
 	openPickerIdx   int
 
+	// Code-block picker modal. When a post has more than one fenced ``` block,
+	// the copy-code key raises this list instead of guessing which to copy.
+	// While codePickerBlocks is non-empty the modal owns every keystroke (digit
+	// copies + fires, ↑/↓+↵ navigate, esc cancels); codePickerIdx is the cursor
+	// within codePickerBlocks.
+	codePickerBlocks []codeBlock
+	codePickerIdx    int
+
 	// Image-preview modal (space on a message with an image attachment). While
 	// preview.active the modal owns every keystroke (space/esc/q close, ←/→
 	// cycle images) and renders the image inline via Kitty graphics. previewGen
@@ -845,7 +853,7 @@ func (m Model) FullHelp() [][]key.Binding {
 		{k.Up, k.Down, k.Home, k.End, k.Left, k.Right, k.PageDown, k.PageUp, k.NextHit, k.PrevHit},
 		{k.NavChanPrev, k.NavChanNext, k.NavTeamPrev, k.NavTeamNext},
 		{k.Filter, k.ClearFilter, k.OpenChannel, k.OpenThread, k.ReplyInThread, k.OpenRef, k.CloseThread},
-		{k.OpenAttach, k.CopyMD, k.EditPost, k.DeletePost, k.React, k.ShowHistory, k.Compose, k.Send, k.NewLine, k.LeaveInput},
+		{k.OpenAttach, k.CopyMD, k.CopyCode, k.EditPost, k.DeletePost, k.React, k.ShowHistory, k.Compose, k.Send, k.NewLine, k.LeaveInput},
 		{k.Paste, k.AttachRemove},
 	}
 }
@@ -1106,15 +1114,21 @@ func (m Model) cachedFilePath(f *model.FileInfo) (string, error) {
 }
 
 func (m Model) copyPostMarkdown(p *model.Post) tea.Cmd {
+	return m.copyText(p.Message, "markdown")
+}
+
+// copyText writes text to the system clipboard, reporting what was copied
+// (e.g. "markdown", "code block") so the status line can name it.
+func (m Model) copyText(text, what string) tea.Cmd {
 	return func() tea.Msg {
-		if err := clipboard.WriteAll(p.Message); err != nil {
+		if err := clipboard.WriteAll(text); err != nil {
 			return errMsg{err}
 		}
-		return copyClipboardMsg{}
+		return copyClipboardMsg{what: what}
 	}
 }
 
-type copyClipboardMsg struct{}
+type copyClipboardMsg struct{ what string }
 
 func (m Model) sendMessage(channelID, rootID, text string, fileIDs []string) tea.Cmd {
 	return func() tea.Msg {

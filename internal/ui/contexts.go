@@ -55,7 +55,7 @@ func (m *Model) contentFocus() bool {
 // handleKey (which returns at the modal before ever reaching them).
 func (m *Model) inModal() bool {
 	return m.deleteConfirmPostID != "" || m.reactionPickerPostID != "" ||
-		m.openPickerActive() || m.pollDialog.open || m.historyMode ||
+		m.openPickerActive() || m.codePickerActive() || m.pollDialog.open || m.historyMode ||
 		m.summary.active() || m.switcherMode || m.keysSheetMode || m.preview.active
 }
 
@@ -86,6 +86,12 @@ var keyContexts = []keyContext{
 	{
 		name:     "modal:open-picker",
 		active:   func(m *Model) bool { return m.openPickerActive() },
+		terminal: true,
+		claims:   func(m *Model) []key.Binding { return []key.Binding{m.keys.Up, m.keys.Down} },
+	},
+	{
+		name:     "modal:code-picker",
+		active:   func(m *Model) bool { return m.codePickerActive() },
 		terminal: true,
 		claims:   func(m *Model) []key.Binding { return []key.Binding{m.keys.Up, m.keys.Down} },
 	},
@@ -233,7 +239,7 @@ var keyContexts = []keyContext{
 				m.keys.Up, m.keys.Down, m.keys.Home, m.keys.End, m.keys.PageUp, m.keys.PageDown,
 				m.keys.NextHit, m.keys.PrevHit, m.keys.OpenThread, m.keys.ReplyInThread,
 				m.keys.EditPost, m.keys.DeletePost, m.keys.OpenAttach, m.keys.OpenRef, m.keys.Preview, m.keys.CopyMD,
-				m.keys.ShowHistory, m.keys.React,
+				m.keys.CopyCode, m.keys.ShowHistory, m.keys.React,
 			}
 		},
 	},
@@ -244,7 +250,7 @@ var keyContexts = []keyContext{
 		claims: func(m *Model) []key.Binding {
 			return []key.Binding{
 				m.keys.Up, m.keys.Down, m.keys.Home, m.keys.End, m.keys.OpenAttach, m.keys.OpenRef, m.keys.Preview,
-				m.keys.CopyMD, m.keys.ShowHistory, m.keys.EditPost, m.keys.DeletePost, m.keys.React,
+				m.keys.CopyMD, m.keys.CopyCode, m.keys.ShowHistory, m.keys.EditPost, m.keys.DeletePost, m.keys.React,
 			}
 		},
 	},
@@ -319,6 +325,7 @@ var shadowProbeStates = []struct {
 	{"delete-confirm", func(m *Model) { m.deleteConfirmPostID = "x" }},
 	{"reaction-picker", func(m *Model) { m.reactionPickerPostID = "x" }},
 	{"open-picker", func(m *Model) { m.openPickerItems = make([]openable, 1) }},
+	{"code-picker", func(m *Model) { m.codePickerBlocks = make([]codeBlock, 1) }},
 	{"poll-dialog", func(m *Model) { m.pollDialog.open = true }},
 	{"history", func(m *Model) { m.historyMode = true }},
 	{"summary", func(m *Model) { m.summary.phase = summaryPicking }},

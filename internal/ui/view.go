@@ -995,6 +995,9 @@ func (m *Model) viewContent() string {
 	if m.openPickerActive() {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderOpenPicker())
 	}
+	if m.codePickerActive() {
+		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderCodePicker())
+	}
 	if m.pollDialog.open {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderPollDialog())
 	}

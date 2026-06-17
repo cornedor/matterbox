@@ -533,7 +533,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case copyClipboardMsg:
-		m.status = "copied markdown to clipboard"
+		m.status = "copied " + msg.what + " to clipboard"
 		return m, nil
 
 	case mentionDebounceMsg:
@@ -1303,6 +1303,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.openPickerActive() {
 		return m.handleOpenPickerKey(msg)
 	}
+	// Code-block picker modal owns every keystroke while open.
+	if m.codePickerActive() {
+		return m.handleCodePickerKey(msg)
+	}
 	// Poll-dialog modal (e.g. matterpoll "Add Option") owns every
 	// keystroke while open.
 	if m.pollDialog.open {
@@ -1595,6 +1599,12 @@ func (m Model) handleThreadKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.copyPostMarkdown(m.threadPosts[m.threadIdx])
+	case key.Matches(msg, m.keys.CopyCode):
+		if m.threadIdx < 0 || m.threadIdx >= len(m.threadPosts) {
+			m.status = "no message selected"
+			return m, nil
+		}
+		return m.copyCodeFromPost(m.threadPosts[m.threadIdx])
 	case key.Matches(msg, m.keys.ShowHistory):
 		if m.threadIdx < 0 || m.threadIdx >= len(m.threadPosts) {
 			return m, nil
@@ -2366,6 +2376,12 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.copyPostMarkdown(m.posts[m.postIdx])
+	case key.Matches(msg, m.keys.CopyCode):
+		if m.postIdx < 0 || m.postIdx >= len(m.posts) {
+			m.status = "no message selected"
+			return m, nil
+		}
+		return m.copyCodeFromPost(m.posts[m.postIdx])
 	case key.Matches(msg, m.keys.ShowHistory):
 		if m.postIdx < 0 || m.postIdx >= len(m.posts) {
 			return m, nil

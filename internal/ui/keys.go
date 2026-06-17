@@ -72,6 +72,7 @@ type keyMap struct {
 	OpenRef       key.Binding
 	Preview       key.Binding
 	CopyMD        key.Binding
+	CopyCode      key.Binding
 	ShowHistory   key.Binding
 	EditPost      key.Binding
 	DeletePost    key.Binding
@@ -190,6 +191,7 @@ var actionDefs = []actionDef{
 	{id: "open_reference", field: func(k *keyMap) *key.Binding { return &k.OpenRef }, keys: []string{"v"}, desc: "open reference (Jira/GitLab)"},
 	{id: "preview_image", field: func(k *keyMap) *key.Binding { return &k.Preview }, keys: []string{"space"}, desc: "preview image"},
 	{id: "copy_markdown", field: func(k *keyMap) *key.Binding { return &k.CopyMD }, keys: []string{"y"}, desc: "copy markdown"},
+	{id: "copy_code_block", field: func(k *keyMap) *key.Binding { return &k.CopyCode }, keys: []string{"Y"}, desc: "copy code block"},
 	{id: "edit_history", field: func(k *keyMap) *key.Binding { return &k.ShowHistory }, keys: []string{"alt+e"}, desc: "edit history"},
 	{id: "edit_post", field: func(k *keyMap) *key.Binding { return &k.EditPost }, keys: []string{"e"}, desc: "edit message"},
 	{id: "delete_post", field: func(k *keyMap) *key.Binding { return &k.DeletePost }, keys: []string{"D"}, desc: "delete message"},
