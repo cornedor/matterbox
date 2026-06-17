@@ -206,6 +206,18 @@ type Model struct {
 	threadScrollFree bool
 	threadFreeOffset int
 
+	// Wheel events are coalesced onto a frame tick. A MacBook trackpad emits a
+	// momentum flood of MouseWheelMsg (easily 60-120/sec, continuing after the
+	// fingers lift); moving + re-rendering the viewport per event lets bubbletea's
+	// msg queue back up, and the buffer then drains *after* the gesture ends — the
+	// "keeps scrolling at constant speed" feel. Instead handleMouseWheel only
+	// accumulates wheelPending lines for wheelTarget (O(1), so the queue never
+	// backs up) and arms a single wheelFlushMsg; the flush applies the summed
+	// delta once per frame. wheelTicking guards against arming more than one tick.
+	wheelPending int
+	wheelTarget  wheelTarget
+	wheelTicking bool
+
 	// channel filter
 	filter      textinput.Model
 	filterMode  bool

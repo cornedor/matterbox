@@ -14,6 +14,12 @@ func growInput(m *Model, lines int) {
 	val := strings.TrimSuffix(strings.Repeat("x\n", lines), "\n")
 	m.input.SetValue(val)
 	m.syncInputHeight()
+	// In the live loop a keypress goes through update(), which invalidates the
+	// memoized view; this helper bypasses that, so invalidate explicitly or
+	// viewContent() would return the stale cached frame.
+	if m.vcache != nil {
+		m.vcache.viewValid = false
+	}
 }
 
 // TestInputGrowthNeverOverflows guards against the regression where a growing

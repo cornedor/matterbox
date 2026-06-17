@@ -16,9 +16,9 @@ import (
 // A pprof of typing in the composer showed View() dominating CPU, split between
 // two re-render costs that are invariant while the message list and sidebar sit
 // still:
-//   - the message/thread scrollbar geometry (total wrapped rows + scroll
-//     percent), each a full O(content) width-measuring walk, recomputed 2-3×
-//     per render; and
+//   - the message/thread scrollbar geometry: the total wrapped-row count is a
+//     full O(content) width-measuring walk, recomputed 2-3× per render (the
+//     scroll percent then derives from it arithmetically); and
 //   - the channels sidebar, fully re-styled every render even when no channel,
 //     unread count, presence dot or selection changed.
 //
@@ -28,6 +28,17 @@ type viewCache struct {
 	thread  scrollGeom
 	ref     scrollGeom
 	sidebar sidebarCache
+	// view memoizes the entire rendered screen (viewContent's output). bubbletea
+	// rebuilds View() after EVERY msg, and a full render is dominated by lipgloss
+	// re-measuring grapheme widths of unchanged content (~75% of it is
+	// ansi.stringWidth) — so a trackpad's wheel flood, one render per buffered
+	// event, can't drain before the gesture ends. update() invalidates this on
+	// every msg by default; a wheel event is the one exception (it only
+	// accumulates wheelPending and changes nothing on screen until its flush
+	// tick), so the flood returns the cached frame instead of rebuilding it. Set
+	// behind the viewCache pointer so the value-receiver View path persists it.
+	view      string
+	viewValid bool
 	// tabZones records each team tab's horizontal screen extent, written by
 	// renderTeamTabs (which alone replays the tab-windowing layout). A mouse
 	// click reads it back to resolve an x-coordinate to a tab index without
@@ -36,37 +47,57 @@ type viewCache struct {
 	tabZones []tabZone
 }
 
-// scrollGeom caches one viewport's soft-wrap geometry. ver is the content
-// generation (bumped whenever the viewport's content is rebuilt by
-// renderMessages / renderThread); width, height and yOffset are read straight
-// off the viewport. When all four match, the stored totalRows/percent are
-// returned verbatim.
+// scrollGeom caches one viewport's total wrapped-row count. That total depends
+// only on (content, width): ver is the content generation (bumped whenever
+// renderMessages / renderThread rebuilds the viewport) and width is read off
+// the viewport. When both match, the stored totalRows is returned verbatim.
+//
+// The scroll percent is deliberately NOT cached. It changes on every scroll,
+// but is a cheap arithmetic function of the total, the height and the offset
+// (see scrollPercentFor), so deriving it per call is far cheaper than letting a
+// changing yOffset invalidate the cache and re-trigger the O(content) walk —
+// which is exactly what made wheel/trackpad scrolling re-measure the whole
+// loaded window on every event.
 type scrollGeom struct {
 	ver       uint64
 	width     int
-	height    int
-	yOffset   int
 	totalRows int
-	percent   float64
 	valid     bool
 }
 
-// scrollGeomFor returns vp's total visual rows and scroll percent, recomputing
-// (a full width-measuring walk via viewportVisualRows + ScrollPercent) only
-// when the content version, width, height or scroll offset changed. g may be
-// nil — tests build Models without a viewCache — in which case it always
-// recomputes, preserving behaviour without caching.
+// scrollGeomFor returns vp's total visual rows and scroll percent. The total is
+// a full width-measuring walk (viewportVisualRows), recomputed only when the
+// content version or width changed — so a scroll, which only moves yOffset, no
+// longer pays for it. The percent is then derived arithmetically from that
+// total, mirroring viewport.Model.ScrollPercent exactly (which would otherwise
+// repeat the same O(content) walk internally via calculateLine). g may be nil —
+// tests build Models without a viewCache — in which case the total is computed
+// fresh each call, preserving behaviour without caching.
 func scrollGeomFor(g *scrollGeom, vp *viewport.Model, ver uint64) (int, float64) {
-	w, h, y := vp.Width(), vp.Height(), vp.YOffset()
-	if g != nil && g.valid && g.ver == ver && g.width == w && g.height == h && g.yOffset == y {
-		return g.totalRows, g.percent
+	w := vp.Width()
+	var total int
+	if g != nil && g.valid && g.ver == ver && g.width == w {
+		total = g.totalRows
+	} else {
+		total = viewportVisualRows(vp.GetContent(), w)
+		if g != nil {
+			*g = scrollGeom{ver: ver, width: w, totalRows: total, valid: true}
+		}
 	}
-	total := viewportVisualRows(vp.GetContent(), w)
-	pct := vp.ScrollPercent()
-	if g != nil {
-		*g = scrollGeom{ver: ver, width: w, height: h, yOffset: y, totalRows: total, percent: pct, valid: true}
+	return total, scrollPercentFor(total, vp.Height(), vp.YOffset())
+}
+
+// scrollPercentFor reproduces viewport.Model.ScrollPercent for a known total
+// row count. Keeping the arithmetic bit-identical to the viewport's (the
+// height>=total short-circuit, then yOffset/(total-height) clamped to [0,1])
+// means the rendered scrollbar is unchanged — only the redundant O(content)
+// walk ScrollPercent performs to recompute the same total is avoided.
+func scrollPercentFor(total, height, yOffset int) float64 {
+	if height >= total {
+		return 1.0
 	}
-	return total, pct
+	v := float64(yOffset) / (float64(total) - float64(height))
+	return min(1.0, max(0.0, v))
 }
 
 // msgsScrollGeom / threadScrollGeom front scrollGeomFor with the matching cache

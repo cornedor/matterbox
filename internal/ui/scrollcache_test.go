@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -77,6 +78,49 @@ func TestScrollGeomServesCacheUntilVersionBump(t *testing.T) {
 	wantRows := viewportVisualRows(m.msgsView.GetContent(), m.msgsView.Width())
 	if gotRows != wantRows {
 		t.Fatalf("after version bump: got %d rows, want %d", gotRows, wantRows)
+	}
+}
+
+// TestScrollGeomScrollIsCacheHit is the heart of the trackpad-scroll fix: a
+// scroll moves only yOffset, which must NOT invalidate the (ver,width)-keyed
+// total — otherwise every wheel event re-walks the whole loaded window. We prove
+// it by corrupting the viewport content behind the version's back after priming,
+// then scrolling: the stale total must survive (proving no re-walk happened),
+// while the percent must still track the new offset (proving it's derived live,
+// not cached).
+func TestScrollGeomScrollIsCacheHit(t *testing.T) {
+	m := newScrollBenchModel(300)
+	m.vcache = &viewCache{}
+	m.renderMessages()
+	m.msgsView.SetYOffset(0)
+
+	primedRows, primedPct := m.msgsScrollGeom() // prime against the 300-post content
+	if primedPct != 0 {
+		t.Fatalf("precondition: top of content should read 0%%, got %v", primedPct)
+	}
+
+	// Replace the content (without bumping the version) with a shorter body that
+	// is still tall enough that a small scroll offset stays valid. A cache miss
+	// would re-walk it and report its row count; a hit keeps the primed total.
+	replacement := strings.TrimSuffix(strings.Repeat("y\n", 100), "\n")
+	if got := viewportVisualRows(replacement, m.msgsView.Width()); got >= primedRows {
+		t.Fatalf("test setup: replacement (%d rows) must be shorter than primed (%d)", got, primedRows)
+	}
+	m.msgsView.SetContent(replacement)
+	m.msgsView.SetYOffset(5)
+	gotRows, gotPct := m.msgsScrollGeom()
+	if gotRows != primedRows {
+		t.Fatalf("scroll re-walked content (totalRows %d -> %d); yOffset must not invalidate the cache",
+			primedRows, gotRows)
+	}
+	// Percent is derived live, so it reflects the new offset against the cached
+	// total — exactly what the viewport's own formula yields for that total.
+	wantPct := scrollPercentFor(primedRows, m.msgsView.Height(), 5)
+	if gotPct != wantPct {
+		t.Fatalf("derived percent not live: got %v want %v", gotPct, wantPct)
+	}
+	if gotPct == primedPct {
+		t.Fatal("percent did not move with the scroll offset")
 	}
 }
 

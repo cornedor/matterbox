@@ -961,7 +961,22 @@ func (m *Model) viewContent() string {
 	if m.width == 0 || m.height == 0 {
 		return "starting…"
 	}
+	// Serve the memoized screen when nothing visible changed since the last
+	// render (see viewCache.view). update() clears viewValid on every msg except
+	// a wheel-accumulate, so a hit here only ever happens when the frame is
+	// genuinely identical — chiefly a trackpad wheel flood between flush ticks.
+	if m.vcache != nil && m.vcache.viewValid {
+		return m.vcache.view
+	}
+	s := m.renderViewContent()
+	if m.vcache != nil {
+		m.vcache.view = s
+		m.vcache.viewValid = true
+	}
+	return s
+}
 
+func (m *Model) renderViewContent() string {
 	// Render footer first so we know its height — full-help mode expands
 	// it from a single line to several, and the body has to shrink to fit.
 	footer := m.renderFooter()

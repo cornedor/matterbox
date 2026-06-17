@@ -230,8 +230,7 @@ func TestWheelScrollsFeedAndSearch(t *testing.T) {
 	if off := mf.feed.view.YOffset(); off != 0 {
 		t.Fatalf("feed precondition: YOffset=%d want 0", off)
 	}
-	out, _ := mf.handleMouseWheel(wheel(tea.MouseWheelDown))
-	mf = out.(Model)
+	mf = wheelOnce(mf, tea.MouseWheelDown)
 	if mf.feed.view.YOffset() <= 0 {
 		t.Fatalf("wheel didn't scroll the feed: YOffset=%d", mf.feed.view.YOffset())
 	}
@@ -240,8 +239,7 @@ func TestWheelScrollsFeedAndSearch(t *testing.T) {
 	}
 
 	ms := searchMouseModel(20)
-	out, _ = ms.handleMouseWheel(wheel(tea.MouseWheelDown))
-	ms = out.(Model)
+	ms = wheelOnce(ms, tea.MouseWheelDown)
 	if ms.search.view.YOffset() <= 0 {
 		t.Fatalf("wheel didn't scroll the search results: YOffset=%d", ms.search.view.YOffset())
 	}

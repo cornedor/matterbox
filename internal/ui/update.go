@@ -41,6 +41,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// User input that acts on the scroll position must see any coalesced wheel
+	// delta applied first (see handleMouseWheel). Background msgs and further
+	// wheel events deliberately don't flush — that would defeat the coalescing.
+	switch msg.(type) {
+	case tea.KeyPressMsg, tea.MouseClickMsg, tea.MouseReleaseMsg, tea.MouseMotionMsg, tea.PasteMsg:
+		m.applyPendingWheel()
+	}
+	// Invalidate the memoized screen (viewCache.view) by default. The lone
+	// exception is a wheel event: handleMouseWheel only accumulates wheelPending,
+	// which changes nothing on screen until the flush tick (a wheelFlushMsg, not a
+	// MouseWheelMsg, so it still invalidates). That exception is what lets a
+	// trackpad flood reuse the cached frame instead of rebuilding it per event.
+	if _, isWheel := msg.(tea.MouseWheelMsg); !isWheel && m.vcache != nil {
+		m.vcache.viewValid = false
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -78,6 +93,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.MouseWheelMsg:
 		return m.handleMouseWheel(msg)
+
+	case wheelFlushMsg:
+		// One frame elapsed since the burst started; apply the accumulated delta
+		// and disarm. New events re-arm a fresh tick, so a continuous gesture
+		// moves once per frame and a stopped one settles within a frame.
+		m.wheelTicking = false
+		m.applyPendingWheel()
+		return m, nil
 
 	case tea.MouseClickMsg:
 		return m.handleMouseClick(msg)
@@ -2230,50 +2253,159 @@ func (m Model) messagesPageStep() int {
 	return 1
 }
 
-// handleMouseWheel free-scrolls the focused message feed or open thread in
-// response to a wheel event, decoupled from the selection — the wheel moves the
-// *view*, like every other scrollback. The viewport handles the wheel delta and
-// clamps to content; the sticky msgScrollFree / threadScrollFree flag then
-// keeps that offset across background re-renders (so a new message doesn't yank
-// the view back to the selection mid-scroll). The next keypress re-syncs the
-// selection to whatever is on screen and clears the flag (see handleKey), so a
-// post taller than the pane is reachable by wheel and keyboard actions still
-// land on a visible message. The Search / Feed bubble lists own the whole body
-// on their tabs, so the wheel just scrolls their viewport (like PageUp/Down).
-// Horizontal wheels, and wheels on the composer, are ignored.
+// wheelTarget identifies which scrollable a wheel gesture is driving. It's
+// captured per gesture so a coalesced flush applies to the right viewport.
+type wheelTarget int
+
+const (
+	wheelNone wheelTarget = iota
+	wheelMsgs
+	wheelThread
+	wheelSearch
+	wheelFeed
+)
+
+// wheelCoalesceDelay is how long accumulated wheel delta waits before being
+// applied — one frame, matching the renderer's ~60fps flush. Long enough to
+// collapse a trackpad's momentum flood into one viewport move per frame, short
+// enough that the scroll still tracks the gesture.
+const wheelCoalesceDelay = 16 * time.Millisecond
+
+// wheelFlushMsg fires wheelCoalesceDelay after the first wheel event of a burst;
+// its handler applies the delta accumulated since (see handleMouseWheel).
+type wheelFlushMsg struct{}
+
+func wheelFlushCmd() tea.Cmd {
+	return tea.Tick(wheelCoalesceDelay, func(time.Time) tea.Msg { return wheelFlushMsg{} })
+}
+
+// wheelTargetForFocus resolves which scrollable the wheel drives right now. The
+// message feed and open thread free-scroll (decoupled from the selection); the
+// synthetic Search / Feed tabs scroll their bubble list even when focus rests on
+// the tab strip. The composer (and anything else) ignores the wheel.
+func (m *Model) wheelTargetForFocus() wheelTarget {
+	switch m.focus {
+	case focusMessages:
+		return wheelMsgs
+	case focusThread:
+		if m.threadOpen {
+			return wheelThread
+		}
+		return wheelNone
+	default:
+		switch {
+		case m.onSearchTab():
+			return wheelSearch
+		case m.onFeedTab():
+			return wheelFeed
+		}
+		return wheelNone
+	}
+}
+
+// wheelStep is the lines-per-event the target viewport scrolls (its
+// MouseWheelDelta), so accumulating ±wheelStep per event reproduces the
+// viewport's own per-event movement.
+func (m *Model) wheelStep(t wheelTarget) int {
+	switch t {
+	case wheelMsgs:
+		return m.msgsView.MouseWheelDelta
+	case wheelThread:
+		return m.threadView.MouseWheelDelta
+	case wheelSearch:
+		return m.search.view.MouseWheelDelta
+	case wheelFeed:
+		return m.feed.view.MouseWheelDelta
+	default:
+		return 0
+	}
+}
+
+// handleMouseWheel coalesces wheel events instead of moving the viewport per
+// event. A MacBook trackpad floods MouseWheelMsg (and keeps firing momentum
+// after the fingers lift); applying each one — an O(content) viewport clamp plus
+// a full re-render — lets the msg queue back up so the buffered events drain
+// after the gesture ends (the "keeps scrolling" feel). Here we only accumulate
+// the net delta (O(1)) and arm one frame tick; applyWheel moves the viewport
+// once per frame. The sticky msgScrollFree / threadScrollFree flag is set
+// immediately so a background re-render mid-burst keeps the wheel offset rather
+// than snapping back to the selection. Horizontal wheels, and wheels on the
+// composer, are ignored.
 func (m Model) handleMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
+	var dir int
 	switch msg.Button {
-	case tea.MouseWheelUp, tea.MouseWheelDown:
+	case tea.MouseWheelUp:
+		dir = -1
+	case tea.MouseWheelDown:
+		dir = 1
 	default:
 		return m, nil // ignore horizontal wheel
 	}
-	var cmd tea.Cmd
-	switch m.focus {
-	case focusMessages:
-		m.msgsView, cmd = m.msgsView.Update(msg)
+	tgt := m.wheelTargetForFocus()
+	if tgt == wheelNone {
+		return m, nil
+	}
+	// A focus/tab change mid-burst would retarget the pending delta; apply what's
+	// queued for the old target first so it lands where the user aimed it.
+	if m.wheelPending != 0 && tgt != m.wheelTarget {
+		m.applyWheel(m.wheelTarget, m.wheelPending)
+		m.wheelPending = 0
+	}
+	m.wheelTarget = tgt
+	m.wheelPending += dir * m.wheelStep(tgt)
+	// Enter free-scroll now (not at flush) so any re-render before the tick keeps
+	// the offset; applyWheel updates the free offset once the move lands.
+	switch tgt {
+	case wheelMsgs:
+		m.msgScrollFree = true
+	case wheelThread:
+		m.threadScrollFree = true
+	}
+	if m.wheelTicking {
+		return m, nil
+	}
+	m.wheelTicking = true
+	return m, wheelFlushCmd()
+}
+
+// applyWheel moves a target viewport by delta lines (SetYOffset clamps to
+// content), mirroring the per-event behaviour the wheel used to have inline. For
+// the feed / thread it also pins the free-scroll offset and refreshes which
+// animated emoji are on screen.
+func (m *Model) applyWheel(t wheelTarget, delta int) {
+	if delta == 0 {
+		return
+	}
+	switch t {
+	case wheelMsgs:
+		m.msgsView.SetYOffset(m.msgsView.YOffset() + delta)
 		m.msgFreeOffset = m.msgsView.YOffset()
 		m.msgScrollFree = true
-	case focusThread:
+		m.refreshAnimVisibility()
+	case wheelThread:
 		if !m.threadOpen {
-			return m, nil
+			return
 		}
-		m.threadView, cmd = m.threadView.Update(msg)
+		m.threadView.SetYOffset(m.threadView.YOffset() + delta)
 		m.threadFreeOffset = m.threadView.YOffset()
 		m.threadScrollFree = true
-	default:
-		// On the synthetic Search / Feed tabs the body is a bubble list, which
-		// the wheel scrolls like PageUp/Down — even when focus rests on the tab
-		// strip. Any other pane (the composer) keeps its own scrolling.
-		switch {
-		case m.onSearchTab():
-			m.search.view, cmd = m.search.view.Update(msg)
-		case m.onFeedTab():
-			m.feed.view, cmd = m.feed.view.Update(msg)
-		}
-		return m, cmd
+		m.refreshAnimVisibility()
+	case wheelSearch:
+		m.search.view.SetYOffset(m.search.view.YOffset() + delta)
+	case wheelFeed:
+		m.feed.view.SetYOffset(m.feed.view.YOffset() + delta)
 	}
-	m.refreshAnimVisibility()
-	return m, cmd
+}
+
+// applyPendingWheel flushes any coalesced wheel delta immediately. Called before
+// handling user input that acts on the scroll position (a keypress, a click) so
+// it sees the final offset rather than one up to a frame stale.
+func (m *Model) applyPendingWheel() {
+	if m.wheelPending == 0 {
+		return
+	}
+	m.applyWheel(m.wheelTarget, m.wheelPending)
+	m.wheelPending = 0
 }
 
 // syncMsgSelToViewport moves the message selection to the first post still

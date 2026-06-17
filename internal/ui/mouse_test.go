@@ -13,6 +13,16 @@ func wheel(btn tea.MouseButton) tea.MouseWheelMsg {
 	return tea.MouseWheelMsg(tea.Mouse{Button: btn})
 }
 
+// wheelOnce delivers one wheel event and applies the coalescing flush, so the
+// move lands synchronously for assertions. handleMouseWheel now only accumulates
+// the delta and arms a frame tick (wheelFlushMsg) to keep a trackpad's momentum
+// flood from backing up the msg queue — see handleMouseWheel.
+func wheelOnce(m Model, btn tea.MouseButton) Model {
+	out, _ := m.handleMouseWheel(wheel(btn))
+	out, _ = out.(Model).update(wheelFlushMsg{})
+	return out.(Model)
+}
+
 func click(btn tea.MouseButton, x, y int) tea.MouseClickMsg {
 	return tea.MouseClickMsg(tea.Mouse{Button: btn, X: x, Y: y})
 }
@@ -282,8 +292,7 @@ func TestWheelFreeScrollsViewport(t *testing.T) {
 		t.Fatalf("precondition: YOffset=%d want 0", off)
 	}
 
-	out, _ := m.handleMouseWheel(wheel(tea.MouseWheelDown))
-	m = out.(Model)
+	m = wheelOnce(m, tea.MouseWheelDown)
 	if m.postIdx != 0 {
 		t.Fatalf("wheel moved the selection: postIdx=%d want 0", m.postIdx)
 	}
@@ -292,6 +301,83 @@ func TestWheelFreeScrollsViewport(t *testing.T) {
 	}
 	if !m.msgScrollFree {
 		t.Fatal("wheel didn't enter free-scroll mode")
+	}
+}
+
+// TestWheelEntersFreeScrollBeforeFlush: the sticky free-scroll flag is set the
+// instant a wheel event arrives, not deferred to the flush — so a background
+// re-render between the gesture and the coalescing tick keeps the offset.
+func TestWheelEntersFreeScrollBeforeFlush(t *testing.T) {
+	m := scrollModel(shortPosts(80), 0)
+	m.renderMessages()
+
+	out, cmd := m.handleMouseWheel(wheel(tea.MouseWheelDown))
+	m = out.(Model)
+	if !m.msgScrollFree {
+		t.Fatal("free-scroll not entered on the wheel event itself")
+	}
+	if cmd == nil {
+		t.Fatal("first wheel event didn't arm a flush tick")
+	}
+	if m.wheelPending == 0 {
+		t.Fatal("wheel event didn't accumulate a pending delta")
+	}
+}
+
+// TestWheelCoalescesBurst: a burst of wheel events accumulates into one pending
+// delta and arms exactly one tick (not one per event — that's what let a
+// trackpad flood back up the queue); a single flush then applies the whole burst
+// and disarms.
+func TestWheelCoalescesBurst(t *testing.T) {
+	m := scrollModel(shortPosts(80), 0)
+	m.renderMessages()
+	step := m.msgsView.MouseWheelDelta
+
+	const burst = 5
+	for i := 0; i < burst; i++ {
+		out, cmd := m.handleMouseWheel(wheel(tea.MouseWheelDown))
+		m = out.(Model)
+		switch {
+		case i == 0 && cmd == nil:
+			t.Fatal("first wheel event didn't arm a flush tick")
+		case i > 0 && cmd != nil:
+			t.Fatalf("event %d re-armed a tick; should coalesce into the pending one", i)
+		}
+	}
+	if off := m.msgsView.YOffset(); off != 0 {
+		t.Fatalf("burst moved the viewport before the flush: YOffset=%d", off)
+	}
+	if m.wheelPending != burst*step {
+		t.Fatalf("pending=%d want %d", m.wheelPending, burst*step)
+	}
+
+	out, _ := m.update(wheelFlushMsg{})
+	m = out.(Model)
+	if m.wheelPending != 0 || m.wheelTicking {
+		t.Fatalf("flush left state armed: pending=%d ticking=%v", m.wheelPending, m.wheelTicking)
+	}
+	if off := m.msgsView.YOffset(); off != burst*step {
+		t.Fatalf("flush applied %d lines, want %d", off, burst*step)
+	}
+}
+
+// TestInputFlushesPendingWheel: a keypress routed through update() applies any
+// coalesced wheel delta before acting, so a key pressed within a frame of the
+// last wheel event still operates on the scrolled position.
+func TestInputFlushesPendingWheel(t *testing.T) {
+	m := scrollModel(shortPosts(80), 0)
+	m.renderMessages()
+
+	out, _ := m.handleMouseWheel(wheel(tea.MouseWheelDown))
+	m = out.(Model)
+	if m.wheelPending == 0 {
+		t.Fatal("precondition: expected a pending wheel delta")
+	}
+
+	out, _ = m.update(keyPress(tea.KeyDown))
+	m = out.(Model)
+	if m.wheelPending != 0 {
+		t.Fatalf("keypress didn't flush pending wheel: pending=%d", m.wheelPending)
 	}
 }
 
@@ -309,8 +395,7 @@ func TestFreeScrollSurvivesRerender(t *testing.T) {
 
 	// Wheel up well past the top so the offset clamps to 0.
 	for i := 0; i < 60; i++ {
-		out, _ := m.handleMouseWheel(wheel(tea.MouseWheelUp))
-		m = out.(Model)
+		m = wheelOnce(m, tea.MouseWheelUp)
 	}
 	if off := m.msgsView.YOffset(); off != 0 {
 		t.Fatalf("wheel-up didn't reach the top: YOffset=%d", off)
@@ -332,8 +417,7 @@ func TestKeypressExitsFreeScroll(t *testing.T) {
 
 	// Wheel to the top.
 	for i := 0; i < 60; i++ {
-		out, _ := m.handleMouseWheel(wheel(tea.MouseWheelUp))
-		m = out.(Model)
+		m = wheelOnce(m, tea.MouseWheelUp)
 	}
 	if !m.msgScrollFree {
 		t.Fatal("precondition: expected free-scroll mode")
