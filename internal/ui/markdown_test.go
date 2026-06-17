@@ -14,7 +14,7 @@ const (
 
 func TestRenderInlineBareURL(t *testing.T) {
 	url := "https://example.com/a/b"
-	got := renderInline("see "+url+" ok", nil, nil)
+	got := renderInline("see "+url+" ok", nil, nil, "")
 	if !strings.Contains(got, osc8Open+url+"\x1b\\") {
 		t.Fatalf("missing OSC 8 open for %q in %q", url, got)
 	}
@@ -28,7 +28,7 @@ func TestRenderInlineBareURL(t *testing.T) {
 }
 
 func TestRenderInlineMarkdownLink(t *testing.T) {
-	got := renderInline("[click here](https://example.com/x)", nil, nil)
+	got := renderInline("[click here](https://example.com/x)", nil, nil, "")
 	if !strings.Contains(got, osc8Open+"https://example.com/x\x1b\\") {
 		t.Fatalf("URL not used as hyperlink target: %q", got)
 	}
@@ -38,7 +38,7 @@ func TestRenderInlineMarkdownLink(t *testing.T) {
 }
 
 func TestRenderInlineTrailingPunctuation(t *testing.T) {
-	got := renderInline("look at https://example.com/a.", nil, nil)
+	got := renderInline("look at https://example.com/a.", nil, nil, "")
 	// The period must fall outside the hyperlink target.
 	if !strings.Contains(got, osc8Open+"https://example.com/a\x1b\\") {
 		t.Fatalf("trailing period not trimmed from target: %q", got)
@@ -50,7 +50,7 @@ func TestRenderInlineTrailingPunctuation(t *testing.T) {
 
 func TestRenderInlineBalancedParensKept(t *testing.T) {
 	url := "https://en.wikipedia.org/wiki/Go_(language)"
-	got := renderInline(url, nil, nil)
+	got := renderInline(url, nil, nil, "")
 	if !strings.Contains(got, osc8Open+url+"\x1b\\") {
 		t.Fatalf("balanced parens dropped from target: %q", got)
 	}
@@ -70,7 +70,7 @@ func TestRenderMarkdownCodeBlockForms(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := renderMarkdown(tt.msg, nil, nil)
+			got := renderMarkdown(tt.msg, nil, nil, "")
 			if !strings.Contains(got, wantLine) {
 				t.Errorf("renderMarkdown(%q) = %q, want a line %q", tt.msg, got, wantLine)
 			}
@@ -81,7 +81,7 @@ func TestRenderMarkdownCodeBlockForms(t *testing.T) {
 // A backtick line inside a ~~~ fence is content, not a closing fence, so it
 // must keep the code-block style rather than the dim fence style.
 func TestRenderMarkdownBacktickInsideTildeFence(t *testing.T) {
-	got := renderMarkdown("~~~\n```\n~~~", nil, nil)
+	got := renderMarkdown("~~~\n```\n~~~", nil, nil, "")
 	if want := "  " + mdCodeBlockStyle.Render("```"); !strings.Contains(got, want) {
 		t.Errorf("``` inside ~~~ not rendered as content: %q", got)
 	}
@@ -92,7 +92,7 @@ func TestRenderMarkdownBacktickInsideTildeFence(t *testing.T) {
 // in between clickable.
 func TestLinkSurvivesBodyWrap(t *testing.T) {
 	url := "https://example.com/a/very/long/path/that/will/wrap/across/rows/for/sure"
-	line := renderMarkdown(url, nil, nil) // gains the two-space gutter
+	line := renderMarkdown(url, nil, nil, "") // gains the two-space gutter
 	rows := wrapBodyLine(line, 30)
 	if len(rows) < 2 {
 		t.Fatalf("expected the long URL to wrap, got %d row(s)", len(rows))

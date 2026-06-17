@@ -183,15 +183,19 @@ func markdownFingerprint(p *model.Post) string {
 // post (a miss) still calls renderMarkdown, whose inline() records emoji
 // sightings, so deferring later styling doesn't drop the fetch trigger.
 func (m *Model) markdownBody(p *model.Post) string {
+	self := ""
+	if m.me != nil {
+		self = m.me.Username
+	}
 	mr := m.buildMRInlineFn(p.Id)
 	if p.Id == "" {
-		return renderMarkdown(p.Message, m.emojiImg, mr)
+		return renderMarkdown(p.Message, m.emojiImg, mr, self)
 	}
 	fp := markdownFingerprint(p)
 	if e, ok := m.postMarkdownCache[p.Id]; ok && e.fp == fp {
 		return e.body
 	}
-	body := renderMarkdown(p.Message, m.emojiImg, mr)
+	body := renderMarkdown(p.Message, m.emojiImg, mr, self)
 	if m.postMarkdownCache == nil {
 		m.postMarkdownCache = make(map[string]postMarkdownCacheEntry, 128)
 	}

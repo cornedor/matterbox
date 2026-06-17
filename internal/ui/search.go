@@ -1115,7 +1115,57 @@ func (m Model) renderHitLine(p *model.Post, width int, muted, match bool) string
 	} else {
 		body = ""
 	}
-	return prefix + msgStyle.Render(body)
+	self := ""
+	if m.me != nil {
+		self = m.me.Username
+	}
+	return prefix + styleMentions(body, self, msgStyle)
+}
+
+// styleMentions replaces @self with a red-bold mentionStyle while keeping
+// the rest of the body styled with baseStyle. It preserves correct styling
+// across segment boundaries so truncation and dim/bold wrapping work.
+func styleMentions(body, self string, baseStyle lipgloss.Style) string {
+	if self == "" || body == "" {
+		return baseStyle.Render(body)
+	}
+	escaped := regexp.QuoteMeta(self)
+	re := regexp.MustCompile(`(^|[^a-zA-Z0-9_.-])@` + escaped + `(?:[^a-zA-Z0-9_.-]|$)`)
+	var out strings.Builder
+	last := 0
+	for _, loc := range re.FindAllStringIndex(body, -1) {
+		start, end := loc[0], loc[1]
+		matchStr := body[start:end]
+		atUser := "@" + self
+		idx := strings.Index(matchStr, atUser)
+		if idx < 0 {
+			continue
+		}
+		if start > last {
+			if seg := body[last:start]; seg != "" {
+				out.WriteString(baseStyle.Render(seg))
+			}
+		}
+		if idx > 0 {
+			if seg := matchStr[:idx]; seg != "" {
+				out.WriteString(baseStyle.Render(seg))
+			}
+		}
+		out.WriteString(mentionStyle.Render(atUser))
+		trailing := start + idx + len(atUser)
+		if end > trailing {
+			if seg := body[trailing:end]; seg != "" {
+				out.WriteString(baseStyle.Render(seg))
+			}
+		}
+		last = end
+	}
+	if last < len(body) {
+		if seg := body[last:]; seg != "" {
+			out.WriteString(baseStyle.Render(seg))
+		}
+	}
+	return out.String()
 }
 
 // renderSearchPane composes the entire body of the Search tab: title,

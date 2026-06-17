@@ -184,7 +184,7 @@ func indentedCodeRun(lines []string, i int) (body []string, next int) {
 // already indented with the two-space message gutter. ei (may be nil) resolves
 // custom server emoji to inline Kitty-graphics placeholders; mr (may be nil)
 // rewrites GitLab MR URLs to inline badge pills.
-func renderMarkdown(msg string, ei *emojiImages, mr mrInlineFn) string {
+func renderMarkdown(msg string, ei *emojiImages, mr mrInlineFn, self string) string {
 	lines := strings.Split(strings.TrimRight(msg, "\n"), "\n")
 	out := make([]string, 0, len(lines))
 	prevBlank := true // start of message counts as preceded by a blank line
@@ -221,11 +221,11 @@ func renderMarkdown(msg string, ei *emojiImages, mr mrInlineFn) string {
 
 		if strings.HasPrefix(raw, ">") {
 			content := strings.TrimPrefix(strings.TrimPrefix(raw, ">"), " ")
-			out = append(out, "  "+mdQuoteBarStyle.Render("┃")+" "+renderInline(content, ei, mr))
+			out = append(out, "  "+mdQuoteBarStyle.Render("┃")+" "+renderInline(content, ei, mr, self))
 			prevBlank = false
 			continue
 		}
-		out = append(out, "  "+renderInline(raw, ei, mr))
+		out = append(out, "  "+renderInline(raw, ei, mr, self))
 		prevBlank = strings.TrimSpace(raw) == ""
 	}
 	return strings.Join(out, "\n")
@@ -236,7 +236,7 @@ func renderMarkdown(msg string, ei *emojiImages, mr mrInlineFn) string {
 // charset; code spans are already stashed before this runs.
 var emojiShortcodeRe = regexp.MustCompile(`:([a-zA-Z0-9_+\-]+):`)
 
-func renderInline(s string, ei *emojiImages, mr mrInlineFn) string {
+func renderInline(s string, ei *emojiImages, mr mrInlineFn, self string) string {
 	if s == "" {
 		return ""
 	}
@@ -315,6 +315,21 @@ func renderInline(s string, ei *emojiImages, mr mrInlineFn) string {
 		links = append(links, linkEntry{clean, clean})
 		return mdLinkSentinel + strconv.Itoa(len(links)-1) + "\x00" + trailing
 	})
+
+	if self != "" {
+		escaped := regexp.QuoteMeta(self)
+		mentionRe := regexp.MustCompile(`(^|[^a-zA-Z0-9_.-])@` + escaped + `(?:[^a-zA-Z0-9_.-]|$)`)
+		s = mentionRe.ReplaceAllStringFunc(s, func(m string) string {
+			atUser := "@" + self
+			idx := strings.Index(m, atUser)
+			if idx < 0 {
+				return m
+			}
+			prefix := m[:idx]
+			suffix := m[idx+len(atUser):]
+			return prefix + mentionStyle.Render(atUser) + suffix
+		})
+	}
 
 	s = mdBoldRe.ReplaceAllStringFunc(s, func(m string) string {
 		return mdBoldStyle.Render(m[2 : len(m)-2])
