@@ -2100,14 +2100,22 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, m.sendMessage(channelID, rootID, text, fileIDs)
 	}
 	var cmd tea.Cmd
+	before := m.input.Value()
 	m.input, cmd = m.input.Update(msg)
+	// Announce typing only when the keystroke actually changed the draft,
+	// so pure navigation (arrows, ctrl+a/e) doesn't ping the channel and an
+	// empty composer never claims someone's typing. The send is throttled.
+	var typingCmd tea.Cmd
+	if v := m.input.Value(); v != before && v != "" {
+		typingCmd = m.maybeSendTyping(time.Now())
+	}
 	// After the textarea has consumed the keystroke, recompute mention
 	// state and reflow the input/messages split so newlines from
 	// shift+enter (or alt+enter / ctrl+j) make the input grow.
 	mentionCmd := m.updateMention()
 	m.updateEmoji()
 	m.syncInputHeight()
-	return m, tea.Batch(cmd, mentionCmd)
+	return m, tea.Batch(cmd, mentionCmd, typingCmd)
 }
 
 // handleFilterKey owns keystrokes while the channel filter is open (f). The

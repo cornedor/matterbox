@@ -215,6 +215,11 @@ type Model struct {
 	// local command. See typingindicator.go.
 	typingIndicator typingIndicator
 
+	// nextTypingSend is the earliest moment we may announce our own typing
+	// to the server again. Composer edits push a `user_typing` request up
+	// the socket, throttled to one per typingSendInterval. See typingsend.go.
+	nextTypingSend time.Time
+
 	// Persisted per-channel usage counters (loaded from
 	// ~/.config/matterbox/channel_stats.json). Used as a sort signal in
 	// the switcher so frequently-opened channels float to the top.
