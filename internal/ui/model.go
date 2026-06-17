@@ -131,6 +131,11 @@ type Model struct {
 	hover   hoverState
 	textSel textSel
 	wrapIdx wrapCache
+	// hoverLink is the link the pointer is currently over (empty url = none). The
+	// post owning it re-renders with that link background-highlighted (markdownBody
+	// + the hover bit in postLineFingerprint) and the footer shows its target. See
+	// linkclick.go.
+	hoverLink hoverLink
 
 	teamIdx    int
 	channelIdx int
@@ -389,6 +394,10 @@ type Model struct {
 	// GitLab action confirm, opened with A (approve) / M (merge) while the panel
 	// shows a merge request. Modal — owns every keystroke while open (gitlab.go).
 	glConfirm glConfirmState
+	// linkConfirm warns before opening a clicked link whose scheme isn't http(s)
+	// — handing a file:/mailto:/custom-scheme target to the OS launcher can do
+	// more than open a browser tab. Modal (linkclick.go).
+	linkConfirm linkConfirmState
 	// glJobsExpanded toggles (with `t`) between showing the first few jobs per
 	// pipeline stage and all of them — long pipelines stay readable by default,
 	// and each stage header carries an aggregate status so a hidden failing job

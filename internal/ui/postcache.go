@@ -92,6 +92,12 @@ func (m *Model) postLineFingerprint(p *model.Post, width int, isThread, isRoot, 
 			b.WriteByte(',')
 		}
 	}
+	// The hovered post renders one link with a background highlight, so its wrapped
+	// lines must not share a cache entry with its un-hovered self (markdownBody).
+	if m.hoverLink.url != "" && m.hoverLink.postID == p.Id {
+		b.WriteString("|H:")
+		b.WriteString(m.hoverLink.url)
+	}
 	return b.String()
 }
 
@@ -183,6 +189,21 @@ func markdownFingerprint(p *model.Post) string {
 // post (a miss) still calls renderMarkdown, whose inline() records emoji
 // sightings, so deferring later styling doesn't drop the fetch trigger.
 func (m *Model) markdownBody(p *model.Post) string {
+	body := m.markdownBodyRaw(p)
+	// Paint the hovered link's background on the post that owns it. Done here, on
+	// the unwrapped body (where the link is contiguous and the cached normal body
+	// is reused), so the highlight costs one string scan and never pollutes the
+	// cache. postLineFingerprint carries the same hover bit so the wrapped-line
+	// cache serves the highlighted version. See linkclick.go.
+	if m.hoverLink.url != "" && m.hoverLink.postID == p.Id {
+		return highlightLink(body, m.hoverLink.url, mdLinkHoverStyle)
+	}
+	return body
+}
+
+// markdownBodyRaw is markdownBody without the hover highlight: the cached,
+// width-independent styled body (see the cache notes above).
+func (m *Model) markdownBodyRaw(p *model.Post) string {
 	self := ""
 	if m.me != nil {
 		self = m.me.Username

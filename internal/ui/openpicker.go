@@ -21,9 +21,7 @@ func (m Model) openFromPost(p *model.Post) (tea.Model, tea.Cmd) {
 		m.status = "nothing to open on this message"
 		return m, nil
 	case 1:
-		o := opens[0]
-		m.status = "opening " + o.name + "…"
-		return m, m.openOpenable(o)
+		return m, m.openTarget(opens[0])
 	default:
 		m.openOpenPicker(opens)
 		return m, nil
@@ -55,8 +53,7 @@ func (m *Model) applyOpenPick() tea.Cmd {
 	}
 	o := m.openPickerItems[m.openPickerIdx]
 	m.closeOpenPicker()
-	m.status = "opening " + o.name + "…"
-	return m.openOpenable(o)
+	return m.openTarget(o)
 }
 
 // handleOpenPickerKey owns every keystroke while the open-target picker

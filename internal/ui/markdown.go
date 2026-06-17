@@ -21,6 +21,10 @@ var (
 	mdQuoteBarStyle  = lipgloss.NewStyle().Foreground(dimColor)
 
 	mdLinkStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Underline(true)
+	// mdLinkHoverStyle paints the link under the mouse: the same blue underline
+	// plus a subtle background so the hovered link reads as "clickable now".
+	// Applied (OSC 8-safely, see highlightLink) only to the hovered post.
+	mdLinkHoverStyle = mdLinkStyle.Background(lipgloss.Color("238"))
 
 	mdCodeSpanRe = regexp.MustCompile("`([^`\n]+)`")
 	mdBoldRe     = regexp.MustCompile(`\*\*([^*]+?)\*\*`)

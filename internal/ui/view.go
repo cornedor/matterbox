@@ -1046,6 +1046,9 @@ func (m *Model) renderViewContent() string {
 	if m.glConfirm.active {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderGitLabConfirm())
 	}
+	if m.linkConfirm.active {
+		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderLinkConfirm())
+	}
 	if m.openPickerActive() {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderOpenPicker())
 	}
@@ -1655,6 +1658,15 @@ func (m *Model) renderFooter() string {
 	// after applyIndexResult sets it on completion.
 	if m.indexer.active {
 		right = m.indexerProgressStatus()
+	}
+	// Hovering a link shows where it goes, taking over the status slot for as long
+	// as the pointer rests on it (truncated so a long URL can't crowd out the help).
+	if m.hoverLink.url != "" {
+		hint := m.width / 2
+		if hint < 24 {
+			hint = 24
+		}
+		right = "↗ " + truncate(m.hoverLink.url, hint)
 	}
 	// rightDot is my own presence dot, shown just left of my username (and
 	// only when the right slot is my username, not while a status/indexer

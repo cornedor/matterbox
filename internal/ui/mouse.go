@@ -110,7 +110,7 @@ var (
 // a click can't act on a pane hidden behind a popup).
 func (m *Model) mouseBlocked() bool {
 	return !m.mouseEnabled || m.inModal() || m.keyDebugMode ||
-		m.jiraPicker.active || m.jiraPointsActive || m.glConfirm.active
+		m.jiraPicker.active || m.jiraPointsActive || m.glConfirm.active || m.linkConfirm.active
 }
 
 // handleMouseClick routes a left-button press: switch team / open channel for
@@ -216,14 +216,20 @@ func (m Model) clickSearchHit(idx int) (tea.Model, tea.Cmd) {
 // handleMouseRelease finishes a text drag: a real range is copied to the
 // clipboard (the highlight stays until the next interaction); a release with no
 // movement was just a click — the message was already selected on mousedown, so
-// only the armed selection is cleared.
+// the armed selection is cleared and, if the click landed on a link, it opens
+// (the terminal would do this itself via OSC 8, but mouse capture intercepts the
+// click while mouseEnabled — see linkclick.go).
 func (m Model) handleMouseRelease(msg tea.MouseReleaseMsg) (tea.Model, tea.Cmd) {
 	if msg.Button != tea.MouseLeft || !m.textSel.dragging {
 		return m, nil
 	}
 	m.textSel.dragging = false
 	if !m.textSel.active {
+		pane, line, col := m.textSel.pane, m.textSel.anchorLine, m.textSel.anchorCol
 		m.clearTextSel()
+		if url, ok := m.linkAt(pane, line, col); ok {
+			return m.activateLink(url)
+		}
 		return m, nil
 	}
 	text := m.selectedText()
@@ -242,16 +248,22 @@ func (m Model) handleMouseMotion(msg tea.MouseMotionMsg) (tea.Model, tea.Cmd) {
 		if m.hover.zone != hitNone {
 			m.hover = hoverState{}
 		}
+		m.setHoverLink(hoverLink{})
 		return m, nil
 	}
 	if m.textSel.dragging && msg.Button == tea.MouseLeft {
 		return m.dragTextSel(msg.X, msg.Y)
 	}
 	next := m.hoverAt(msg.X, msg.Y)
-	if m.hover == next {
+	hl := m.hoverLinkAt(msg.X, msg.Y)
+	if m.hover == next && m.hoverLink == hl {
 		return m, nil
 	}
 	m.hover = next
+	// Re-renders the affected transcript pane(s) only when the hovered link
+	// actually changes, so a move within one link (or over plain text) stays a
+	// cache-hit re-render of the unchanged content.
+	m.setHoverLink(hl)
 	return m, nil
 }
 
@@ -623,15 +635,19 @@ func (m *Model) contentCoord(pane focus, x, x0, width, vrow int) (int, int) {
 // ensureWrapIndex returns the pane's logical lines and per-line visual-row
 // starts, rebuilding the cache when the content version or width changed.
 func (m *Model) ensureWrapIndex(pane focus, width int) ([]string, []int) {
-	var content string
-	var ver uint64
+	// Check the cache key (content version, not the content itself) before
+	// fetching the viewport content — GetContent copies the whole transcript, and
+	// the hover path hits this every mouse-motion, so skip it on a cache hit.
+	ver := m.msgsContentVer
 	if pane == focusThread {
-		content, ver = m.threadView.GetContent(), m.threadContentVer
-	} else {
-		content, ver = m.msgsView.GetContent(), m.msgsContentVer
+		ver = m.threadContentVer
 	}
 	if m.wrapIdx.pane == pane && m.wrapIdx.ver == ver && m.wrapIdx.width == width && m.wrapIdx.lines != nil {
 		return m.wrapIdx.lines, m.wrapIdx.starts
+	}
+	content := m.msgsView.GetContent()
+	if pane == focusThread {
+		content = m.threadView.GetContent()
 	}
 	lines := strings.Split(content, "\n")
 	starts := make([]int, len(lines)+1)

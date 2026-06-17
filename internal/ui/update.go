@@ -1425,6 +1425,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.glConfirm.active {
 		return m.handleGitLabConfirmKey(msg)
 	}
+	// Link warning (clicked a non-web link) owns every keystroke while open.
+	if m.linkConfirm.active {
+		return m.handleLinkConfirmKey(msg)
+	}
 	// Open-target picker modal owns every keystroke while open.
 	if m.openPickerActive() {
 		return m.handleOpenPickerKey(msg)
