@@ -2,11 +2,14 @@ package ui
 
 import (
 	"fmt"
+	"path/filepath"
 	"testing"
 
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/store"
 )
 
 func wheel(btn tea.MouseButton) tea.MouseWheelMsg {
@@ -449,5 +452,168 @@ func TestMouseModeGatedByConfig(t *testing.T) {
 	off := Model{mouseEnabled: false}.View()
 	if off.MouseMode != tea.MouseModeNone {
 		t.Fatalf("mouse off: MouseMode=%v want None", off.MouseMode)
+	}
+}
+
+// TestWheelTopPaginatesOlderHistoryOnce: an upward wheel flick that lands at the
+// very top of the loaded window requests older history, and a second flick while
+// that fetch is still in flight does NOT stack another (the loadingOlder guard,
+// so a trackpad momentum flood can't fire a request per frame).
+func TestWheelTopPaginatesOlderHistoryOnce(t *testing.T) {
+	m := pagingModel([]*model.Post{p("m1", 500), p("m2", 600)}, 1)
+	m.renderMessages()
+	// Content is shorter than the viewport, so the offset is pinned at the top.
+	out, cmd := wheelFlush(m, tea.MouseWheelUp)
+	got := out
+	if cmd == nil {
+		t.Fatal("wheel-up at top returned no command; expected an older-history fetch")
+	}
+	if !got.loadingOlder {
+		t.Error("loadingOlder not set after the wheel-triggered fetch")
+	}
+	if got.status != "loading older messages…" {
+		t.Errorf("status = %q; want the loading notice", got.status)
+	}
+	// Second flick while the first fetch is unresolved must be a no-op.
+	out2, cmd2 := wheelFlush(got, tea.MouseWheelUp)
+	if cmd2 != nil {
+		t.Error("second wheel-up while loading stacked another fetch; want none")
+	}
+	if !out2.loadingOlder {
+		t.Error("guard cleared by the second flick; want it held until the fetch returns")
+	}
+}
+
+// TestWheelOlderMergeKeepsViewAnchored: when a wheel-triggered older page
+// arrives mid-scroll, the post at the viewport top must stay put (no jump) and
+// the free-scroll flag must survive so the wheel doesn't snap back to the
+// selection.
+func TestWheelOlderMergeKeepsViewAnchored(t *testing.T) {
+	m := pagingModel([]*model.Post{p("m1", 500), p("m2", 600), p("m3", 700)}, 2)
+	m.renderMessages()
+	m.msgScrollFree = true
+	m.loadingOlder = true
+	// Park the viewport top exactly at m2.
+	m.msgFreeOffset = m.msgRowStarts[1]
+	m.msgsView.SetYOffset(m.msgFreeOffset)
+
+	out, _ := m.update(olderPostsMsg{
+		channelID: "c",
+		posts:     []*model.Post{p("old1", 100), p("old2", 200)},
+	})
+	got := out.(Model)
+
+	if got.loadingOlder {
+		t.Error("loadingOlder not cleared after olderPostsMsg")
+	}
+	if !got.msgScrollFree {
+		t.Error("free-scroll flag dropped; the wheel view would snap to the selection")
+	}
+	if order := ids(got.posts); !eq(order, []string{"old1", "old2", "m1", "m2", "m3"}) {
+		t.Fatalf("older page not merged in order: got %v", order)
+	}
+	// m2 must remain at the viewport top: its new row-start equals the offset.
+	idx := got.postIndexByID("m2")
+	if want := got.msgRowStarts[idx]; got.msgFreeOffset != want {
+		t.Errorf("view jumped: msgFreeOffset=%d, want %d (m2 row-start)", got.msgFreeOffset, want)
+	}
+}
+
+// wheelFlush delivers one wheel event and the coalescing flush, returning the
+// resulting model and the flush command (the older-history fetch, when the
+// gesture pages). Unlike wheelOnce it keeps the command for assertions.
+func wheelFlush(m Model, btn tea.MouseButton) (Model, tea.Cmd) {
+	out, _ := m.handleMouseWheel(wheel(btn))
+	out2, cmd := out.(Model).update(wheelFlushMsg{})
+	return out2.(Model), cmd
+}
+
+// TestWheelBottomPaginatesNewerHistory: a downward wheel flick that lands at the
+// bottom of the loaded window (whose tail sits below the live tail — e.g.
+// reading forward from a search hit) pages in newer history, painting the cached
+// page at once and asking the server for more. A second flick while that fetch
+// is in flight must not stack another (the loadingNewer guard).
+func TestWheelBottomPaginatesNewerHistory(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "wheel.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	// Newer posts cached past the loaded tail.
+	if err := st.UpsertMany([]*model.Post{
+		{Id: "n1", ChannelId: "c", UserId: "u", CreateAt: 700, UpdateAt: 700},
+		{Id: "n2", ChannelId: "c", UserId: "u", CreateAt: 800, UpdateAt: 800},
+	}); err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+
+	m := pagingModel([]*model.Post{p("m1", 500), p("m2", 600)}, 1)
+	m.store = st
+	m.renderMessages()
+	// Content is shorter than the viewport, so the offset is pinned at the
+	// bottom (== top); a downward flick still reads as "at the bottom".
+	out, cmd := wheelFlush(m, tea.MouseWheelDown)
+	got := out
+	if cmd == nil {
+		t.Fatal("wheel-down at bottom returned no command; expected a newer-history fetch")
+	}
+	if !got.loadingNewer {
+		t.Error("loadingNewer not set after the wheel-triggered fetch")
+	}
+	if order := ids(got.posts); !eq(order, []string{"m1", "m2", "n1", "n2"}) {
+		t.Fatalf("cached newer page not appended: got %v", order)
+	}
+	_, cmd2 := wheelFlush(got, tea.MouseWheelDown)
+	if cmd2 != nil {
+		t.Error("second wheel-down while loading stacked another fetch; want none")
+	}
+}
+
+// TestWheelBottomAtLiveTailIsNoOp: a downward flick at the live tail (nothing
+// newer cached) does nothing — no fetch, and crucially no drop into the composer
+// (the keyboard ↓ does that; the wheel must not).
+func TestWheelBottomAtLiveTailIsNoOp(t *testing.T) {
+	m := pagingModel([]*model.Post{p("m1", 500), p("m2", 600)}, 1)
+	m.focus = focusMessages
+	m.renderMessages()
+	out, cmd := wheelFlush(m, tea.MouseWheelDown) // no store → nothing newer
+	if cmd != nil {
+		t.Error("wheel-down at the live tail issued a command; want a no-op")
+	}
+	if out.focus != focusMessages {
+		t.Errorf("wheel-down dropped focus to %v; the wheel must not enter the composer", out.focus)
+	}
+}
+
+// TestWheelNewerMergeKeepsViewAnchored: when a wheel-triggered newer page
+// arrives mid-scroll, the post at the viewport top stays put (no jump) and the
+// free-scroll flag survives.
+func TestWheelNewerMergeKeepsViewAnchored(t *testing.T) {
+	m := pagingModel([]*model.Post{p("m1", 500), p("m2", 600), p("m3", 700)}, 0)
+	m.renderMessages()
+	m.msgScrollFree = true
+	m.loadingNewer = true
+	// Park the viewport top at m2.
+	m.msgFreeOffset = m.msgRowStarts[1]
+	m.msgsView.SetYOffset(m.msgFreeOffset)
+
+	out, _ := m.update(newerPostsMsg{
+		channelID: "c",
+		posts:     []*model.Post{p("n1", 800), p("n2", 900)},
+	})
+	got := out.(Model)
+
+	if got.loadingNewer {
+		t.Error("loadingNewer not cleared after newerPostsMsg")
+	}
+	if !got.msgScrollFree {
+		t.Error("free-scroll flag dropped; the wheel view would snap to the selection")
+	}
+	if order := ids(got.posts); !eq(order, []string{"m1", "m2", "m3", "n1", "n2"}) {
+		t.Fatalf("newer page not merged in order: got %v", order)
+	}
+	idx := got.postIndexByID("m2")
+	if want := got.msgRowStarts[idx]; got.msgFreeOffset != want {
+		t.Errorf("view jumped: msgFreeOffset=%d, want %d (m2 row-start)", got.msgFreeOffset, want)
 	}
 }

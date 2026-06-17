@@ -99,7 +99,19 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// and disarm. New events re-arm a fresh tick, so a continuous gesture
 		// moves once per frame and a stopped one settles within a frame.
 		m.wheelTicking = false
+		// A flick on the transcript that lands at an edge pages in more history
+		// (the keyboard's ↑-at-first-post / ↓-at-last-post paths, here offset-
+		// driven). Note the direction before applyPendingWheel zeroes the delta.
+		onMsgs := m.wheelTarget == wheelMsgs
+		up := onMsgs && m.wheelPending < 0
+		down := onMsgs && m.wheelPending > 0
 		m.applyPendingWheel()
+		switch {
+		case up:
+			return m, m.paginateMsgsOnWheelTop()
+		case down:
+			return m, m.paginateMsgsOnWheelBottom()
+		}
 		return m, nil
 
 	case tea.MouseClickMsg:
@@ -319,6 +331,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Server-fetched page of older history (scroll-up past the loaded
 		// window). Persist regardless of focus; only mutate the view if it's
 		// still the open channel.
+		m.loadingOlder = false // in-flight wheel fetch resolved; allow the next
 		persistCmd := m.persistPosts(msg.posts...)
 		for id, name := range msg.users {
 			m.userNames[id] = name
@@ -334,6 +347,31 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.status = "beginning of channel"
 			} else {
 				m.status = ""
+			}
+			return m, persistCmd
+		}
+		if m.msgScrollFree {
+			// Wheel-driven scroll-up: the offset, not the selection, owns the
+			// view. Pin the post at the viewport top in place so the merged
+			// older history lands above it without the screen jumping.
+			anchorID, within := m.msgFreeAnchor()
+			m.posts = mergePostsByTime(m.posts, msg.posts)
+			// Follow the top post with the selection so the tail can be trimmed.
+			if idx := m.postIndexByID(anchorID); idx >= 0 {
+				m.postIdx = idx
+			}
+			if m.postIdx > len(m.posts)-1 {
+				m.postIdx = len(m.posts) - 1
+			}
+			if m.postIdx < 0 {
+				m.postIdx = 0
+			}
+			m.trimPostWindowTail()
+			m.status = ""
+			m.renderMessages()
+			if idx := m.postIndexByID(anchorID); idx >= 0 {
+				m.msgFreeOffset = m.msgRowStarts[idx] + within
+				m.msgsView.SetYOffset(m.msgFreeOffset)
 			}
 			return m, persistCmd
 		}
@@ -370,6 +408,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case newerPostsMsg:
 		// Forward mirror of olderPostsMsg (scroll-down past the loaded tail).
+		m.loadingNewer = false // in-flight wheel fetch resolved; allow the next
 		persistCmd := m.persistPosts(msg.posts...)
 		for id, name := range msg.users {
 			m.userNames[id] = name
@@ -379,6 +418,30 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if len(msg.posts) == 0 {
 			m.status = ""
+			return m, persistCmd
+		}
+		if m.msgScrollFree {
+			// Wheel-driven scroll-down: pin the post at the viewport top in place
+			// so the merged newer history lands below it (and the head-trim above
+			// it) without the screen jumping.
+			anchorID, within := m.msgFreeAnchor()
+			m.posts = mergePostsByTime(m.posts, msg.posts)
+			if idx := m.postIndexByID(anchorID); idx >= 0 {
+				m.postIdx = idx
+			}
+			if m.postIdx > len(m.posts)-1 {
+				m.postIdx = len(m.posts) - 1
+			}
+			if m.postIdx < 0 {
+				m.postIdx = 0
+			}
+			m.trimPostWindowHead()
+			m.status = ""
+			m.renderMessages()
+			if idx := m.postIndexByID(anchorID); idx >= 0 {
+				m.msgFreeOffset = m.msgRowStarts[idx] + within
+				m.msgsView.SetYOffset(m.msgFreeOffset)
+			}
 			return m, persistCmd
 		}
 		selID := ""
@@ -435,6 +498,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case errMsg:
 		m.loading = false
+		m.loadingOlder = false // a failed fetch must not wedge the wheel guards
+		m.loadingNewer = false
 		m.status = "error: " + msg.err.Error()
 		if isUnauthorized(msg.err) {
 			m.status = "auth failed — run `matterbox login` to refresh the token"
@@ -2433,6 +2498,128 @@ func (m *Model) syncThreadSelToViewport() {
 	}
 }
 
+// paginateMsgsOnWheelTop loads older history when the mouse wheel reaches the
+// top of the loaded window, the offset-driven counterpart to ↑-at-the-first-
+// post. It paints the next cached page immediately (pinning the previously-top
+// post in place so the view doesn't jump) and asks the server for anything
+// older. A no-op unless the viewport is actually pegged at the top. The
+// loadingOlder guard keeps a fast flick from stacking a server fetch per
+// momentum frame: the cache prepend self-limits (it moves the offset off the
+// top), so only the network fetch is gated.
+func (m *Model) paginateMsgsOnWheelTop() tea.Cmd {
+	if m.msgsView.YOffset() > 0 || len(m.posts) == 0 {
+		return nil // not at the top of the loaded window
+	}
+	oldestID := m.posts[0].Id
+	if oldestID == "" {
+		return nil // optimistic stub at the head; nothing to fetch before it
+	}
+	// Free-scroll leaves the selection wherever it was (often the bottom). Move
+	// it to the post at the viewport top so trimPostWindowTail can shed the now-
+	// offscreen tail and keep renderMessages bounded.
+	m.syncMsgSelToViewport()
+	older := m.loadOlderFromStore(m.posts[0].ChannelId, m.posts[0].CreateAt)
+	if n := len(older); n > 0 {
+		m.posts = append(older, m.posts...)
+		m.postIdx += n
+		m.trimPostWindowTail()
+		m.renderMessages()
+		// The cache prepend never trims the head, so the previously-top post now
+		// starts n posts in; pin the viewport there so it stays put.
+		if n < len(m.msgRowStarts) {
+			m.msgFreeOffset = m.msgRowStarts[n]
+			m.msgsView.SetYOffset(m.msgFreeOffset)
+		}
+		m.status = ""
+	}
+	if m.loadingOlder {
+		return nil // a server page is already in flight; don't stack another
+	}
+	if len(older) == 0 {
+		m.status = "loading older messages…"
+	}
+	m.loadingOlder = true
+	return m.fetchOlder(m.openChannelID, oldestID)
+}
+
+// paginateMsgsOnWheelBottom is the downward mirror of paginateMsgsOnWheelTop:
+// when the wheel reaches the bottom of the loaded window it loads newer history
+// (the ↓-at-the-last-post path), which only has anything to do when the loaded
+// tail sits below the live tail — e.g. reading forward from a search hit centred
+// on an old post. Unlike the keyboard ↓, hitting the bottom with the wheel never
+// drops into the composer; at the live tail it's simply a no-op. The post at the
+// viewport top is pinned across the head-trim so the view doesn't jump, and
+// loadingNewer keeps a momentum flood to one fetch at a time.
+func (m *Model) paginateMsgsOnWheelBottom() tea.Cmd {
+	if len(m.posts) == 0 || len(m.msgRowStarts) == 0 {
+		return nil
+	}
+	total := m.msgRowStarts[len(m.msgRowStarts)-1]
+	maxOff := total - m.msgsView.Height()
+	if maxOff < 0 {
+		maxOff = 0
+	}
+	if m.msgsView.YOffset() < maxOff {
+		return nil // not at the bottom of the loaded window
+	}
+	last := m.posts[len(m.posts)-1]
+	newer := m.loadNewerFromStore(last.ChannelId, last.CreateAt)
+	if len(newer) == 0 {
+		return nil // at the live tail; nothing newer to page in
+	}
+	newestID := last.Id // anchor the server fetch on the OLD tail (pre-append)
+	// Appending grows content below the viewport (no shift), but trimPostWindowHead
+	// drops posts above it; pin the viewport-top post so the head-trim is invisible.
+	anchorID, within := m.msgFreeAnchor()
+	m.posts = append(m.posts, newer...)
+	if idx := m.postIndexByID(anchorID); idx >= 0 {
+		m.postIdx = idx // let the trim shed everything above the viewport top
+	}
+	m.trimPostWindowHead()
+	m.renderMessages()
+	if idx := m.postIndexByID(anchorID); idx >= 0 {
+		m.msgFreeOffset = m.msgRowStarts[idx] + within
+		m.msgsView.SetYOffset(m.msgFreeOffset)
+	}
+	m.status = ""
+	if m.loadingNewer {
+		return nil // a server page is already in flight; don't stack another
+	}
+	if newestID == "" {
+		return nil
+	}
+	m.loadingNewer = true
+	return m.fetchNewer(m.openChannelID, newestID)
+}
+
+// msgFreeAnchor returns the id of the post at the top of the free-scroll
+// viewport and how many of its rows sit above the top edge, so the exact pixel
+// position can be restored after posts are inserted above it (a server page of
+// older history merged in mid wheel-scroll).
+func (m Model) msgFreeAnchor() (id string, within int) {
+	off := m.msgFreeOffset
+	for i := 0; i+1 < len(m.msgRowStarts) && i < len(m.posts); i++ {
+		if m.msgRowStarts[i+1] > off {
+			return m.posts[i].Id, off - m.msgRowStarts[i]
+		}
+	}
+	return "", 0
+}
+
+// postIndexByID returns the index of the post with the given id in m.posts, or
+// -1 if it isn't loaded.
+func (m Model) postIndexByID(id string) int {
+	if id == "" {
+		return -1
+	}
+	for i, p := range m.posts {
+		if p.Id == id {
+			return i
+		}
+	}
+	return -1
+}
+
 // viewportPageStep is the number of visual rows a PageUp/PageDown moves the
 // view when scrolling inside a tall post: one screenful minus a row of overlap
 // so the reader keeps their place. At least one so the keys always move.
@@ -2577,6 +2764,9 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if oldestID == "" {
 			return m, settle
 		}
+		// Mark the fetch in flight so a wheel flick onto the top doesn't stack a
+		// second PostsBefore on top of this keyboard-triggered one.
+		m.loadingOlder = true
 		return m, tea.Batch(settle, m.fetchOlder(m.openChannelID, oldestID))
 	case key.Matches(msg, m.keys.Down):
 		settle := m.bumpMRFetch()
@@ -2624,6 +2814,9 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if newestID == "" {
 			return m, settle
 		}
+		// Mark the fetch in flight so a wheel flick onto the bottom doesn't stack
+		// a second PostsAfter on top of this keyboard-triggered one.
+		m.loadingNewer = true
 		return m, tea.Batch(settle, m.fetchNewer(m.openChannelID, newestID))
 	case key.Matches(msg, m.keys.Home):
 		m.postIdx = 0

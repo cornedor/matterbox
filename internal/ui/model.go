@@ -206,6 +206,16 @@ type Model struct {
 	threadScrollFree bool
 	threadFreeOffset int
 
+	// loadingOlder / loadingNewer are set while a wheel-triggered server fetch
+	// for older / newer history is in flight and cleared when it returns (see
+	// olderPostsMsg / newerPostsMsg / errMsg). They stop a fast wheel flick that
+	// stays pegged at an edge from stacking one PostsBefore/PostsAfter request
+	// per momentum frame; the instant cache prepend/append is naturally rate-
+	// limited (it pushes the offset off the edge), so only the network fetch
+	// needs the guard.
+	loadingOlder bool
+	loadingNewer bool
+
 	// Wheel events are coalesced onto a frame tick. A MacBook trackpad emits a
 	// momentum flood of MouseWheelMsg (easily 60-120/sec, continuing after the
 	// fingers lift); moving + re-rendering the viewport per event lets bubbletea's
