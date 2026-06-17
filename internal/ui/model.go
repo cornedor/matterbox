@@ -164,6 +164,18 @@ type Model struct {
 	// trimPostWindowHead drop shifted the content up. Cleared on each render.
 	anchorMsgSelBottom bool
 
+	// keepMsgOffset is a one-shot flag: when set, the next renderMessages
+	// keeps pendingMsgOffset as the viewport offset instead of re-deriving it
+	// from the selection. Set by intra-message scrolling — when the selected
+	// post is taller than the pane, ↑/↓/PageUp/PageDown scroll *within* it
+	// rather than moving the selection. pendingMsgOffset is an absolute
+	// visual-row offset; it stays valid because the selection doesn't move
+	// during an intra-scroll, so the posts above it keep identical heights and
+	// the post's start row is unchanged between renders. This is also the hook
+	// a future mouse-wheel handler would reuse. Cleared on each render.
+	keepMsgOffset    bool
+	pendingMsgOffset int
+
 	// channel filter
 	filter      textinput.Model
 	filterMode  bool

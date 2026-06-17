@@ -2188,6 +2188,78 @@ func (m Model) messagesPageStep() int {
 	return 1
 }
 
+// viewportPageStep is the number of visual rows a PageUp/PageDown moves the
+// view when scrolling inside a tall post: one screenful minus a row of overlap
+// so the reader keeps their place. At least one so the keys always move.
+func (m Model) viewportPageStep() int {
+	if s := m.msgsView.Height() - 1; s > 1 {
+		return s
+	}
+	return 1
+}
+
+// scrollSelWithin scrolls the viewport inside the selected post when that post
+// is taller than the pane, so its hidden interior is reachable without the
+// selection jumping to a neighbour. dir is -1 (up) or +1 (down); step is the
+// number of visual rows to move. It returns true when it consumed the key (the
+// caller should re-render and stop); false means the post isn't tall or the
+// view is already pinned to that edge, so the caller should move the selection
+// as usual. Relies on m.msgRowStarts / the live YOffset from the last render —
+// valid here because the selection (and thus every post's height) is unchanged.
+func (m *Model) scrollSelWithin(dir, step int) bool {
+	h := m.msgsView.Height()
+	if h <= 0 || m.postIdx < 0 || m.postIdx+1 >= len(m.msgRowStarts) {
+		return false
+	}
+	visStart := m.msgRowStarts[m.postIdx]
+	visEnd := m.msgRowStarts[m.postIdx+1]
+	if visEnd-visStart <= h {
+		return false // post fits; let the caller move the selection
+	}
+	off := m.msgsView.YOffset()
+	switch {
+	case dir < 0: // up: reveal rows hidden above the view
+		if off <= visStart {
+			return false
+		}
+		off -= step
+		if off < visStart {
+			off = visStart
+		}
+	default: // down: reveal rows hidden below the view
+		if off+h >= visEnd {
+			return false
+		}
+		off += step
+		if off > visEnd-h {
+			off = visEnd - h
+		}
+	}
+	m.pendingMsgOffset = off
+	m.keepMsgOffset = true
+	return true
+}
+
+// anchorSelOnLand sets the one-shot anchor for a selection that just moved onto
+// a post taller than the pane, so the post opens at its natural reading edge:
+// moving down lands on its top (read it top-down); moving up lands on its
+// bottom (the edge adjacent to where the cursor came from). Posts that fit the
+// pane are left to renderMessages' default "ensure visible" handling.
+func (m *Model) anchorSelOnLand(dir int) {
+	h := m.msgsView.Height()
+	if h <= 0 || m.postIdx < 0 || m.postIdx+1 >= len(m.msgRowStarts) {
+		return
+	}
+	if m.msgRowStarts[m.postIdx+1]-m.msgRowStarts[m.postIdx] <= h {
+		return
+	}
+	if dir < 0 {
+		m.anchorMsgSelBottom = true
+	} else {
+		m.anchorMsgSelTop = true
+	}
+}
+
 // selectLastMessage moves the message selection to the channel's newest
 // post. The loaded window may have slid up while scrolling back (older
 // posts paged in, the newest trimmed off), so the loaded tail isn't
@@ -2222,8 +2294,15 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.Up):
 		settle := m.bumpMRFetch()
+		// Tall selected post with content hidden above: scroll within it
+		// before moving the selection to the previous post.
+		if m.scrollSelWithin(-1, 1) {
+			m.renderMessages()
+			return m, settle
+		}
 		if m.postIdx > 0 {
 			m.postIdx--
+			m.anchorSelOnLand(-1)
 			m.renderMessages()
 			return m, settle
 		}
@@ -2256,8 +2335,15 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(settle, m.fetchOlder(m.openChannelID, oldestID))
 	case key.Matches(msg, m.keys.Down):
 		settle := m.bumpMRFetch()
+		// Tall selected post with content hidden below: scroll within it
+		// before moving the selection to the next post.
+		if m.scrollSelWithin(1, 1) {
+			m.renderMessages()
+			return m, settle
+		}
 		if m.postIdx < len(m.posts)-1 {
 			m.postIdx++
+			m.anchorSelOnLand(1)
 			m.renderMessages()
 			return m, settle
 		}
@@ -2306,20 +2392,31 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if len(m.posts) == 0 {
 			return m, nil
 		}
+		// Page through a tall selected post before advancing the selection.
+		if m.scrollSelWithin(1, m.viewportPageStep()) {
+			m.renderMessages()
+			return m, m.bumpMRFetch()
+		}
 		m.postIdx += m.messagesPageStep()
 		if m.postIdx > len(m.posts)-1 {
 			m.postIdx = len(m.posts) - 1
 		}
+		m.anchorSelOnLand(1)
 		m.renderMessages()
 		return m, m.bumpMRFetch()
 	case key.Matches(msg, m.keys.PageUp):
 		if len(m.posts) == 0 {
 			return m, nil
 		}
+		if m.scrollSelWithin(-1, m.viewportPageStep()) {
+			m.renderMessages()
+			return m, m.bumpMRFetch()
+		}
 		m.postIdx -= m.messagesPageStep()
 		if m.postIdx < 0 {
 			m.postIdx = 0
 		}
+		m.anchorSelOnLand(-1)
 		m.renderMessages()
 		return m, m.bumpMRFetch()
 	case key.Matches(msg, m.keys.NextHit):

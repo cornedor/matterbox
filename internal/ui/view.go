@@ -406,6 +406,16 @@ func (m *Model) renderMessages() {
 		visEnd := selVisStart + selVisRows
 		off := m.msgsView.YOffset()
 		switch {
+		case m.keepMsgOffset:
+			// Intra-message scroll set the offset explicitly; keep it, clamped
+			// to the selected post's scrollable range below.
+			off = m.pendingMsgOffset
+			if off > visEnd-h {
+				off = visEnd - h
+			}
+			if off < visStart {
+				off = visStart
+			}
 		case m.anchorMsgSelTop:
 			off = visStart
 		case m.anchorMsgSelBottom:
@@ -422,6 +432,7 @@ func (m *Model) renderMessages() {
 	}
 	m.anchorMsgSelTop = false
 	m.anchorMsgSelBottom = false
+	m.keepMsgOffset = false
 	// YOffset is final; refresh which animated emoji are actually in view.
 	m.refreshAnimVisibility()
 }
