@@ -114,6 +114,14 @@ type searchState struct {
 	loading  bool   // a search is currently in flight (load-more spinner-less indicator)
 	err      string // error from the last search (cleared when a new search runs)
 	notReady bool   // store unavailable — show a friendly message instead of searching
+
+	// zones maps viewport visual rows to selectable items (hit index, -1 for
+	// the AI answer box, len(hits) for the load-more row) for mouse
+	// hit-testing; zonesTotal is the rendered list's full height. Both are
+	// rebuilt by setBubbleViewport and cleared by renderSearchResults' non-list
+	// states. See mouse.go.
+	zones      []bubbleZone
+	zonesTotal int
 }
 
 // newSearchState constructs the textinput / viewport used by the Search
@@ -801,6 +809,9 @@ func (m *Model) sizeSearchView(width, height int) {
 // per hit. Selection is drawn by giving the focused bubble the focused
 // border color. The selected bubble is scrolled into view.
 func (m *Model) renderSearchResults() {
+	// Non-list states (not-ready / AI trace / error / hints) carry no clickable
+	// bubbles; setBubbleViewport repopulates these whenever it runs.
+	m.search.zones, m.search.zonesTotal = nil, 0
 	if m.search.notReady {
 		m.search.view.SetContent(
 			lipgloss.NewStyle().Foreground(dimColor).Render(
@@ -892,29 +903,44 @@ func (m *Model) setBubbleViewport(header []string, hits []store.SearchHit, selId
 	}
 	allLines := append([]string(nil), header...)
 	selStart, selEnd := -1, -1
-	// A negative selIdx means "the header is selected" (the AI answer box): scroll
-	// the header block into view so the summary / follow-up box stays reachable.
-	if selIdx < 0 && len(header) > 0 {
-		selStart, selEnd = 0, len(header)
+	// zones map viewport visual rows back to selectable items for mouse
+	// hit-testing; acc tracks the running visual-row count as the list grows.
+	zones := make([]bubbleZone, 0, len(hits)+2)
+	vw := m.search.view.Width()
+	acc := 0
+	// A header block is the AI answer box, selectable as idx -1. A negative
+	// selIdx means it's the selected item: scroll it into view so the summary /
+	// follow-up box stays reachable.
+	if len(header) > 0 {
+		zones = append(zones, bubbleZone{row0: 0, idx: -1})
+		acc = visualRowsBefore(header, len(header), vw)
+		if selIdx < 0 {
+			selStart, selEnd = 0, len(header)
+		}
 	}
 	for i, hit := range hits {
 		bubble := m.renderSearchBubble(innerW-2, hit, i == selIdx)
 		bubbleLines := strings.Split(bubble, "\n")
+		zones = append(zones, bubbleZone{row0: acc, idx: i})
 		if i == selIdx {
 			selStart = len(allLines)
 			selEnd = selStart + len(bubbleLines)
 		}
 		allLines = append(allLines, bubbleLines...)
-		allLines = append(allLines, "") // blank separator between bubbles
+		acc += visualRowsBefore(bubbleLines, len(bubbleLines), vw) + 1 // +1 blank separator
+		allLines = append(allLines, "")                                // blank separator between bubbles
 	}
 	if showLoadMore {
 		row := m.renderLoadMoreRow(innerW-2, selIdx == len(hits))
+		zones = append(zones, bubbleZone{row0: acc, idx: len(hits)})
 		if selIdx == len(hits) {
 			selStart = len(allLines)
 			selEnd = selStart + 1
 		}
 		allLines = append(allLines, row)
+		acc += visualRowsBefore([]string{row}, 1, vw)
 	}
+	m.search.zones, m.search.zonesTotal = zones, acc
 	m.search.view.SetContent(strings.Join(allLines, "\n"))
 
 	if h := m.search.view.Height(); h > 0 && selStart >= 0 {

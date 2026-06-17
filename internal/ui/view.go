@@ -354,8 +354,10 @@ func (m *Model) renderMessages() {
 	}
 
 	// Only show the selection bar when the messages pane is focused —
-	// otherwise the bar would mislead about what keys would act on.
-	decorate := m.focus == focusMessages
+	// otherwise the bar would mislead about what keys would act on. Drop it
+	// while a text selection is being drawn here: the bar shifts a header line
+	// by two cells, which would skew the cell→content mapping the drag relies on.
+	decorate := m.focus == focusMessages && !(m.textSel.active && m.textSel.pane == focusMessages)
 	bar := selectedBarStyle.Render("▎")
 	width := m.msgsView.Width()
 	var allLines []string
@@ -399,6 +401,7 @@ func (m *Model) renderMessages() {
 	}
 	rowStarts[len(m.posts)] = visAcc
 	m.msgRowStarts = rowStarts
+	m.applyTextSelHighlight(focusMessages, allLines)
 	m.msgsView.SetContent(strings.Join(allLines, "\n"))
 
 	if h := m.msgsView.Height(); h > 0 && selVisStart >= 0 {
@@ -406,6 +409,14 @@ func (m *Model) renderMessages() {
 		visEnd := selVisStart + selVisRows
 		off := m.msgsView.YOffset()
 		switch {
+		case m.msgScrollFree:
+			// Mouse free-scroll: keep the wheel's offset, clamped to content,
+			// rather than anchoring to the selection. Sticky until a keypress
+			// (see handleKey).
+			off = m.msgFreeOffset
+			if max := m.msgRowStarts[len(m.msgRowStarts)-1] - h; off > max {
+				off = max
+			}
 		case m.keepMsgOffset:
 			// Intra-message scroll set the offset explicitly; keep it, clamped
 			// to the selected post's scrollable range below.
@@ -464,7 +475,7 @@ func (m *Model) renderThread() {
 	if m.threadIdx < 0 {
 		m.threadIdx = 0
 	}
-	decorate := m.focus == focusThread
+	decorate := m.focus == focusThread && !(m.textSel.active && m.textSel.pane == focusThread)
 	bar := selectedBarStyle.Render("▎")
 	width := m.threadView.Width()
 	var allLines []string
@@ -499,6 +510,7 @@ func (m *Model) renderThread() {
 	}
 	rowStarts[len(m.threadPosts)] = visAcc
 	m.threadRowStarts = rowStarts
+	m.applyTextSelHighlight(focusThread, allLines)
 	m.threadView.SetContent(strings.Join(allLines, "\n"))
 
 	if h := m.threadView.Height(); h > 0 && selVisStart >= 0 {
@@ -506,6 +518,12 @@ func (m *Model) renderThread() {
 		visEnd := selVisStart + selVisRows
 		off := m.threadView.YOffset()
 		switch {
+		case m.threadScrollFree:
+			// Mouse free-scroll: keep the wheel's offset, clamped to content.
+			off = m.threadFreeOffset
+			if max := m.threadRowStarts[len(m.threadRowStarts)-1] - h; off > max {
+				off = max
+			}
 		case visStart < off:
 			off = visStart
 		case visEnd > off+h:
@@ -929,6 +947,13 @@ func humanSize(n int64) string {
 func (m Model) View() tea.View {
 	v := tea.NewView(m.viewContent())
 	v.AltScreen = true
+	// All-motion mouse reporting: the wheel scrolls, clicks switch/select,
+	// drags select text, and the button-less motion events drive the tab /
+	// channel hover highlight. Gated by config because capturing the mouse
+	// disables the terminal's native text selection. See mouse.go.
+	if m.mouseEnabled {
+		v.MouseMode = tea.MouseModeAllMotion
+	}
 	return v
 }
 
@@ -1174,9 +1199,13 @@ func (m *Model) renderChannelsPane(height int) string {
 		row := gutter + suffix
 		// The sidebar isn't focusable; always mark the current channel so the
 		// user can see where ctrl-nav (and the open transcript) is pointing.
-		// The "> " cursor overlays the presence dot on the selected row.
-		if i == m.channelIdx {
+		// The "> " cursor overlays the presence dot on the selected row. A
+		// hovered (but unselected) row gets a quieter background bar.
+		switch {
+		case i == m.channelIdx:
 			row = selectedRow.Width(channelsWidth - 2).Render("> " + suffix)
+		case m.hover.zone == hitChannel && m.hover.idx == i:
+			row = hoverRowStyle.Width(channelsWidth - 2).Render(row)
 		}
 		rows = append(rows, row)
 	}
@@ -1407,12 +1436,16 @@ func (m *Model) renderTeamTabs() string {
 	// always shown) and a scrollable team suffix. teamTabs collects the
 	// latter so a window can be chosen around the active team when they
 	// don't all fit; activeTeamPos is the active team's index within it.
-	var sticky []string
-	stickyW := 0
+	// Each rendered tab carries its tab-bar index so a click can map an
+	// x-coordinate back to the tab (see hitTest); sticky tabs (DMs/Feed/Search)
+	// and the scrollable team tabs both record it.
 	type teamTab struct {
-		s string
-		w int
+		s   string
+		w   int
+		idx int
 	}
+	var sticky []teamTab
+	stickyW := 0
 	var teamTabs []teamTab
 	activeTeamPos := -1
 
@@ -1465,6 +1498,10 @@ func (m *Model) renderTeamTabs() string {
 			default:
 				style = style.Foreground(dimColor)
 			}
+			// Hover affordance: underline the inactive tab the pointer is over.
+			if m.hover.zone == hitTab && m.hover.idx == i {
+				style = style.Underline(true)
+			}
 		}
 
 		// Fix up the leftmost tab's bottom-left so the rule starts cleanly.
@@ -1480,14 +1517,15 @@ func (m *Model) renderTeamTabs() string {
 		style = style.Border(b)
 
 		rendered := style.Render(label)
+		tab := teamTab{s: rendered, w: lipgloss.Width(rendered), idx: i}
 		if kind == tabTeam {
 			if isActive {
 				activeTeamPos = len(teamTabs)
 			}
-			teamTabs = append(teamTabs, teamTab{s: rendered, w: lipgloss.Width(rendered)})
+			teamTabs = append(teamTabs, tab)
 		} else {
-			sticky = append(sticky, rendered)
-			stickyW += lipgloss.Width(rendered)
+			sticky = append(sticky, tab)
+			stickyW += tab.w
 		}
 	}
 
@@ -1500,15 +1538,31 @@ func (m *Model) renderTeamTabs() string {
 	start, end, leftClip, rightClip := teamTabWindow(widths, activeTeamPos, m.width-stickyW)
 
 	pieces := make([]string, 0, len(sticky)+(end-start)+2)
-	pieces = append(pieces, sticky...)
+	// Record each tab's horizontal extent as pieces are laid out left to right,
+	// so a click resolves to the right tab without replaying this windowing.
+	var zones []tabZone
+	xpos := 0
+	place := func(t teamTab) {
+		pieces = append(pieces, t.s)
+		zones = append(zones, tabZone{x0: xpos, x1: xpos + t.w, idx: t.idx})
+		xpos += t.w
+	}
+	for _, t := range sticky {
+		place(t)
+	}
 	if leftClip {
-		pieces = append(pieces, scrollArrow("‹"))
+		arrow := scrollArrow("‹")
+		pieces = append(pieces, arrow)
+		xpos += lipgloss.Width(arrow)
 	}
 	for i := start; i < end; i++ {
-		pieces = append(pieces, teamTabs[i].s)
+		place(teamTabs[i])
 	}
 	if rightClip {
 		pieces = append(pieces, scrollArrow("›"))
+	}
+	if m.vcache != nil {
+		m.vcache.tabZones = zones
 	}
 
 	row := lipgloss.JoinHorizontal(lipgloss.Top, pieces...)

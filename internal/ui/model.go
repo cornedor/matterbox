@@ -114,6 +114,24 @@ type Model struct {
 	showCustomStatus  bool
 	statusPollStarted bool
 
+	// mouseEnabled mirrors config.Mouse: when true, View requests mouse
+	// reporting — the wheel scrolls the focused message/thread pane and the
+	// Search / Feed result lists (see handleMouseWheel), clicks switch
+	// team/channel, select messages, and select/open Search hits & Feed bubbles,
+	// and drags select text to copy. Off keeps the terminal's native text selection.
+	mouseEnabled bool
+
+	// hover is the clickable element the pointer is currently over (a team tab
+	// or a channel row), painted with a hover style; textSel is an in-progress
+	// or just-finished click-drag text selection in the message / thread pane.
+	// wrapIdx caches one pane's content split into logical lines plus each line's
+	// visual-row start, keyed by content version, so a drag maps screen cells to
+	// content coordinates without re-measuring every line per motion event. All
+	// three live in mouse.go.
+	hover   hoverState
+	textSel textSel
+	wrapIdx wrapCache
+
 	teamIdx    int
 	channelIdx int
 	chanOff    int
@@ -171,10 +189,22 @@ type Model struct {
 	// rather than moving the selection. pendingMsgOffset is an absolute
 	// visual-row offset; it stays valid because the selection doesn't move
 	// during an intra-scroll, so the posts above it keep identical heights and
-	// the post's start row is unchanged between renders. This is also the hook
-	// a future mouse-wheel handler would reuse. Cleared on each render.
+	// the post's start row is unchanged between renders. Cleared on each render.
 	keepMsgOffset    bool
 	pendingMsgOffset int
+
+	// msgScrollFree / threadScrollFree are sticky flags set while the mouse
+	// wheel free-scrolls the feed / open thread, decoupled from the selection.
+	// While set, renderMessages / renderThread keep msgFreeOffset /
+	// threadFreeOffset (clamped to content) instead of anchoring to the
+	// selection, so a background re-render (e.g. a new message arriving) doesn't
+	// yank the view back mid-scroll. The next keypress re-syncs the selection to
+	// the post on screen and clears the flag (see handleKey). Unlike
+	// keepMsgOffset these are NOT cleared per render.
+	msgScrollFree    bool
+	msgFreeOffset    int
+	threadScrollFree bool
+	threadFreeOffset int
 
 	// channel filter
 	filter      textinput.Model
@@ -299,21 +329,21 @@ type Model struct {
 	// already cycled/closed past. refLoading/refErr are the shared load state of
 	// whichever ref is current. See ref.go; the per-provider data + rendering
 	// live in jira.go and gitlab.go.
-	refOpen      bool
-	refView      viewport.Model
-	refs         []reference
-	refIdx       int
-	refLoading   bool
-	refErr       error
-	refGen       int
-	jiraIssue    *jira.Issue // loaded data when the current ref is a Jira issue
-	jiraClient   *jira.Client
-	jiraProjects []string
-	glMR         *gitlab.MR // loaded data when the current ref is a GitLab MR
-	glClient     *gitlab.Client
-	mrStatus         *mrStatusManager // inline MR badge state; nil when gitlab not configured
-	mrFetchGen       int              // bumped on navigation to debounce scroll fetches
-	mrFetchSettledGen int             // set by settle tick; fetches fire when gen == settledGen
+	refOpen           bool
+	refView           viewport.Model
+	refs              []reference
+	refIdx            int
+	refLoading        bool
+	refErr            error
+	refGen            int
+	jiraIssue         *jira.Issue // loaded data when the current ref is a Jira issue
+	jiraClient        *jira.Client
+	jiraProjects      []string
+	glMR              *gitlab.MR // loaded data when the current ref is a GitLab MR
+	glClient          *gitlab.Client
+	mrStatus          *mrStatusManager // inline MR badge state; nil when gitlab not configured
+	mrFetchGen        int              // bumped on navigation to debounce scroll fetches
+	mrFetchSettledGen int              // set by settle tick; fetches fire when gen == settledGen
 
 	// Jira field editors, opened with s/p/a/P while the panel shows a Jira
 	// issue. jiraPicker is the modal list picker for Status / Priority /
@@ -645,6 +675,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	markReadDelay := defaultMarkReadDelay
 	groupWindow := defaultGroupWindow
 	showCustomStatus := true
+	mouseEnabled := true
 	navModifier := navModifierFromConfig(cfg)
 	vimNav := vimNavGlobal
 	emojiMode := "auto"
@@ -680,6 +711,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		}
 		if cfg.CustomStatus != nil {
 			showCustomStatus = *cfg.CustomStatus
+		}
+		if cfg.Mouse != nil {
+			mouseEnabled = *cfg.Mouse
 		}
 		if cfg.EmojiImages != "" {
 			emojiMode = cfg.EmojiImages
@@ -765,6 +799,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		statuses:            map[string]string{},
 		customStatuses:      map[string]model.CustomStatus{},
 		showCustomStatus:    showCustomStatus,
+		mouseEnabled:        mouseEnabled,
 		focus:               focusMessages,
 		msgsView:            msgsView,
 		threadView:          threadView,

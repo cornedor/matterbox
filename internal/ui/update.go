@@ -76,6 +76,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 
+	case tea.MouseWheelMsg:
+		return m.handleMouseWheel(msg)
+
+	case tea.MouseClickMsg:
+		return m.handleMouseClick(msg)
+
+	case tea.MouseReleaseMsg:
+		return m.handleMouseRelease(msg)
+
+	case tea.MouseMotionMsg:
+		return m.handleMouseMotion(msg)
+
 	case tea.PasteMsg:
 		return m.handlePaste(msg)
 
@@ -1277,6 +1289,23 @@ func (m Model) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// A keypress ends mouse free-scroll: re-anchor the selection to the post the
+	// wheel left on screen (so the key acts on a visible message and the view
+	// doesn't jump back to the pre-scroll selection), then resume normal
+	// selection-following on the render this key triggers.
+	if m.msgScrollFree {
+		m.syncMsgSelToViewport()
+		m.msgScrollFree = false
+	}
+	if m.threadScrollFree {
+		m.syncThreadSelToViewport()
+		m.threadScrollFree = false
+	}
+	// A keypress also dismisses a mouse text selection so its highlight doesn't
+	// linger over content the keyboard is now acting on.
+	if m.textSel.active || m.textSel.dragging {
+		m.clearTextSel()
+	}
 	// Key inspector is fully modal and checked first: it echoes every decoded
 	// keystroke instead of acting on it (esc closes, ctrl+c still quits), so a
 	// user can see exactly what the terminal sends for e.g. option+arrow.
@@ -2199,6 +2228,77 @@ func (m Model) messagesPageStep() int {
 		return s
 	}
 	return 1
+}
+
+// handleMouseWheel free-scrolls the focused message feed or open thread in
+// response to a wheel event, decoupled from the selection — the wheel moves the
+// *view*, like every other scrollback. The viewport handles the wheel delta and
+// clamps to content; the sticky msgScrollFree / threadScrollFree flag then
+// keeps that offset across background re-renders (so a new message doesn't yank
+// the view back to the selection mid-scroll). The next keypress re-syncs the
+// selection to whatever is on screen and clears the flag (see handleKey), so a
+// post taller than the pane is reachable by wheel and keyboard actions still
+// land on a visible message. The Search / Feed bubble lists own the whole body
+// on their tabs, so the wheel just scrolls their viewport (like PageUp/Down).
+// Horizontal wheels, and wheels on the composer, are ignored.
+func (m Model) handleMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
+	switch msg.Button {
+	case tea.MouseWheelUp, tea.MouseWheelDown:
+	default:
+		return m, nil // ignore horizontal wheel
+	}
+	var cmd tea.Cmd
+	switch m.focus {
+	case focusMessages:
+		m.msgsView, cmd = m.msgsView.Update(msg)
+		m.msgFreeOffset = m.msgsView.YOffset()
+		m.msgScrollFree = true
+	case focusThread:
+		if !m.threadOpen {
+			return m, nil
+		}
+		m.threadView, cmd = m.threadView.Update(msg)
+		m.threadFreeOffset = m.threadView.YOffset()
+		m.threadScrollFree = true
+	default:
+		// On the synthetic Search / Feed tabs the body is a bubble list, which
+		// the wheel scrolls like PageUp/Down — even when focus rests on the tab
+		// strip. Any other pane (the composer) keeps its own scrolling.
+		switch {
+		case m.onSearchTab():
+			m.search.view, cmd = m.search.view.Update(msg)
+		case m.onFeedTab():
+			m.feed.view, cmd = m.feed.view.Update(msg)
+		}
+		return m, cmd
+	}
+	m.refreshAnimVisibility()
+	return m, cmd
+}
+
+// syncMsgSelToViewport moves the message selection to the first post still
+// visible at the top of the viewport. Called when a keypress ends mouse
+// free-scroll so the key acts on an on-screen post and the view doesn't jump
+// back to the pre-scroll selection.
+func (m *Model) syncMsgSelToViewport() {
+	off := m.msgFreeOffset
+	for i := 0; i+1 < len(m.msgRowStarts); i++ {
+		if m.msgRowStarts[i+1] > off {
+			m.postIdx = i
+			return
+		}
+	}
+}
+
+// syncThreadSelToViewport is the thread-pane mirror of syncMsgSelToViewport.
+func (m *Model) syncThreadSelToViewport() {
+	off := m.threadFreeOffset
+	for i := 0; i+1 < len(m.threadRowStarts); i++ {
+		if m.threadRowStarts[i+1] > off {
+			m.threadIdx = i
+			return
+		}
+	}
 }
 
 // viewportPageStep is the number of visual rows a PageUp/PageDown moves the

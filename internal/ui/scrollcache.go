@@ -28,6 +28,12 @@ type viewCache struct {
 	thread  scrollGeom
 	ref     scrollGeom
 	sidebar sidebarCache
+	// tabZones records each team tab's horizontal screen extent, written by
+	// renderTeamTabs (which alone replays the tab-windowing layout). A mouse
+	// click reads it back to resolve an x-coordinate to a tab index without
+	// recomputing that layout. Persists across the value-receiver View path
+	// because viewCache lives behind a pointer (see hitTest).
+	tabZones []tabZone
 }
 
 // scrollGeom caches one viewport's soft-wrap geometry. ver is the content
@@ -120,6 +126,14 @@ func (m *Model) channelsFingerprint(vis []*model.Channel, off, listH, innerH int
 	b.WriteString(strconv.Itoa(m.channelIdx))
 	b.WriteByte('|')
 	b.WriteString(strconv.Itoa(len(vis)))
+	b.WriteByte('|')
+	// Hover index (-1 when the pointer isn't over a channel row) so the cached
+	// sidebar repaints as the hover highlight moves between rows.
+	if m.hover.zone == hitChannel {
+		b.WriteString(strconv.Itoa(m.hover.idx))
+	} else {
+		b.WriteByte('-')
+	}
 	b.WriteByte('\x1e')
 	for i := off; i < len(vis) && i <= off+listH; i++ {
 		ch := vis[i]

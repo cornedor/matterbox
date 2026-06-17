@@ -62,6 +62,13 @@ type feedState struct {
 	// Both only matter while the feed has no entries (see feedart.go).
 	wavePhase  int
 	waveActive bool
+
+	// zones maps viewport visual rows to feed-entry indices for mouse
+	// hit-testing; zonesTotal is the rendered list's full height. Both are
+	// rebuilt by renderFeedResults on every repaint and cleared in its
+	// non-list states (empty splash / loading / error). See mouse.go.
+	zones      []bubbleZone
+	zonesTotal int
 }
 
 // newFeedState constructs the viewport used by the Feed tab. Called once
@@ -572,6 +579,9 @@ func (m *Model) sizeFeedView(width, height int) {
 // channel, scrolling the selected bubble into view. Mirrors
 // renderSearchResults.
 func (m *Model) renderFeedResults() {
+	// Non-list states (error / splash / loading) carry no clickable bubbles;
+	// the bubble loop below repopulates these when there are entries.
+	m.feed.zones, m.feed.zonesTotal = nil, 0
 	if m.feed.err != "" {
 		m.feed.view.SetContent(
 			lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("  feed error: " + m.feed.err),
@@ -603,16 +613,22 @@ func (m *Model) renderFeedResults() {
 	}
 	var allLines []string
 	selStart, selEnd := -1, -1
+	zones := make([]bubbleZone, 0, len(m.feed.entries))
+	vw := m.feed.view.Width()
+	acc := 0 // running visual-row count, for the per-bubble click zones
 	for i, e := range m.feed.entries {
 		bubble := m.renderFeedBubble(innerW-2, e, i == m.feed.idx)
 		bubbleLines := strings.Split(bubble, "\n")
+		zones = append(zones, bubbleZone{row0: acc, idx: i})
 		if i == m.feed.idx {
 			selStart = len(allLines)
 			selEnd = selStart + len(bubbleLines)
 		}
 		allLines = append(allLines, bubbleLines...)
-		allLines = append(allLines, "") // blank separator between bubbles
+		acc += visualRowsBefore(bubbleLines, len(bubbleLines), vw) + 1 // +1 blank separator
+		allLines = append(allLines, "")                                // blank separator between bubbles
 	}
+	m.feed.zones, m.feed.zonesTotal = zones, acc
 	m.feed.view.SetContent(strings.Join(allLines, "\n"))
 
 	if h := m.feed.view.Height(); h > 0 && selStart >= 0 {
