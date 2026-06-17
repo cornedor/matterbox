@@ -12,9 +12,12 @@ import (
 // Mouse interaction beyond the wheel (handleMouseWheel lives in update.go):
 // clicking a team tab switches to it, clicking a channel row opens it, clicking
 // a message selects it, and dragging within a message selects text that's
-// copied on release. Hovering a tab or channel row paints a hover highlight.
-// Everything here is gated by mouseEnabled (View only requests mouse reporting
-// then) and stands down behind any modal overlay.
+// copied on release. On the Search / Feed tabs a click selects the bubble under
+// it and a click on the already-selected bubble activates it (opens the channel
+// / hit, or expands the load-more row) — a deliberate two-step that keeps a
+// stray click from yanking you away mid-scroll. Hovering a tab or channel row
+// paints a hover highlight. Everything here is gated by mouseEnabled (View only
+// requests mouse reporting then) and stands down behind any modal overlay.
 
 // hitZone identifies which clickable region of the UI a screen cell falls in.
 type hitZone int
@@ -25,6 +28,8 @@ const (
 	hitChannel
 	hitMessage
 	hitThread
+	hitFeed
+	hitSearch
 )
 
 // hit is the result of hitTest. idx's meaning depends on zone: a tab index
@@ -134,7 +139,77 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		m.armTextSel(focusThread, h.line, h.col)
 		m.renderThread()
 		return m, nil
+	case hitFeed:
+		return m.clickFeedEntry(h.idx)
+	case hitSearch:
+		return m.clickSearchHit(h.idx)
 	}
+	return m, nil
+}
+
+// clickFeedEntry handles a left click on a Feed bubble: the first click selects
+// it (and focuses the feed), a click on the already-selected bubble opens its
+// channel — the same action Enter performs.
+func (m Model) clickFeedEntry(idx int) (tea.Model, tea.Cmd) {
+	if idx < 0 || idx >= len(m.feed.entries) {
+		return m, nil
+	}
+	activate := m.focus == focusFeed && m.feed.idx == idx
+	m.focus = focusFeed
+	m.feed.idx = idx
+	if activate {
+		return m.openFeedEntry()
+	}
+	m.renderFeedResults()
+	return m, nil
+}
+
+// clickSearchHit handles a left click on a Search bubble. idx carries the
+// list's selection semantics: -1 is the AI answer box (clicking it focuses the
+// follow-up field), len(hits) is the load-more row, and 0..len(hits)-1 are
+// hits. The first click selects; a click on the already-selected row activates
+// it (open the hit's channel, or expand the load-more row).
+func (m Model) clickSearchHit(idx int) (tea.Model, tea.Cmd) {
+	aiDone := m.aiSearch.phase == aiSearchDone && m.aiSearch.err == nil
+	wasFocused := m.focus == focusSearch
+	m.focus = focusSearch
+
+	// AI answer box: select it and (on a finished run) focus the follow-up
+	// field, mirroring arrowing up onto it in handleAIDoneKey.
+	if idx < 0 {
+		m.search.idx = -1
+		var cmd tea.Cmd
+		if aiDone {
+			cmd = m.aiSearch.followup.Focus()
+		}
+		m.renderSearchResults()
+		return m, cmd
+	}
+
+	activate := wasFocused && m.search.idx == idx
+	// Leaving the answer box for a hit blurs its follow-up; on a plain search
+	// the main input stays focused so typing keeps editing the query.
+	if aiDone {
+		m.aiSearch.followup.Blur()
+	} else {
+		m.search.input.Focus()
+	}
+	m.search.idx = idx
+
+	if !aiDone && idx == len(m.search.hits) { // load-more pseudo-row
+		if activate {
+			return m.expandSearch()
+		}
+		m.renderSearchResults()
+		return m, nil
+	}
+	if idx >= len(m.search.hits) {
+		return m, nil
+	}
+	if activate {
+		return m.openHitChannel(m.search.hits[idx])
+	}
+	m.renderSearchResults()
 	return m, nil
 }
 
@@ -290,10 +365,13 @@ func (m *Model) hitTest(x, y int) hit {
 		}
 		return hit{zone: hitNone}
 	}
-	// Below the strip. Only the channel/message layout has clickable channels
-	// and messages; the Search / Feed panes own their interaction.
-	if m.onSearchTab() || m.onFeedTab() {
-		return hit{zone: hitNone}
+	// Below the strip. The Search / Feed panes own the whole body on their
+	// synthetic tabs; map the click to the bubble under it.
+	if m.onFeedTab() {
+		return m.hitFeedBubble(y)
+	}
+	if m.onSearchTab() {
+		return m.hitSearchBubble(y)
 	}
 	if x < channelsWidth {
 		return m.hitChannel(y)
@@ -346,6 +424,71 @@ func (m *Model) hitChannel(y int) hit {
 		return hit{zone: hitNone}
 	}
 	return hit{zone: hitChannel, idx: idx}
+}
+
+// bubbleZone maps the first viewport visual row of one selectable item in a
+// bubble list (a Feed entry or a Search hit) to that item's index. The item's
+// span runs from row0 up to the next zone's row0 (or the list's total height
+// for the last item, so a click in the empty space below the last bubble is a
+// no-op). idx carries the list's own selection semantics: a Feed entry / Search
+// hit index, -1 for the AI answer box, or len(hits) for the load-more row.
+type bubbleZone struct {
+	row0 int
+	idx  int
+}
+
+// bubbleAt returns the idx of the zone whose visual-row span contains vrow. ok
+// is false when vrow sits above the first zone or at/below total (the empty
+// rows under the last bubble), so the click does nothing.
+func bubbleAt(zones []bubbleZone, total, vrow int) (idx int, ok bool) {
+	if len(zones) == 0 || vrow < zones[0].row0 || vrow >= total {
+		return 0, false
+	}
+	for i := len(zones) - 1; i >= 0; i-- {
+		if vrow >= zones[i].row0 {
+			return zones[i].idx, true
+		}
+	}
+	return 0, false
+}
+
+// feedGeom / searchGeom give a bubble viewport's top screen row, height and
+// y-offset, mirroring messagesGeom. The Feed pane stacks a title + rule above
+// its viewport (2 rows); the Search pane stacks a title, a 2-row input box and
+// a rule (4 rows). Both panes fill the whole body width on their tab.
+func (m *Model) feedGeom() (top, height, yoff int) {
+	return tabsHeight + 2, m.feed.view.Height(), m.feed.view.YOffset()
+}
+
+func (m *Model) searchGeom() (top, height, yoff int) {
+	return tabsHeight + 4, m.search.view.Height(), m.search.view.YOffset()
+}
+
+// hitFeedBubble maps a screen row on the Feed tab to the feed entry under it,
+// via the per-bubble visual-row zones the last render recorded.
+func (m *Model) hitFeedBubble(y int) hit {
+	top, height, yoff := m.feedGeom()
+	row := y - top
+	if row < 0 || row >= height {
+		return hit{zone: hitNone}
+	}
+	if idx, ok := bubbleAt(m.feed.zones, m.feed.zonesTotal, yoff+row); ok {
+		return hit{zone: hitFeed, idx: idx}
+	}
+	return hit{zone: hitNone}
+}
+
+// hitSearchBubble is the Search-tab mirror of hitFeedBubble.
+func (m *Model) hitSearchBubble(y int) hit {
+	top, height, yoff := m.searchGeom()
+	row := y - top
+	if row < 0 || row >= height {
+		return hit{zone: hitNone}
+	}
+	if idx, ok := bubbleAt(m.search.zones, m.search.zonesTotal, yoff+row); ok {
+		return hit{zone: hitSearch, idx: idx}
+	}
+	return hit{zone: hitNone}
 }
 
 // channelScrollOff reproduces renderChannelsPane's scroll-window math: start
@@ -499,9 +642,26 @@ func (m *Model) ensureWrapIndex(pane focus, width int) ([]string, []int) {
 	return lines, starts
 }
 
+// gutterWidth is the two-space left gutter that body, attachment, reaction and
+// poll lines carry as UI chrome (the same columns the selected-post bar ▎
+// occupies). It isn't message content, so text selection skips it.
+const gutterWidth = 2
+
+// contentLeft is the first content column of a rendered line: past the gutter
+// on body lines, or 0 on header lines (which carry no gutter). A selection
+// whose left edge falls inside the gutter is pulled in to here so the chrome
+// indent is neither highlighted nor copied.
+func contentLeft(line string) int {
+	if strings.HasPrefix(line, strings.Repeat(" ", gutterWidth)) {
+		return gutterWidth
+	}
+	return 0
+}
+
 // selectedText extracts the plain (ANSI-stripped) text of the current
 // selection, column-sliced per line and trimmed of trailing padding on the
-// lines that run to their end.
+// lines that run to their end. The two-space gutter is excluded (see
+// contentLeft) so copied text isn't indented by the chrome.
 func (m *Model) selectedText() string {
 	width := m.msgsView.Width()
 	if m.textSel.pane == focusThread {
@@ -517,8 +677,8 @@ func (m *Model) selectedText() string {
 	}
 	var b strings.Builder
 	for li := l0; li <= l1; li++ {
-		start, end := 0, lipgloss.Width(lines[li])
-		if li == l0 {
+		start, end := contentLeft(lines[li]), lipgloss.Width(lines[li])
+		if li == l0 && c0 > start {
 			start = c0
 		}
 		if li == l1 {
@@ -551,8 +711,8 @@ func (m *Model) applyTextSelHighlight(pane focus, lines []string) {
 		if li < 0 {
 			continue
 		}
-		start, end := 0, lipgloss.Width(lines[li])
-		if li == l0 {
+		start, end := contentLeft(lines[li]), lipgloss.Width(lines[li])
+		if li == l0 && c0 > start {
 			start = c0
 		}
 		if li == l1 {

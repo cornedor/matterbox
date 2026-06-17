@@ -115,9 +115,10 @@ type Model struct {
 	statusPollStarted bool
 
 	// mouseEnabled mirrors config.Mouse: when true, View requests mouse
-	// reporting — the wheel scrolls the focused message/thread pane (see
-	// handleMouseWheel), clicks switch team/channel and select messages, and
-	// drags select text to copy. Off keeps the terminal's native text selection.
+	// reporting — the wheel scrolls the focused message/thread pane and the
+	// Search / Feed result lists (see handleMouseWheel), clicks switch
+	// team/channel, select messages, and select/open Search hits & Feed bubbles,
+	// and drags select text to copy. Off keeps the terminal's native text selection.
 	mouseEnabled bool
 
 	// hover is the clickable element the pointer is currently over (a team tab
@@ -317,21 +318,21 @@ type Model struct {
 	// already cycled/closed past. refLoading/refErr are the shared load state of
 	// whichever ref is current. See ref.go; the per-provider data + rendering
 	// live in jira.go and gitlab.go.
-	refOpen      bool
-	refView      viewport.Model
-	refs         []reference
-	refIdx       int
-	refLoading   bool
-	refErr       error
-	refGen       int
-	jiraIssue    *jira.Issue // loaded data when the current ref is a Jira issue
-	jiraClient   *jira.Client
-	jiraProjects []string
-	glMR         *gitlab.MR // loaded data when the current ref is a GitLab MR
-	glClient     *gitlab.Client
-	mrStatus         *mrStatusManager // inline MR badge state; nil when gitlab not configured
-	mrFetchGen       int              // bumped on navigation to debounce scroll fetches
-	mrFetchSettledGen int             // set by settle tick; fetches fire when gen == settledGen
+	refOpen           bool
+	refView           viewport.Model
+	refs              []reference
+	refIdx            int
+	refLoading        bool
+	refErr            error
+	refGen            int
+	jiraIssue         *jira.Issue // loaded data when the current ref is a Jira issue
+	jiraClient        *jira.Client
+	jiraProjects      []string
+	glMR              *gitlab.MR // loaded data when the current ref is a GitLab MR
+	glClient          *gitlab.Client
+	mrStatus          *mrStatusManager // inline MR badge state; nil when gitlab not configured
+	mrFetchGen        int              // bumped on navigation to debounce scroll fetches
+	mrFetchSettledGen int              // set by settle tick; fetches fire when gen == settledGen
 
 	// Jira field editors, opened with s/p/a/P while the panel shows a Jira
 	// issue. jiraPicker is the modal list picker for Status / Priority /

@@ -2225,8 +2225,9 @@ func (m Model) messagesPageStep() int {
 // the view back to the selection mid-scroll). The next keypress re-syncs the
 // selection to whatever is on screen and clears the flag (see handleKey), so a
 // post taller than the pane is reachable by wheel and keyboard actions still
-// land on a visible message. Horizontal wheels, and wheels on other panes
-// (composer / search / feed, which keep their own scrolling), are ignored.
+// land on a visible message. The Search / Feed bubble lists own the whole body
+// on their tabs, so the wheel just scrolls their viewport (like PageUp/Down).
+// Horizontal wheels, and wheels on the composer, are ignored.
 func (m Model) handleMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 	switch msg.Button {
 	case tea.MouseWheelUp, tea.MouseWheelDown:
@@ -2247,7 +2248,16 @@ func (m Model) handleMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 		m.threadFreeOffset = m.threadView.YOffset()
 		m.threadScrollFree = true
 	default:
-		return m, nil
+		// On the synthetic Search / Feed tabs the body is a bubble list, which
+		// the wheel scrolls like PageUp/Down — even when focus rests on the tab
+		// strip. Any other pane (the composer) keeps its own scrolling.
+		switch {
+		case m.onSearchTab():
+			m.search.view, cmd = m.search.view.Update(msg)
+		case m.onFeedTab():
+			m.feed.view, cmd = m.feed.view.Update(msg)
+		}
+		return m, cmd
 	}
 	m.refreshAnimVisibility()
 	return m, cmd

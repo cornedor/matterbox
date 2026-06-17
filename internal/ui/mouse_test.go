@@ -172,14 +172,28 @@ func TestSelectedTextSingleLine(t *testing.T) {
 }
 
 // TestSelectedTextMultiLine: a drag spanning two body lines joins them with a
-// newline, trimming trailing padding on the all-but-last line.
+// newline, trimming trailing padding on the all-but-last line and dropping the
+// two-space chrome gutter that each body line carries (here bravo is selected
+// from column 0, but its gutter is excluded).
 func TestSelectedTextMultiLine(t *testing.T) {
 	m := mouseModel([]*model.Post{{Id: "p", CreateAt: 100, UserId: "u", Message: "alpha\nbravo"}})
 	// Lines: [header, "  alpha", "  bravo"]. Select alpha's text through bravo.
 	m.textSel = textSel{pane: focusMessages, anchorLine: 1, anchorCol: 2, headLine: 2, headCol: 7, active: true}
 	m.renderMessages() // active selection suppresses the bar, as in the live flow
-	if got := m.selectedText(); got != "alpha\n  bravo" {
-		t.Fatalf("selectedText=%q want %q", got, "alpha\n  bravo")
+	if got := m.selectedText(); got != "alpha\nbravo" {
+		t.Fatalf("selectedText=%q want %q", got, "alpha\nbravo")
+	}
+}
+
+// TestSelectedTextDropsGutter: a drag that starts inside the two-space gutter
+// (column 0) still copies only the message text, not the chrome indent.
+func TestSelectedTextDropsGutter(t *testing.T) {
+	m := mouseModel([]*model.Post{{Id: "p", CreateAt: 100, UserId: "u", Message: "hello world"}})
+	// Line 1 is "  hello world"; anchor at column 0 (in the gutter).
+	m.textSel = textSel{pane: focusMessages, anchorLine: 1, anchorCol: 0, headLine: 1, headCol: 13, active: true}
+	m.renderMessages()
+	if got := m.selectedText(); got != "hello world" {
+		t.Fatalf("selectedText=%q want %q", got, "hello world")
 	}
 }
 
