@@ -145,7 +145,7 @@ func refCycleHint(n int) string {
 func refStatusHint(r reference, n int) string {
 	switch r.kind {
 	case refJira:
-		return "s/p/P/a edit fields · o browser · r refresh · esc closes" + refCycleHint(n)
+		return "s/p/P/a edit · c comment · R reply · o browser · r refresh · esc closes" + refCycleHint(n)
 	case refGitLab:
 		return "A approve · M merge · o browser · r refresh · esc closes" + refCycleHint(n)
 	}
@@ -193,6 +193,7 @@ func (m *Model) closeRef() {
 	// Tear down any open editor/confirm so it can't outlive the panel.
 	m.closeJiraPicker()
 	m.closeJiraPoints()
+	m.closeJiraComment()
 	m.glConfirm = glConfirmState{}
 	m.glJobsExpanded = false
 	if m.focus == focusRef {
@@ -289,6 +290,16 @@ func (m Model) handleRefKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "a":
 			return m, m.openJiraAssigneePicker()
+		case "c":
+			m.openJiraCommentInput()
+			return m, nil
+		case "R":
+			if len(m.jiraIssue.Comments) == 0 {
+				m.status = "no comments to reply to"
+				return m, nil
+			}
+			m.openJiraReplyPicker()
+			return m, nil
 		}
 	}
 	if r != nil && r.kind == refGitLab && m.glMR != nil {

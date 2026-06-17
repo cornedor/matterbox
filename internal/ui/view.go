@@ -1040,6 +1040,9 @@ func (m *Model) renderViewContent() string {
 	if m.jiraPointsActive {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderJiraPointsInput())
 	}
+	if m.jiraCommentActive {
+		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderJiraCommentInput())
+	}
 	if m.glConfirm.active {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderGitLabConfirm())
 	}

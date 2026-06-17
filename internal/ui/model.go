@@ -376,6 +376,16 @@ type Model struct {
 	jiraPointsKey    string
 	jiraPointsInput  textinput.Model
 
+	// jiraComment* is the modal composer for adding a comment (c) or replying to
+	// one (R). jiraCommentMention, when set, makes the post a reply that
+	// @mentions the quoted comment's author; jiraCommentReplyTo is that author's
+	// name for the modal's "replying to" line. See jira_comment.go.
+	jiraCommentActive  bool
+	jiraCommentKey     string
+	jiraCommentInput   textarea.Model
+	jiraCommentMention *jira.Mention
+	jiraCommentReplyTo string
+
 	// GitLab action confirm, opened with A (approve) / M (merge) while the panel
 	// shows a merge request. Modal — owns every keystroke while open (gitlab.go).
 	glConfirm glConfirmState

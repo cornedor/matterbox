@@ -202,6 +202,106 @@ func applyMarks(text string, marks []adfMark) string {
 	return text
 }
 
+// textToADF builds a minimal ADF document from plain text for posting a
+// comment (the inverse of adfToMarkdown, much narrower). Blank lines separate
+// paragraphs; single newlines within a paragraph become hardBreaks; a run of
+// lines beginning with ">" becomes a blockquote (so a quoted reply renders as
+// one). When mention is non-nil a real mention node — the only form Jira
+// notifies on — plus a space is prepended to the first body paragraph, or
+// added as its own trailing paragraph when the body is empty or only a quote.
+func textToADF(text string, mention *Mention) map[string]any {
+	blocks := parseADFBlocks(text)
+	if mention != nil {
+		nodes := []any{
+			map[string]any{
+				"type":  "mention",
+				"attrs": map[string]any{"id": mention.AccountID, "text": "@" + mention.DisplayName},
+			},
+			map[string]any{"type": "text", "text": " "},
+		}
+		blocks = prependMention(blocks, nodes)
+	}
+	if len(blocks) == 0 {
+		// Jira rejects an empty doc; a single space keeps it valid.
+		blocks = []any{paragraphNode([]string{" "})}
+	}
+	return map[string]any{"type": "doc", "version": 1, "content": blocks}
+}
+
+// parseADFBlocks splits plain text into ADF block nodes (paragraphs and
+// blockquotes), grouping consecutive ">" lines into a single blockquote.
+func parseADFBlocks(text string) []any {
+	var blocks []any
+	var para, quote []string
+
+	flushPara := func() {
+		if len(para) > 0 {
+			blocks = append(blocks, paragraphNode(para))
+			para = nil
+		}
+	}
+	flushQuote := func() {
+		if len(quote) > 0 {
+			blocks = append(blocks, map[string]any{
+				"type":    "blockquote",
+				"content": []any{paragraphNode(quote)},
+			})
+			quote = nil
+		}
+	}
+
+	for _, ln := range strings.Split(text, "\n") {
+		switch {
+		case strings.HasPrefix(ln, ">"):
+			flushPara()
+			quote = append(quote, strings.TrimPrefix(strings.TrimPrefix(ln, ">"), " "))
+		case strings.TrimSpace(ln) == "":
+			flushPara()
+			flushQuote()
+		default:
+			flushQuote()
+			para = append(para, ln)
+		}
+	}
+	flushPara()
+	flushQuote()
+	return blocks
+}
+
+// paragraphNode builds a paragraph node whose lines are joined by hardBreaks.
+func paragraphNode(lines []string) map[string]any {
+	var content []any
+	for i, ln := range lines {
+		if i > 0 {
+			content = append(content, map[string]any{"type": "hardBreak"})
+		}
+		if ln != "" {
+			content = append(content, map[string]any{"type": "text", "text": ln})
+		}
+	}
+	if len(content) == 0 {
+		content = append(content, map[string]any{"type": "text", "text": " "})
+	}
+	return map[string]any{"type": "paragraph", "content": content}
+}
+
+// prependMention inserts nodes at the start of the first paragraph block, so a
+// reply's @mention sits with the author's own text. When there's no paragraph
+// (e.g. the body is only a quote) it appends a paragraph carrying just nodes.
+func prependMention(blocks []any, nodes []any) []any {
+	for i, blk := range blocks {
+		m, ok := blk.(map[string]any)
+		if !ok || m["type"] != "paragraph" {
+			continue
+		}
+		content, _ := m["content"].([]any)
+		m["content"] = append(append([]any{}, nodes...), content...)
+		blocks[i] = m
+		return blocks
+	}
+	return append(blocks, map[string]any{"type": "paragraph", "content": nodes})
+}
+
 // itoa is a tiny strconv.Itoa to avoid the import for one call site.
 func itoa(n int) string {
 	if n == 0 {

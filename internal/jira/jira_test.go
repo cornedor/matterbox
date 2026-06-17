@@ -564,3 +564,136 @@ func TestSetStoryPoints(t *testing.T) {
 		}
 	})
 }
+
+func TestGetParsesComments(t *testing.T) {
+	const body = `{
+		"key": "ABC-1",
+		"fields": {
+			"summary": "s",
+			"comment": {
+				"total": 3,
+				"comments": [
+					{
+						"author": {"accountId": "a1", "displayName": "Ada Lovelace"},
+						"created": "2026-06-15T09:41:00.000+0200",
+						"body": {"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"first note"}]}]}
+					},
+					{
+						"author": {"accountId": "a2", "displayName": "Alan Turing"},
+						"created": "2026-06-16T10:00:00.000+0200",
+						"body": {"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"reply"}]}]}
+					}
+				]
+			}
+		}
+	}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	c := New(Config{BaseURL: srv.URL, Email: "me@x.test", APIToken: "tok"})
+	iss, err := c.Get(context.Background(), "ABC-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if iss.CommentTotal != 3 {
+		t.Errorf("CommentTotal = %d, want 3", iss.CommentTotal)
+	}
+	if len(iss.Comments) != 2 {
+		t.Fatalf("got %d comments, want 2", len(iss.Comments))
+	}
+	if iss.Comments[0].Author != "Ada Lovelace" || iss.Comments[0].AuthorID != "a1" || iss.Comments[0].Body != "first note" {
+		t.Errorf("comment[0] = %+v", iss.Comments[0])
+	}
+	if iss.Comments[0].Created.IsZero() {
+		t.Error("comment[0] created not parsed")
+	}
+	if iss.Comments[1].Author != "Alan Turing" || iss.Comments[1].Body != "reply" {
+		t.Errorf("comment[1] = %+v", iss.Comments[1])
+	}
+}
+
+func TestAddCommentPostsAndInvalidates(t *testing.T) {
+	var gotMethod, gotPath, gotBody string
+	var issueCalls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/rest/api/3/field":
+			_, _ = w.Write([]byte(`[]`))
+		case strings.HasSuffix(r.URL.Path, "/comment") && r.Method == http.MethodPost:
+			gotMethod, gotPath = r.Method, r.URL.Path
+			b, _ := io.ReadAll(r.Body)
+			gotBody = string(b)
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"id":"10001"}`))
+		default: // GET issue
+			issueCalls++
+			_, _ = w.Write([]byte(`{"key":"ABC-1","fields":{"summary":"s"}}`))
+		}
+	}))
+	defer srv.Close()
+
+	c := New(Config{BaseURL: srv.URL, Email: "me@x.test", APIToken: "tok"})
+	if _, err := c.Get(context.Background(), "ABC-1"); err != nil { // prime the cache
+		t.Fatal(err)
+	}
+	if err := c.AddComment(context.Background(), "ABC-1", "looks good", nil); err != nil {
+		t.Fatal(err)
+	}
+	if gotMethod != http.MethodPost || gotPath != "/rest/api/3/issue/ABC-1/comment" {
+		t.Errorf("request = %s %s", gotMethod, gotPath)
+	}
+	if !strings.Contains(gotBody, `"type":"doc"`) || !strings.Contains(gotBody, `"looks good"`) {
+		t.Errorf("body = %q", gotBody)
+	}
+	// Posting a comment must drop the cached copy so the next Get refetches.
+	if _, err := c.Get(context.Background(), "ABC-1"); err != nil {
+		t.Fatal(err)
+	}
+	if issueCalls != 2 {
+		t.Errorf("expected refetch after comment, got %d issue calls", issueCalls)
+	}
+}
+
+func TestTextToADF(t *testing.T) {
+	t.Run("paragraphs and hardBreaks", func(t *testing.T) {
+		doc := textToADF("line one\nline two\n\nsecond para", nil)
+		raw, _ := json.Marshal(doc)
+		s := string(raw)
+		if !strings.Contains(s, `"type":"doc"`) || !strings.Contains(s, `"version":1`) {
+			t.Errorf("doc shape = %s", s)
+		}
+		if !strings.Contains(s, `"hardBreak"`) {
+			t.Errorf("expected a hardBreak between lines: %s", s)
+		}
+		if !strings.Contains(s, `"line one"`) || !strings.Contains(s, `"second para"`) {
+			t.Errorf("missing text: %s", s)
+		}
+	})
+
+	t.Run("blockquote", func(t *testing.T) {
+		doc := textToADF("> quoted line\n\nmy reply", nil)
+		raw, _ := json.Marshal(doc)
+		s := string(raw)
+		if !strings.Contains(s, `"type":"blockquote"`) {
+			t.Errorf("expected a blockquote: %s", s)
+		}
+		if !strings.Contains(s, `"quoted line"`) || !strings.Contains(s, `"my reply"`) {
+			t.Errorf("missing text: %s", s)
+		}
+	})
+
+	t.Run("mention prepended to first paragraph", func(t *testing.T) {
+		doc := textToADF("> quoted\n\nthanks", &Mention{AccountID: "a1", DisplayName: "Ada"})
+		raw, _ := json.Marshal(doc)
+		s := string(raw)
+		if !strings.Contains(s, `"type":"mention"`) || !strings.Contains(s, `"id":"a1"`) || !strings.Contains(s, `"@Ada"`) {
+			t.Errorf("expected a mention node: %s", s)
+		}
+		// The mention must lead the reply paragraph, not sit inside the quote.
+		if i, j := strings.Index(s, `"blockquote"`), strings.Index(s, `"mention"`); i < 0 || j < 0 || j < i {
+			t.Errorf("mention should follow the blockquote: %s", s)
+		}
+	})
+}

@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -9,6 +10,8 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+
+	"matterbox/internal/jira"
 )
 
 // jiraAssigneeDebounce delays the assignable-user search after a keystroke so
@@ -31,6 +34,10 @@ const (
 	jiraPickStatus jiraPickerKind = iota
 	jiraPickPriority
 	jiraPickAssignee
+	// jiraPickReplyTarget lists the issue's comments so the user can choose
+	// which one to reply to. Unlike the others it triggers no mutation — picking
+	// a row opens the reply composer (see applyJiraPick / jira_comment.go).
+	jiraPickReplyTarget
 )
 
 // jiraPickerItem is one selectable row. id is the value handed to the mutation
@@ -196,6 +203,38 @@ func (m Model) fetchAssignees(gen, seq int, key, query string) tea.Cmd {
 	}
 }
 
+// openJiraReplyPicker lists the issue's comments (newest first) so the user can
+// pick which one to reply to. The comments are already loaded with the issue,
+// so the picker opens populated — there's no fetch. Each row's id is the index
+// into m.jiraIssue.Comments, so applyJiraPick can recover the chosen comment.
+func (m *Model) openJiraReplyPicker() {
+	m.startJiraPicker(jiraPickReplyTarget, "Reply to comment — "+m.jiraIssue.Key, false)
+	items := make([]jiraPickerItem, 0, len(m.jiraIssue.Comments))
+	for i := len(m.jiraIssue.Comments) - 1; i >= 0; i-- {
+		items = append(items, jiraPickerItem{id: strconv.Itoa(i), label: commentPickerLabel(m.jiraIssue.Comments[i])})
+	}
+	m.jiraPicker.loading = false
+	m.jiraPicker.items = items
+	m.jiraPicker.idx = 0
+}
+
+// commentPickerLabel is a one-line "Author: snippet" used in the reply picker.
+func commentPickerLabel(c jira.Comment) string {
+	author := c.Author
+	if author == "" {
+		author = "Unknown"
+	}
+	snippet := strings.Join(strings.Fields(c.Body), " ")
+	const max = 60
+	if r := []rune(snippet); len(r) > max {
+		snippet = string(r[:max]) + "…"
+	}
+	if snippet == "" {
+		return author
+	}
+	return author + ": " + snippet
+}
+
 // openJiraPointsInput shows the numeric story-points input seeded with the
 // current value (empty when unset).
 func (m *Model) openJiraPointsInput() {
@@ -356,6 +395,19 @@ func (m Model) applyJiraPick() (tea.Model, tea.Cmd) {
 	}
 	it := items[m.jiraPicker.idx]
 	kind := m.jiraPicker.kind
+
+	// The reply-target picker mutates nothing: the chosen row opens the reply
+	// composer prefilled from the loaded comment (id is its index).
+	if kind == jiraPickReplyTarget {
+		m.closeJiraPicker()
+		idx, err := strconv.Atoi(it.id)
+		if err != nil || m.jiraIssue == nil || idx < 0 || idx >= len(m.jiraIssue.Comments) {
+			return m, nil
+		}
+		m.openJiraReply(m.jiraIssue.Comments[idx])
+		return m, nil
+	}
+
 	key := m.jiraPicker.issueKey
 	m.closeJiraPicker()
 

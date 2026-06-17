@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -81,8 +82,9 @@ func (m *Model) renderJiraIssue(iss *jira.Issue, width int) string {
 		refMeta(&b, "Updated", iss.Updated.Format("2006-01-02 15:04"), 10)
 	}
 
-	// Edit affordances for the four changeable fields (see jira_edit.go).
-	b.WriteString("\n" + refDimStyle.Render("s status · p priority · P points · a assignee") + "\n")
+	// Edit affordances: the four changeable fields (jira_edit.go) plus comments
+	// (jira_comment.go).
+	b.WriteString("\n" + refDimStyle.Render("s status · p priority · P points · a assignee · c comment · R reply") + "\n")
 
 	if desc := strings.TrimSpace(iss.Description); desc != "" {
 		divW := width
@@ -92,5 +94,51 @@ func (m *Model) renderJiraIssue(iss *jira.Issue, width int) string {
 		b.WriteString("\n" + refDimStyle.Render(strings.Repeat("─", divW)) + "\n")
 		b.WriteString(renderMarkdown(desc, m.emojiImg, nil, ""))
 	}
+
+	m.renderJiraComments(&b, iss, width)
 	return b.String()
+}
+
+// renderJiraComments appends the issue's comment thread under the description: a
+// divider, a "Comments (N)" heading, then each comment (oldest first, the order
+// the API returns) as a dim author·timestamp line and its markdown body. When
+// the issue has more comments than the inline field returned, a trailing note
+// points at the browser.
+func (m *Model) renderJiraComments(b *strings.Builder, iss *jira.Issue, width int) {
+	if len(iss.Comments) == 0 && iss.CommentTotal == 0 {
+		return
+	}
+	divW := width
+	if divW < 1 {
+		divW = 1
+	}
+	b.WriteString("\n" + refDimStyle.Render(strings.Repeat("─", divW)) + "\n")
+
+	count := iss.CommentTotal
+	if count < len(iss.Comments) {
+		count = len(iss.Comments)
+	}
+	b.WriteString(refLabelStyle.Render(fmt.Sprintf("Comments (%d)", count)) + "\n\n")
+
+	for i, c := range iss.Comments {
+		author := c.Author
+		if author == "" {
+			author = "Unknown"
+		}
+		when := ""
+		if !c.Created.IsZero() {
+			when = " · " + c.Created.Format("2006-01-02 15:04")
+		}
+		b.WriteString(refDimStyle.Render(author+when) + "\n")
+		if body := strings.TrimSpace(c.Body); body != "" {
+			b.WriteString(renderMarkdown(body, m.emojiImg, nil, ""))
+		}
+		if i < len(iss.Comments)-1 {
+			b.WriteString("\n")
+		}
+	}
+
+	if extra := iss.CommentTotal - len(iss.Comments); extra > 0 {
+		b.WriteString("\n" + refDimStyle.Render(fmt.Sprintf("…and %d more — o opens in browser", extra)) + "\n")
+	}
 }

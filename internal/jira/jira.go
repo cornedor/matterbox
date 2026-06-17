@@ -35,7 +35,7 @@ const requestTimeout = 20 * time.Second
 // issueFields is the field list requested from the API. Keeping it explicit
 // (rather than the default "*all") keeps the response small and the JSON we
 // have to decode predictable.
-const issueFields = "summary,status,assignee,reporter,issuetype,priority,labels,updated,description"
+const issueFields = "summary,status,assignee,reporter,issuetype,priority,labels,updated,description,comment"
 
 // Config is the subset of the user config this package needs. BaseURL is the
 // instance root (https://your-instance.atlassian.net); Email + APIToken are the
@@ -130,11 +130,35 @@ type Issue struct {
 	Description string
 	StoryPoints string // formatted estimate (e.g. "5", "2.5"), "" when unset
 
+	// Comments is the issue's comment thread (oldest first, the order the API
+	// returns), flattened for display. CommentTotal is the server's total — it
+	// can exceed len(Comments) when the inline field paged, so the panel can
+	// say "…and N more".
+	Comments     []Comment
+	CommentTotal int
+
 	// IDs of the current selection, so the field pickers can mark the active
 	// row. Display-only fields (Status, Reporter) don't need one here: status
 	// changes go through Transitions, not by id.
 	PriorityID        string
 	AssigneeAccountID string
+}
+
+// Comment is one issue comment, flattened for display. Body is markdown
+// (converted from ADF); AuthorID (accountId) is what a reply's @mention writes.
+type Comment struct {
+	Author   string
+	AuthorID string
+	Body     string
+	Created  time.Time
+}
+
+// Mention names a user to ping in a comment. AddComment turns it into a real
+// ADF mention node — the only form Jira notifies on; plain "@name" text does
+// not.
+type Mention struct {
+	AccountID   string
+	DisplayName string
 }
 
 // Option is a pickable choice with a stable id and a human label — a workflow
@@ -165,6 +189,10 @@ type apiIssue struct {
 		IssueType   *named          `json:"issuetype"`
 		Assignee    *user           `json:"assignee"`
 		Reporter    *user           `json:"reporter"`
+		Comment     *struct {
+			Comments []apiComment `json:"comments"`
+			Total    int          `json:"total"`
+		} `json:"comment"`
 	} `json:"fields"`
 }
 
@@ -176,6 +204,14 @@ type named struct {
 type user struct {
 	AccountID   string `json:"accountId"`
 	DisplayName string `json:"displayName"`
+}
+
+// apiComment mirrors one entry of the issue's inline comment field. Body is the
+// ADF document, flattened to markdown via adfToMarkdown.
+type apiComment struct {
+	Author  *user           `json:"author"`
+	Body    json.RawMessage `json:"body"`
+	Created string          `json:"created"`
 }
 
 // Get returns the issue for key, serving a cached copy when present. Use
@@ -344,6 +380,20 @@ func (c *Client) toIssue(a apiIssue) *Issue {
 	// Jira stamps updated as e.g. 2026-06-15T09:41:00.000+0200.
 	if t, err := time.Parse("2006-01-02T15:04:05.999-0700", a.Fields.Updated); err == nil {
 		iss.Updated = t
+	}
+	if a.Fields.Comment != nil {
+		iss.CommentTotal = a.Fields.Comment.Total
+		for _, ac := range a.Fields.Comment.Comments {
+			cm := Comment{Body: adfToMarkdown(ac.Body)}
+			if ac.Author != nil {
+				cm.Author = ac.Author.DisplayName
+				cm.AuthorID = ac.Author.AccountID
+			}
+			if t, err := time.Parse("2006-01-02T15:04:05.999-0700", ac.Created); err == nil {
+				cm.Created = t
+			}
+			iss.Comments = append(iss.Comments, cm)
+		}
 	}
 	return iss
 }
@@ -614,6 +664,27 @@ func (c *Client) SetStoryPoints(ctx context.Context, key, raw string) error {
 	body := map[string]any{"fields": map[string]any{fields[0]: value}}
 	path := "/rest/api/3/issue/" + url.PathEscape(key)
 	if err := c.do(ctx, http.MethodPut, path, key, body, nil); err != nil {
+		return err
+	}
+	c.Invalidate(key)
+	return nil
+}
+
+// AddComment posts text as a new comment on the issue, then invalidates the
+// cache so the next Get includes it. text is plain (blank lines separate
+// paragraphs, "> " lines become a blockquote — see textToADF); when mention is
+// non-nil the comment opens with a real @mention of that user, which is what a
+// reply uses to actually notify them.
+func (c *Client) AddComment(ctx context.Context, key, text string, mention *Mention) error {
+	if !c.Enabled() {
+		return errNotConfigured
+	}
+	if strings.TrimSpace(text) == "" && mention == nil {
+		return fmt.Errorf("jira: empty comment")
+	}
+	body := map[string]any{"body": textToADF(text, mention)}
+	path := "/rest/api/3/issue/" + url.PathEscape(key) + "/comment"
+	if err := c.do(ctx, http.MethodPost, path, key, body, nil); err != nil {
 		return err
 	}
 	c.Invalidate(key)

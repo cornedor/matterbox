@@ -1417,6 +1417,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.jiraPointsActive {
 		return m.handleJiraPointsKey(msg)
 	}
+	// Jira comment composer (add / reply) owns every keystroke while open.
+	if m.jiraCommentActive {
+		return m.handleJiraCommentKey(msg)
+	}
 	// GitLab approve/merge confirm owns every keystroke while open.
 	if m.glConfirm.active {
 		return m.handleGitLabConfirmKey(msg)

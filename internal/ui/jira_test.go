@@ -213,3 +213,86 @@ func TestCloseRefRestoresFocus(t *testing.T) {
 		t.Errorf("refs not cleared: %+v", got.refs)
 	}
 }
+
+// loadedJiraModelWith opens the reference panel on ABC-1 and injects iss as the
+// loaded issue, the way the fetch Cmd's result would. (loadedJiraModel, in
+// jira_edit_test.go, uses a fixed issue; this variant takes one with comments.)
+func loadedJiraModelWith(t *testing.T, iss *jira.Issue) Model {
+	t.Helper()
+	m := configuredJiraModel(t, "ABC")
+	m.posts = []*model.Post{{Message: "https://example.atlassian.net/browse/ABC-1"}}
+	m.postIdx = 0
+	m.focus = focusMessages
+	updated, _ := m.openRefForPost(m.posts[0])
+	got := updated.(Model)
+	final, _ := got.handleJiraLoaded(jiraLoadedMsg{gen: got.refGen, key: "ABC-1", issue: iss})
+	return final.(Model)
+}
+
+func TestJiraPanelRendersComments(t *testing.T) {
+	m := loadedJiraModelWith(t, &jira.Issue{
+		Key:          "ABC-1",
+		Summary:      "Fix the widget",
+		CommentTotal: 2,
+		Comments: []jira.Comment{
+			{Author: "Ada Lovelace", AuthorID: "a1", Body: "first thought"},
+			{Author: "Alan Turing", AuthorID: "a2", Body: "a follow-up"},
+		},
+	})
+
+	pane := m.renderRefPane(24, 48)
+	for _, want := range []string{"Comments (2)", "Ada Lovelace", "first thought", "Alan Turing", "a follow-up"} {
+		if !strings.Contains(pane, want) {
+			t.Errorf("rendered pane missing %q", want)
+		}
+	}
+}
+
+func TestJiraReplyPrefillsComposer(t *testing.T) {
+	m := loadedJiraModelWith(t, &jira.Issue{
+		Key: "ABC-1",
+		Comments: []jira.Comment{
+			{Author: "Ada Lovelace", AuthorID: "a1", Body: "older"},
+			{Author: "Alan Turing", AuthorID: "a2", Body: "the newest comment"},
+		},
+	})
+
+	// R opens the reply-target picker, populated newest-first.
+	m.openJiraReplyPicker()
+	if !m.jiraPicker.active || m.jiraPicker.kind != jiraPickReplyTarget {
+		t.Fatalf("reply picker not active: %+v", m.jiraPicker)
+	}
+	if len(m.jiraPicker.items) != 2 || !strings.Contains(m.jiraPicker.items[0].label, "Alan Turing") {
+		t.Fatalf("picker items = %+v (want newest first)", m.jiraPicker.items)
+	}
+
+	// Selecting the newest comment opens the composer prefilled to reply to it.
+	updated, _ := m.applyJiraPick()
+	got := updated.(Model)
+	if !got.jiraCommentActive {
+		t.Fatal("expected comment composer active after picking a reply target")
+	}
+	if got.jiraPicker.active {
+		t.Error("expected reply picker closed after selection")
+	}
+	if got.jiraCommentMention == nil || got.jiraCommentMention.AccountID != "a2" {
+		t.Errorf("mention = %+v, want author a2", got.jiraCommentMention)
+	}
+	if v := got.jiraCommentInput.Value(); !strings.Contains(v, "Alan Turing wrote:") || !strings.Contains(v, "> the newest comment") {
+		t.Errorf("composer not prefilled with the quote: %q", v)
+	}
+}
+
+func TestJiraReplyWithNoCommentsIsNoOp(t *testing.T) {
+	m := loadedJiraModelWith(t, &jira.Issue{Key: "ABC-1"})
+	// R with no comments: the key handler should refuse rather than open an
+	// empty picker.
+	updated, _ := m.handleRefKey(keyStr("R"))
+	got := updated.(Model)
+	if got.jiraPicker.active {
+		t.Error("reply picker should not open with no comments")
+	}
+	if !strings.Contains(got.status, "no comments to reply to") {
+		t.Errorf("status = %q", got.status)
+	}
+}
