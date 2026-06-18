@@ -1229,6 +1229,29 @@ func (m Model) copyText(text, what string) tea.Cmd {
 
 type copyClipboardMsg struct{ what string }
 
+// statusFlashDuration is how long a transient confirmation ("opened X",
+// "copied X") lingers in the footer before clearing itself. Mouse-driven
+// actions — clicking a link to open it — never press a key afterward, and only
+// key handlers clear m.status, so without a self-expiring path the toast would
+// stay in the footer indefinitely.
+const statusFlashDuration = 4 * time.Second
+
+// statusFlashClearMsg clears a self-expiring status, but only if m.status is
+// still the exact text that scheduled it — a newer status (or a key handler's
+// clear) owns the slot by then and must not be wiped by an older toast's timer.
+type statusFlashClearMsg struct{ text string }
+
+// flashStatus shows a transient confirmation that clears itself after
+// statusFlashDuration. Use it for toasts ("opened X", "copied X"); persistent
+// state ("loading messages…") sets m.status directly so it stays until the
+// thing it describes finishes.
+func (m *Model) flashStatus(text string) tea.Cmd {
+	m.status = text
+	return tea.Tick(statusFlashDuration, func(time.Time) tea.Msg {
+		return statusFlashClearMsg{text: text}
+	})
+}
+
 func (m Model) sendMessage(channelID, rootID, text string, fileIDs []string) tea.Cmd {
 	return func() tea.Msg {
 		p, err := m.client.Send(m.ctx, channelID, rootID, text, fileIDs)

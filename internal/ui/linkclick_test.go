@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -348,6 +349,47 @@ func TestPickerNonWebWarns(t *testing.T) {
 	}
 	if !m.linkConfirm.active || m.linkConfirm.url != "mailto:x@y.com" {
 		t.Fatalf("warning modal not raised by the picker: %+v", m.linkConfirm)
+	}
+}
+
+// TestOpenedStatusSelfClears: a successful open sets the "opened X" toast and
+// schedules its own clear — a mouse-driven open never presses a key afterward,
+// and only key handlers clear m.status, so without this the toast would stick.
+func TestOpenedStatusSelfClears(t *testing.T) {
+	m := Model{}
+	out, cmd := m.update(attachmentOpenedMsg{name: "report.pdf"})
+	m = out.(Model)
+	if m.status != "opened report.pdf" {
+		t.Fatalf("status = %q, want %q", m.status, "opened report.pdf")
+	}
+	if cmd == nil {
+		t.Fatal("a successful open should schedule its own status clear")
+	}
+
+	// The scheduled clear empties the slot while the toast still owns it.
+	out, _ = m.update(statusFlashClearMsg{text: "opened report.pdf"})
+	if got := out.(Model).status; got != "" {
+		t.Fatalf("status = %q, want cleared", got)
+	}
+
+	// A stale clear must not wipe a newer status that took over the slot.
+	m.status = "loading messages…"
+	out, _ = m.update(statusFlashClearMsg{text: "opened report.pdf"})
+	if got := out.(Model).status; got != "loading messages…" {
+		t.Fatalf("stale clear wiped a newer status: %q", got)
+	}
+}
+
+// TestOpenErrorStatusPersists: an open *failure* stays in the footer (no
+// self-clear) — it's rare and worth reading until the next interaction.
+func TestOpenErrorStatusPersists(t *testing.T) {
+	m := Model{}
+	out, cmd := m.update(attachmentOpenedMsg{name: "report.pdf", err: errors.New("boom")})
+	if cmd != nil {
+		t.Fatal("an open error should not schedule a clear")
+	}
+	if got := out.(Model).status; got != "open report.pdf: boom" {
+		t.Fatalf("status = %q, want the error to persist", got)
 	}
 }
 

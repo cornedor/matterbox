@@ -629,15 +629,20 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case attachmentOpenedMsg:
 		if msg.err != nil {
+			// Errors stay until the next interaction — worth reading, and rare.
 			m.status = "open " + msg.name + ": " + msg.err.Error()
-		} else {
-			m.status = "opened " + msg.name
+			return m, nil
+		}
+		return m, m.flashStatus("opened " + msg.name)
+
+	case statusFlashClearMsg:
+		if m.status == msg.text {
+			m.status = ""
 		}
 		return m, nil
 
 	case copyClipboardMsg:
-		m.status = "copied " + msg.what + " to clipboard"
-		return m, nil
+		return m, m.flashStatus("copied " + msg.what + " to clipboard")
 
 	case mentionDebounceMsg:
 		if !m.mention.active || msg.seq != m.mention.fetchSeq {
