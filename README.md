@@ -12,7 +12,8 @@ local LLM.
   with `--json` output on most commands and shell completion for zsh/bash/fish.
 - **Local message cache** — every message you see is stored in a local SQLite
   database (`~/.config/matterbox/messages.db`) so reopening a channel is instant
-  and history is searchable offline.
+  and history is searchable offline. A read-only **SQL tab** lets you query it
+  directly — see [docs/database.md](docs/database.md).
 - **Full-text search** — keyword search over the local cache via SQLite FTS5,
   available both in the TUI and as `matterbox search`.
 - **Semantic search** — optional vector search over your message history using a
