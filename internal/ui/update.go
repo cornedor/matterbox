@@ -841,6 +841,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case searchResultsMsg:
 		return m.applySearchResults(msg)
 
+	case sqlResultsMsg:
+		return m.applySQLResults(msg)
+
 	case feedLoadedMsg:
 		return m.applyFeedResults(msg)
 
@@ -1383,12 +1386,13 @@ func (m *Model) ensureSelection() {
 }
 
 // maxTeamIdx returns the highest valid teamIdx, accounting for the
-// synthetic DM tab (when present) and the always-present Unread + Feed +
-// Search tabs.
+// synthetic DM tab (when present) and the always-present Feed + Search +
+// SQL tabs.
 func (m *Model) maxTeamIdx() int {
 	n := len(m.teams)
 	n++ // Feed is always present
 	n++ // Search is always present
+	n++ // SQL is always present
 	if m.hasDMs {
 		n++
 	}
@@ -1455,6 +1459,15 @@ func (m Model) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 		if m.search.input.Value() != old {
 			debounceCmd := m.scheduleSearch()
 			return m, tea.Batch(cmd, debounceCmd)
+		}
+		return m, cmd
+	}
+	if m.focus == focusSQL {
+		old := m.sql.input.Value()
+		var cmd tea.Cmd
+		m.sql.input, cmd = m.sql.input.Update(msg)
+		if m.sql.input.Value() != old {
+			m.layoutPanes()
 		}
 		return m, cmd
 	}
@@ -1609,6 +1622,11 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.focus == focusSearch {
 		return m.handleSearchKey(msg)
 	}
+	// The SQL editor likewise owns every keystroke while focused so its
+	// multi-line typing isn't intercepted by the nav shortcuts below.
+	if m.focus == focusSQL {
+		return m.handleSQLKey(msg)
+	}
 
 	// Below here we're in a content focus (messages / thread / attachments /
 	// teams / feed), so plain-character and alt-letter shortcuts are safe. The
@@ -1660,8 +1678,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Filter):
 		// "f" filters the channel-list sidebar. The sidebar is no longer a
 		// focus, so this works from any content pane on a channel/DM tab;
-		// the Search/Feed tabs have no channel list to filter.
-		if !m.onSearchTab() && !m.onFeedTab() {
+		// the Search/Feed/SQL tabs have no channel list to filter.
+		if !m.onSearchTab() && !m.onFeedTab() && !m.onSQLTab() {
 			m.filterMode = true
 			m.filter.SetValue(m.filterValue)
 			m.filter.Focus()
@@ -1715,6 +1733,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleSearchKey(msg)
 	case focusFeed:
 		return m.handleFeedKey(msg)
+	case focusSQL:
+		return m.handleSQLKey(msg)
+	case focusSQLResults:
+		return m.handleSQLResultsKey(msg)
 	}
 	return m, nil
 }
@@ -1896,6 +1918,16 @@ func teamDigit(msg tea.KeyPressMsg) int {
 // does NOT call this — the user opts in to typing rather than having the
 // textarea swallow navigation shortcuts.)
 func (m Model) focusComposer() (tea.Model, tea.Cmd) {
+	if m.onSQLTab() {
+		// No composer on the SQL tab, but i is a natural "give me the editor"
+		// key when the cursor is down in the results.
+		if m.focus == focusSQLResults {
+			m.focus = focusSQL
+			m.renderSQLResults()
+			return m, m.sql.input.Focus()
+		}
+		return m, nil
+	}
 	if m.onSearchTab() || m.onFeedTab() {
 		return m, nil
 	}
@@ -1923,6 +1955,10 @@ func (m Model) gotoTab(target int) (tea.Model, tea.Cmd) {
 	if m.onFeedTab() {
 		m.focus = focusFeed
 		return m, m.buildFeed()
+	}
+	if m.onSQLTab() {
+		m.focus = focusSQL
+		return m, m.sql.input.Focus()
 	}
 	// Channel/DM tab: land in the messages pane (the sidebar is not a
 	// focus) and open the preferred channel.
@@ -2057,6 +2093,7 @@ func (m Model) gotoTeam(n int) (tea.Model, tea.Cmd) {
 func (m Model) cycleFocus(step int) (tea.Model, tea.Cmd) {
 	onSearch := m.onSearchTab()
 	onFeed := m.onFeedTab()
+	onSQL := m.onSQLTab()
 	for i := 0; i < numFocus; i++ {
 		m.focus = focus((int(m.focus) + step + numFocus) % numFocus)
 		// The channel sidebar can't be focused anymore; it's driven by ctrl-nav.
@@ -2078,15 +2115,25 @@ func (m Model) cycleFocus(step int) (tea.Model, tea.Cmd) {
 		if m.focus == focusFeed && !onFeed {
 			continue
 		}
-		// The team strip is its own Tab stop only on the Search/Feed tabs,
+		if (m.focus == focusSQL || m.focus == focusSQLResults) && !onSQL {
+			continue
+		}
+		// The SQL results focus only exists while there are rows to act on.
+		if m.focus == focusSQLResults && len(m.sql.posts) == 0 {
+			continue
+		}
+		// The team strip is its own Tab stop only on the Search/Feed/SQL tabs,
 		// whose body panes can't host the ←/→ tab switch themselves.
-		if m.focus == focusTeams && !onSearch && !onFeed {
+		if m.focus == focusTeams && !onSearch && !onFeed && !onSQL {
 			continue
 		}
 		if onSearch && m.focus != focusTeams && m.focus != focusSearch {
 			continue
 		}
 		if onFeed && m.focus != focusTeams && m.focus != focusFeed {
+			continue
+		}
+		if onSQL && m.focus != focusTeams && m.focus != focusSQL && m.focus != focusSQLResults {
 			continue
 		}
 		break
@@ -2102,6 +2149,11 @@ func (m Model) cycleFocus(step int) (tea.Model, tea.Cmd) {
 	} else {
 		m.search.input.Blur()
 	}
+	if m.focus == focusSQL {
+		cmd = tea.Batch(cmd, m.sql.input.Focus())
+	} else {
+		m.sql.input.Blur()
+	}
 	// Entering the Feed pane for the first time this session builds it
 	// lazily so arrowing onto the tab and tab-ing in shows fresh unreads.
 	var buildCmd tea.Cmd
@@ -2112,6 +2164,9 @@ func (m Model) cycleFocus(step int) (tea.Model, tea.Cmd) {
 	m.renderMessages()
 	m.renderThread()
 	m.renderRef()
+	if onSQL {
+		m.renderSQLResults() // toggle the result-list selection bar with focus
+	}
 	return m, tea.Batch(cmd, buildCmd)
 }
 
@@ -2427,6 +2482,7 @@ const (
 	wheelThread
 	wheelSearch
 	wheelFeed
+	wheelSQL
 )
 
 // wheelCoalesceDelay is how long accumulated wheel delta waits before being
@@ -2462,6 +2518,8 @@ func (m *Model) wheelTargetForFocus() wheelTarget {
 			return wheelSearch
 		case m.onFeedTab():
 			return wheelFeed
+		case m.onSQLTab():
+			return wheelSQL
 		}
 		return wheelNone
 	}
@@ -2480,6 +2538,8 @@ func (m *Model) wheelStep(t wheelTarget) int {
 		return m.search.view.MouseWheelDelta
 	case wheelFeed:
 		return m.feed.view.MouseWheelDelta
+	case wheelSQL:
+		return m.sql.view.MouseWheelDelta
 	default:
 		return 0
 	}
@@ -2558,6 +2618,8 @@ func (m *Model) applyWheel(t wheelTarget, delta int) {
 		m.search.view.SetYOffset(m.search.view.YOffset() + delta)
 	case wheelFeed:
 		m.feed.view.SetYOffset(m.feed.view.YOffset() + delta)
+	case wheelSQL:
+		m.sql.view.SetYOffset(m.sql.view.YOffset() + delta)
 	}
 }
 
@@ -3186,6 +3248,10 @@ func (m Model) handleTeamsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.focus = focusFeed
 			return m.handleFeedKey(msg)
 		}
+		if m.onSQLTab() {
+			m.focus = focusSQL
+			return m, m.sql.input.Focus()
+		}
 		return m, nil
 	case key.Matches(msg, m.keys.LoadTeam):
 		if m.onSearchTab() {
@@ -3196,6 +3262,10 @@ func (m Model) handleTeamsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.onFeedTab() {
 			m.focus = focusFeed
 			return m, m.buildFeed()
+		}
+		if m.onSQLTab() {
+			m.focus = focusSQL
+			return m, m.sql.input.Focus()
 		}
 		m.focus = focusMessages
 		m.chanOff = 0

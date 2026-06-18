@@ -51,6 +51,7 @@ var (
 	mentionTabColor   = lipgloss.Color("9")  // red when there are mentions
 	searchTabColor    = lipgloss.Color("6")  // cyan to set Search apart from teams
 	feedTabColor      = lipgloss.Color("10") // green to set the Feed tab apart
+	sqlTabColor       = lipgloss.Color("3")  // yellow to set the SQL tab apart
 	footerStyle       = lipgloss.NewStyle().Foreground(dimColor)
 	filterStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("11"))
 	unreadStyle       = lipgloss.NewStyle().Bold(true)
@@ -215,6 +216,7 @@ func (m *Model) layoutPanes() {
 	}
 	m.sizeSearchView(m.width, bodyH)
 	m.sizeFeedView(m.width, bodyH)
+	m.sizeSQLView(m.width, bodyH)
 }
 
 // renderAllPanes repaints the content of every pane after a layout change.
@@ -1048,6 +1050,8 @@ func (m *Model) renderViewContent() string {
 		body = m.renderSearchPane(bodyH, m.width)
 	} else if m.onFeedTab() {
 		body = m.renderFeedPane(bodyH, m.width)
+	} else if m.onSQLTab() {
+		body = m.renderSQLPane(bodyH, m.width)
 	} else {
 		channelsPane := m.renderChannelsPane(bodyH)
 		rightW := m.width - channelsWidth
@@ -1567,6 +1571,8 @@ func (m *Model) renderTeamTabs() string {
 				style = style.Foreground(dmTabColor)
 			case kind == tabSearch:
 				style = style.Foreground(searchTabColor)
+			case kind == tabSQL:
+				style = style.Foreground(sqlTabColor)
 			case kind == tabFeed && mentionCh > 0:
 				style = style.Foreground(mentionTabColor).Bold(true)
 			case kind == tabFeed && unreadCh > 0:

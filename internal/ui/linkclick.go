@@ -130,6 +130,8 @@ func (m *Model) linkAt(pane focus, line, col int) (string, bool) {
 		width = m.threadView.Width()
 	case focusRef:
 		width = m.refView.Width()
+	case focusSQLResults:
+		width = m.sql.view.Width()
 	}
 	lines, _ := m.ensureWrapIndex(pane, width)
 	if line < 0 || line >= len(lines) {
@@ -223,6 +225,8 @@ func (m *Model) hoverLinkAt(x, y int) hoverLink {
 			return hoverLink{url: url, pane: focusRef}
 		}
 		return hoverLink{}
+	case hitSQL:
+		pane, posts = focusSQLResults, m.sql.posts
 	default:
 		return hoverLink{}
 	}
@@ -264,6 +268,8 @@ func (m *Model) renderHoverPane(pane focus) {
 		m.renderThread()
 	case focusRef:
 		m.renderRef()
+	case focusSQLResults:
+		m.renderSQLResults()
 	default:
 		m.renderMessages()
 	}

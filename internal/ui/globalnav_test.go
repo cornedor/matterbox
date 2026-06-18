@@ -53,6 +53,7 @@ func navModel() Model {
 		filter:        fi,
 		search:        newSearchState(false),
 		feed:          newFeedState(),
+		sql:           newSQLState(false),
 		openChannelID: "c1",
 		channelIdx:    0,
 	}
@@ -128,18 +129,19 @@ func TestNavTeamNextClampsAtLastTeam(t *testing.T) {
 	}
 }
 
-// TestNavTeamPrevEntersSyntheticTab: the synthetic Feed/Search tabs sit
+// TestNavTeamPrevEntersSyntheticTab: the synthetic Feed/Search/SQL tabs sit
 // left of the teams in the strip, so ctrl+← from the first team steps onto the
-// Search tab and focuses its body — mirroring the plain ← behavior exactly.
+// SQL tab (the synthetic tab adjacent to the teams) and focuses its body —
+// mirroring the plain ← behavior exactly.
 func TestNavTeamPrevEntersSyntheticTab(t *testing.T) {
 	m := navModel()
 	out, _ := m.handleKey(ctrlKey(tea.KeyLeft))
 	got := out.(Model)
-	if !got.onSearchTab() {
-		t.Fatalf("ctrl+← from first team: currentTeamID = %q, want the Search tab", got.currentTeamID())
+	if !got.onSQLTab() {
+		t.Fatalf("ctrl+← from first team: currentTeamID = %q, want the SQL tab", got.currentTeamID())
 	}
-	if got.focus != focusSearch {
-		t.Fatalf("ctrl+← onto Search tab: focus = %v, want focusSearch", got.focus)
+	if got.focus != focusSQL {
+		t.Fatalf("ctrl+← onto SQL tab: focus = %v, want focusSQL", got.focus)
 	}
 }
 

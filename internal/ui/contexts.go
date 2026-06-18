@@ -44,7 +44,7 @@ type keyContext struct {
 // focuses (where the global:reading layer and the per-pane handlers run).
 func (m *Model) contentFocus() bool {
 	switch m.focus {
-	case focusMessages, focusThread, focusRef, focusAttachments, focusTeams, focusFeed:
+	case focusMessages, focusThread, focusRef, focusAttachments, focusTeams, focusFeed, focusSQLResults:
 		return true
 	}
 	return false
@@ -207,6 +207,32 @@ var keyContexts = []keyContext{
 		},
 	},
 	{
+		name:     "focus:sql",
+		active:   func(m *Model) bool { return m.focus == focusSQL },
+		terminal: true,
+		typing:   true,
+		claims: func(m *Model) []key.Binding {
+			// The multi-line editor owns enter (run) and the newline keys; Tab/
+			// ShiftTab cycle focus, Paste pulls the clipboard. Everything else is
+			// raw typing into the textarea.
+			return []key.Binding{m.keys.Send, m.keys.NewLine, m.keys.Tab, m.keys.ShiftTab, m.keys.Paste}
+		},
+	},
+	{
+		name:     "focus:sqlresults",
+		active:   func(m *Model) bool { return m.focus == focusSQLResults },
+		terminal: true,
+		claims: func(m *Model) []key.Binding {
+			// The result list: selection nav + the read-only message actions,
+			// reused from the messages pane. Tab/ShiftTab are owned by global:
+			// reading above, so they're not claimed here.
+			return []key.Binding{
+				m.keys.Up, m.keys.Down, m.keys.Home, m.keys.End, m.keys.PageUp, m.keys.PageDown,
+				m.keys.OpenAttach, m.keys.Download, m.keys.Preview, m.keys.CopyMD, m.keys.CopyCode,
+			}
+		},
+	},
+	{
 		name:   "global:reading",
 		active: func(m *Model) bool { return m.contentFocus() && !m.inModal() },
 		claims: func(m *Model) []key.Binding {
@@ -315,6 +341,8 @@ var shadowProbeStates = []struct {
 	{"input", func(m *Model) { m.focus = focusInput }},
 	{"input+popup", func(m *Model) { m.focus = focusInput; m.mention.active = true }},
 	{"search", func(m *Model) { m.focus = focusSearch }},
+	{"sql", func(m *Model) { m.focus = focusSQL }},
+	{"sqlresults", func(m *Model) { m.focus = focusSQLResults }},
 	{"messages", func(m *Model) { m.focus = focusMessages }},
 	{"thread", func(m *Model) { m.focus = focusThread; m.threadOpen = true }},
 	{"ref", func(m *Model) { m.focus = focusRef; m.refOpen = true }},

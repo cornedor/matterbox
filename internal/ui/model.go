@@ -55,9 +55,11 @@ const (
 	focusSearch
 	focusFeed
 	focusRef
+	focusSQL
+	focusSQLResults
 )
 
-const numFocus = 9
+const numFocus = 11
 
 // dmTeamID is a synthetic team identifier used to bucket DMs / group-DMs,
 // which carry an empty Channel.TeamId on the server.
@@ -75,6 +77,11 @@ const searchTeamID = "__search__"
 // bucket.
 const feedTeamID = "__feed__"
 
+// sqlTeamID is a synthetic team identifier for the virtual "SQL" tab. Its
+// body is a read-only SQL editor over the local message cache; results render
+// as chat messages. See internal/ui/sqltab.go.
+const sqlTeamID = "__sql__"
+
 type tabKind int
 
 const (
@@ -82,6 +89,7 @@ const (
 	tabDM
 	tabSearch
 	tabFeed
+	tabSQL
 )
 
 type Model struct {
@@ -470,6 +478,11 @@ type Model struct {
 	// the synthetic "Feed" tab. See internal/ui/feed.go.
 	feed feedState
 
+	// SQL tab state: a read-only SQL editor over the local message cache,
+	// with results rendered as chat messages. Reached by selecting the
+	// synthetic "SQL" tab. See internal/ui/sqltab.go.
+	sql sqlState
+
 	// pendingJumpPostID, when non-empty, is the post id renderMessages
 	// should center on after the next postsLoadedMsg lands — used by the
 	// search-result → channel jump flow.
@@ -618,6 +631,10 @@ type Model struct {
 	msgsContentVer   uint64
 	threadContentVer uint64
 	refContentVer    uint64
+	// sqlContentVer is bumped whenever renderSQLResults rebuilds the SQL result
+	// viewport, so the wrap-index cache (linkAt / hover) keys off it like the
+	// transcript panes do.
+	sqlContentVer uint64
 
 	// msgRowStarts / threadRowStarts hold the cumulative visual-row offset of
 	// each post in the corresponding viewport's content (len = nposts+1, the
@@ -895,6 +912,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		help:                h,
 		search:              newSearchState(st != nil),
 		feed:                newFeedState(),
+		sql:                 newSQLState(st != nil),
 		reactionEmojis:      reactions,
 		teamOrder:           teamOrder,
 		summaryEndpoint:     summaryEndpoint,
@@ -964,6 +982,10 @@ func (m Model) ShortHelp() []key.Binding {
 		return []key.Binding{k.Up, k.Down, k.ApplyOpen, k.CancelEdit, k.Tab, k.Help, k.Quit}
 	case m.focus == focusFeed:
 		return []key.Binding{k.Up, k.Down, k.OpenChannel, k.MarkRead, k.Refresh, k.Tab, k.NavTeam, k.Help, k.Quit}
+	case m.focus == focusSQL:
+		return []key.Binding{k.Send, k.NewLine, k.Tab, k.NavTeam, k.Help, k.Quit}
+	case m.focus == focusSQLResults:
+		return []key.Binding{k.Up, k.Down, k.OpenAttach, k.Preview, k.Download, k.CopyMD, k.Tab, k.Help, k.Quit}
 	}
 	return []key.Binding{k.Tab, k.NavTeam, k.Switcher, k.Search, k.SearchHere, k.Help, k.Quit}
 }
@@ -1963,6 +1985,10 @@ func (m Model) tabAt(i int) (kind tabKind, id, name string) {
 	i--
 	if i == 0 {
 		return tabSearch, searchTeamID, "Search"
+	}
+	i--
+	if i == 0 {
+		return tabSQL, sqlTeamID, "SQL"
 	}
 	i--
 	if i >= 0 && i < len(m.teams) {

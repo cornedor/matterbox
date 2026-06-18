@@ -31,6 +31,7 @@ const (
 	hitFeed
 	hitSearch
 	hitRef
+	hitSQL
 )
 
 // hit is the result of hitTest. idx's meaning depends on zone: a tab index
@@ -145,6 +146,17 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		return m.clickFeedEntry(h.idx)
 	case hitSearch:
 		return m.clickSearchHit(h.idx)
+	case hitSQL:
+		// A click on a link in a result row opens it (mouse capture intercepts the
+		// OSC 8 click while reporting is on, like the messages pane); otherwise it
+		// selects the row. The link is resolved against the content as it was
+		// rendered at click time — before clickSQLRow moves the selection bar.
+		if h.idx >= 0 {
+			if url, ok := m.linkAt(focusSQLResults, h.line, h.col); ok {
+				return m.activateLink(url)
+			}
+		}
+		return m.clickSQLRow(h.idx)
 	case hitRef:
 		// The reference panel has no post selection or text drag, so a click
 		// just opens the link under it (if any) — mirroring what the terminal
@@ -291,7 +303,7 @@ func (m *Model) hoverAt(x, y int) hoverState {
 		}
 		return hoverState{}
 	}
-	if x < channelsWidth && !m.onSearchTab() && !m.onFeedTab() {
+	if x < channelsWidth && !m.onSearchTab() && !m.onFeedTab() && !m.onSQLTab() {
 		if h := m.hitChannel(y); h.zone == hitChannel {
 			return hoverState{zone: hitChannel, idx: h.idx}
 		}
@@ -397,6 +409,9 @@ func (m *Model) hitTest(x, y int) hit {
 	}
 	if m.onSearchTab() {
 		return m.hitSearchBubble(y)
+	}
+	if m.onSQLTab() {
+		return m.hitSQLRow(x, y)
 	}
 	if x < channelsWidth {
 		return m.hitChannel(y)
@@ -512,6 +527,53 @@ func (m *Model) hitSearchBubble(y int) hit {
 	}
 	if idx, ok := bubbleAt(m.search.zones, m.search.zonesTotal, yoff+row); ok {
 		return hit{zone: hitSearch, idx: idx}
+	}
+	return hit{zone: hitNone}
+}
+
+// sqlGeom gives the SQL result viewport's content-left column, top screen row,
+// width, height and y-offset (mirroring messagesGeom). The pane fills the body
+// width with a single left border, so content starts at column 1; it stacks a
+// title (1), an input box (1-row top border + the editor's current height) and
+// a rule (1) above the viewport — so the header height tracks the dynamic editor
+// height, mirroring sizeSQLView.
+func (m *Model) sqlGeom() (x0, top, width, height, yoff int) {
+	return 1, tabsHeight + 3 + m.sql.input.Height(), m.sql.view.Width(), m.sql.view.Height(), m.sql.view.YOffset()
+}
+
+// sqlRowAt returns the result row whose visual-row span contains vrow, using the
+// per-row offsets the last render recorded (rowStarts[i]..rowStarts[i+1]). ok is
+// false above the first row or at/below the total (empty space under the rows).
+func sqlRowAt(rowStarts []int, vrow int) (idx int, ok bool) {
+	n := len(rowStarts) - 1
+	if n <= 0 || vrow < rowStarts[0] || vrow >= rowStarts[n] {
+		return 0, false
+	}
+	for i := n - 1; i >= 0; i-- {
+		if vrow >= rowStarts[i] {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// hitSQLRow maps a screen cell on the SQL tab to the result row under it (idx >=
+// 0, with line/col content coordinates so a click can resolve a link), or to the
+// editor region above the results (idx -1, so a click there focuses the query
+// editor). Empty space below the rows is a no-op.
+func (m *Model) hitSQLRow(x, y int) hit {
+	x0, top, width, height, yoff := m.sqlGeom()
+	if y < top {
+		// Title / editor / rule region: a click here focuses the editor.
+		return hit{zone: hitSQL, idx: -1}
+	}
+	row := y - top
+	if row >= 0 && row < height {
+		vrow := yoff + row
+		if idx, ok := sqlRowAt(m.sql.rowStarts, vrow); ok {
+			line, col := m.contentCoord(focusSQLResults, x, x0, width, vrow)
+			return hit{zone: hitSQL, idx: idx, line: line, col: col}
+		}
 	}
 	return hit{zone: hitNone}
 }
@@ -682,6 +744,8 @@ func (m *Model) ensureWrapIndex(pane focus, width int) ([]string, []int) {
 		ver = m.threadContentVer
 	case focusRef:
 		ver = m.refContentVer
+	case focusSQLResults:
+		ver = m.sqlContentVer
 	}
 	if m.wrapIdx.pane == pane && m.wrapIdx.ver == ver && m.wrapIdx.width == width && m.wrapIdx.lines != nil {
 		return m.wrapIdx.lines, m.wrapIdx.starts
@@ -692,6 +756,8 @@ func (m *Model) ensureWrapIndex(pane focus, width int) ([]string, []int) {
 		content = m.threadView.GetContent()
 	case focusRef:
 		content = m.refView.GetContent()
+	case focusSQLResults:
+		content = m.sql.view.GetContent()
 	}
 	lines := strings.Split(content, "\n")
 	starts := make([]int, len(lines)+1)

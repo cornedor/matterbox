@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -23,9 +24,16 @@ const defaultRecencyHalfLife = 90 * 24 * time.Hour
 // Store wraps the message database. Methods are safe for concurrent use
 // by multiple goroutines because database/sql serialises access.
 type Store struct {
-	db *sql.DB
+	db   *sql.DB
+	path string // the database file, kept so RawQuery can open a read-only handle
 	// recencyHalfLife tunes how fast ranked search results decay with age.
 	recencyHalfLife time.Duration
+
+	// roMu guards lazy creation of roDB, a separate read-only (query_only)
+	// handle used by RawQuery so a power-user query on the SQL tab can never
+	// mutate the message cache. See query.go.
+	roMu sync.Mutex
+	roDB *sql.DB
 }
 
 // Option configures a Store at Open time.
@@ -71,7 +79,7 @@ func Open(path string, opts ...Option) (*Store, error) {
 	// One writer is enough; SQLite serialises writes anyway, and capping
 	// connections avoids "database is locked" surprises.
 	db.SetMaxOpenConns(1)
-	s := &Store{db: db, recencyHalfLife: defaultRecencyHalfLife}
+	s := &Store{db: db, path: path, recencyHalfLife: defaultRecencyHalfLife}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -82,9 +90,18 @@ func Open(path string, opts ...Option) (*Store, error) {
 	return s, nil
 }
 
-// Close releases the database handle.
+// Close releases the database handle (and the lazily-opened read-only handle).
 func (s *Store) Close() error {
-	if s == nil || s.db == nil {
+	if s == nil {
+		return nil
+	}
+	s.roMu.Lock()
+	if s.roDB != nil {
+		s.roDB.Close()
+		s.roDB = nil
+	}
+	s.roMu.Unlock()
+	if s.db == nil {
 		return nil
 	}
 	return s.db.Close()
