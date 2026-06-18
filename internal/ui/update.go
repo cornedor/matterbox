@@ -1386,13 +1386,15 @@ func (m *Model) ensureSelection() {
 }
 
 // maxTeamIdx returns the highest valid teamIdx, accounting for the
-// synthetic DM tab (when present) and the always-present Feed + Search +
-// SQL tabs.
+// synthetic DM tab (when present), the always-present Feed + Search tabs,
+// and the optional SQL tab (config sql_tab).
 func (m *Model) maxTeamIdx() int {
 	n := len(m.teams)
 	n++ // Feed is always present
 	n++ // Search is always present
-	n++ // SQL is always present
+	if m.showSQL {
+		n++ // SQL is optional (config sql_tab)
+	}
 	if m.hasDMs {
 		n++
 	}

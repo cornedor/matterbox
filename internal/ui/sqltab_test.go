@@ -79,6 +79,7 @@ func sqlModelWithTwoRows() Model {
 	m := newSQLAuthorModel()
 	m.keys = newKeyMap("ctrl")
 	m.mouseEnabled = true
+	m.showSQL = true
 	m.sql = newSQLState(true)
 	m.sql.view.SetWidth(80)
 	m.sql.view.SetHeight(20)
@@ -176,6 +177,7 @@ func TestSQLResultLinkResolves(t *testing.T) {
 	m := newSQLAuthorModel()
 	m.keys = newKeyMap("ctrl")
 	m.mouseEnabled = true
+	m.showSQL = true
 	m.sql = newSQLState(true)
 	m.sql.view.SetWidth(80)
 	m.sql.view.SetHeight(20)
@@ -212,6 +214,7 @@ func TestSQLResultLinkResolves(t *testing.T) {
 func TestSQLZeroRowsKeepsEditorFocus(t *testing.T) {
 	m := newSQLAuthorModel()
 	m.keys = newKeyMap("ctrl")
+	m.showSQL = true
 	m.sql = newSQLState(true)
 	m.sql.view.SetWidth(80)
 	m.sql.view.SetHeight(20)
@@ -226,6 +229,35 @@ func TestSQLZeroRowsKeepsEditorFocus(t *testing.T) {
 	m = out.(Model)
 	if m.focus != focusSQL {
 		t.Fatalf("0 rows: focus = %v, want focusSQL (stay in editor)", m.focus)
+	}
+}
+
+// sqlTabPresent reports whether any tab in the strip is the SQL tab.
+func sqlTabPresent(m Model) bool {
+	for i := 0; i <= m.maxTeamIdx(); i++ {
+		if k, _, _ := m.tabAt(i); k == tabSQL {
+			return true
+		}
+	}
+	return false
+}
+
+// TestSQLTabHiddenByDefault: showSQL gates the synthetic SQL tab. Off (the
+// default) keeps it out of the strip; on adds it, lengthening the strip by one.
+func TestSQLTabHiddenByDefault(t *testing.T) {
+	m := newSQLAuthorModel()
+
+	if sqlTabPresent(m) {
+		t.Fatalf("SQL tab present with showSQL=false; want hidden")
+	}
+	hiddenMax := m.maxTeamIdx()
+
+	m.showSQL = true
+	if !sqlTabPresent(m) {
+		t.Fatalf("SQL tab absent with showSQL=true; want present")
+	}
+	if got := m.maxTeamIdx(); got != hiddenMax+1 {
+		t.Fatalf("maxTeamIdx with SQL tab = %d; want %d", got, hiddenMax+1)
 	}
 }
 

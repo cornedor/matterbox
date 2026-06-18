@@ -11,9 +11,12 @@ queries.
 
 ## Opening the SQL tab
 
-It's the yellow **SQL** tab in the tab strip, next to **Feed** and **Search**.
-Jump to it the same way you switch teams (the nav-modifier + arrows, the team
-jump keys, or just click it). Then:
+The tab is **hidden by default**. Turn it on by setting `sql_tab: true` in
+`~/.config/matterbox/config.yaml`, then restart matterbox.
+
+Once enabled it's the yellow **SQL** tab in the tab strip, next to **Feed** and
+**Search**. Jump to it the same way you switch teams (the nav-modifier + arrows,
+the team jump keys, or just click it). Then:
 
 - Type a query and press **Enter** to run it. (`alt+↵` / `shift+↵` inserts a
   newline, so multi-line SQL works.)

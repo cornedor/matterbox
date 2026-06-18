@@ -76,6 +76,11 @@ type Config struct {
 	// directory is created on first download. Empty defaults to ~/Downloads.
 	// See internal/ui.
 	DownloadDir string `yaml:"download_dir"`
+	// SQLTab adds a synthetic "SQL" tab: a read-only SQL editor over the local
+	// message cache that renders each result row as a chat message. Pointer so
+	// an absent key defaults to false — the tab is hidden — while an explicit
+	// `sql_tab: true` shows it. See internal/ui/sqltab.go.
+	SQLTab *bool `yaml:"sql_tab"`
 	// Keybindings holds optional keymap tweaks. See internal/ui.
 	Keybindings KeybindingsConfig `yaml:"keybindings"`
 	// EmojiImages controls whether custom (server) emoji render as real
@@ -530,7 +535,7 @@ func Load() (*Config, error) {
 	// and rewrite the file once so the discovered model + prompt show up as
 	// editable defaults. Best-effort: a failed rewrite only means the file
 	// keeps working off in-memory defaults.
-	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.DownloadDir == "" || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.TwoWay == nil || cfg.Listen.NotifyDMs == nil || cfg.Listen.NotifyDelaySeconds == nil
+	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.DownloadDir == "" || cfg.SQLTab == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.TwoWay == nil || cfg.Listen.NotifyDMs == nil || cfg.Listen.NotifyDelaySeconds == nil
 	cfg.fillDefaults()
 	if addDefaults {
 		if werr := writeConfig(p, cfg); werr != nil {
@@ -595,6 +600,10 @@ func (c *Config) fillDefaults() {
 	}
 	if c.DownloadDir == "" {
 		c.DownloadDir = defaultDownloadDir
+	}
+	if c.SQLTab == nil {
+		f := false
+		c.SQLTab = &f
 	}
 	if c.Keybindings.NavModifier == "" {
 		// Default to the ctrl modifier, but honour a pre-NavModifier config's
@@ -712,6 +721,9 @@ func writeConfig(p string, cfg *Config) error {
 		"# download_dir: where the download-attachment key (s on a message) saves\n" +
 		"#             files (default ~/Downloads). A leading ~ is expanded and the\n" +
 		"#             directory is created on first download.\n" +
+		"# sql_tab:    show the read-only SQL tab — a query editor over your local\n" +
+		"#             message cache whose rows render as chat messages (default\n" +
+		"#             false, hidden). Set true to add it to the tab strip.\n" +
 		"# keybindings: nav_modifier sets the modifier for arrow-key team/channel\n" +
 		"#             navigation: ctrl (default), alt, shift, super (the ⌘/Windows\n" +
 		"#             key; also \"cmd\"), meta, hyper, or none. On macOS ctrl+arrows\n" +

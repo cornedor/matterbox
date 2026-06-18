@@ -478,9 +478,14 @@ type Model struct {
 	// the synthetic "Feed" tab. See internal/ui/feed.go.
 	feed feedState
 
+	// showSQL snapshots config.SQLTab: when false (the default) the synthetic
+	// "SQL" tab is omitted from the tab strip entirely (tabAt / maxTeamIdx skip
+	// it). Set sql_tab: true in config.yaml to surface it.
+	showSQL bool
+
 	// SQL tab state: a read-only SQL editor over the local message cache,
 	// with results rendered as chat messages. Reached by selecting the
-	// synthetic "SQL" tab. See internal/ui/sqltab.go.
+	// synthetic "SQL" tab (only present when showSQL). See internal/ui/sqltab.go.
 	sql sqlState
 
 	// pendingJumpPostID, when non-empty, is the post id renderMessages
@@ -753,6 +758,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	markReadDelay := defaultMarkReadDelay
 	groupWindow := defaultGroupWindow
 	showCustomStatus := true
+	showSQL := false
 	mouseEnabled := true
 	navModifier := navModifierFromConfig(cfg)
 	vimNav := vimNavGlobal
@@ -790,6 +796,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		}
 		if cfg.CustomStatus != nil {
 			showCustomStatus = *cfg.CustomStatus
+		}
+		if cfg.SQLTab != nil {
+			showSQL = *cfg.SQLTab
 		}
 		if cfg.Mouse != nil {
 			mouseEnabled = *cfg.Mouse
@@ -912,6 +921,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		help:                h,
 		search:              newSearchState(st != nil),
 		feed:                newFeedState(),
+		showSQL:             showSQL,
 		sql:                 newSQLState(st != nil),
 		reactionEmojis:      reactions,
 		teamOrder:           teamOrder,
@@ -1970,8 +1980,8 @@ func (m *Model) openChannelLoadCmd(channelID string) tea.Cmd {
 }
 
 // tabAt resolves a 0-based tab index into its kind and (for teams) the
-// team's ID + display name. Tab order is: DMs (if present), Feed,
-// Search, teams in their loaded order.
+// team's ID + display name. Tab order is: DMs (if present), Feed, Search,
+// SQL (only when showSQL), teams in their loaded order.
 func (m Model) tabAt(i int) (kind tabKind, id, name string) {
 	if m.hasDMs {
 		if i == 0 {
@@ -1987,10 +1997,12 @@ func (m Model) tabAt(i int) (kind tabKind, id, name string) {
 		return tabSearch, searchTeamID, "Search"
 	}
 	i--
-	if i == 0 {
-		return tabSQL, sqlTeamID, "SQL"
+	if m.showSQL {
+		if i == 0 {
+			return tabSQL, sqlTeamID, "SQL"
+		}
+		i--
 	}
-	i--
 	if i >= 0 && i < len(m.teams) {
 		return tabTeam, m.teams[i].Id, displayTeam(m.teams[i])
 	}
