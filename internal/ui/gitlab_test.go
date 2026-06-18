@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/mattermost/mattermost/server/public/model"
 
 	"matterbox/internal/gitlab"
@@ -50,6 +51,71 @@ func sampleMR() *gitlab.MR {
 				{Name: "test", Jobs: []gitlab.Job{{Name: "lint", Status: "failed"}}},
 			},
 		},
+	}
+}
+
+// TestRefPanelLinkIsClickable: a link in the reference panel (here a GitLab MR
+// description) resolves under the pointer and opens on a click — the panel used
+// to be inert to the mouse (hitTest returned hitNone), so a rendered link could
+// not be clicked while mouse reporting was on. Hovering it also highlights it.
+func TestRefPanelLinkIsClickable(t *testing.T) {
+	url := "https://example.com/docs"
+	// mouseModel parks us on a real team tab (so hitTest sees the channel/message
+	// layout, not the synthetic Feed/Search panes) with mouse reporting on.
+	base := mouseModel([]*model.Post{{Id: "p", CreateAt: 100, UserId: "u", Message: "x"}})
+	base.glClient = gitlab.New(gitlab.Config{BaseURL: "https://git.example.com", Token: "tok"})
+	mr := sampleMR()
+	mr.Description = "Read [the docs](" + url + ") carefully."
+	m := openLoadedMR(t, base, mr)
+
+	// Find the link in the rendered panel: the logical line carrying its OSC 8
+	// open marker, and the first display column the link covers.
+	width := m.refView.Width()
+	lines, starts := m.ensureWrapIndex(focusRef, width)
+	li, col := -1, -1
+	for i, ln := range lines {
+		if !strings.Contains(ln, "\x1b]8;;"+url) {
+			continue
+		}
+		for c := 0; c <= len(ln); c++ {
+			if got, ok := m.linkAt(focusRef, i, c); ok && got == url {
+				li, col = i, c
+				break
+			}
+		}
+		break
+	}
+	if li < 0 {
+		t.Fatalf("link %q not resolvable anywhere in the ref panel", url)
+	}
+
+	// Map (logical line, display column) to a screen cell.
+	x0, top, _, _, yoff := m.refGeom()
+	x := x0 + col%width
+	y := top + (starts[li] + col/width - yoff)
+
+	if h := m.hitTest(x, y); h.zone != hitRef {
+		t.Fatalf("hitTest over the ref link = zone %v, want hitRef", h.zone)
+	}
+
+	out, _ := m.handleMouseClick(click(tea.MouseLeft, x, y))
+	got := out.(Model)
+	if !strings.Contains(got.status, "opening") || !strings.Contains(got.status, url) {
+		t.Fatalf("clicking the ref link did not open it; status=%q", got.status)
+	}
+	if got.linkConfirm.active {
+		t.Fatal("a web link in the ref panel should open without the warning modal")
+	}
+
+	// Hovering the same cell records the link (the footer reads hoverLink.url)
+	// and highlights it in the panel content.
+	out, _ = m.handleMouseMotion(motion(tea.MouseNone, x, y))
+	hov := out.(Model)
+	if hov.hoverLink.url != url || hov.hoverLink.pane != focusRef {
+		t.Fatalf("hover over ref link: hoverLink=%+v, want url=%q pane=focusRef", hov.hoverLink, url)
+	}
+	if !strings.Contains(hov.refView.GetContent(), "48;5;238") {
+		t.Fatal("hovered ref link not highlighted in the panel content")
 	}
 }
 

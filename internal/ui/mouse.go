@@ -30,6 +30,7 @@ const (
 	hitThread
 	hitFeed
 	hitSearch
+	hitRef
 )
 
 // hit is the result of hitTest. idx's meaning depends on zone: a tab index
@@ -110,7 +111,8 @@ var (
 // a click can't act on a pane hidden behind a popup).
 func (m *Model) mouseBlocked() bool {
 	return !m.mouseEnabled || m.inModal() || m.keyDebugMode ||
-		m.jiraPicker.active || m.jiraPointsActive || m.glConfirm.active || m.linkConfirm.active
+		m.jiraPicker.active || m.jiraPointsActive || m.jiraCommentActive ||
+		m.glConfirm.active || m.linkConfirm.active
 }
 
 // handleMouseClick routes a left-button press: switch team / open channel for
@@ -143,6 +145,14 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		return m.clickFeedEntry(h.idx)
 	case hitSearch:
 		return m.clickSearchHit(h.idx)
+	case hitRef:
+		// The reference panel has no post selection or text drag, so a click
+		// just opens the link under it (if any) — mirroring what the terminal
+		// would do natively via OSC 8 were mouse reporting off.
+		if url, ok := m.linkAt(focusRef, h.line, h.col); ok {
+			return m.activateLink(url)
+		}
+		return m, nil
 	}
 	return m, nil
 }
@@ -407,7 +417,7 @@ func (m *Model) hitTest(x, y int) hit {
 		refW := splitRightPane(rightW)
 		msgsW = rightW - refW
 		if x >= channelsWidth+msgsW {
-			return hit{zone: hitNone} // reference panel is read-only
+			return m.hitRefContent(x, y)
 		}
 	}
 	mx0, top, w, h, yoff := m.messagesGeom()
@@ -556,6 +566,34 @@ func (m *Model) hitViewportPost(x, y, top, x0, width, height, yoff int, pane foc
 	return hit{zone: zone, idx: idx, line: line, col: col}
 }
 
+// hitRefContent maps a cell inside the reference panel's viewport to the
+// content coordinate under it, so a click / hover can resolve the link there.
+// Unlike the message and thread panes the panel has no per-post structure — it
+// is a single scrollable document — so the hit carries only (line, col), with
+// no post index. Returns hitNone over the title row, the empty rows below the
+// content, or before the panel has any geometry.
+func (m *Model) hitRefContent(x, y int) hit {
+	x0, top, width, height, yoff := m.refGeom()
+	if width <= 0 || height <= 0 {
+		return hit{zone: hitNone}
+	}
+	row := y - top
+	if row < 0 || row >= height {
+		return hit{zone: hitNone}
+	}
+	vrow := yoff + row
+	_, starts := m.ensureWrapIndex(focusRef, width)
+	total := 0
+	if len(starts) > 0 {
+		total = starts[len(starts)-1]
+	}
+	if vrow < 0 || vrow >= total {
+		return hit{zone: hitNone}
+	}
+	line, col := m.contentCoord(focusRef, x, x0, width, vrow)
+	return hit{zone: hitRef, line: line, col: col}
+}
+
 // cellToContent maps a screen cell to (logical line, display column) within a
 // pane's content, clamping out-of-bounds cells into the viewport so a drag that
 // leaves the pane still extends to its edge. ok is false when the pane has no
@@ -639,15 +677,21 @@ func (m *Model) ensureWrapIndex(pane focus, width int) ([]string, []int) {
 	// fetching the viewport content — GetContent copies the whole transcript, and
 	// the hover path hits this every mouse-motion, so skip it on a cache hit.
 	ver := m.msgsContentVer
-	if pane == focusThread {
+	switch pane {
+	case focusThread:
 		ver = m.threadContentVer
+	case focusRef:
+		ver = m.refContentVer
 	}
 	if m.wrapIdx.pane == pane && m.wrapIdx.ver == ver && m.wrapIdx.width == width && m.wrapIdx.lines != nil {
 		return m.wrapIdx.lines, m.wrapIdx.starts
 	}
 	content := m.msgsView.GetContent()
-	if pane == focusThread {
+	switch pane {
+	case focusThread:
 		content = m.threadView.GetContent()
+	case focusRef:
+		content = m.refView.GetContent()
 	}
 	lines := strings.Split(content, "\n")
 	starts := make([]int, len(lines)+1)
@@ -761,6 +805,17 @@ func (m *Model) threadGeom() (x0, top, width, height, yoff int) {
 	}
 	msgsW := rightW - splitRightPane(rightW)
 	return channelsWidth + msgsW + 1, tabsHeight + 1, m.threadView.Width(), m.threadView.Height(), m.threadView.YOffset()
+}
+
+// refGeom mirrors threadGeom for the reference panel, which shares the same
+// right-side slot (only one of the thread sidebar and the panel is ever open).
+func (m *Model) refGeom() (x0, top, width, height, yoff int) {
+	rightW := m.width - channelsWidth
+	if rightW < 10 {
+		rightW = 10
+	}
+	msgsW := rightW - splitRightPane(rightW)
+	return channelsWidth + msgsW + 1, tabsHeight + 1, m.refView.Width(), m.refView.Height(), m.refView.YOffset()
 }
 
 // bodyHeight reproduces viewContent's body-height calculation (terminal height

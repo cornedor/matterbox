@@ -339,12 +339,24 @@ func (m *Model) renderRef() {
 		}
 		m.refView.SetContent(refDimStyle.Render("loading " + label + "…"))
 	case r.kind == refJira && m.jiraIssue != nil:
-		m.refView.SetContent(m.renderJiraIssue(m.jiraIssue, m.refView.Width()))
+		m.refView.SetContent(m.refHover(m.renderJiraIssue(m.jiraIssue, m.refView.Width())))
 	case r.kind == refGitLab && m.glMR != nil:
-		m.refView.SetContent(m.renderGitLabMR(m.glMR, m.refView.Width()))
+		m.refView.SetContent(m.refHover(m.renderGitLabMR(m.glMR, m.refView.Width())))
 	default:
 		m.refView.SetContent(refDimStyle.Render("loading…"))
 	}
+}
+
+// refHover paints the hovered link's background when the pointer rests on a
+// link in this panel, mirroring the message pane's hover highlight. The content
+// is still unwrapped here (the viewport soft-wraps it on display), so each
+// link's OSC 8 open/inner/close is contiguous for highlightLink. A no-op unless
+// the hovered link belongs to this pane.
+func (m *Model) refHover(content string) string {
+	if m.hoverLink.pane == focusRef && m.hoverLink.url != "" {
+		return highlightLink(content, m.hoverLink.url, mdLinkHoverStyle)
+	}
+	return content
 }
 
 // refMeta writes one aligned "label: value" row, skipping empty values. width

@@ -125,8 +125,11 @@ func (m *Model) renderLinkConfirm() string {
 // active link), and the marker-less rows between it and here preserve that state.
 func (m *Model) linkAt(pane focus, line, col int) (string, bool) {
 	width := m.msgsView.Width()
-	if pane == focusThread {
+	switch pane {
+	case focusThread:
 		width = m.threadView.Width()
+	case focusRef:
+		width = m.refView.Width()
 	}
 	lines, _ := m.ensureWrapIndex(pane, width)
 	if line < 0 || line >= len(lines) {
@@ -213,6 +216,13 @@ func (m *Model) hoverLinkAt(x, y int) hoverLink {
 		pane, posts = focusMessages, m.posts
 	case hitThread:
 		pane, posts = focusThread, m.threadPosts
+	case hitRef:
+		// The reference panel is a single document with no owning post, so the
+		// hover is keyed by pane alone (postID stays empty).
+		if url, ok := m.linkAt(focusRef, h.line, h.col); ok {
+			return hoverLink{url: url, pane: focusRef}
+		}
+		return hoverLink{}
 	default:
 		return hoverLink{}
 	}
@@ -249,9 +259,12 @@ func (m *Model) setHoverLink(hl hoverLink) {
 // renderHoverPane re-renders one transcript pane so a hover-highlight change takes
 // effect (markdownBody paints the hovered post's link; the rest are cache hits).
 func (m *Model) renderHoverPane(pane focus) {
-	if pane == focusThread {
+	switch pane {
+	case focusThread:
 		m.renderThread()
-	} else {
+	case focusRef:
+		m.renderRef()
+	default:
 		m.renderMessages()
 	}
 }
