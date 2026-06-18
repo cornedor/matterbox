@@ -354,6 +354,33 @@ func unreadDivider(width int) string {
 	return style.Render(strings.Repeat("─", left) + label + strings.Repeat("─", right))
 }
 
+// resolveUnreadDivider picks the post the "new messages" divider sits above,
+// once, from the posts loaded for a freshly-opened channel — then freezes it
+// so a message sent or received while the channel is open never moves or
+// creates the divider. It waits until the loaded window actually reaches past
+// the boundary (the unread posts may arrive a beat later via the recent
+// merge), and never anchors to the user's own message: a divider reading
+// "unread messages" above something you just sent is the bug this guards.
+func (m *Model) resolveUnreadDivider() {
+	if m.unreadDividerResolved || m.unreadBoundary <= 0 || len(m.posts) == 0 {
+		return
+	}
+	if m.posts[len(m.posts)-1].CreateAt <= m.unreadBoundary {
+		return // window hasn't reached the unread region yet
+	}
+	m.unreadDividerResolved = true
+	for i := 1; i < len(m.posts); i++ {
+		prev, cur := m.posts[i-1], m.posts[i]
+		if prev.CreateAt <= m.unreadBoundary && cur.CreateAt > m.unreadBoundary {
+			if m.me != nil && cur.UserId == m.me.Id {
+				return // first unread is the user's own post — no divider
+			}
+			m.unreadDividerID = cur.Id
+			return
+		}
+	}
+}
+
 func (m *Model) renderMessages() {
 	// New content generation: invalidates the messages scroll-geometry cache
 	// (see scrollcache.go). Bump unconditionally — every path below resets the
@@ -385,18 +412,15 @@ func (m *Model) renderMessages() {
 	// (post-wrap). Accumulate each post's cached visual-row count as we go
 	// so we can place the selection without re-measuring every line on
 	// each keystroke (visAcc is the running visual-row offset).
+	m.resolveUnreadDivider()
 	selVisStart, selVisRows, visAcc := -1, 0, 0
 	rowStarts := make([]int, len(m.posts)+1)
 	dividerDrawn := false
 	for i, p := range m.posts {
-		// Insert the "new messages" divider at the read→unread transition:
-		// the first post created after the frozen boundary whose predecessor
-		// was created before it. Requiring a read post above means a list
-		// that is unread top-to-bottom draws no divider (it would carry no
-		// information). The extra row lives in the gap before the post, so
-		// rowStarts still points at the post's real first line.
-		if !dividerDrawn && m.unreadBoundary > 0 && i > 0 &&
-			m.posts[i-1].CreateAt <= m.unreadBoundary && p.CreateAt > m.unreadBoundary {
+		// Insert the "new messages" divider above its frozen anchor post. The
+		// extra row lives in the gap before the post, so rowStarts still points
+		// at the post's real first line.
+		if !dividerDrawn && p.Id != "" && p.Id == m.unreadDividerID {
 			allLines = append(allLines, unreadDivider(width))
 			visAcc++
 			dividerDrawn = true

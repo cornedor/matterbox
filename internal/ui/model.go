@@ -169,11 +169,20 @@ type Model struct {
 	viewSettled bool
 
 	// unreadBoundary is the LastViewedAt timestamp captured when the open
-	// channel was entered with unread messages; renderMessages draws a "new
-	// messages" divider above the first post created after it. Frozen for the
-	// duration of the view (it does not move as the channel is marked read or
-	// as live posts arrive), and 0 when the channel was opened already-read.
+	// channel was entered with unread messages (0 when opened already-read).
+	// It seeds the "new messages" divider but is not itself what renderMessages
+	// draws against — see unreadDividerID.
 	unreadBoundary int64
+	// unreadDividerID is the post the "new messages" divider sits above,
+	// resolved once from the posts loaded for the freshly-opened channel and
+	// then frozen ("" = no divider). Anchoring to a fixed post — rather than
+	// re-comparing CreateAt against the boundary each render — keeps the
+	// divider from latching onto a message sent or received while the channel
+	// is open, which the live boundary comparison did whenever the boundary
+	// had drifted past every loaded post. unreadDividerResolved guards the
+	// one-time resolution. See resolveUnreadDivider.
+	unreadDividerID       string
+	unreadDividerResolved bool
 
 	posts   []*model.Post
 	postIdx int // index of the selected post in m.posts
@@ -1884,10 +1893,13 @@ func (m Model) persistDelete(id string) tea.Cmd {
 // work (focus changes, stat bumps, etc.).
 func (m *Model) openChannelLoadCmd(channelID string) tea.Cmd {
 	m.openChannelID = channelID
-	// Freeze the read/unread boundary for this view. Only when the channel
-	// actually has unread messages — otherwise reopening an already-read
-	// channel would draw a stale divider at the old LastViewedAt.
+	// Freeze the read/unread boundary for this view, then let renderMessages
+	// resolve it to a concrete post. Only when the channel actually has unread
+	// messages — otherwise reopening an already-read channel would draw a stale
+	// divider at the old LastViewedAt.
 	m.unreadBoundary = 0
+	m.unreadDividerID = ""
+	m.unreadDividerResolved = false
 	if m.unread[channelID] > 0 {
 		for _, mb := range m.members {
 			if mb.ChannelId == channelID {
