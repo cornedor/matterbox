@@ -892,6 +892,45 @@ func (m *Model) handleWSEvent(ev *model.WebSocketEvent) tea.Cmd {
 		return nil
 	case model.WebsocketEventTyping:
 		return m.applyTypingEvent(ev)
+	case model.WebsocketEventMultipleChannelsViewed:
+		return m.applyMultipleChannelsViewed(ev)
+	}
+	return nil
+}
+
+// applyMultipleChannelsViewed reconciles the live unread/mention badges with
+// read state advanced by another session — a second matterbox instance, the
+// web client, or mobile. The server broadcasts this to all of a user's
+// sessions whenever any of them views a channel. Without it the count-based
+// m.unread badge (bumped here on every posted event) stays stale while the
+// authoritative feed — which re-fetches LastViewedAt in fetchFeed — shows
+// nothing: the "badge says 1, feed empty" drift.
+//
+// We only clear a channel whose view caught up to its newest known post. A
+// strictly-newer local LastPostAt means a message landed that the viewing
+// session hadn't seen, so genuine unread remains and the badge stays.
+func (m *Model) applyMultipleChannelsViewed(ev *model.WebSocketEvent) tea.Cmd {
+	times := wsChannelTimes(ev)
+	if len(times) == 0 {
+		return nil
+	}
+	feedChanged := false
+	for id, viewedAt := range times {
+		if m.unread[id] == 0 && m.mentions[id] == 0 {
+			continue // nothing to clear (commonly our own view echoed back)
+		}
+		if c := m.findChannel(id); c != nil && c.LastPostAt > viewedAt {
+			continue // a post newer than the view exists locally — keep it unread
+		}
+		delete(m.unread, id)
+		delete(m.mentions, id)
+		if m.feed.built {
+			m.removeFeedEntry(id)
+			feedChanged = true
+		}
+	}
+	if feedChanged {
+		m.renderFeedResults()
 	}
 	return nil
 }
@@ -1235,6 +1274,44 @@ func wsMentions(ev *model.WebSocketEvent) map[string]bool {
 		out[id] = true
 	}
 	return out
+}
+
+// wsChannelTimes parses the channel_times payload of a
+// multiple_channels_viewed event into channelID → last-viewed timestamp
+// (ms). The server sends it as a nested JSON object, so after the event
+// round-trips through JSON the numbers arrive as float64; a JSON-string
+// encoding is tolerated as a fallback. A failed parse yields an empty map,
+// which the caller treats as "clear nothing".
+func wsChannelTimes(ev *model.WebSocketEvent) map[string]int64 {
+	out := map[string]int64{}
+	switch v := ev.GetData()["channel_times"].(type) {
+	case map[string]any:
+		for id, t := range v {
+			out[id] = wsInt64(t)
+		}
+	case string:
+		if v != "" {
+			_ = json.Unmarshal([]byte(v), &out)
+		}
+	}
+	return out
+}
+
+// wsInt64 coerces a JSON-decoded number (float64, or json.Number under a
+// UseNumber decoder) to int64. Non-numeric values yield 0.
+func wsInt64(v any) int64 {
+	switch n := v.(type) {
+	case float64:
+		return int64(n)
+	case json.Number:
+		i, _ := n.Int64()
+		return i
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	}
+	return 0
 }
 
 // wsBackoff returns the backoff delay for the n-th consecutive failure
