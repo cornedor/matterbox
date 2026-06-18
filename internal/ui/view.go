@@ -36,6 +36,7 @@ var (
 	border       = lipgloss.NormalBorder()
 	focusedColor = lipgloss.Color("12")  // bright blue
 	dimColor     = lipgloss.Color("241") // grey
+	unreadColor  = lipgloss.Color("67")  // muted steel blue — the "new messages" divider
 
 	titleStyle    = lipgloss.NewStyle().Bold(true)
 	userStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("4")).Bold(true)
@@ -334,6 +335,25 @@ func (m *Model) capInputHeight(avail int) {
 	}
 }
 
+// unreadDivider renders a full-width separator with a centered label,
+// drawn above the first unread post when a channel is opened with unread
+// messages. Uses a subtle colour so it reads as a marker without competing
+// with the message text.
+func unreadDivider(width int) string {
+	style := lipgloss.NewStyle().Foreground(unreadColor)
+	const label = " unread messages "
+	lw := lipgloss.Width(label)
+	if width <= lw {
+		if width < 1 {
+			width = 1
+		}
+		return style.Render(strings.Repeat("─", width))
+	}
+	left := (width - lw) / 2
+	right := width - lw - left
+	return style.Render(strings.Repeat("─", left) + label + strings.Repeat("─", right))
+}
+
 func (m *Model) renderMessages() {
 	// New content generation: invalidates the messages scroll-geometry cache
 	// (see scrollcache.go). Bump unconditionally — every path below resets the
@@ -367,7 +387,20 @@ func (m *Model) renderMessages() {
 	// each keystroke (visAcc is the running visual-row offset).
 	selVisStart, selVisRows, visAcc := -1, 0, 0
 	rowStarts := make([]int, len(m.posts)+1)
+	dividerDrawn := false
 	for i, p := range m.posts {
+		// Insert the "new messages" divider at the read→unread transition:
+		// the first post created after the frozen boundary whose predecessor
+		// was created before it. Requiring a read post above means a list
+		// that is unread top-to-bottom draws no divider (it would carry no
+		// information). The extra row lives in the gap before the post, so
+		// rowStarts still points at the post's real first line.
+		if !dividerDrawn && m.unreadBoundary > 0 && i > 0 &&
+			m.posts[i-1].CreateAt <= m.unreadBoundary && p.CreateAt > m.unreadBoundary {
+			allLines = append(allLines, unreadDivider(width))
+			visAcc++
+			dividerDrawn = true
+		}
 		rowStarts[i] = visAcc
 		var prev *model.Post
 		if i > 0 {

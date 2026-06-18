@@ -168,6 +168,13 @@ type Model struct {
 	// mark it read early — the pending dwell tick covers them.
 	viewSettled bool
 
+	// unreadBoundary is the LastViewedAt timestamp captured when the open
+	// channel was entered with unread messages; renderMessages draws a "new
+	// messages" divider above the first post created after it. Frozen for the
+	// duration of the view (it does not move as the channel is marked read or
+	// as live posts arrive), and 0 when the channel was opened already-read.
+	unreadBoundary int64
+
 	posts   []*model.Post
 	postIdx int // index of the selected post in m.posts
 
@@ -1877,6 +1884,18 @@ func (m Model) persistDelete(id string) tea.Cmd {
 // work (focus changes, stat bumps, etc.).
 func (m *Model) openChannelLoadCmd(channelID string) tea.Cmd {
 	m.openChannelID = channelID
+	// Freeze the read/unread boundary for this view. Only when the channel
+	// actually has unread messages — otherwise reopening an already-read
+	// channel would draw a stale divider at the old LastViewedAt.
+	m.unreadBoundary = 0
+	if m.unread[channelID] > 0 {
+		for _, mb := range m.members {
+			if mb.ChannelId == channelID {
+				m.unreadBoundary = mb.LastViewedAt
+				break
+			}
+		}
+	}
 	// New focus session: start a fresh dwell. The badges are intentionally
 	// left intact until the dwell elapses (see scheduleMarkViewed), so a
 	// quick peek doesn't clear unread.
