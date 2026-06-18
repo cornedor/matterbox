@@ -635,6 +635,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.flashStatus("opened " + msg.name)
 
+	case attachmentsDownloadedMsg:
+		return m, m.applyDownloadResult(msg)
+
 	case statusFlashClearMsg:
 		if m.status == msg.text {
 			m.status = ""
@@ -1793,6 +1796,12 @@ func (m Model) handleThreadKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.openFromPost(m.threadPosts[m.threadIdx])
+	case key.Matches(msg, m.keys.Download):
+		if m.threadIdx < 0 || m.threadIdx >= len(m.threadPosts) {
+			m.status = "no message selected"
+			return m, nil
+		}
+		return m.downloadFromPost(m.threadPosts[m.threadIdx])
 	case key.Matches(msg, m.keys.OpenRef):
 		if m.threadIdx < 0 || m.threadIdx >= len(m.threadPosts) {
 			m.status = "no message selected"
@@ -2983,6 +2992,12 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.openFromPost(m.posts[m.postIdx])
+	case key.Matches(msg, m.keys.Download):
+		if m.postIdx < 0 || m.postIdx >= len(m.posts) {
+			m.status = "no message selected"
+			return m, nil
+		}
+		return m.downloadFromPost(m.posts[m.postIdx])
 	case key.Matches(msg, m.keys.OpenRef):
 		if m.postIdx < 0 || m.postIdx >= len(m.posts) {
 			m.status = "no message selected"

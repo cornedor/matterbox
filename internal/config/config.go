@@ -71,6 +71,11 @@ type Config struct {
 	// native click-drag text selection / copy, which capturing the mouse
 	// otherwise disables (most terminals fall back to shift-drag). See internal/ui.
 	Mouse *bool `yaml:"mouse"`
+	// DownloadDir is where the "download attachment" key (s on a message)
+	// saves files. A leading "~" is expanded to the home directory and the
+	// directory is created on first download. Empty defaults to ~/Downloads.
+	// See internal/ui.
+	DownloadDir string `yaml:"download_dir"`
 	// Keybindings holds optional keymap tweaks. See internal/ui.
 	Keybindings KeybindingsConfig `yaml:"keybindings"`
 	// EmojiImages controls whether custom (server) emoji render as real
@@ -433,6 +438,11 @@ const defaultGiphyRendition = "fixed_height"
 // unread, short enough not to feel laggy when you actually read it.
 const defaultMarkReadDelaySeconds = 5
 
+// defaultDownloadDir is where attachments are saved when no download_dir is
+// configured. A leading "~" is expanded to the user's home directory in
+// internal/ui when the directory is resolved.
+const defaultDownloadDir = "~/Downloads"
+
 // defaultGroupMessageSeconds is the window within which consecutive
 // same-author messages collapse under a single header. Two minutes mirrors
 // the grouping window the Mattermost web client and similar chat clients use.
@@ -520,7 +530,7 @@ func Load() (*Config, error) {
 	// and rewrite the file once so the discovered model + prompt show up as
 	// editable defaults. Best-effort: a failed rewrite only means the file
 	// keeps working off in-memory defaults.
-	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.TwoWay == nil || cfg.Listen.NotifyDMs == nil || cfg.Listen.NotifyDelaySeconds == nil
+	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.DownloadDir == "" || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.TwoWay == nil || cfg.Listen.NotifyDMs == nil || cfg.Listen.NotifyDelaySeconds == nil
 	cfg.fillDefaults()
 	if addDefaults {
 		if werr := writeConfig(p, cfg); werr != nil {
@@ -582,6 +592,9 @@ func (c *Config) fillDefaults() {
 	if c.CustomStatus == nil {
 		t := true
 		c.CustomStatus = &t
+	}
+	if c.DownloadDir == "" {
+		c.DownloadDir = defaultDownloadDir
 	}
 	if c.Keybindings.NavModifier == "" {
 		// Default to the ctrl modifier, but honour a pre-NavModifier config's
@@ -696,6 +709,9 @@ func writeConfig(p string, cfg *Config) error {
 		"#             message.\n" +
 		"# custom_status: show DM partners' custom statuses (default true); false\n" +
 		"#             shows presence dots only.\n" +
+		"# download_dir: where the download-attachment key (s on a message) saves\n" +
+		"#             files (default ~/Downloads). A leading ~ is expanded and the\n" +
+		"#             directory is created on first download.\n" +
 		"# keybindings: nav_modifier sets the modifier for arrow-key team/channel\n" +
 		"#             navigation: ctrl (default), alt, shift, super (the ⌘/Windows\n" +
 		"#             key; also \"cmd\"), meta, hyper, or none. On macOS ctrl+arrows\n" +

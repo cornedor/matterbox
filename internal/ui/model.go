@@ -562,6 +562,10 @@ type Model struct {
 	giphyAPIKey    string
 	giphyRendition string
 
+	// downloadDir is the resolved (tilde-expanded) directory the
+	// download-attachment key saves files into. See download.go.
+	downloadDir string
+
 	keys keyMap
 	// vimNav controls when the ctrl+vim sidebar-nav keys fire (see keys.go).
 	// Zero value (vimNavGlobal) is today's behaviour, so test Models that
@@ -739,7 +743,8 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	animateEmoji := true
 	animatePreview := true
 	var giphyAPIKey string
-	giphyRendition := "fixed_height" // mirrors config.defaultGiphyRendition
+	giphyRendition := "fixed_height"             // mirrors config.defaultGiphyRendition
+	downloadDir := expandUserPath("~/Downloads") // mirrors config.defaultDownloadDir
 	var jiraCfg jira.Config
 	var jiraProjects []string
 	var gitlabCfg gitlab.Config
@@ -784,6 +789,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		giphyAPIKey = cfg.Giphy.APIKey
 		if cfg.Giphy.Rendition != "" {
 			giphyRendition = cfg.Giphy.Rendition
+		}
+		if cfg.DownloadDir != "" {
+			downloadDir = expandUserPath(cfg.DownloadDir)
 		}
 		jiraProjects = append([]string(nil), cfg.Jira.Projects...)
 		jiraCfg = jira.Config{
@@ -909,6 +917,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		animatePreview:      animatePreview,
 		giphyAPIKey:         giphyAPIKey,
 		giphyRendition:      giphyRendition,
+		downloadDir:         downloadDir,
 	}
 }
 
@@ -968,7 +977,7 @@ func (m Model) FullHelp() [][]key.Binding {
 		{k.Up, k.Down, k.Home, k.End, k.Left, k.Right, k.PageDown, k.PageUp, k.NextHit, k.PrevHit},
 		{k.NavChanPrev, k.NavChanNext, k.NavTeamPrev, k.NavTeamNext},
 		{k.Filter, k.ClearFilter, k.OpenChannel, k.OpenThread, k.ReplyInThread, k.OpenRef, k.CloseThread},
-		{k.OpenAttach, k.CopyMD, k.CopyCode, k.EditPost, k.DeletePost, k.React, k.ShowHistory, k.Compose, k.Send, k.NewLine, k.LeaveInput},
+		{k.OpenAttach, k.Download, k.CopyMD, k.CopyCode, k.EditPost, k.DeletePost, k.React, k.ShowHistory, k.Compose, k.Send, k.NewLine, k.LeaveInput},
 		{k.Paste, k.AttachRemove},
 	}
 }

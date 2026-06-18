@@ -69,6 +69,7 @@ type keyMap struct {
 	OpenThread    key.Binding
 	ReplyInThread key.Binding
 	OpenAttach    key.Binding
+	Download      key.Binding
 	OpenRef       key.Binding
 	Preview       key.Binding
 	CopyMD        key.Binding
@@ -188,6 +189,7 @@ var actionDefs = []actionDef{
 	{id: "open_thread", field: func(k *keyMap) *key.Binding { return &k.OpenThread }, keys: []string{"enter"}, desc: "open thread", primary: true},
 	{id: "reply_in_thread", field: func(k *keyMap) *key.Binding { return &k.ReplyInThread }, keys: []string{"r"}, desc: "reply in thread"},
 	{id: "open_attachment", field: func(k *keyMap) *key.Binding { return &k.OpenAttach }, keys: []string{"o"}, desc: "open attachment/link"},
+	{id: "download_attachment", field: func(k *keyMap) *key.Binding { return &k.Download }, keys: []string{"s"}, desc: "download attachment(s)"},
 	{id: "open_reference", field: func(k *keyMap) *key.Binding { return &k.OpenRef }, keys: []string{"v"}, desc: "open reference (Jira/GitLab)"},
 	{id: "preview_image", field: func(k *keyMap) *key.Binding { return &k.Preview }, keys: []string{"space"}, desc: "preview image"},
 	{id: "copy_markdown", field: func(k *keyMap) *key.Binding { return &k.CopyMD }, keys: []string{"y"}, desc: "copy markdown"},
