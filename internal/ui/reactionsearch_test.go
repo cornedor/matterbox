@@ -112,6 +112,40 @@ func TestReactionPickerDigitFiresWhenEmpty(t *testing.T) {
 	}
 }
 
+// TestReactionPickerListsPlacedReactions: the modal lists who placed each
+// existing reaction — the current user as "you", others by cached username,
+// grouped by emoji — above the pickable list.
+func TestReactionPickerListsPlacedReactions(t *testing.T) {
+	m := reactionPickerModel()
+	m.width, m.height = 80, 40
+	m.userNames["u2"] = "bob"
+	p := m.posts[0]
+	p.Metadata = &model.PostMetadata{Reactions: []*model.Reaction{
+		{UserId: "u1", PostId: "p1", EmojiName: "tada"},
+		{UserId: "u2", PostId: "p1", EmojiName: "tada"},
+		{UserId: "u2", PostId: "p1", EmojiName: "heart"},
+	}}
+	out := m.renderReactionPicker()
+	if !strings.Contains(out, "placed reactions") {
+		t.Fatalf("picker missing the placed-reactions section:\n%s", out)
+	}
+	for _, want := range []string{"you", "bob"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("placed reactions missing reactor %q:\n%s", want, out)
+		}
+	}
+}
+
+// TestReactionPickerNoReactionsHidesSection: a post without reactions shows no
+// placed-reactions section at all.
+func TestReactionPickerNoReactionsHidesSection(t *testing.T) {
+	m := reactionPickerModel()
+	m.width, m.height = 80, 40
+	if got := m.renderReactionReactors(m.posts[0], 52); got != "" {
+		t.Fatalf("renderReactionReactors on a reaction-less post = %q, want empty", got)
+	}
+}
+
 // TestReactionPickerNavClamps: ctrl+n (input_down) advances the cursor and
 // stops at the last row rather than running past it.
 func TestReactionPickerNavClamps(t *testing.T) {

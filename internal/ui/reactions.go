@@ -9,6 +9,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"charm.land/lipgloss/v2/compat"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
@@ -133,7 +134,47 @@ func (m *Model) openReactionPicker(postID string) tea.Cmd {
 	m.reactionPickerPostID = postID
 	m.reactionPickerIdx = 0
 	m.reactionSearch.SetValue("")
-	return m.reactionSearch.Focus()
+	// The "placed reactions" list names each reactor; fetch any reactor we
+	// can't name yet so the modal fills them in a frame or two later.
+	return tea.Batch(m.reactionSearch.Focus(), m.resolveReactorNames(postID))
+}
+
+// resolveReactorNames fetches the usernames of anyone who reacted to the post
+// but isn't in the name cache yet, reusing the shared usersResolvedMsg path
+// (UsernamesByIDs is singleflight-deduped). Returns nil when every reactor is
+// already named — including the common case of no reactions at all.
+func (m Model) resolveReactorNames(postID string) tea.Cmd {
+	p := m.findPostByID(postID)
+	if p == nil || p.Metadata == nil {
+		return nil
+	}
+	var ids []string
+	seen := map[string]struct{}{}
+	for _, r := range p.Metadata.Reactions {
+		if r == nil {
+			continue
+		}
+		// Membership (not emptiness) is the test: a "" entry negatively caches
+		// a user the server didn't return, so we don't keep asking.
+		if _, known := m.userNames[r.UserId]; known {
+			continue
+		}
+		if _, dup := seen[r.UserId]; dup {
+			continue
+		}
+		seen[r.UserId] = struct{}{}
+		ids = append(ids, r.UserId)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	return func() tea.Msg {
+		names, err := m.client.UsernamesByIDs(m.ctx, ids)
+		if err != nil {
+			return usersResolvedMsg{ids: ids, err: err}
+		}
+		return usersResolvedMsg{ids: ids, users: names}
+	}
 }
 
 // closeReactionPicker tears down picker state without firing anything.
@@ -192,6 +233,68 @@ func (m *Model) userHasReacted(p *model.Post, emojiName string) bool {
 		}
 	}
 	return false
+}
+
+// reactorName resolves a reaction's user id to a short display name for the
+// picker's "placed reactions" list. The current user shows as "you"; an id we
+// can't name yet (not in the cache, or negatively cached as "") falls back to
+// a truncated raw id. openReactionPicker fires resolveReactorNames so these
+// self-heal to real usernames a frame or two later.
+func (m *Model) reactorName(uid string) string {
+	if m.me != nil && uid == m.me.Id {
+		return "you"
+	}
+	if n := m.userNames[uid]; n != "" {
+		return n
+	}
+	if len(uid) > 8 {
+		return uid[:8]
+	}
+	return uid
+}
+
+// renderReactionReactors lists each reaction already on the post together with
+// the people who placed it, e.g. "👍  alice, you". Reactions are grouped by
+// emoji in first-seen order to match the chip strip under the message; returns
+// "" when the post carries none. width bounds the wrap of the reactor list.
+func (m *Model) renderReactionReactors(p *model.Post, width int) string {
+	if p == nil || p.Metadata == nil || len(p.Metadata.Reactions) == 0 {
+		return ""
+	}
+	order := []string{}
+	byEmoji := map[string][]string{}
+	for _, r := range p.Metadata.Reactions {
+		if r == nil {
+			continue
+		}
+		if _, ok := byEmoji[r.EmojiName]; !ok {
+			order = append(order, r.EmojiName)
+		}
+		byEmoji[r.EmojiName] = append(byEmoji[r.EmojiName], m.reactorName(r.UserId))
+	}
+	if len(order) == 0 {
+		return ""
+	}
+	label := lipgloss.NewStyle().Foreground(dimColor).Italic(true).Render("placed reactions")
+	nameStyle := lipgloss.NewStyle().Foreground(dimColor)
+	const gutter = "    " // continuation rows align past the "<glyph>  " column
+	avail := width - len(gutter)
+	if avail < 8 {
+		avail = 8
+	}
+	lines := []string{label}
+	for _, name := range order {
+		// renderEmojiGlyph may return a Kitty image placeholder, whose bytes
+		// must not pass through the wrapper — so wrap only the plain-text
+		// reactor list and keep the glyph as a fixed prefix.
+		glyph := m.renderEmojiGlyph(name)
+		wrapped := strings.Split(ansi.Wrap(strings.Join(byEmoji[name], ", "), avail, ""), "\n")
+		lines = append(lines, glyph+"  "+nameStyle.Render(wrapped[0]))
+		for _, cont := range wrapped[1:] {
+			lines = append(lines, gutter+nameStyle.Render(cont))
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // applyReactionPick toggles the configured emoji at the picker's
@@ -387,14 +490,18 @@ func (m *Model) renderReactionPicker() string {
 	}
 
 	m.reactionSearch.SetWidth(inner - 2)
-	body := lipgloss.JoinVertical(lipgloss.Left,
-		header,
-		hint,
-		"",
+	sections := []string{header, hint, ""}
+	// When the post already carries reactions, show who placed each one above
+	// the pickable list so the user can see the current state at a glance.
+	if reactors := m.renderReactionReactors(p, inner); reactors != "" {
+		sections = append(sections, reactors, "")
+	}
+	sections = append(sections,
 		strings.Join(rows, "\n"),
 		"",
 		m.reactionSearch.View(),
 	)
+	body := lipgloss.JoinVertical(lipgloss.Left, sections...)
 
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
