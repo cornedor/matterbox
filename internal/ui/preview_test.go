@@ -216,11 +216,16 @@ func TestHandlePreviewLoadedTransmits(t *testing.T) {
 		width: 100, height: 40,
 		emojiImg: activeEmojiImages(),
 	}
-	m.preview = previewState{active: true, items: previewImages(imagePost("image/png")), loading: true}
+	// id is allocated at open time; the background load supplies the pre-built
+	// transmit sequence and placement size.
+	m.preview = previewState{active: true, items: previewImages(imagePost("image/png")), loading: true, id: 7}
 	m.previewGen = 1
 
 	img := image.NewRGBA(image.Rect(0, 0, 64, 48))
-	mm, cmd := m.handlePreviewLoaded(previewImageLoadedMsg{gen: 1, frames: []image.Image{img}, caption: "pic.png"})
+	mm, cmd := m.handlePreviewLoaded(previewImageLoadedMsg{
+		gen: 1, frames: []image.Image{img}, seqs: []string{"\x1b_Gseq\x1b\\"},
+		cols: 20, rows: 8, caption: "pic.png",
+	})
 	got := mm.(Model)
 	if got.preview.loading {
 		t.Error("loading should clear once the decode lands")
@@ -229,10 +234,13 @@ func TestHandlePreviewLoadedTransmits(t *testing.T) {
 		t.Error("decoded image should be stored")
 	}
 	if got.preview.id == 0 {
-		t.Error("an image id should be allocated")
+		t.Error("the allocated image id should be preserved")
 	}
 	if got.preview.rows <= 0 || got.preview.cols <= 0 {
 		t.Errorf("placement not sized: rows=%d cols=%d", got.preview.rows, got.preview.cols)
+	}
+	if len(got.preview.seqs) != 1 {
+		t.Errorf("preview.seqs = %d, want 1", len(got.preview.seqs))
 	}
 	if cmd == nil {
 		t.Error("expected a tea.Raw transmit command")
@@ -270,10 +278,16 @@ func TestHandlePreviewLoadedAnimatedArmsTick(t *testing.T) {
 	m.previewGen = 1
 
 	frames, delays := twoFrames()
-	mm, cmd := m.handlePreviewLoaded(previewImageLoadedMsg{gen: 1, frames: frames, delays: delays, caption: "a.gif"})
+	mm, cmd := m.handlePreviewLoaded(previewImageLoadedMsg{
+		gen: 1, frames: frames, delays: delays,
+		seqs: []string{"a", "b", "c"}, cols: 8, rows: 4, caption: "a.gif",
+	})
 	got := mm.(Model)
 	if len(got.preview.frames) != 3 {
 		t.Fatalf("frames stored = %d, want 3", len(got.preview.frames))
+	}
+	if len(got.preview.seqs) != 3 {
+		t.Fatalf("seqs stored = %d, want 3", len(got.preview.seqs))
 	}
 	if got.preview.frameStart.IsZero() {
 		t.Error("animated preview should anchor frameStart")
@@ -284,9 +298,11 @@ func TestHandlePreviewLoadedAnimatedArmsTick(t *testing.T) {
 
 	// Still image: one frame, no tick armed (frameStart stays zero).
 	still := Model{width: 100, height: 40, emojiImg: activeEmojiImages(), animatePreview: true}
-	still.preview = previewState{active: true, items: previewImages(imagePost("image/png")), loading: true}
+	still.preview = previewState{active: true, items: previewImages(imagePost("image/png")), loading: true, id: 3}
 	still.previewGen = 1
-	smm, _ := still.handlePreviewLoaded(previewImageLoadedMsg{gen: 1, frames: []image.Image{frames[0]}})
+	smm, _ := still.handlePreviewLoaded(previewImageLoadedMsg{
+		gen: 1, frames: []image.Image{frames[0]}, seqs: []string{"a"}, cols: 8, rows: 4,
+	})
 	if !smm.(Model).preview.frameStart.IsZero() {
 		t.Error("a still preview should not anchor an animation clock")
 	}
@@ -299,7 +315,7 @@ func TestHandlePreviewTick(t *testing.T) {
 	m := Model{width: 100, height: 40, emojiImg: activeEmojiImages(), animatePreview: true}
 	m.preview = previewState{
 		active: true, id: 9, rows: 4, cols: 8,
-		frames: frames, delays: delays,
+		frames: frames, delays: delays, seqs: []string{"a", "b", "c"},
 		frameStart: time.Now().Add(-2 * delays[0]), // ~2 frames overdue
 	}
 	m.previewGen = 1
@@ -324,6 +340,61 @@ func TestHandlePreviewTick(t *testing.T) {
 	still.previewGen = 1
 	if _, c := still.handlePreviewTick(previewTickMsg{gen: 1}); c != nil {
 		t.Error("a still-image preview should not schedule animation ticks")
+	}
+}
+
+// A frame larger than the placement's physical pixel box is downscaled to it
+// (aspect preserved) so we don't PNG-encode and transmit more than the cells can
+// show.
+func TestFitFrameToCellsDownscalesLargeImage(t *testing.T) {
+	cols, rows, cw, ch := 80, 24, 8, 16
+	boxW, boxH := cols*cw, rows*ch // 640×384
+	large := image.NewRGBA(image.Rect(0, 0, 2000, 1500))
+	got := fitFrameToCells(large, cols, rows, cw, ch).Bounds()
+	if got.Dx() > boxW || got.Dy() > boxH {
+		t.Errorf("downscaled bounds %dx%d exceed box %dx%d", got.Dx(), got.Dy(), boxW, boxH)
+	}
+	if got.Dx() >= 2000 {
+		t.Errorf("large image was not downscaled: width still %d", got.Dx())
+	}
+	if r := float64(got.Dx()) / float64(got.Dy()); r < 1.30 || r > 1.36 {
+		t.Errorf("aspect ratio not preserved: got %.3f, want ~1.333", r)
+	}
+}
+
+// A frame already within the box is never shrunk (Kitty/pad handle it).
+func TestFitFrameToCellsKeepsSmallImage(t *testing.T) {
+	small := image.NewRGBA(image.Rect(0, 0, 100, 80))
+	got := fitFrameToCells(small, 80, 24, 8, 16).Bounds() // box 640×384
+	if got.Dx() < 100 || got.Dy() < 80 {
+		t.Errorf("small image was shrunk to %dx%d", got.Dx(), got.Dy())
+	}
+}
+
+// A resize re-encode swaps in the new sequences and re-transmits the current
+// frame; stale or length-mismatched results are dropped.
+func TestHandlePreviewReencoded(t *testing.T) {
+	frames, delays := twoFrames()
+	m := Model{emojiImg: activeEmojiImages()}
+	m.preview = previewState{
+		active: true, id: 9, frames: frames, delays: delays,
+		seqs: []string{"old", "old", "old"}, frameIdx: 1,
+	}
+	m.previewGen = 4
+
+	mm, cmd := m.handlePreviewReencoded(previewReencodedMsg{gen: 4, seqs: []string{"x", "y", "z"}})
+	got := mm.(Model)
+	if got.preview.seqs[1] != "y" {
+		t.Errorf("seqs not replaced: %v", got.preview.seqs)
+	}
+	if cmd == nil {
+		t.Error("expected a re-transmit of the current frame")
+	}
+	if _, c := got.handlePreviewReencoded(previewReencodedMsg{gen: 1, seqs: []string{"a", "b", "c"}}); c != nil {
+		t.Error("stale (gen-mismatched) reencode should be dropped")
+	}
+	if _, c := got.handlePreviewReencoded(previewReencodedMsg{gen: 4, seqs: []string{"only-one"}}); c != nil {
+		t.Error("length-mismatched reencode should be dropped")
 	}
 }
 

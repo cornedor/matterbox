@@ -268,6 +268,19 @@ func (c *Client) DownloadFile(ctx context.Context, fileID string) ([]byte, error
 	return b, nil
 }
 
+// DownloadFilePreview returns the server-generated preview rendition of an
+// image file — a downscaled (≤~1MP) JPEG/PNG, far smaller than the original.
+// Only valid for image files whose FileInfo.HasPreviewImage is set; the server
+// 404s otherwise. Used by the inline preview modal so opening a multi-megapixel
+// photo doesn't have to transfer (and decode, and re-encode) the full original.
+func (c *Client) DownloadFilePreview(ctx context.Context, fileID string) ([]byte, error) {
+	b, _, err := c.c.DownloadFilePreview(ctx, fileID, true)
+	if err != nil {
+		return nil, fmt.Errorf("download file preview: %w", err)
+	}
+	return b, nil
+}
+
 // UploadFile uploads raw bytes to the given channel and returns the
 // FileInfo for the resulting upload. The returned FileInfo.Id is the
 // fileId to pass in Post.FileIds (via Send) when creating the post.

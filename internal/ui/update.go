@@ -183,6 +183,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case previewImageLoadedMsg:
 		return m.handlePreviewLoaded(msg)
 
+	case previewReencodedMsg:
+		return m.handlePreviewReencoded(msg)
+
 	case previewTickMsg:
 		return m.handlePreviewTick(msg)
 
