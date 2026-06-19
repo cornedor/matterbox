@@ -27,6 +27,7 @@ type viewCache struct {
 	msgs    scrollGeom
 	thread  scrollGeom
 	ref     scrollGeom
+	info    scrollGeom
 	sidebar sidebarCache
 	// view memoizes the entire rendered screen (viewContent's output). bubbletea
 	// rebuilds View() after EVERY msg, and a full render is dominated by lipgloss
@@ -124,6 +125,14 @@ func (m *Model) refScrollGeom() (int, float64) {
 		g = &m.vcache.ref
 	}
 	return scrollGeomFor(g, &m.refView, m.refContentVer)
+}
+
+func (m *Model) infoScrollGeom() (int, float64) {
+	var g *scrollGeom
+	if m.vcache != nil {
+		g = &m.vcache.info
+	}
+	return scrollGeomFor(g, &m.infoView, m.infoContentVer)
 }
 
 // sidebarCache memoizes renderChannelsPane's rendered string. fp is a

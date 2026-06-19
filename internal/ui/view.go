@@ -134,14 +134,18 @@ func (m *Model) layoutPanes() {
 	msgsW := rightW
 	threadW := 0
 	refW := 0
-	// The thread sidebar and the reference panel share the single right slot —
-	// at most one is ever open — so each splits rightW the same way.
+	infoW := 0
+	// The thread sidebar, reference panel and channel-info panel share the single
+	// right slot — at most one is ever open — so each splits rightW the same way.
 	if m.threadOpen {
 		threadW = splitRightPane(rightW)
 		msgsW = rightW - threadW
 	} else if m.refOpen {
 		refW = splitRightPane(rightW)
 		msgsW = rightW - refW
+	} else if m.infoOpen {
+		infoW = splitRightPane(rightW)
+		msgsW = rightW - infoW
 	}
 	// The scrollbar overlays the right border column (rendered by
 	// renderMessagesPane / renderThreadPane), so the viewport fills the
@@ -157,6 +161,11 @@ func (m *Model) layoutPanes() {
 		rw = 1
 	}
 	m.refView.SetWidth(rw)
+	iw := infoW - 4
+	if iw < 1 {
+		iw = 1
+	}
+	m.infoView.SetWidth(iw)
 	// When the thread sidebar is open the compose textarea moves into
 	// the thread pane; the messages pane only needs room for its title
 	// + viewport, while the thread pane has to make room for the input
@@ -196,14 +205,15 @@ func (m *Model) layoutPanes() {
 			th = 1
 		}
 		m.threadView.SetHeight(th)
-		// The reference panel is read-only (no composer), so its viewport fills
-		// the whole body below its title row: bodyH minus the title and the
-		// pane's bottom border.
+		// The reference and channel-info panels are read-only (no composer), so
+		// their viewport fills the whole body below the title row: bodyH minus the
+		// title and the pane's bottom border.
 		rh := bodyH - 2
 		if rh < 1 {
 			rh = 1
 		}
 		m.refView.SetHeight(rh)
+		m.infoView.SetHeight(rh)
 	}
 	if m.historyMode {
 		m.sizeHistoryView()
@@ -238,6 +248,7 @@ func (m *Model) renderAllPanes() {
 	m.renderMessages()
 	m.renderThread()
 	m.renderRef()
+	m.renderInfo()
 }
 
 const threadPaneMinWidth = 24
@@ -1061,12 +1072,16 @@ func (m *Model) renderViewContent() string {
 		msgsW := rightW
 		threadW := 0
 		refW := 0
+		infoW := 0
 		if m.threadOpen {
 			threadW = splitRightPane(rightW)
 			msgsW = rightW - threadW
 		} else if m.refOpen {
 			refW = splitRightPane(rightW)
 			msgsW = rightW - refW
+		} else if m.infoOpen {
+			infoW = splitRightPane(rightW)
+			msgsW = rightW - infoW
 		}
 		messagesPane := m.renderMessagesPane(bodyH, msgsW)
 		panes := []string{channelsPane, messagesPane}
@@ -1074,6 +1089,8 @@ func (m *Model) renderViewContent() string {
 			panes = append(panes, m.renderThreadPane(bodyH, threadW))
 		} else if m.refOpen {
 			panes = append(panes, m.renderRefPane(bodyH, refW))
+		} else if m.infoOpen {
+			panes = append(panes, m.renderInfoPane(bodyH, infoW))
 		}
 		body = lipgloss.JoinHorizontal(lipgloss.Top, panes...)
 	}

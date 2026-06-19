@@ -147,6 +147,37 @@ func (c *Client) ChannelMembers(ctx context.Context, userID string) (model.Chann
 	return all, nil
 }
 
+// PinnedPosts returns every pinned post in the channel, newest first.
+// Used by the channel-info panel.
+func (c *Client) PinnedPosts(ctx context.Context, channelID string) (*model.PostList, error) {
+	pl, _, err := c.c.GetPinnedPosts(ctx, channelID, "")
+	if err != nil {
+		return nil, fmt.Errorf("get pinned posts: %w", err)
+	}
+	return pl, nil
+}
+
+// ChannelUsers returns the user records of every member of the channel,
+// paging until the list is exhausted (the server caps per_page). Unlike
+// ChannelMembers (membership rows with counters) this carries full user
+// profiles, so the channel-info panel can list members by name without a
+// second lookup.
+func (c *Client) ChannelUsers(ctx context.Context, channelID string) ([]*model.User, error) {
+	const perPage = 200
+	var all []*model.User
+	for page := 0; ; page++ {
+		batch, _, err := c.c.GetUsersInChannel(ctx, channelID, page, perPage, "")
+		if err != nil {
+			return nil, fmt.Errorf("get users in channel: %w", err)
+		}
+		all = append(all, batch...)
+		if len(batch) < perPage {
+			break
+		}
+	}
+	return all, nil
+}
+
 // ViewChannel marks the channel as read for the user (updates
 // LastViewedAt / MsgCount on the server-side ChannelMember).
 func (c *Client) ViewChannel(ctx context.Context, userID, channelID string) error {

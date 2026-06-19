@@ -79,6 +79,7 @@ type keyMap struct {
 	DeletePost    key.Binding
 	React         key.Binding
 	CloseThread   key.Binding
+	ChannelInfo   key.Binding
 
 	// Delete-confirmation modal
 	ConfirmYes key.Binding
@@ -199,6 +200,7 @@ var actionDefs = []actionDef{
 	{id: "delete_post", field: func(k *keyMap) *key.Binding { return &k.DeletePost }, keys: []string{"D"}, desc: "delete message"},
 	{id: "react", field: func(k *keyMap) *key.Binding { return &k.React }, keys: []string{"R"}, desc: "react"},
 	{id: "close_thread", field: func(k *keyMap) *key.Binding { return &k.CloseThread }, keys: []string{"esc"}, desc: "close thread"},
+	{id: "channel_info", field: func(k *keyMap) *key.Binding { return &k.ChannelInfo }, keys: []string{"I"}, desc: "channel info"},
 
 	{id: "confirm_yes", field: func(k *keyMap) *key.Binding { return &k.ConfirmYes }, keys: []string{"y", "Y"}, desc: "confirm delete"},
 	{id: "confirm_no", field: func(k *keyMap) *key.Binding { return &k.ConfirmNo }, keys: []string{"n", "N"}, desc: "cancel"},

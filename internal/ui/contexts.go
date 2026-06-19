@@ -44,7 +44,7 @@ type keyContext struct {
 // focuses (where the global:reading layer and the per-pane handlers run).
 func (m *Model) contentFocus() bool {
 	switch m.focus {
-	case focusMessages, focusThread, focusRef, focusAttachments, focusTeams, focusFeed, focusSQLResults:
+	case focusMessages, focusThread, focusRef, focusInfo, focusAttachments, focusTeams, focusFeed, focusSQLResults:
 		return true
 	}
 	return false
@@ -265,7 +265,7 @@ var keyContexts = []keyContext{
 				m.keys.Up, m.keys.Down, m.keys.Home, m.keys.End, m.keys.PageUp, m.keys.PageDown,
 				m.keys.NextHit, m.keys.PrevHit, m.keys.OpenThread, m.keys.ReplyInThread,
 				m.keys.EditPost, m.keys.DeletePost, m.keys.OpenAttach, m.keys.Download, m.keys.OpenRef, m.keys.Preview, m.keys.CopyMD,
-				m.keys.CopyCode, m.keys.ShowHistory, m.keys.React,
+				m.keys.CopyCode, m.keys.ShowHistory, m.keys.React, m.keys.ChannelInfo,
 			}
 		},
 	},
@@ -293,6 +293,20 @@ var keyContexts = []keyContext{
 			return []key.Binding{
 				m.keys.Up, m.keys.Down, m.keys.Left, m.keys.Right,
 				m.keys.OpenRef, m.keys.Refresh, m.keys.OpenAttach,
+			}
+		},
+	},
+	{
+		// Channel-info side panel (channel-info key on a channel/DM tab). The
+		// channel-info key toggles it shut, ↑/↓ move between focusable targets
+		// (links + pinned messages), ↵/o activate the selected one; esc
+		// (hardwired) also closes. Anything else scrolls the viewport.
+		name:     "focus:info",
+		active:   func(m *Model) bool { return m.focus == focusInfo },
+		terminal: true,
+		claims: func(m *Model) []key.Binding {
+			return []key.Binding{
+				m.keys.Up, m.keys.Down, m.keys.ChannelInfo, m.keys.OpenAttach, m.keys.OpenChannel,
 			}
 		},
 	},
@@ -346,6 +360,7 @@ var shadowProbeStates = []struct {
 	{"messages", func(m *Model) { m.focus = focusMessages }},
 	{"thread", func(m *Model) { m.focus = focusThread; m.threadOpen = true }},
 	{"ref", func(m *Model) { m.focus = focusRef; m.refOpen = true }},
+	{"info", func(m *Model) { m.focus = focusInfo; m.infoOpen = true }},
 	{"attachments", func(m *Model) { m.focus = focusAttachments }},
 	{"teams", func(m *Model) { m.focus = focusTeams }},
 	{"feed", func(m *Model) { m.focus = focusFeed }},

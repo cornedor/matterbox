@@ -591,6 +591,29 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.renderThread()
 		return m, nil
 
+	case infoMembersLoadedMsg:
+		if !m.infoOpen || msg.channelID != m.infoChannelID {
+			return m, nil // stale (closed or switched)
+		}
+		m.infoMembersLoaded = true
+		m.infoMembersErr = msg.err
+		m.infoMembers = msg.members
+		m.renderInfo()
+		return m, nil
+
+	case infoPinnedLoadedMsg:
+		if !m.infoOpen || msg.channelID != m.infoChannelID {
+			return m, nil // stale (closed or switched)
+		}
+		m.infoPinnedLoaded = true
+		m.infoPinnedErr = msg.err
+		m.infoPinned = msg.posts
+		for id, name := range msg.users {
+			m.userNames[id] = name
+		}
+		m.renderInfo()
+		return m, nil
+
 	case jiraLoadedMsg:
 		return m.handleJiraLoaded(msg)
 
@@ -1711,6 +1734,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.closeRef()
 			return m, nil
 		}
+		if m.infoOpen {
+			m.closeInfo()
+			return m, nil
+		}
 		if m.filterValue != "" {
 			m.filterValue = ""
 			m.filter.SetValue("")
@@ -1727,6 +1754,8 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.handleThreadKey(msg)
 	case focusRef:
 		return m.handleRefKey(msg)
+	case focusInfo:
+		return m.handleInfoKey(msg)
 	case focusAttachments:
 		return m.handleAttachmentsKey(msg)
 	case focusTeams:
@@ -2108,6 +2137,9 @@ func (m Model) cycleFocus(step int) (tea.Model, tea.Cmd) {
 		if m.focus == focusRef && !m.refOpen {
 			continue
 		}
+		if m.focus == focusInfo && !m.infoOpen {
+			continue
+		}
 		if m.focus == focusAttachments && len(m.attachments) == 0 {
 			continue
 		}
@@ -2166,6 +2198,7 @@ func (m Model) cycleFocus(step int) (tea.Model, tea.Cmd) {
 	m.renderMessages()
 	m.renderThread()
 	m.renderRef()
+	m.renderInfo()
 	if onSQL {
 		m.renderSQLResults() // toggle the result-list selection bar with focus
 	}
@@ -2482,6 +2515,8 @@ const (
 	wheelNone wheelTarget = iota
 	wheelMsgs
 	wheelThread
+	wheelRef
+	wheelInfo
 	wheelSearch
 	wheelFeed
 	wheelSQL
@@ -2514,6 +2549,16 @@ func (m *Model) wheelTargetForFocus() wheelTarget {
 			return wheelThread
 		}
 		return wheelNone
+	case focusRef:
+		if m.refOpen {
+			return wheelRef
+		}
+		return wheelNone
+	case focusInfo:
+		if m.infoOpen {
+			return wheelInfo
+		}
+		return wheelNone
 	default:
 		switch {
 		case m.onSearchTab():
@@ -2536,6 +2581,10 @@ func (m *Model) wheelStep(t wheelTarget) int {
 		return m.msgsView.MouseWheelDelta
 	case wheelThread:
 		return m.threadView.MouseWheelDelta
+	case wheelRef:
+		return m.refView.MouseWheelDelta
+	case wheelInfo:
+		return m.infoView.MouseWheelDelta
 	case wheelSearch:
 		return m.search.view.MouseWheelDelta
 	case wheelFeed:
@@ -2586,6 +2635,8 @@ func (m Model) handleMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 		m.msgScrollFree = true
 	case wheelThread:
 		m.threadScrollFree = true
+	case wheelInfo:
+		m.infoScrollFree = true
 	}
 	if m.wheelTicking {
 		return m, nil
@@ -2616,6 +2667,18 @@ func (m *Model) applyWheel(t wheelTarget, delta int) {
 		m.threadFreeOffset = m.threadView.YOffset()
 		m.threadScrollFree = true
 		m.refreshAnimVisibility()
+	case wheelRef:
+		if !m.refOpen {
+			return
+		}
+		m.refView.SetYOffset(m.refView.YOffset() + delta)
+	case wheelInfo:
+		if !m.infoOpen {
+			return
+		}
+		m.infoView.SetYOffset(m.infoView.YOffset() + delta)
+		m.infoFreeOffset = m.infoView.YOffset()
+		m.infoScrollFree = true
 	case wheelSearch:
 		m.search.view.SetYOffset(m.search.view.YOffset() + delta)
 	case wheelFeed:
@@ -3068,6 +3131,8 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m.openRefForPost(m.posts[m.postIdx])
+	case key.Matches(msg, m.keys.ChannelInfo):
+		return m.openChannelInfo()
 	case key.Matches(msg, m.keys.Preview):
 		if m.postIdx < 0 || m.postIdx >= len(m.posts) {
 			m.status = "no message selected"

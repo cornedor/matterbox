@@ -31,6 +31,7 @@ const (
 	hitFeed
 	hitSearch
 	hitRef
+	hitInfo
 	hitSQL
 )
 
@@ -165,6 +166,13 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 			return m.activateLink(url)
 		}
 		return m, nil
+	case hitInfo:
+		// A click on a link opens it; otherwise a click within a pinned message
+		// selects that target and jumps the main pane to it (the same as ↵ on it).
+		if url, ok := m.linkAt(focusInfo, h.line, h.col); ok {
+			return m.activateLink(url)
+		}
+		return m.clickInfoTarget(h.line)
 	}
 	return m, nil
 }
@@ -271,6 +279,7 @@ func (m Model) handleMouseMotion(msg tea.MouseMotionMsg) (tea.Model, tea.Cmd) {
 			m.hover = hoverState{}
 		}
 		m.setHoverLink(hoverLink{})
+		m.setInfoHover(-1)
 		return m, nil
 	}
 	if m.textSel.dragging && msg.Button == tea.MouseLeft {
@@ -278,7 +287,8 @@ func (m Model) handleMouseMotion(msg tea.MouseMotionMsg) (tea.Model, tea.Cmd) {
 	}
 	next := m.hoverAt(msg.X, msg.Y)
 	hl := m.hoverLinkAt(msg.X, msg.Y)
-	if m.hover == next && m.hoverLink == hl {
+	ih := m.infoHoverAt(msg.X, msg.Y)
+	if m.hover == next && m.hoverLink == hl && m.infoHoverIdx == ih {
 		return m, nil
 	}
 	m.hover = next
@@ -286,6 +296,8 @@ func (m Model) handleMouseMotion(msg tea.MouseMotionMsg) (tea.Model, tea.Cmd) {
 	// actually changes, so a move within one link (or over plain text) stays a
 	// cache-hit re-render of the unchanged content.
 	m.setHoverLink(hl)
+	// The channel-info member rows aren't OSC 8 links, so they hover separately.
+	m.setInfoHover(ih)
 	return m, nil
 }
 
@@ -433,6 +445,12 @@ func (m *Model) hitTest(x, y int) hit {
 		msgsW = rightW - refW
 		if x >= channelsWidth+msgsW {
 			return m.hitRefContent(x, y)
+		}
+	} else if m.infoOpen {
+		infoW := splitRightPane(rightW)
+		msgsW = rightW - infoW
+		if x >= channelsWidth+msgsW {
+			return m.hitInfoContent(x, y)
 		}
 	}
 	mx0, top, w, h, yoff := m.messagesGeom()
@@ -744,6 +762,8 @@ func (m *Model) ensureWrapIndex(pane focus, width int) ([]string, []int) {
 		ver = m.threadContentVer
 	case focusRef:
 		ver = m.refContentVer
+	case focusInfo:
+		ver = m.infoContentVer
 	case focusSQLResults:
 		ver = m.sqlContentVer
 	}
@@ -756,6 +776,8 @@ func (m *Model) ensureWrapIndex(pane focus, width int) ([]string, []int) {
 		content = m.threadView.GetContent()
 	case focusRef:
 		content = m.refView.GetContent()
+	case focusInfo:
+		content = m.infoView.GetContent()
 	case focusSQLResults:
 		content = m.sql.view.GetContent()
 	}
@@ -882,6 +904,18 @@ func (m *Model) refGeom() (x0, top, width, height, yoff int) {
 	}
 	msgsW := rightW - splitRightPane(rightW)
 	return channelsWidth + msgsW + 1, tabsHeight + 1, m.refView.Width(), m.refView.Height(), m.refView.YOffset()
+}
+
+// infoGeom mirrors refGeom for the channel-info panel, which shares the same
+// right-side slot (only one of the thread sidebar, reference and info panels is
+// ever open).
+func (m *Model) infoGeom() (x0, top, width, height, yoff int) {
+	rightW := m.width - channelsWidth
+	if rightW < 10 {
+		rightW = 10
+	}
+	msgsW := rightW - splitRightPane(rightW)
+	return channelsWidth + msgsW + 1, tabsHeight + 1, m.infoView.Width(), m.infoView.Height(), m.infoView.YOffset()
 }
 
 // bodyHeight reproduces viewContent's body-height calculation (terminal height

@@ -55,11 +55,12 @@ const (
 	focusSearch
 	focusFeed
 	focusRef
+	focusInfo
 	focusSQL
 	focusSQLResults
 )
 
-const numFocus = 11
+const numFocus = 12
 
 // dmTeamID is a synthetic team identifier used to bucket DMs / group-DMs,
 // which carry an empty Channel.TeamId on the server.
@@ -428,6 +429,33 @@ type Model struct {
 	// is never missed.
 	glJobsExpanded bool
 
+	// Channel-info side panel (open with the channel-info key on a channel/DM
+	// tab). Like the reference panel it hosts the single right slot, so opening
+	// it closes the thread sidebar / reference panel and vice-versa. It shows the
+	// open channel's purpose, header, member list, pinned messages, mute state
+	// and id. infoChannelID is the channel it describes (always the open channel
+	// at open time). members/pinned are fetched async; the *Loading/*Err flags
+	// track each fetch. infoTargets is the ordered list of focusable items — the
+	// links in the purpose/header and each pinned message — that ↑/↓ cycle and
+	// enter/o activate (open a link, or jump to a pinned message); infoIdx is the
+	// selected one (-1 = none). infoTargetRows[i] is target i's first content
+	// line, for scroll-into-view and click resolution. See info.go.
+	infoOpen          bool
+	infoChannelID     string
+	infoView          viewport.Model
+	infoContentVer    uint64
+	infoMembers       []*model.User
+	infoMembersLoaded bool
+	infoMembersErr    error
+	infoPinned        []*model.Post
+	infoPinnedLoaded  bool
+	infoPinnedErr     error
+	infoTargets       []infoTarget
+	infoIdx           int
+	infoHoverIdx      int // member target the pointer is over (-1 = none)
+	infoScrollFree    bool
+	infoFreeOffset    int
+
 	// editingPostID is non-empty while the user is editing an existing
 	// post: the textarea is preloaded with that post's message and Send
 	// patches it on the server instead of creating a new post. Cleared
@@ -740,6 +768,8 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	threadView.SoftWrap = true
 	refView := viewport.New()
 	refView.SoftWrap = true
+	infoView := viewport.New()
+	infoView.SoftWrap = true
 	historyView := viewport.New()
 	historyView.SoftWrap = true
 	keysSheetView := viewport.New()
@@ -895,6 +925,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		msgsView:            msgsView,
 		threadView:          threadView,
 		refView:             refView,
+		infoView:            infoView,
+		infoIdx:             -1,
+		infoHoverIdx:        -1,
 		jiraClient:          jiraClient,
 		jiraProjects:        jiraProjects,
 		glClient:            gitlabClient,
@@ -979,11 +1012,14 @@ func (m Model) ShortHelp() []key.Binding {
 	case m.focus == focusMessages:
 		// Concise footer: the primary actions only (the old 23-binding line
 		// ellipsized after ~6). `?` opens the full, grouped help.
-		return []key.Binding{k.Compose, k.OpenThread, k.SearchHere, k.Filter, k.NavTeam, k.Help}
+		return []key.Binding{k.Compose, k.OpenThread, k.ChannelInfo, k.SearchHere, k.Filter, k.NavTeam, k.Help}
 	case m.focus == focusThread:
 		return []key.Binding{k.Compose, k.SearchHere, k.CloseThread, k.NavTeam, k.Help}
 	case m.focus == focusRef:
 		return []key.Binding{k.Up, k.Down, k.OpenAttach, k.Refresh, k.OpenRef, k.NavTeam, k.Help}
+	case m.focus == focusInfo:
+		// k.ChannelInfo doubles as the close key, mirroring the ref pane's OpenRef.
+		return []key.Binding{k.Up, k.Down, k.OpenChannel, k.ChannelInfo, k.NavTeam, k.Help}
 	case m.focus == focusAttachments:
 		return []key.Binding{k.Left, k.Right, k.OpenAttach, k.AttachRemove, k.Tab, k.NavTeam, k.Help, k.Quit}
 	case m.focus == focusTeams:
@@ -1008,7 +1044,7 @@ func (m Model) FullHelp() [][]key.Binding {
 		{k.Tab, k.ShiftTab, k.NavTeam, k.NavDM, k.NavFeed, k.Switcher, k.Search, k.SearchHere, k.Help, k.Quit},
 		{k.Up, k.Down, k.Home, k.End, k.Left, k.Right, k.PageDown, k.PageUp, k.NextHit, k.PrevHit},
 		{k.NavChanPrev, k.NavChanNext, k.NavTeamPrev, k.NavTeamNext},
-		{k.Filter, k.ClearFilter, k.OpenChannel, k.OpenThread, k.ReplyInThread, k.OpenRef, k.CloseThread},
+		{k.Filter, k.ClearFilter, k.OpenChannel, k.OpenThread, k.ReplyInThread, k.OpenRef, k.ChannelInfo, k.CloseThread},
 		{k.OpenAttach, k.Download, k.CopyMD, k.CopyCode, k.EditPost, k.DeletePost, k.React, k.ShowHistory, k.Compose, k.Send, k.NewLine, k.LeaveInput},
 		{k.Paste, k.AttachRemove},
 	}
@@ -1933,6 +1969,11 @@ func (m Model) persistDelete(id string) tea.Cmd {
 // fetchPosts Cmd. Callers tea.Batch the returned Cmd with any unrelated
 // work (focus changes, stat bumps, etc.).
 func (m *Model) openChannelLoadCmd(channelID string) tea.Cmd {
+	// The channel-info panel describes a specific channel; close it when the
+	// open channel changes out from under it so it can't show stale info.
+	if m.infoOpen && channelID != m.infoChannelID {
+		m.closeInfo()
+	}
 	m.openChannelID = channelID
 	// Freeze the read/unread boundary for this view, then let renderMessages
 	// resolve it to a concrete post. Only when the channel actually has unread

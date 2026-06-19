@@ -127,6 +127,11 @@ func (m Model) handleSwitcherKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		ch := results[m.switcherIdx]
 		m.closeSwitcher()
+		// The channel-info panel describes the channel it was opened for; close
+		// it when jumping elsewhere so it can't show stale info.
+		if m.infoOpen && ch.Id != m.infoChannelID {
+			m.closeInfo()
+		}
 		// Hop to the channel's home team so isCurrentChannel keeps
 		// tracking the open channel. Clear any channel filter so the
 		// target is actually visible in the sidebar list.

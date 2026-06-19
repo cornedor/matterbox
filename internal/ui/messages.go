@@ -103,6 +103,24 @@ type membersLoadedMsg struct {
 	members model.ChannelMembersWithTeamData
 }
 
+// infoMembersLoadedMsg / infoPinnedLoadedMsg carry the channel-info panel's
+// async fetches (member profiles and pinned posts). channelID is checked
+// against m.infoChannelID so a response for a channel the user already
+// navigated away from is discarded. err carries a fetch failure to show in
+// the panel rather than the global status line.
+type infoMembersLoadedMsg struct {
+	channelID string
+	members   []*model.User
+	err       error
+}
+
+type infoPinnedLoadedMsg struct {
+	channelID string
+	posts     []*model.Post
+	users     map[string]string
+	err       error
+}
+
 type fileInfosLoadedMsg struct {
 	postID string
 	infos  []*model.FileInfo

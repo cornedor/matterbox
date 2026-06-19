@@ -130,6 +130,8 @@ func (m *Model) linkAt(pane focus, line, col int) (string, bool) {
 		width = m.threadView.Width()
 	case focusRef:
 		width = m.refView.Width()
+	case focusInfo:
+		width = m.infoView.Width()
 	case focusSQLResults:
 		width = m.sql.view.Width()
 	}
@@ -225,6 +227,13 @@ func (m *Model) hoverLinkAt(x, y int) hoverLink {
 			return hoverLink{url: url, pane: focusRef}
 		}
 		return hoverLink{}
+	case hitInfo:
+		// The channel-info panel is likewise a single document; key the hover by
+		// pane alone.
+		if url, ok := m.linkAt(focusInfo, h.line, h.col); ok {
+			return hoverLink{url: url, pane: focusInfo}
+		}
+		return hoverLink{}
 	case hitSQL:
 		pane, posts = focusSQLResults, m.sql.posts
 	default:
@@ -268,6 +277,8 @@ func (m *Model) renderHoverPane(pane focus) {
 		m.renderThread()
 	case focusRef:
 		m.renderRef()
+	case focusInfo:
+		m.renderInfo()
 	case focusSQLResults:
 		m.renderSQLResults()
 	default:
