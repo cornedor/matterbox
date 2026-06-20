@@ -8,9 +8,9 @@ import tea "charm.land/bubbletea/v2"
 // small (a 4000-char limit) so snapshotting the string is cheaper to reason
 // about than diff/patch bookkeeping, and it matches how every programmatic
 // edit already replaces the value wholesale via SetValue. Restoring a snapshot
-// leaves the cursor at the end of the text, which is where it belongs for the
-// dominant "undo my own typing" case (and is the same place SetValue lands the
-// cursor everywhere else in this package).
+// diffs it against the live draft and lands the cursor at the edit site (see
+// applyComposerSnapshot / changeEndOffset) rather than at the end, so undoing a
+// change mid-message keeps the caret where the change was.
 //
 // Consecutive single-character edits of the same kind (all inserts, or all
 // deletes) coalesce into one undo step until a word/line boundary, so undo
@@ -132,17 +132,44 @@ func (h *composerHistory) reset() {
 }
 
 // applyComposerSnapshot replaces the draft with a restored undo/redo snapshot
-// and resyncs the dependent composer state: cursor to end (where SetValue lands
-// it), input height, the @-mention / :emoji popups, and a fresh grammar pass
-// (the cached matches point at the old text). It returns the commands to run.
+// and resyncs the dependent composer state: the cursor (landed at the edit
+// site, see below), input height, the @-mention / :emoji popups, and a fresh
+// grammar pass (the cached matches point at the old text). It returns the
+// commands to run.
 func (m *Model) applyComposerSnapshot(v string) tea.Cmd {
+	// Place the cursor where the restored draft diverges from the current one
+	// — i.e. the text the undo/redo just changed — instead of at the end (where
+	// SetValue would leave it). Computed before SetValue clobbers the value.
+	cursor := changeEndOffset(m.input.Value(), v)
 	m.input.SetValue(v)
-	m.input.MoveToEnd()
+	m.setInputCursorOffset(cursor)
 	m.syncInputHeight()
 	mentionCmd := m.updateMention()
 	m.updateEmoji()
 	m.clearGrammar()
 	return tea.Batch(mentionCmd, m.scheduleGrammarCheck())
+}
+
+// changeEndOffset returns the rune offset, within after, at the end of the
+// region where before and after differ — the natural caret position after an
+// edit that turned before into after. It trims the shared prefix and suffix and
+// returns the tail of what's left (len(after) minus the common suffix), so an
+// undo/redo lands the cursor right after the text it restored. Identical strings
+// yield len(after) (end of draft), which is harmless.
+func changeEndOffset(before, after string) int {
+	a := []rune(before)
+	b := []rune(after)
+	// Longest common prefix.
+	p := 0
+	for p < len(a) && p < len(b) && a[p] == b[p] {
+		p++
+	}
+	// Longest common suffix that doesn't overlap the shared prefix.
+	s := 0
+	for s < len(a)-p && s < len(b)-p && a[len(a)-1-s] == b[len(b)-1-s] {
+		s++
+	}
+	return len(b) - s
 }
 
 // composerContextKey identifies which logical buffer the composer currently
