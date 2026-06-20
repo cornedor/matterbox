@@ -325,9 +325,11 @@ func TestVimNavOff(t *testing.T) {
 }
 
 // TestNavWorksWhileComposing: ctrl-nav fires even when the composer is focused
-// (it's checked before the typing guards), switching channel without discarding
-// the in-progress draft and leaving focus in the composer so typing continues
-// against the newly-opened channel.
+// (it's checked before the typing guards), switching channel and leaving focus
+// in the composer so typing continues against the newly-opened channel. The
+// in-progress draft isn't discarded — per-channel drafts stash it under the
+// channel being left so it's there again on return — but it doesn't follow
+// the cursor into the new channel, which shows its own (empty) draft.
 func TestNavWorksWhileComposing(t *testing.T) {
 	m := navModel()
 	m.focus = focusInput
@@ -339,8 +341,11 @@ func TestNavWorksWhileComposing(t *testing.T) {
 	if got.openChannelID != "c2" {
 		t.Fatalf("ctrl+j in composer: openChannelID = %q, want c2 (nav not blocked)", got.openChannelID)
 	}
-	if got.input.Value() != "draft" {
-		t.Fatalf("ctrl+j in composer discarded draft: input = %q, want \"draft\"", got.input.Value())
+	if got.input.Value() != "" {
+		t.Fatalf("ctrl+j carried the draft into c2: input = %q, want \"\" (c2's own draft)", got.input.Value())
+	}
+	if got.drafts["c1"] != "draft" {
+		t.Fatalf("ctrl+j discarded c1's draft: drafts[c1] = %q, want \"draft\"", got.drafts["c1"])
 	}
 	if got.focus != focusInput {
 		t.Fatalf("ctrl+j in composer changed focus to %v, want focusInput (keep composing)", got.focus)

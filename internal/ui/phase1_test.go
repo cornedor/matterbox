@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 
 	"charm.land/bubbles/v2/textinput"
@@ -25,8 +26,10 @@ func keyStr(s string) tea.KeyPressMsg {
 }
 
 // TestComposerCtrlJNeverInsertsNewline: ctrl+j is the global "next channel"
-// nav even while composing — it must switch channels and leave the draft
-// byte-for-byte intact (no newline slips into the textarea).
+// nav even while composing — it must switch channels without slipping a
+// literal newline into the textarea. With per-channel drafts the half-typed
+// text isn't carried into the new channel but stashed under the old one, so
+// the composer shows the target channel's (empty) draft instead.
 func TestComposerCtrlJNeverInsertsNewline(t *testing.T) {
 	m := navModel()
 	m.focus = focusInput
@@ -35,11 +38,17 @@ func TestComposerCtrlJNeverInsertsNewline(t *testing.T) {
 
 	out, _ := m.handleKey(ctrlKey('j'))
 	got := out.(Model)
-	if got.input.Value() != "hello" {
-		t.Fatalf("ctrl+j touched the draft: input = %q, want \"hello\" (no newline)", got.input.Value())
+	if strings.Contains(got.input.Value(), "\n") {
+		t.Fatalf("ctrl+j slipped a newline into the composer: input = %q", got.input.Value())
 	}
 	if got.openChannelID != "c2" {
 		t.Fatalf("ctrl+j did not navigate: openChannelID = %q, want c2", got.openChannelID)
+	}
+	if got.input.Value() != "" {
+		t.Fatalf("ctrl+j did not show c2's empty draft: input = %q, want \"\"", got.input.Value())
+	}
+	if got.drafts["c1"] != "hello" {
+		t.Fatalf("ctrl+j discarded c1's draft: drafts[c1] = %q, want \"hello\"", got.drafts["c1"])
 	}
 }
 
