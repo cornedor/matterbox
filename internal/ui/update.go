@@ -864,6 +864,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case searchDebounceMsg:
 		return m.applySearchDebounce(msg)
 
+	case grammarDebounceMsg:
+		return m, m.applyGrammarDebounce(msg)
+
+	case grammarResultMsg:
+		return m, m.applyGrammarResult(msg)
+
 	case searchResultsMsg:
 		return m.applySearchResults(msg)
 
@@ -2259,6 +2265,37 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Grammar/spell suggestions: alt+g opens the popup on the mistake at the
+	// cursor (or cycles to the next while open). When the popup is up it owns
+	// the digit accelerators, tab navigation and esc; any other key dismisses
+	// it and is handled normally below. (Keys hardwired, like the popups above,
+	// rather than going through the configurable keymap.) Suppressed while an
+	// @-mention / :emoji popup owns the slot so the two never fight over it.
+	if m.grammarEnabled() && !m.mention.active && !m.emoji.active {
+		if msg.String() == "alt+g" && len(m.grammar.matches) > 0 {
+			m.openOrCycleGrammarPopup()
+			return m, nil
+		}
+		if m.grammar.popup {
+			s := msg.String()
+			switch {
+			case s == "esc":
+				m.closeGrammarPopup()
+				return m, nil
+			case key.Matches(msg, m.keys.Tab):
+				m.cycleGrammarPopup(1)
+				return m, nil
+			case key.Matches(msg, m.keys.ShiftTab):
+				m.cycleGrammarPopup(-1)
+				return m, nil
+			case len(s) == 1 && s[0] >= '1' && s[0] <= '9':
+				return m, m.applyGrammarSuggestion(int(s[0] - '1'))
+			default:
+				m.closeGrammarPopup()
+			}
+		}
+	}
+
 	switch {
 	case msg.String() == "ctrl+c":
 		return m, tea.Quit
@@ -2310,6 +2347,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.syncInputHeight()
 		m.closeMention()
 		m.closeEmoji()
+		m.clearGrammar()
 		m.status = "draft cleared"
 		return m, nil
 	case key.Matches(msg, m.keys.LeaveInput):
@@ -2332,6 +2370,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.closeMention()
 		m.closeEmoji()
+		m.clearGrammar()
 		if editing {
 			m.cancelEdit()
 		}
@@ -2364,6 +2403,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.syncInputHeight()
 			m.closeMention()
 			m.closeEmoji()
+			m.clearGrammar()
 			m.restoreInputPrompt()
 			m.status = "saving edit…"
 			return m, m.editPost(id, text)
@@ -2397,6 +2437,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.syncInputHeight()
 		m.closeMention()
 		m.closeEmoji()
+		m.clearGrammar()
 		m.appendOptimistic(channelID, rootID, text, fileIDs)
 		m.clearAttachments()
 		m.resizeMessagesViewport()
@@ -2414,9 +2455,13 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Announce typing only when the keystroke actually changed the draft,
 	// so pure navigation (arrows, ctrl+a/e) doesn't ping the channel and an
 	// empty composer never claims someone's typing. The send is throttled.
-	var typingCmd tea.Cmd
-	if v := m.input.Value(); v != before && v != "" {
-		typingCmd = m.maybeSendTyping(time.Now())
+	// A real edit also (re)arms the debounced grammar check.
+	var typingCmd, grammarCmd tea.Cmd
+	if v := m.input.Value(); v != before {
+		if v != "" {
+			typingCmd = m.maybeSendTyping(time.Now())
+		}
+		grammarCmd = m.scheduleGrammarCheck()
 	}
 	// After the textarea has consumed the keystroke, recompute mention
 	// state and reflow the input/messages split so newlines from
@@ -2424,7 +2469,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	mentionCmd := m.updateMention()
 	m.updateEmoji()
 	m.syncInputHeight()
-	return m, tea.Batch(cmd, mentionCmd, typingCmd)
+	return m, tea.Batch(cmd, mentionCmd, typingCmd, grammarCmd)
 }
 
 // handleFilterKey owns keystrokes while the channel filter is open (f). The

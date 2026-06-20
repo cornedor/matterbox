@@ -34,7 +34,9 @@ func (m *Model) beginEditPost(p *model.Post) tea.Cmd {
 	m.syncInputHeight()
 	m.renderMessages()
 	m.renderThread()
-	return focusCmd
+	// Check the pre-filled text right away so an edited message is underlined
+	// without waiting for the first keystroke.
+	return tea.Batch(focusCmd, m.scheduleGrammarCheck())
 }
 
 // cancelEdit drops the edit-mode state and resets the textarea +

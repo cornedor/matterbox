@@ -23,6 +23,7 @@ import (
 	"matterbox/internal/embed"
 	"matterbox/internal/gitlab"
 	"matterbox/internal/jira"
+	"matterbox/internal/languagetool"
 	"matterbox/internal/mm"
 	"matterbox/internal/opener"
 	"matterbox/internal/semindex"
@@ -511,6 +512,12 @@ type Model struct {
 	// it). Set sql_tab: true in config.yaml to surface it.
 	showSQL bool
 
+	// ltClient is the LanguageTool grammar/spell checker for the composer, or
+	// nil when language_tool.enabled is false. grammar holds the live findings
+	// and popup state. See internal/ui/grammar.go.
+	ltClient *languagetool.Client
+	grammar  grammarState
+
 	// SQL tab state: a read-only SQL editor over the local message cache,
 	// with results rendered as chat messages. Reached by selecting the
 	// synthetic "SQL" tab (only present when showSQL). See internal/ui/sqltab.go.
@@ -885,6 +892,12 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		}
 	}
 	gitlabClient := gitlab.New(gitlabCfg)
+	// LanguageTool grammar/spell check for the composer is opt-in; a nil client
+	// keeps every grammar code path inert (grammarEnabled reports false).
+	var ltClient *languagetool.Client
+	if cfg != nil && cfg.LanguageToolEnabled() {
+		ltClient = languagetool.New(cfg.LanguageTool.ServerURL, cfg.LanguageTool.Language, grammarTimeout)
+	}
 	// Unless the sidebar nav uses the ctrl modifier itself, ctrl+←/→ never
 	// reach the global dispatch, so let them word-jump in the composer (the
 	// textarea otherwise only binds alt+←/→ for that — ctrl+arrows would do
@@ -956,6 +969,8 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		feed:                newFeedState(),
 		showSQL:             showSQL,
 		sql:                 newSQLState(st != nil),
+		ltClient:            ltClient,
+		grammar:             newGrammarState(),
 		reactionEmojis:      reactions,
 		teamOrder:           teamOrder,
 		summaryEndpoint:     summaryEndpoint,

@@ -120,6 +120,33 @@ type Config struct {
 	// show it inline. An empty base_url (with no usable token) disables the
 	// panel. See internal/gitlab and internal/ui.
 	GitLab GitLabConfig `yaml:"gitlab"`
+	// LanguageTool configures the optional grammar/spell checker for the
+	// composer: while you type, the draft is checked against a LanguageTool
+	// server and mistakes are underlined in place (alt+g surfaces the
+	// suggestions). Off unless enabled is true. See internal/languagetool and
+	// internal/ui/grammar.go.
+	LanguageTool LanguageToolConfig `yaml:"language_tool"`
+}
+
+// LanguageToolConfig holds the grammar/spell-checker settings. The feature is
+// opt-in (enabled defaults false); server_url and language fall back to sensible
+// defaults in fillDefaults so enabling it needs only `enabled: true`.
+type LanguageToolConfig struct {
+	// Enabled turns the composer grammar/spell check on. Pointer so an absent
+	// key defaults to false (feature hidden) while `enabled: true` opts in.
+	Enabled *bool `yaml:"enabled"`
+	// ServerURL is the LanguageTool API base (the /v2 root), e.g.
+	// http://localhost:8010/v2. The check endpoint is this + /check. Defaults to
+	// http://localhost:8010/v2.
+	ServerURL string `yaml:"server_url"`
+	// Language is the checking language code, e.g. en-US, en-GB, nl, or "auto"
+	// to let the server detect it per message. Defaults to "auto".
+	Language string `yaml:"language"`
+}
+
+// LanguageToolEnabled reports whether the composer grammar checker is on.
+func (c Config) LanguageToolEnabled() bool {
+	return c.LanguageTool.Enabled != nil && *c.LanguageTool.Enabled
 }
 
 // JiraConfig holds the Jira Cloud connection used by the issue side panel. All
@@ -438,6 +465,13 @@ const defaultSearchRecencyHalfLifeDays = 90
 // it quickly.
 const defaultGiphyRendition = "fixed_height"
 
+// LanguageTool defaults: a locally-running server and per-message language
+// auto-detection, so enabling the feature needs only `enabled: true`.
+const (
+	defaultLanguageToolURL  = "http://localhost:8010/v2"
+	defaultLanguageToolLang = "auto"
+)
+
 // defaultMarkReadDelaySeconds is the dwell a channel must stay open before
 // it's marked read. Long enough that an accidental peek doesn't clear
 // unread, short enough not to feel laggy when you actually read it.
@@ -604,6 +638,16 @@ func (c *Config) fillDefaults() {
 	if c.SQLTab == nil {
 		f := false
 		c.SQLTab = &f
+	}
+	if c.LanguageTool.Enabled == nil {
+		f := false
+		c.LanguageTool.Enabled = &f
+	}
+	if c.LanguageTool.ServerURL == "" {
+		c.LanguageTool.ServerURL = defaultLanguageToolURL
+	}
+	if c.LanguageTool.Language == "" {
+		c.LanguageTool.Language = defaultLanguageToolLang
 	}
 	if c.Keybindings.NavModifier == "" {
 		// Default to the ctrl modifier, but honour a pre-NavModifier config's
@@ -796,6 +840,14 @@ func writeConfig(p string, cfg *Config) error {
 		"#             base_url is the instance root (https://git.example.com);\n" +
 		"#             token is a personal/project access token (read_api to view,\n" +
 		"#             api to approve/merge). Empty token falls back to GITLAB_TOKEN\n" +
-		"#             or an existing glab CLI login for the same host.\n"
+		"#             or an existing glab CLI login for the same host.\n" +
+		"# language_tool: composer grammar/spell check (off by default). enabled\n" +
+		"#             true turns it on; while you type the draft is checked against\n" +
+		"#             a LanguageTool server and mistakes are underlined in place —\n" +
+		"#             alt+g opens the suggestions for the mistake at the cursor.\n" +
+		"#             server_url is the API /v2 root (default\n" +
+		"#             http://localhost:8010/v2); language is the code to check\n" +
+		"#             against — en-US, en-GB, nl, … or auto (default) to detect\n" +
+		"#             it per message.\n"
 	return os.WriteFile(p, append([]byte(header), body...), 0o644)
 }

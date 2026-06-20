@@ -1373,6 +1373,9 @@ func (m *Model) renderMessagesPane(height, width int) string {
 	if popup == "" {
 		popup = m.renderEmojiPopup()
 	}
+	if popup == "" {
+		popup = m.renderGrammarPopup()
+	}
 	if popup != "" {
 		popupH := lipgloss.Height(popup)
 		h := m.msgsView.Height() - popupH
@@ -1437,11 +1440,14 @@ func (m *Model) renderInputBox(width int) string {
 	if m.focus == focusInput {
 		inputBorder = focusedColor
 	}
+	// Underline grammar/spell findings directly on the textarea's rendered
+	// output before framing it. A no-op unless the checker is on and the
+	// findings still match the live draft.
 	box := lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder(), true, false, false, false).
 		BorderForeground(inputBorder).
 		Width(width).
-		Render(m.input.View())
+		Render(m.grammarOverlay(m.input.View()))
 
 	// When someone is typing in the open channel, lay the animated dots
 	// over the top rule (the separator) so the cue rides the line it
@@ -1747,6 +1753,13 @@ func (m *Model) renderFooter() string {
 			hint = 24
 		}
 		right = "↗ " + truncate(m.hoverLink.url, hint)
+	}
+	// When the cursor rests on an underlined mistake (and nothing more urgent
+	// holds the slot), surface its label + top suggestion with the alt+g cue.
+	if right == "" {
+		if hint := m.grammarHint(); hint != "" {
+			right = hint
+		}
 	}
 	// rightDot is my own presence dot, shown just left of my username (and
 	// only when the right slot is my username, not while a status/indexer
