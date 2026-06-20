@@ -2351,13 +2351,15 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Undo):
 		// Silent no-op at the stack boundary — a sticky "nothing to undo"
 		// status would linger until the next action replaced it.
-		if v, ok := m.history.undo(m.composerContextKey(), m.input.Value()); ok {
-			return m, m.applyComposerSnapshot(v)
+		live := m.input.Value()
+		if v, ok := m.history.undo(m.composerContextKey(), live); ok {
+			return m, m.applyComposerSnapshot(v, live)
 		}
 		return m, nil
 	case key.Matches(msg, m.keys.Redo):
-		if v, ok := m.history.redo(m.composerContextKey(), m.input.Value()); ok {
-			return m, m.applyComposerSnapshot(v)
+		live := m.input.Value()
+		if v, ok := m.history.redo(m.composerContextKey(), live); ok {
+			return m, m.applyComposerSnapshot(v, live)
 		}
 		return m, nil
 	case key.Matches(msg, m.keys.ClearInput):

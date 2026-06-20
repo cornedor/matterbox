@@ -260,9 +260,13 @@ func (m *Model) applyGrammarSuggestion(i int) tea.Cmd {
 		m.closeGrammarPopup()
 		return nil
 	}
-	newVal := string(runes[:mt.Offset]) + mt.Replacements[i] + string(runes[mt.Offset+mt.Length:])
+	rep := []rune(mt.Replacements[i])
+	newVal := string(runes[:mt.Offset]) + string(rep) + string(runes[mt.Offset+mt.Length:])
 	m.history.checkpoint(m.composerContextKey(), val)
-	m.input.SetValue(newVal)
+	// Land the cursor just past the replacement, not at the end of the draft,
+	// so a mid-message correction doesn't fling the cursor away from where the
+	// user is working.
+	m.setInputValueCursor(newVal, mt.Offset+len(rep))
 	m.syncInputHeight()
 	m.closeGrammarPopup()
 	m.clearGrammar()

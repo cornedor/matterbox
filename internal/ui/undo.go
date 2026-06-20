@@ -132,17 +132,57 @@ func (h *composerHistory) reset() {
 }
 
 // applyComposerSnapshot replaces the draft with a restored undo/redo snapshot
-// and resyncs the dependent composer state: cursor to end (where SetValue lands
-// it), input height, the @-mention / :emoji popups, and a fresh grammar pass
-// (the cached matches point at the old text). It returns the commands to run.
-func (m *Model) applyComposerSnapshot(v string) tea.Cmd {
-	m.input.SetValue(v)
-	m.input.MoveToEnd()
+// and resyncs the dependent composer state: the cursor (dropped where the
+// restored edit lands, not at the end), input height, the @-mention / :emoji
+// popups, and a fresh grammar pass (the cached matches point at the old text).
+// prevLive is the draft being replaced; the cursor goes to the end of the
+// region that differs between it and v, which is where the undone/redone change
+// sits. It returns the commands to run.
+func (m *Model) applyComposerSnapshot(v, prevLive string) tea.Cmd {
+	m.setInputValueCursor(v, changedRegionEnd(prevLive, v))
 	m.syncInputHeight()
 	mentionCmd := m.updateMention()
 	m.updateEmoji()
 	m.clearGrammar()
 	return tea.Batch(mentionCmd, m.scheduleGrammarCheck())
+}
+
+// setInputValueCursor replaces the draft with v and lands the cursor at rune
+// offset — unlike SetValue, which always jumps to the end. It builds the value
+// in two inserts (the part after the cursor first, then the part before it) so
+// the cursor naturally comes to rest at the boundary between them. Both inserts
+// go through the textarea's normal insert path, so char-limit handling, height,
+// wrapping and viewport repositioning all stay correct.
+func (m *Model) setInputValueCursor(v string, offset int) {
+	runes := []rune(v)
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > len(runes) {
+		offset = len(runes)
+	}
+	m.input.Reset()
+	m.input.InsertString(string(runes[offset:]))
+	m.input.MoveToBegin()
+	m.input.InsertString(string(runes[:offset]))
+}
+
+// changedRegionEnd returns the rune offset in next just past the last rune that
+// differs from prev — i.e. the trailing edge of the changed span. It trims the
+// shared prefix and suffix, so for a localised edit the cursor lands right where
+// the change ends instead of at the end of the whole draft.
+func changedRegionEnd(prev, next string) int {
+	o := []rune(prev)
+	n := []rune(next)
+	p := 0
+	for p < len(o) && p < len(n) && o[p] == n[p] {
+		p++
+	}
+	s := 0
+	for s < len(o)-p && s < len(n)-p && o[len(o)-1-s] == n[len(n)-1-s] {
+		s++
+	}
+	return len(n) - s
 }
 
 // composerContextKey identifies which logical buffer the composer currently
