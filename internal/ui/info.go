@@ -142,7 +142,10 @@ func (m Model) fetchInfoMembers(channelID string) tea.Cmd {
 // fetchInfoPinned loads the channel's pinned posts (newest first) for the
 // panel, resolving any sender names the UI can't already name.
 func (m Model) fetchInfoPinned(channelID string) tea.Cmd {
-	client, ctx := m.client, m.ctx
+	// Snapshot the name cache on the UI goroutine; the closure below runs on a
+	// Bubble Tea worker and must not read the live m.userNames while Update
+	// writes it (issue #2).
+	client, ctx, known := m.client, m.ctx, snapshotNames(m.userNames)
 	return func() tea.Msg {
 		pl, err := client.PinnedPosts(ctx, channelID)
 		if err != nil {
@@ -151,7 +154,7 @@ func (m Model) fetchInfoPinned(channelID string) tea.Cmd {
 		posts := orderedPinned(pl)
 		need := map[string]struct{}{}
 		for _, p := range posts {
-			if _, have := m.userNames[p.UserId]; !have {
+			if _, have := known[p.UserId]; !have {
 				need[p.UserId] = struct{}{}
 			}
 		}
