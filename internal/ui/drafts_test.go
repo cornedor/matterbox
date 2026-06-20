@@ -5,7 +5,142 @@ import (
 	"testing"
 
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/languagetool"
 )
+
+// grammarNavModel is navModel with grammar enabled (a fake LanguageTool
+// endpoint), so the transient composer state can be checked across channel
+// switches without a live server.
+func grammarNavModel() Model {
+	m := navModel()
+	m.grammar = newGrammarState()
+	m.ltClient = languagetool.New("http://localhost:8010/v2", "auto", false, 0)
+	return m
+}
+
+// TestChannelSwitchClearsStaleGrammar: leaving a channel drops the grammar
+// findings (and any open suggestion popup) bound to its draft, so they can't
+// paint over the next channel's text at the wrong offsets.
+func TestChannelSwitchClearsStaleGrammar(t *testing.T) {
+	m := grammarNavModel() // on c1
+	m.input.SetValue("som sentnce")
+	m.setGrammarMatches("som sentnce", []languagetool.Match{
+		{Offset: 0, Length: 3, IssueType: "misspelling"},
+	})
+	m.grammar.popup = true
+
+	m.swapChannelDraft("c2") // c2 has no draft → composer clears
+	m.openChannelID = "c2"
+
+	if m.grammar.matches != nil {
+		t.Fatalf("stale grammar matches survived the switch: %+v", m.grammar.matches)
+	}
+	if m.grammar.checkedText != "" {
+		t.Fatalf("grammar checkedText not reset: %q", m.grammar.checkedText)
+	}
+	if m.grammar.popup {
+		t.Fatalf("grammar popup left open after switch")
+	}
+}
+
+// TestChannelSwitchRechecksRestoredDraft: switching to a channel that has a
+// saved draft restores it and arms a fresh grammar check for that text —
+// rather than carrying the previous channel's findings or leaving the restored
+// draft unchecked.
+func TestChannelSwitchRechecksRestoredDraft(t *testing.T) {
+	m := grammarNavModel() // on c1, empty composer
+	m.drafts = map[string]string{"c2": "som draft"}
+	// Pretend the old channel had findings, to prove they don't linger.
+	m.setGrammarMatches("stale", []languagetool.Match{{Offset: 0, Length: 5}})
+	seqBefore := m.grammar.seq
+
+	cmd := m.swapChannelDraft("c2")
+	m.openChannelID = "c2"
+
+	if got := m.input.Value(); got != "som draft" {
+		t.Fatalf("draft not restored: composer = %q", got)
+	}
+	if m.grammar.checkedText != "" || m.grammar.matches != nil {
+		t.Fatalf("restored draft kept stale findings: checkedText=%q matches=%+v",
+			m.grammar.checkedText, m.grammar.matches)
+	}
+	if m.grammar.seq == seqBefore {
+		t.Fatalf("no grammar check armed for the restored draft (seq still %d)", m.grammar.seq)
+	}
+	if cmd == nil {
+		t.Fatalf("swap returned no cmd; expected a grammar-check tick")
+	}
+}
+
+// TestNavKeyClearsGrammar: the same clearing happens end-to-end through a real
+// ctrl+j nav keypress, not just the helper.
+func TestNavKeyClearsGrammar(t *testing.T) {
+	m := grammarNavModel()
+	m.focus = focusInput
+	m.input.Focus()
+	m.input.SetValue("som sentnce")
+	m.setGrammarMatches("som sentnce", []languagetool.Match{
+		{Offset: 0, Length: 3, IssueType: "misspelling"},
+	})
+
+	out, _ := m.handleKey(ctrlKey('j'))
+	got := out.(Model)
+	if got.openChannelID != "c2" {
+		t.Fatalf("nav didn't switch: openChannelID = %q", got.openChannelID)
+	}
+	if got.grammar.matches != nil {
+		t.Fatalf("grammar findings survived the nav keypress: %+v", got.grammar.matches)
+	}
+}
+
+// TestDraftsLoadedRechecksOpenDraft: a draft arriving from the server for the
+// open channel seeds the empty composer and arms a grammar check for it.
+func TestDraftsLoadedRechecksOpenDraft(t *testing.T) {
+	m := grammarNavModel() // on c1, empty composer
+	seqBefore := m.grammar.seq
+
+	cmd := m.applyDraftsLoaded(draftsLoadedMsg{drafts: map[string]string{"c1": "som loaded"}})
+
+	if got := m.input.Value(); got != "som loaded" {
+		t.Fatalf("loaded draft not seeded into composer: %q", got)
+	}
+	if m.grammar.seq == seqBefore || cmd == nil {
+		t.Fatalf("no grammar check armed for the loaded draft (seq %d→%d, cmd nil=%v)",
+			seqBefore, m.grammar.seq, cmd == nil)
+	}
+}
+
+// TestChannelSwitchClosesMentionPopup: an open @-mention dropdown belongs to
+// the draft being left, so a channel switch dismisses it.
+func TestChannelSwitchClosesMentionPopup(t *testing.T) {
+	m := navModel()
+	m.input.SetValue("hey @al")
+	m.mention.active = true
+	m.mention.query = "al"
+
+	m.swapChannelDraft("c2")
+	m.openChannelID = "c2"
+
+	if m.mention.active {
+		t.Fatalf("mention popup stayed open across the channel switch")
+	}
+}
+
+// TestChannelSwitchResetsUndoHistory: undo history is reset on switch so an
+// undo in the new channel can't resurrect the previous channel's text.
+func TestChannelSwitchResetsUndoHistory(t *testing.T) {
+	m := navModel()
+	m.input.SetValue("hello")
+	m.history.note("chan:c1", "", "hello")
+
+	m.swapChannelDraft("c2")
+	m.openChannelID = "c2"
+
+	if v, ok := m.history.undo("chan:c2", m.input.Value()); ok {
+		t.Fatalf("undo after switch resurrected previous text: %q", v)
+	}
+}
 
 // draftEvent builds a draft_* WebSocket event carrying the given draft, the
 // way the server broadcasts it (JSON under the "draft" data key).
