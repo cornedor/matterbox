@@ -6,6 +6,7 @@ import (
 	"sync"
 	"unicode"
 
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	emoji "github.com/kyokomi/emoji/v2"
 )
@@ -172,68 +173,86 @@ func (m *Model) closeEmoji() {
 	m.emoji = emojiState{}
 }
 
-// emojiMatches returns up to emojiLimit candidates, prefix matches first
-// (":smi" → smile before kissing_smiling_eyes), then substring matches, so
-// the most obvious completion sits at the top while fuzzier hits stay
-// reachable. Custom (server) emoji are merged ahead of the kyokomi index
-// within each tier so they stay discoverable against the much larger unicode
-// set; glyphs are resolved at render time, not here.
+// emojiMatches returns up to emojiLimit candidates ranked by, in order:
+// match quality (exact > prefix > interior substring > fuzzy subsequence),
+// then popularity (shortcodes you've accepted before float up within a
+// tier), then custom-vs-unicode, then match position. Fuzzy matching means
+// ":smle" still finds ":smile:"; the band-first ordering keeps the obvious
+// prefix completion on top while fuzzier hits stay reachable. Custom
+// (server) emoji are merged ahead of the kyokomi index within each tier so
+// they stay discoverable against the much larger unicode set; glyphs are
+// resolved at render time, not here.
 func (m Model) emojiMatches(query string) []emojiItem {
-	var prefix, infix []emojiItem
+	type cand struct {
+		name   string
+		band   int
+		score  int
+		custom bool
+	}
+	var cands []cand
 	seen := map[string]struct{}{}
-	add := func(dst *[]emojiItem, name string) {
+	consider := func(name string, custom bool) {
 		if _, dup := seen[name]; dup {
 			return
 		}
+		band, score, ok := fuzzyScore(name, query)
+		if !ok {
+			return
+		}
 		seen[name] = struct{}{}
-		*dst = append(*dst, emojiItem{code: ":" + name + ":", name: name})
+		cands = append(cands, cand{name: name, band: band, score: score, custom: custom})
 	}
 	for _, name := range m.customEmojiNames {
-		switch {
-		case strings.HasPrefix(name, query):
-			add(&prefix, name)
-		case strings.Contains(name, query):
-			add(&infix, name)
-		}
+		consider(name, true)
 	}
 	for _, name := range emojiIndex() {
-		if len(prefix) >= emojiLimit {
-			break
-		}
-		switch {
-		case strings.HasPrefix(name, query):
-			add(&prefix, name)
-		case strings.Contains(name, query):
-			add(&infix, name)
-		}
+		consider(name, false)
 	}
-	out := prefix
-	for _, it := range infix {
-		if len(out) >= emojiLimit {
-			break
+	sort.SliceStable(cands, func(i, j int) bool {
+		a, b := cands[i], cands[j]
+		// 1. Match quality: exact > prefix > substring > subsequence.
+		if a.band != b.band {
+			return a.band < b.band
 		}
-		out = append(out, it)
+		// 2. Popularity: more-often-accepted shortcodes first.
+		if ua, ub := m.emojiUsage[a.name], m.emojiUsage[b.name]; ua != ub {
+			return ua > ub
+		}
+		// 3. Custom (server) emoji ahead of unicode for discoverability.
+		if a.custom != b.custom {
+			return a.custom
+		}
+		// 4. Finer match position, then name as a stable last resort.
+		if a.score != b.score {
+			return a.score < b.score
+		}
+		return a.name < b.name
+	})
+	if len(cands) > emojiLimit {
+		cands = cands[:emojiLimit]
 	}
-	if len(out) > emojiLimit {
-		out = out[:emojiLimit]
+	out := make([]emojiItem, len(cands))
+	for i, c := range cands {
+		out[i] = emojiItem{code: ":" + c.name + ":", name: c.name}
 	}
 	return out
 }
 
 // acceptEmoji replaces ":<query>" with the selected shortcode + space at the
-// captured position. Returns false when there's nothing usable so the caller
-// falls through to the default key handler.
-func (m *Model) acceptEmoji() bool {
+// captured position. Returns (cmd, true) on success — cmd persists the
+// updated popularity counter — or (nil, false) when there's nothing usable,
+// so the caller falls through to the default key handler.
+func (m *Model) acceptEmoji() (tea.Cmd, bool) {
 	if !m.emoji.active || m.emoji.idx < 0 || m.emoji.idx >= len(m.emoji.items) {
-		return false
+		return nil, false
 	}
 	it := m.emoji.items[m.emoji.idx]
 	if it.code == "" {
-		return false
+		return nil, false
 	}
 	lines := strings.Split(m.input.Value(), "\n")
 	if m.emoji.line < 0 || m.emoji.line >= len(lines) {
-		return false
+		return nil, false
 	}
 	runes := []rune(lines[m.emoji.line])
 	li := m.input.LineInfo()
@@ -242,15 +261,16 @@ func (m *Model) acceptEmoji() bool {
 		col = len(runes)
 	}
 	if m.emoji.start > col {
-		return false
+		return nil, false
 	}
 	replaced := string(runes[:m.emoji.start]) + it.code + " " + string(runes[col:])
 	lines[m.emoji.line] = replaced
 	m.history.checkpoint(m.composerContextKey(), m.input.Value())
 	m.input.SetValue(strings.Join(lines, "\n"))
 	m.syncInputHeight()
+	bump := m.bumpEmojiStat(it.name)
 	m.closeEmoji()
-	return true
+	return bump, true
 }
 
 // emojiPopupStyle reuses the mention dropdown frame vocabulary.

@@ -308,6 +308,15 @@ type Model struct {
 	// the switcher so frequently-opened channels float to the top.
 	openStats map[string]channelStat
 
+	// Persisted popularity counters for the autocomplete pickers (loaded
+	// from ~/.config/matterbox/picker_stats.json). emojiUsage counts how
+	// often each emoji shortcode was accepted (`:` picker + reaction
+	// picker); mentionUsage counts how often each username was accepted
+	// from the `@` picker. Both are sort signals so the candidates you pick
+	// most float to the top within a match-quality tier. See pickerstats.go.
+	emojiUsage   map[string]int
+	mentionUsage map[string]int
+
 	// store is the local SQLite database that caches messages and powers
 	// future local search. Best-effort: if Open fails, it stays nil and
 	// the app falls back to the original fresh-fetch behaviour. Every
@@ -759,6 +768,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	h := help.New()
 
 	stats, la, lastByTeam := loadChannelStats()
+	emojiUsage, mentionUsage := loadPickerStats()
 
 	var st *store.Store
 	if p, err := store.DefaultPath(); err == nil {
@@ -956,6 +966,8 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		switcher:            sw,
 		reactionSearch:      rs,
 		openStats:           stats,
+		emojiUsage:          emojiUsage,
+		mentionUsage:        mentionUsage,
 		store:               st,
 		lastActiveTeamID:    la.teamID(),
 		lastActiveChannelID: la.channelID(),

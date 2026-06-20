@@ -2,6 +2,7 @@ package ui
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 	"time"
 
@@ -704,6 +705,15 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		items := msg.users
+		// Float the people you mention most to the top of the server's
+		// relevance-ordered results — a stable sort keeps the server order
+		// for everyone you've never picked.
+		sort.SliceStable(items, func(i, j int) bool {
+			if items[i] == nil || items[j] == nil {
+				return items[j] == nil && items[i] != nil
+			}
+			return m.mentionUsage[items[i].Username] > m.mentionUsage[items[j].Username]
+		})
 		if len(items) > mentionLimit {
 			items = items[:mentionLimit]
 		}
@@ -2238,8 +2248,8 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case key.Matches(msg, m.keys.Tab), key.Matches(msg, m.keys.Send):
-			if m.acceptMention() {
-				return m, nil
+			if cmd, ok := m.acceptMention(); ok {
+				return m, cmd
 			}
 		case msg.String() == "esc": // hardwired popup dismiss
 			m.closeMention()
@@ -2262,8 +2272,8 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case key.Matches(msg, m.keys.Tab), key.Matches(msg, m.keys.Send):
-			if m.acceptEmoji() {
-				return m, nil
+			if cmd, ok := m.acceptEmoji(); ok {
+				return m, cmd
 			}
 		case msg.String() == "esc": // hardwired popup dismiss
 			m.closeEmoji()

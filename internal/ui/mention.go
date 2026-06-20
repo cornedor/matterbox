@@ -98,24 +98,51 @@ func (m *Model) closeMention() {
 
 // localMentionMatches prefilters from already-resolved usernames so the
 // popup shows something instantly while the debounced API fetch flies.
+// Matching is fuzzy (so "@andrs" still finds "anders") and candidates are
+// ranked by match quality first, then popularity — usernames you mention
+// most float to the top within a tier — mirroring the switcher's ordering.
 func (m *Model) localMentionMatches(query string) []*model.User {
 	if len(m.userNames) == 0 {
 		return nil
 	}
-	out := make([]*model.User, 0, mentionLimit)
+	type cand struct {
+		u     *model.User
+		band  int
+		score int
+	}
+	var cands []cand
 	for id, name := range m.userNames {
 		if name == "" {
 			continue
 		}
-		if query == "" || strings.HasPrefix(strings.ToLower(name), query) {
-			out = append(out, &model.User{Id: id, Username: name})
+		band, score, ok := fuzzyScore(strings.ToLower(name), query)
+		if !ok {
+			continue
 		}
+		cands = append(cands, cand{u: &model.User{Id: id, Username: name}, band: band, score: score})
 	}
-	sort.SliceStable(out, func(i, j int) bool {
-		return out[i].Username < out[j].Username
+	sort.SliceStable(cands, func(i, j int) bool {
+		a, b := cands[i], cands[j]
+		// 1. Match quality: exact > prefix > substring > subsequence.
+		if a.band != b.band {
+			return a.band < b.band
+		}
+		// 2. Popularity: more-often-mentioned usernames first.
+		if ua, ub := m.mentionUsage[a.u.Username], m.mentionUsage[b.u.Username]; ua != ub {
+			return ua > ub
+		}
+		// 3. Finer match position, then username as a stable last resort.
+		if a.score != b.score {
+			return a.score < b.score
+		}
+		return a.u.Username < b.u.Username
 	})
-	if len(out) > mentionLimit {
-		out = out[:mentionLimit]
+	out := make([]*model.User, 0, mentionLimit)
+	for _, c := range cands {
+		out = append(out, c.u)
+		if len(out) >= mentionLimit {
+			break
+		}
 	}
 	return out
 }
@@ -133,19 +160,20 @@ func (m Model) fetchMentions(teamID, channelID, query string, seq int) tea.Cmd {
 }
 
 // acceptMention replaces "@<query>" with "@<username> " at the captured
-// position and closes the popup. Returns false when there's nothing
-// usable to accept (caller falls through to the default key handler).
-func (m *Model) acceptMention() bool {
+// position and closes the popup. Returns (cmd, true) on success — cmd
+// persists the updated popularity counter — or (nil, false) when there's
+// nothing usable to accept (caller falls through to the default handler).
+func (m *Model) acceptMention() (tea.Cmd, bool) {
 	if !m.mention.active || m.mention.idx < 0 || m.mention.idx >= len(m.mention.items) {
-		return false
+		return nil, false
 	}
 	u := m.mention.items[m.mention.idx]
 	if u == nil || u.Username == "" {
-		return false
+		return nil, false
 	}
 	lines := strings.Split(m.input.Value(), "\n")
 	if m.mention.line < 0 || m.mention.line >= len(lines) {
-		return false
+		return nil, false
 	}
 	runes := []rune(lines[m.mention.line])
 	li := m.input.LineInfo()
@@ -154,7 +182,7 @@ func (m *Model) acceptMention() bool {
 		col = len(runes)
 	}
 	if m.mention.start > col {
-		return false
+		return nil, false
 	}
 	replaced := string(runes[:m.mention.start]) + "@" + u.Username + " " + string(runes[col:])
 	lines[m.mention.line] = replaced
@@ -165,8 +193,9 @@ func (m *Model) acceptMention() bool {
 	m.input.SetValue(strings.Join(lines, "\n"))
 	m.syncInputHeight()
 	m.userNames[u.Id] = u.Username
+	bump := m.bumpMentionStat(u.Username)
 	m.closeMention()
-	return true
+	return bump, true
 }
 
 // mentionPopupStyle is the dropdown frame; matches the focused-border
