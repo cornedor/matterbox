@@ -261,6 +261,7 @@ func (m *Model) applyGrammarSuggestion(i int) tea.Cmd {
 		return nil
 	}
 	newVal := string(runes[:mt.Offset]) + mt.Replacements[i] + string(runes[mt.Offset+mt.Length:])
+	m.history.checkpoint(m.composerContextKey(), val)
 	m.input.SetValue(newVal)
 	m.syncInputHeight()
 	m.closeGrammarPopup()

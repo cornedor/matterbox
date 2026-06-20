@@ -161,6 +161,7 @@ func (m *Model) acceptMention() bool {
 	// SetValue resets + reinserts, leaving the cursor at the end of the
 	// value. Fine for the common single-line case; for a rare multi-line
 	// edit the cursor still lands in a sensible spot to keep typing.
+	m.history.checkpoint(m.composerContextKey(), m.input.Value())
 	m.input.SetValue(strings.Join(lines, "\n"))
 	m.syncInputHeight()
 	m.userNames[u.Id] = u.Username

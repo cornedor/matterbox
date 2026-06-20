@@ -342,6 +342,9 @@ type Model struct {
 	// reflowed for. syncInputHeight compares against it to reflow only
 	// when the textarea's DynamicHeight actually changed.
 	lastInputHeight int
+	// history backs composer undo/redo (ctrl+z / ctrl+y). It's keyed by
+	// composerContextKey so undo never crosses into another channel's draft.
+	history composerHistory
 
 	loading bool
 	status  string

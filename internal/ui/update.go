@@ -781,6 +781,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !strings.Contains(val, msg.old) {
 			return m, nil
 		}
+		m.history.checkpoint(m.composerContextKey(), val)
 		m.input.SetValue(strings.Replace(val, msg.old, msg.markdown, 1))
 		m.input.CursorEnd()
 		m.updateMention()
@@ -1472,8 +1473,13 @@ func (m Model) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 				giphyCmd = giphyLookup(m.ctx, m.giphyAPIKey, id, m.giphyRendition, md)
 			}
 		}
+		before := m.input.Value()
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
+		// A paste lands as a single, discrete undo step.
+		if m.input.Value() != before {
+			m.history.checkpoint(m.composerContextKey(), before)
+		}
 		mentionCmd := m.updateMention()
 		m.syncInputHeight()
 		return m, tea.Batch(cmd, mentionCmd, giphyCmd)
@@ -2342,6 +2348,18 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.selectLastMessage()
 		m.renderMessages()
 		return m, nil
+	case key.Matches(msg, m.keys.Undo):
+		// Silent no-op at the stack boundary — a sticky "nothing to undo"
+		// status would linger until the next action replaced it.
+		if v, ok := m.history.undo(m.composerContextKey(), m.input.Value()); ok {
+			return m, m.applyComposerSnapshot(v)
+		}
+		return m, nil
+	case key.Matches(msg, m.keys.Redo):
+		if v, ok := m.history.redo(m.composerContextKey(), m.input.Value()); ok {
+			return m, m.applyComposerSnapshot(v)
+		}
+		return m, nil
 	case key.Matches(msg, m.keys.ClearInput):
 		// Wipe the whole draft in one keystroke. The textarea's emacs keys
 		// only kill to the line start / end; this is the "start over" hatch
@@ -2352,6 +2370,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.input.Reset()
+		m.history.reset()
 		m.syncInputHeight()
 		m.closeMention()
 		m.closeEmoji()
@@ -2408,6 +2427,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			id := m.editingPostID
 			m.editingPostID = ""
 			m.input.Reset()
+			m.history.reset()
 			m.syncInputHeight()
 			m.closeMention()
 			m.closeEmoji()
@@ -2442,6 +2462,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		fileIDs := m.collectAttachmentFileIDs()
 		m.input.Reset()
+		m.history.reset()
 		m.syncInputHeight()
 		m.closeMention()
 		m.closeEmoji()
@@ -2466,6 +2487,9 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// A real edit also (re)arms the debounced grammar check.
 	var typingCmd, grammarCmd tea.Cmd
 	if v := m.input.Value(); v != before {
+		// Snapshot the pre-keystroke draft for undo. Single-character edits
+		// coalesce into word-sized steps inside note.
+		m.history.note(m.composerContextKey(), before, v)
 		if v != "" {
 			typingCmd = m.maybeSendTyping(time.Now())
 		}

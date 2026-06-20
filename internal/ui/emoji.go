@@ -246,6 +246,7 @@ func (m *Model) acceptEmoji() bool {
 	}
 	replaced := string(runes[:m.emoji.start]) + it.code + " " + string(runes[col:])
 	lines[m.emoji.line] = replaced
+	m.history.checkpoint(m.composerContextKey(), m.input.Value())
 	m.input.SetValue(strings.Join(lines, "\n"))
 	m.syncInputHeight()
 	m.closeEmoji()
