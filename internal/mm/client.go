@@ -220,6 +220,49 @@ func (c *Client) Send(ctx context.Context, channelID, rootID, message string, fi
 	return p, nil
 }
 
+// Drafts ---------------------------------------------------------------
+
+// GetDrafts returns the user's saved message drafts for the given team.
+// The server scopes the query to that team's channels *plus* every DM /
+// group-DM (which carry an empty TeamId), so the same DM draft comes back
+// for any team queried — callers dedupe by ChannelId. Each Draft carries
+// its ChannelId and RootId ("" for a channel draft, the thread root for a
+// reply draft).
+func (c *Client) GetDrafts(ctx context.Context, userID, teamID string) ([]*model.Draft, error) {
+	d, _, err := c.c.GetDrafts(ctx, userID, teamID)
+	if err != nil {
+		return nil, fmt.Errorf("get drafts: %w", err)
+	}
+	return d, nil
+}
+
+// UpsertDraft creates or replaces the draft for its ChannelId/RootId pair.
+// The server stamps CreateAt/UpdateAt, so callers leave those zero. The
+// message is keyed per (user, channel, root): one draft per channel, plus
+// one per open thread.
+func (c *Client) UpsertDraft(ctx context.Context, channelID, rootID, message string, fileIDs []string) (*model.Draft, error) {
+	d, _, err := c.c.UpsertDraft(ctx, &model.Draft{
+		ChannelId: channelID,
+		RootId:    rootID,
+		Message:   message,
+		FileIds:   fileIDs,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("upsert draft: %w", err)
+	}
+	return d, nil
+}
+
+// DeleteDraft removes the draft for the given channel/root pair (rootID
+// "" targets the channel draft). It is idempotent — deleting a draft that
+// no longer exists is not treated as an error by the caller.
+func (c *Client) DeleteDraft(ctx context.Context, userID, channelID, rootID string) error {
+	if _, _, err := c.c.DeleteDraft(ctx, userID, channelID, rootID); err != nil {
+		return fmt.Errorf("delete draft: %w", err)
+	}
+	return nil
+}
+
 // DeletePost soft-deletes a post by Id. The server broadcasts a
 // `post_deleted` WS event that the UI applies asynchronously.
 func (c *Client) DeletePost(ctx context.Context, postID string) error {

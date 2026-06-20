@@ -159,6 +159,19 @@ type Model struct {
 	// conversation is open never retargets the open panel.
 	openChannelID string
 
+	// drafts holds the unsent composer text per channel, keyed by channelID
+	// (channel drafts only — thread replies and in-progress edits aren't
+	// tracked here). It mirrors the server's per-channel drafts: it's seeded
+	// from the drafts API at startup (loadDrafts), restored into the composer
+	// when a channel is opened and re-captured from it when one is left (see
+	// swapChannelDraft), autosaved while typing (scheduleDraftSave), and
+	// cleared on send. An empty/whitespace-only draft is dropped rather than
+	// stored, so the map only ever holds channels with real pending text.
+	drafts map[string]string
+	// draftSaveSeq sequences the debounced draft autosave so a stale tick
+	// (superseded by a newer keystroke) is ignored. See scheduleDraftSave.
+	draftSaveSeq int
+
 	// markReadDelay is how long the open channel must stay open before it's
 	// marked read (server + badges). Snapshotted from config at New(); 0 means
 	// mark read immediately on open (the original behaviour).
@@ -943,6 +956,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		client:              client,
 		ctx:                 context.Background(),
 		channels:            map[string][]*model.Channel{},
+		drafts:              map[string]string{},
 		userNames:           map[string]string{},
 		statuses:            map[string]string{},
 		customStatuses:      map[string]model.CustomStatus{},
@@ -2000,6 +2014,11 @@ func (m *Model) openChannelLoadCmd(channelID string) tea.Cmd {
 	if m.infoOpen && channelID != m.infoChannelID {
 		m.closeInfo()
 	}
+	// Stash the outgoing channel's composer draft and restore the incoming
+	// one before repointing openChannelID (swapChannelDraft reads the old id
+	// from it). nil for same-channel reopens or when an edit/thread owns the
+	// composer.
+	draftCmd := m.swapChannelDraft(channelID)
 	m.openChannelID = channelID
 	// Freeze the read/unread boundary for this view, then let renderMessages
 	// resolve it to a concrete post. Only when the channel actually has unread
@@ -2038,12 +2057,12 @@ func (m *Model) openChannelLoadCmd(channelID string) tea.Cmd {
 		// forward-only PostsAfter(newestCached) can never see. fetchRecent
 		// pulls the channel's latest page (anchored at "now") so the merge
 		// fills any such hole. See fetchRecent / the postsGapFilledMsg merge.
-		return m.fetchRecent(channelID)
+		return tea.Batch(draftCmd, m.fetchRecent(channelID))
 	}
 	m.posts = nil
 	m.status = "loading messages…"
 	m.renderMessages()
-	return m.fetchPosts(channelID)
+	return tea.Batch(draftCmd, m.fetchPosts(channelID))
 }
 
 // tabAt resolves a 0-based tab index into its kind and (for teams) the
