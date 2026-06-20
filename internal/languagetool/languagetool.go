@@ -38,21 +38,28 @@ type Match struct {
 type Client struct {
 	checkURL string
 	language string
+	level    string // "default" or "picky" (strict mode)
 	http     *http.Client
 }
 
 // New builds a client for the given server. serverURL is the API /v2 root (e.g.
 // http://localhost:8010/v2); the check endpoint is that + /check. language is a
-// code like "en-US" or "auto". timeout bounds a single request (0 picks a
-// sensible default).
-func New(serverURL, language string, timeout time.Duration) *Client {
+// code like "en-US" or "auto". picky selects the "picky" level (extra strict
+// style/grammar rules) instead of "default". timeout bounds a single request (0
+// picks a sensible default).
+func New(serverURL, language string, picky bool, timeout time.Duration) *Client {
 	if timeout <= 0 {
 		timeout = 5 * time.Second
+	}
+	level := "default"
+	if picky {
+		level = "picky"
 	}
 	base := strings.TrimRight(serverURL, "/")
 	return &Client{
 		checkURL: base + "/check",
 		language: language,
+		level:    level,
 		http:     &http.Client{Timeout: timeout},
 	}
 }
@@ -84,9 +91,9 @@ func (c *Client) Check(ctx context.Context, text string) ([]Match, error) {
 	form := url.Values{}
 	form.Set("text", text)
 	form.Set("language", c.language)
-	// level=default keeps it to high-confidence rules; the picky extras are
-	// noisy in casual chat.
-	form.Set("level", "default")
+	// "default" keeps it to high-confidence rules; "picky" (strict mode) adds
+	// extra style/typography/grammar rules that are noisier in casual chat.
+	form.Set("level", c.level)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.checkURL, strings.NewReader(form.Encode()))
 	if err != nil {

@@ -2293,6 +2293,14 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			default:
 				m.closeGrammarPopup()
 			}
+		} else if key.Matches(msg, m.keys.Tab) {
+			// With no popup open, Tab applies the top suggestion for the mistake
+			// the cursor is on (the one the footer hint is showing). When the
+			// cursor isn't on a fixable mistake it falls through to focus-cycle.
+			if idx := m.matchAtCursor(); idx >= 0 && len(m.grammar.matches[idx].Replacements) > 0 {
+				m.grammar.popupIdx = idx
+				return m, m.applyGrammarSuggestion(0)
+			}
 		}
 	}
 

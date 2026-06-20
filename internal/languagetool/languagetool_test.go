@@ -44,7 +44,7 @@ func TestCheckParsesMatches(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL+"/v2", "auto", 0)
+	c := New(srv.URL+"/v2", "auto", false, 0)
 	matches, err := c.Check(context.Background(), "som sentnce")
 	if err != nil {
 		t.Fatalf("Check: %v", err)
@@ -53,9 +53,12 @@ func TestCheckParsesMatches(t *testing.T) {
 		t.Fatalf("got %d matches, want 2", len(matches))
 	}
 
-	// Form carried the text and language.
+	// Form carried the text, language and the default level.
 	if !strings.Contains(gotForm, "text=som+sentnce") || !strings.Contains(gotForm, "language=auto") {
 		t.Errorf("request form missing fields: %q", gotForm)
+	}
+	if !strings.Contains(gotForm, "level=default") {
+		t.Errorf("non-picky client should send level=default: %q", gotForm)
 	}
 
 	first := matches[0]
@@ -82,9 +85,27 @@ func TestCheckServerError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL+"/v2", "en-US", 0)
+	c := New(srv.URL+"/v2", "en-US", false, 0)
 	if _, err := c.Check(context.Background(), "hello"); err == nil {
 		t.Fatal("expected an error on 500, got nil")
+	}
+}
+
+func TestCheckPickyLevel(t *testing.T) {
+	var gotForm string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotForm = string(body)
+		_, _ = io.WriteString(w, `{"matches":[]}`)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL+"/v2", "en-US", true, 0)
+	if _, err := c.Check(context.Background(), "hello"); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if !strings.Contains(gotForm, "level=picky") {
+		t.Errorf("picky client should send level=picky: %q", gotForm)
 	}
 }
 
@@ -94,7 +115,7 @@ func TestCheckEmptyMatches(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(srv.URL+"/v2", "en-US", 0)
+	c := New(srv.URL+"/v2", "en-US", false, 0)
 	matches, err := c.Check(context.Background(), "all good")
 	if err != nil {
 		t.Fatalf("Check: %v", err)

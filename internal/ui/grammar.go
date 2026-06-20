@@ -598,10 +598,12 @@ func (m *Model) grammarHint() string {
 	}
 	mt := m.grammar.matches[idx]
 	hint := "✗ " + grammarLabel(mt)
+	cue := " (alt+g)"
 	if len(mt.Replacements) > 0 {
 		hint += ": " + truncate(m.matchText(mt), 18) + " → " + truncate(mt.Replacements[0], 18)
+		cue = " (tab · alt+g)" // tab applies the top suggestion
 	}
-	hint += " (alt+g)"
+	hint += cue
 	st := lipgloss.NewStyle().Foreground(grammarColor(mt.IssueType))
 	return st.Render(truncate(hint, 64))
 }

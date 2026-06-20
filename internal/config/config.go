@@ -142,6 +142,10 @@ type LanguageToolConfig struct {
 	// Language is the checking language code, e.g. en-US, en-GB, nl, or "auto"
 	// to let the server detect it per message. Defaults to "auto".
 	Language string `yaml:"language"`
+	// Picky enables LanguageTool's "picky" level — stricter style, typography
+	// and grammar rules on top of the defaults. Pointer so an absent key
+	// defaults to false (the default level). Set `picky: true` for strict mode.
+	Picky *bool `yaml:"picky"`
 }
 
 // LanguageToolEnabled reports whether the composer grammar checker is on.
@@ -649,6 +653,10 @@ func (c *Config) fillDefaults() {
 	if c.LanguageTool.Language == "" {
 		c.LanguageTool.Language = defaultLanguageToolLang
 	}
+	if c.LanguageTool.Picky == nil {
+		f := false
+		c.LanguageTool.Picky = &f
+	}
 	if c.Keybindings.NavModifier == "" {
 		// Default to the ctrl modifier, but honour a pre-NavModifier config's
 		// ctrl_arrow_nav: false by migrating it to "none".
@@ -848,6 +856,7 @@ func writeConfig(p string, cfg *Config) error {
 		"#             server_url is the API /v2 root (default\n" +
 		"#             http://localhost:8010/v2); language is the code to check\n" +
 		"#             against — en-US, en-GB, nl, … or auto (default) to detect\n" +
-		"#             it per message.\n"
+		"#             it per message; picky true enables strict mode (extra\n" +
+		"#             style/typography/grammar rules; default false).\n"
 	return os.WriteFile(p, append([]byte(header), body...), 0o644)
 }

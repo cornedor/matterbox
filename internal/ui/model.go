@@ -896,7 +896,8 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	// keeps every grammar code path inert (grammarEnabled reports false).
 	var ltClient *languagetool.Client
 	if cfg != nil && cfg.LanguageToolEnabled() {
-		ltClient = languagetool.New(cfg.LanguageTool.ServerURL, cfg.LanguageTool.Language, grammarTimeout)
+		picky := cfg.LanguageTool.Picky != nil && *cfg.LanguageTool.Picky
+		ltClient = languagetool.New(cfg.LanguageTool.ServerURL, cfg.LanguageTool.Language, picky, grammarTimeout)
 	}
 	// Unless the sidebar nav uses the ctrl modifier itself, ctrl+←/→ never
 	// reach the global dispatch, so let them word-jump in the composer (the

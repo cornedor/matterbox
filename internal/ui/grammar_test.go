@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
@@ -160,11 +161,26 @@ func grammarModel(value string, matches []languagetool.Match) Model {
 	m.input = ta
 	m.focus = focusInput
 	m.lastInputHeight = ta.Height()
+	m.keys = newKeyMap("ctrl")
 	m.grammar = newGrammarState()
 	m.grammar.checkedText = value
 	m.grammar.matches = matches
-	m.ltClient = languagetool.New("http://localhost:8010/v2", "auto", 0)
+	m.ltClient = languagetool.New("http://localhost:8010/v2", "auto", false, 0)
 	return m
+}
+
+func TestTabAppliesTopSuggestionAtCursor(t *testing.T) {
+	matches := []languagetool.Match{
+		{Offset: 0, Length: 3, Replacements: []string{"some"}, IssueType: "misspelling"},
+	}
+	m := grammarModel("som text", matches)
+	m.input.CursorStart() // cursor sits on "som"
+
+	out, _ := m.handleInputKey(tea.KeyPressMsg(tea.Key{Code: tea.KeyTab}))
+	m = out.(Model)
+	if got := m.input.Value(); got != "some text" {
+		t.Errorf("tab on a mistake: value=%q, want %q", got, "some text")
+	}
 }
 
 func TestMatchAtCursor(t *testing.T) {
