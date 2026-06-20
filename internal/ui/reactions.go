@@ -317,7 +317,9 @@ func (m *Model) applyReactionPick() tea.Cmd {
 
 	userID := m.me.Id
 	if hasIt {
-		// Optimistic local removal — the WS event will confirm.
+		// Optimistic local removal — the WS event will confirm. Removing a
+		// reaction isn't a "I like this emoji" signal, so it doesn't bump
+		// the popularity counter.
 		m.removeLocalReaction(postID, userID, name)
 		m.renderMessages()
 		m.renderThread()
@@ -326,7 +328,10 @@ func (m *Model) applyReactionPick() tea.Cmd {
 	m.addLocalReaction(postID, userID, name)
 	m.renderMessages()
 	m.renderThread()
-	return m.addReactionCmd(userID, postID, name)
+	// Picking an emoji to react with is the same "I want this emoji" signal
+	// as accepting it from the `:` composer picker, so it feeds the shared
+	// popularity counter.
+	return tea.Batch(m.bumpEmojiStat(name), m.addReactionCmd(userID, postID, name))
 }
 
 func (m Model) addReactionCmd(userID, postID, emojiName string) tea.Cmd {
