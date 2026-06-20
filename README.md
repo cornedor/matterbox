@@ -30,6 +30,10 @@ local LLM.
   uses tools to dig through your channels to answer it.
 - **Clipboard paste** — paste images and files from the clipboard directly into
   the composer (macOS and Linux with wl-clipboard/xclip).
+- **Per-channel drafts** — unsent composer text is saved per channel via
+  Mattermost's server-side drafts API, so each channel keeps its own draft,
+  switching channels never loses what you typed, and a draft started here shows
+  up (and stays in sync) in the webapp, mobile, and across restarts.
 
 The AI features (summaries, semantic/agentic search) are entirely optional and talk
 to any OpenAI-compatible endpoint — point them at a local

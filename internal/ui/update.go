@@ -203,7 +203,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.teams = msg.teams
 		m.applyTeamOrder()
 		m.teamsLoaded = true
-		return m, m.maybeFetchInitialPosts()
+		return m, tea.Batch(m.maybeFetchInitialPosts(), m.loadDrafts())
+
+	case draftsLoadedMsg:
+		m.applyDraftsLoaded(msg)
+		return m, nil
+
+	case draftSaveDebounceMsg:
+		return m, m.applyDraftSaveDebounce(msg)
 
 	case channelsLoadedMsg:
 		for id, name := range msg.userNames {
@@ -943,6 +950,12 @@ func (m *Model) handleWSEvent(ev *model.WebSocketEvent) tea.Cmd {
 		return m.applyTypingEvent(ev)
 	case model.WebsocketEventMultipleChannelsViewed:
 		return m.applyMultipleChannelsViewed(ev)
+	case model.WebsocketEventDraftCreated, model.WebsocketEventDraftUpdated:
+		m.applyDraftUpserted(ev)
+		return nil
+	case model.WebsocketEventDraftDeleted:
+		m.applyDraftDeleted(ev)
+		return nil
 	}
 	return nil
 }
@@ -2386,7 +2399,13 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.closeEmoji()
 		m.clearGrammar()
 		m.status = "draft cleared"
-		return m, nil
+		// Wiping a channel draft also drops its server copy. Editing / thread
+		// replies don't track a channel draft, so leave the server alone then.
+		var clearCmd tea.Cmd
+		if m.editingPostID == "" && !m.threadOpen {
+			clearCmd = m.clearDraft(m.openChannelID)
+		}
+		return m, clearCmd
 	case key.Matches(msg, m.keys.LeaveInput):
 		// While composing a new message, esc only leaves the input when
 		// the textarea is empty — a stray esc shouldn't yank focus away
@@ -2486,7 +2505,13 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.renderMessages()
 		m.renderThread()
 		m.status = "sending…"
-		return m, m.sendMessage(channelID, rootID, text, fileIDs)
+		// A channel send consumes its draft; drop the saved copy locally and
+		// on the server. Thread replies (rootID set) aren't channel drafts.
+		var draftCmd tea.Cmd
+		if rootID == "" {
+			draftCmd = m.clearDraft(channelID)
+		}
+		return m, tea.Batch(m.sendMessage(channelID, rootID, text, fileIDs), draftCmd)
 	}
 	var cmd tea.Cmd
 	before := m.input.Value()
@@ -2495,7 +2520,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// so pure navigation (arrows, ctrl+a/e) doesn't ping the channel and an
 	// empty composer never claims someone's typing. The send is throttled.
 	// A real edit also (re)arms the debounced grammar check.
-	var typingCmd, grammarCmd tea.Cmd
+	var typingCmd, grammarCmd, draftCmd tea.Cmd
 	if v := m.input.Value(); v != before {
 		// Snapshot the pre-keystroke draft for undo. Single-character edits
 		// coalesce into word-sized steps inside note.
@@ -2504,6 +2529,9 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			typingCmd = m.maybeSendTyping(time.Now())
 		}
 		grammarCmd = m.scheduleGrammarCheck()
+		// Persist the channel draft a beat after typing stops (no-op while
+		// editing or replying in a thread).
+		draftCmd = m.scheduleDraftSave()
 	}
 	// After the textarea has consumed the keystroke, recompute mention
 	// state and reflow the input/messages split so newlines from
@@ -2511,7 +2539,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	mentionCmd := m.updateMention()
 	m.updateEmoji()
 	m.syncInputHeight()
-	return m, tea.Batch(cmd, mentionCmd, typingCmd, grammarCmd)
+	return m, tea.Batch(cmd, mentionCmd, typingCmd, grammarCmd, draftCmd)
 }
 
 // handleFilterKey owns keystrokes while the channel filter is open (f). The
