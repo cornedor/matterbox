@@ -206,8 +206,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.maybeFetchInitialPosts(), m.loadDrafts())
 
 	case draftsLoadedMsg:
-		m.applyDraftsLoaded(msg)
-		return m, nil
+		return m, m.applyDraftsLoaded(msg)
 
 	case draftSaveDebounceMsg:
 		return m, m.applyDraftSaveDebounce(msg)

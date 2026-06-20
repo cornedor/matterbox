@@ -74,7 +74,7 @@ func (m Model) loadDrafts() tea.Cmd {
 // the map for the next time that channel is opened. The empty-composer guard
 // keeps a slow draft fetch from clobbering text the user has already started
 // typing.
-func (m *Model) applyDraftsLoaded(msg draftsLoadedMsg) {
+func (m *Model) applyDraftsLoaded(msg draftsLoadedMsg) tea.Cmd {
 	if m.drafts == nil {
 		m.drafts = map[string]string{}
 	}
@@ -82,14 +82,17 @@ func (m *Model) applyDraftsLoaded(msg draftsLoadedMsg) {
 		m.drafts[id] = text
 	}
 	if m.openChannelID == "" || m.threadOpen || m.editingPostID != "" {
-		return
+		return nil
 	}
 	if strings.TrimSpace(m.input.Value()) != "" {
-		return
+		return nil
 	}
 	if text, ok := m.drafts[m.openChannelID]; ok {
 		m.setComposerDraft(text)
+		// Check the just-seeded draft for grammar (no-op when off / empty).
+		return m.scheduleGrammarCheck()
 	}
+	return nil
 }
 
 // swapChannelDraft persists the composer's current text as the draft for the
@@ -111,7 +114,10 @@ func (m *Model) swapChannelDraft(newChannelID string) tea.Cmd {
 		cmd = m.stashDraft(old, m.input.Value())
 	}
 	m.setComposerDraft(m.drafts[newChannelID])
-	return cmd
+	// setComposerDraft dropped the previous channel's grammar findings; arm a
+	// fresh check so the restored draft (if any) gets underlined too. No-op
+	// when grammar is off or the restored draft is empty.
+	return tea.Batch(cmd, m.scheduleGrammarCheck())
 }
 
 // setComposerDraft replaces the composer contents with text and resets the
