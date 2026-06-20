@@ -1,6 +1,10 @@
 package ui
 
-import "testing"
+import (
+	"testing"
+
+	"charm.land/bubbles/v2/textarea"
+)
 
 // typeRunes feeds text into the history one rune at a time, the way the
 // composer's keystroke path calls note (before → after per keystroke). It
@@ -97,6 +101,96 @@ func TestComposerHistoryResetClears(t *testing.T) {
 	h.reset()
 	if v, ok := h.undo("k", "draft"); ok {
 		t.Fatalf("undo after reset returned %q; want nothing", v)
+	}
+}
+
+func TestChangeEndOffset(t *testing.T) {
+	tests := []struct {
+		name          string
+		before, after string
+		want          int
+	}{
+		// Undo an insertion: "hello world" → "hello " lands the caret right
+		// after the restored text (end of common prefix), not at the draft end.
+		{"undo insertion", "hello world", "hello ", 6},
+		// Undo a deletion: "hi" → "hi there" lands after the re-inserted tail.
+		{"undo deletion", "hi", "hi there", 8},
+		// A change in the middle lands after the changed region, before the
+		// shared suffix.
+		{"middle change", "the cat sat", "the dog sat", 7},
+		// Identical strings degrade to the end of the draft (harmless).
+		{"identical", "same", "same", 4},
+		// Multibyte runes are counted as runes, not bytes.
+		{"unicode", "café au", "café", 4},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := changeEndOffset(tt.before, tt.after); got != tt.want {
+				t.Fatalf("changeEndOffset(%q, %q) = %d, want %d", tt.before, tt.after, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOffsetToRowCol(t *testing.T) {
+	const v = "one\ntwo\nthree"
+	tests := []struct {
+		off      int
+		row, col int
+	}{
+		{0, 0, 0},   // start
+		{3, 0, 3},   // end of first line
+		{4, 1, 0},   // start of second line (just past the newline)
+		{7, 1, 3},   // end of second line
+		{8, 2, 0},   // start of third line
+		{13, 2, 5},  // end of draft
+		{999, 2, 5}, // past the end clamps to the last line
+		{-5, 0, 0},  // negative clamps to the start
+	}
+	for _, tt := range tests {
+		row, col := offsetToRowCol(v, tt.off)
+		if row != tt.row || col != tt.col {
+			t.Fatalf("offsetToRowCol(%d) = (%d, %d), want (%d, %d)", tt.off, row, col, tt.row, tt.col)
+		}
+	}
+}
+
+// inputModel builds a Model with a usable textarea for cursor-placement tests.
+func inputModel() Model {
+	m := Model{keys: newKeyMap("ctrl")}
+	ta := textarea.New()
+	ta.SetWidth(80)
+	ta.Focus()
+	m.input = ta
+	return m
+}
+
+// TestApplyComposerSnapshotCursorAtEdit: restoring an undo snapshot lands the
+// cursor at the edit site, not blindly at the end of the draft.
+func TestApplyComposerSnapshotCursorAtEdit(t *testing.T) {
+	m := inputModel()
+	m.input.SetValue("hello world")
+	// Undo back to "hello " — the caret should sit just after "hello ".
+	m.applyComposerSnapshot("hello ")
+	if got := m.inputCursorOffset(); got != 6 {
+		t.Fatalf("cursor offset after undo = %d, want 6", got)
+	}
+	if got := m.input.Value(); got != "hello " {
+		t.Fatalf("value after undo = %q, want %q", got, "hello ")
+	}
+}
+
+// TestSetInputCursorOffsetMultiline: the caret lands on the right logical row
+// and column for a multi-line draft.
+func TestSetInputCursorOffsetMultiline(t *testing.T) {
+	m := inputModel()
+	m.input.SetValue("one\ntwo\nthree")
+	m.setInputCursorOffset(5) // row 1 ("two"), col 1 → offset 5
+	if row := m.input.Line(); row != 1 {
+		t.Fatalf("cursor row = %d, want 1", row)
+	}
+	if got := m.inputCursorOffset(); got != 5 {
+		t.Fatalf("cursor offset = %d, want 5", got)
 	}
 }
 

@@ -191,6 +191,47 @@ func (m *Model) inputCursorOffset() int {
 	return off + col
 }
 
+// setInputCursorOffset moves the textarea cursor to the given rune offset within
+// the whole draft, counting each newline as one rune — the inverse of
+// inputCursorOffset. It exists because SetValue always parks the cursor at the
+// end, so any programmatic edit that wants to preserve a sensible caret position
+// (undo/redo, grammar fix) has to put it back afterwards.
+func (m *Model) setInputCursorOffset(off int) {
+	row, col := offsetToRowCol(m.input.Value(), off)
+	// Walk down to the target logical row, then set the column. CursorDown
+	// steps one visual (wrapped) sub-line at a time, so Line() only advances
+	// when it crosses into the next logical row; the break guards termination
+	// at the end of the buffer.
+	m.input.MoveToBegin()
+	for m.input.Line() < row {
+		prev := m.input.Line()
+		m.input.CursorDown()
+		if m.input.Line() == prev {
+			break
+		}
+	}
+	m.input.SetCursorColumn(col)
+}
+
+// offsetToRowCol converts a whole-draft rune offset (newline = one rune) into
+// the textarea's (logical row, rune column) coordinates. It is the inverse of
+// inputCursorOffset and clamps an out-of-range offset to the end of the draft.
+func offsetToRowCol(value string, off int) (int, int) {
+	if off < 0 {
+		off = 0
+	}
+	lines := strings.Split(value, "\n")
+	for i, l := range lines {
+		n := len([]rune(l))
+		if off <= n {
+			return i, off
+		}
+		off -= n + 1 // +1 for the newline
+	}
+	last := len(lines) - 1
+	return last, len([]rune(lines[last]))
+}
+
 // matchAtCursor returns the index of the match the cursor sits in (or just
 // past the end of), or -1. Findings are tied to checkedText, so it only reports
 // while that still equals the live draft.
@@ -263,6 +304,10 @@ func (m *Model) applyGrammarSuggestion(i int) tea.Cmd {
 	newVal := string(runes[:mt.Offset]) + mt.Replacements[i] + string(runes[mt.Offset+mt.Length:])
 	m.history.checkpoint(m.composerContextKey(), val)
 	m.input.SetValue(newVal)
+	// Land the cursor just after the inserted correction rather than at the end
+	// of the draft (where SetValue would leave it), so fixing a word mid-message
+	// doesn't fling the caret away from where the user was working.
+	m.setInputCursorOffset(mt.Offset + len([]rune(mt.Replacements[i])))
 	m.syncInputHeight()
 	m.closeGrammarPopup()
 	m.clearGrammar()
