@@ -605,6 +605,14 @@ LIMIT ?`
 	return out, nil
 }
 
+// upsertSQL inserts a post, or updates the stored row on id conflict — but
+// only when the incoming row actually differs (the trailing WHERE). raw_json
+// is the full serialized post, so an identical blob means nothing changed and
+// the UPDATE is skipped entirely. That matters because the posts_au FTS
+// trigger re-tokenizes message on every UPDATE: without the guard, re-opening
+// a channel re-fetches ~a page of unchanged posts and needlessly re-indexes
+// each one. When the WHERE is false SQLite treats the conflict as DO NOTHING
+// (no row write, no triggers), so a warm refetch costs nothing.
 const upsertSQL = `
 INSERT INTO posts (id, channel_id, user_id, root_id, create_at, update_at, edit_at, delete_at, message, raw_json)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -618,6 +626,7 @@ ON CONFLICT(id) DO UPDATE SET
     delete_at  = excluded.delete_at,
     message    = excluded.message,
     raw_json   = excluded.raw_json
+WHERE posts.raw_json IS NOT excluded.raw_json
 `
 
 // Upsert inserts or updates a single post by Id. Posts with an empty Id

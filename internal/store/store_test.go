@@ -203,6 +203,36 @@ func TestRevisionsSkipUnchangedUpsert(t *testing.T) {
 	}
 }
 
+// TestUpsertMetadataOnlyChangePersists guards the upsert's content-change
+// WHERE clause (posts.raw_json IS NOT excluded.raw_json): a refetch whose
+// message is unchanged but whose serialized post differs — e.g. a reaction or
+// file info arrived — must still overwrite the stored row. The cheap-looking
+// alternative of comparing only update_at/edit_at would silently drop these.
+func TestUpsertMetadataOnlyChangePersists(t *testing.T) {
+	s := tempStore(t)
+	p := mkPost("p1aaaaaaaaaaaaaaaaaaaaaaaa", "c1", "stable message", 100)
+	if err := s.Upsert(p); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	// Same id, same message + timestamps, but new metadata (raw_json differs).
+	enriched := mkPost("p1aaaaaaaaaaaaaaaaaaaaaaaa", "c1", "stable message", 100)
+	enriched.AddProp("pinned", true)
+	if err := s.Upsert(enriched); err != nil {
+		t.Fatalf("re-upsert with metadata: %v", err)
+	}
+	got, _ := s.RecentForChannel("c1", 10)
+	if len(got) != 1 {
+		t.Fatalf("want 1 post, got %d", len(got))
+	}
+	if got[0].GetProp("pinned") != true {
+		t.Errorf("metadata-only update dropped: prop = %v", got[0].GetProp("pinned"))
+	}
+	// FTS row for the unchanged message must remain searchable.
+	if n := ftsCount(t, s, "stable"); n != 1 {
+		t.Errorf("want 1 fts row after metadata update, got %d", n)
+	}
+}
+
 func TestRevisionsEmptyForUnknownPost(t *testing.T) {
 	s := tempStore(t)
 	revs, err := s.Revisions("doesnotexist")
