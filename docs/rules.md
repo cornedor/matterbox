@@ -423,8 +423,11 @@ or more operators, all ANDed:
 | `eq` / `ne` | Value equals / doesn't equal this (string compare). |
 | `gt` / `gte` / `lt` / `lte` | Value, **as a number**, compared to this (a range is `gte` + `lt`). |
 
-`state` takes a single condition or a list (all ANDed). The canonical pairing —
-count failures in one rule, page when the count crosses a threshold in another:
+`state` takes a single condition or a list (all ANDed). The `key` is a
+**template** over the post, just like the action keys — so a condition can read a
+per-channel or per-author key, e.g. `key: "hot:{{ .channel_id }}"`. The canonical
+pairing — count failures in one rule, page when the count crosses a threshold in
+another:
 
 ```yaml
 rules:
@@ -462,6 +465,61 @@ differently: `frequency` is in-memory and self-pruning (great for "N in the last
 T minutes"), while a ledger counter is exact, persistent across restarts, and
 yours to reset — better when the threshold must survive a restart or the count
 is cleared by an explicit event (a green deploy) rather than by time.
+
+### Correlating across messages
+
+Because a state condition's `key` is templated per post, the ledger can remember
+context about *one conversation* and react to it several messages later — a
+correlation no single-message `match` (term **and** mention in the same message)
+or `frequency` window (same rule's own hits) can express. The pattern is a
+per-channel **countdown**: a trigger term arms a window, every message ticks it
+down, and a mention while the window is open escalates. "Was a sev-1 term posted
+in the last ~5 messages, and then I got @-mentioned?":
+
+```yaml
+rules:
+  # 1) ESCALATE: I'm mentioned while this channel is still "hot".
+  - name: hot-mention
+    match:
+      mention: true
+      state: { key: "hot:{{ .channel_id }}", gte: 1 }
+    actions:
+      - type: notify
+        urgent: true
+
+  # 2) TICK: every message in a hot channel counts the window down by one.
+  - name: tick-hot
+    match:
+      state: { key: "hot:{{ .channel_id }}", gte: 1 }
+    actions:
+      - type: state_incr
+        key: "hot:{{ .channel_id }}"
+        by: -1
+
+  # 3) ARM: a trigger term opens a ~5-message window for this channel.
+  - name: arm-hot
+    match:
+      message: "(?i)urgent|sev-?1|p1|outage|prod(uction)? down"
+    actions:
+      - type: state_set
+        key: "hot:{{ .channel_id }}"
+        value: "5"
+
+  # 4) NORMAL: an ordinary mention (channel not hot) → regular notification.
+  - name: mention
+    match:
+      mention: true
+      not: { state: { key: "hot:{{ .channel_id }}", gte: 1 } }
+    actions:
+      - type: notify
+```
+
+Rules 1 and 4 are mutually exclusive (the `not:` in rule 4), so a mention fires
+*either* the urgent path *or* the normal one, never both — and an ordinary
+mention in a channel that never saw a term still notifies (an absent `hot:` key
+fails `gte: 1`, so `not:` lets rule 4 through). The window is **per channel** —
+a term in `#ops` can't escalate a mention in `#random`. Rule order matters: the
+tick runs before the arm so the arming message itself doesn't consume the window.
 
 ### Live-only, like side effects
 

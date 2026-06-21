@@ -225,21 +225,29 @@ type frequency struct {
 	by     string // "author" | "channel" | "global"
 }
 
-// stateCond is a compiled StateCondSpec — one condition on a ledger key. eval
-// reports whether the snapshot satisfies it.
+// stateCond is a compiled StateCondSpec — one condition on a ledger key. The
+// key is a template (like the state action keys), so a condition can address a
+// per-channel or per-author key — `hot:{{ .channel_id }}`. eval reports whether
+// the snapshot satisfies it.
 type stateCond struct {
-	key              string
+	key              string             // raw key text (used when no renderer is supplied, e.g. in tests)
+	keyTmpl          *template.Template // compiled key template, rendered against the post at match time
 	exists           *bool
 	eq, ne           *string
 	gt, gte, lt, lte *float64
 }
 
-// eval reports whether the ledger snapshot satisfies this condition. An absent
-// key has no value, so any value comparison (eq/ne/numeric) against it fails;
-// use exists:false to match absence. A non-numeric stored value never satisfies
-// a numeric comparison.
-func (c stateCond) eval(state map[string]string) bool {
-	val, present := state[c.key]
+// eval reports whether the ledger snapshot satisfies this condition. render
+// expands the key template against the post (nil falls back to the raw key, for
+// pure tests). An absent key has no value, so any value comparison (eq/ne/
+// numeric) against it fails; use exists:false to match absence. A non-numeric
+// stored value never satisfies a numeric comparison.
+func (c stateCond) eval(state map[string]string, render func(*template.Template) string) bool {
+	key := c.key
+	if render != nil && c.keyTmpl != nil {
+		key = render(c.keyTmpl)
+	}
+	val, present := state[key]
 	if c.exists != nil && *c.exists != present {
 		return false
 	}
@@ -422,15 +430,20 @@ func compileStateCond(s StateCondSpec) (stateCond, error) {
 		s.Gt == nil && s.Gte == nil && s.Lt == nil && s.Lte == nil {
 		return stateCond{}, fmt.Errorf("condition on %q needs an operator (exists, eq, ne, gt, gte, lt, lte)", s.Key)
 	}
+	kt, err := compileTemplate(s.Key)
+	if err != nil {
+		return stateCond{}, fmt.Errorf("bad key template %q: %w", s.Key, err)
+	}
 	return stateCond{
-		key:    s.Key,
-		exists: s.Exists,
-		eq:     s.Eq,
-		ne:     s.Ne,
-		gt:     s.Gt,
-		gte:    s.Gte,
-		lt:     s.Lt,
-		lte:    s.Lte,
+		key:     s.Key,
+		keyTmpl: kt,
+		exists:  s.Exists,
+		eq:      s.Eq,
+		ne:      s.Ne,
+		gt:      s.Gt,
+		gte:     s.Gte,
+		lt:      s.Lt,
+		lte:     s.Lte,
 	}, nil
 }
 
@@ -575,8 +588,9 @@ func (e *Engine) hasNotifyRule() bool {
 // only notifies for one channel no longer gets a catch-up digest for the rest.
 func (e *Engine) notifyMatches(ev *model.WebSocketEvent, p *model.Post) bool {
 	state := e.matchState()
+	render := e.stateKeyRenderer(ev, p)
 	for _, r := range e.rules {
-		if ruleHasNotify(r) && e.matches(ev, p, r.Match, state) {
+		if ruleHasNotify(r) && e.matches(ev, p, r.Match, state, render) {
 			return true
 		}
 	}
@@ -595,10 +609,13 @@ func (e *Engine) applyRules(ctx context.Context, ev *model.WebSocketEvent, p *mo
 	// The ledger snapshot is read once up front (nil when no rule uses `state`),
 	// then refreshed after any rule whose actions wrote state, so a later rule's
 	// `state` condition observes what an earlier rule's state_incr just stored.
+	// render expands templated `state.key`s (e.g. hot:{{ .channel_id }}) against
+	// this post; it is built once and lazily fills its envelope on first use.
 	state := e.matchState()
+	render := e.stateKeyRenderer(ev, p)
 	for i := range e.rules {
 		r := e.rules[i]
-		if !e.matches(ev, p, r.Match, state) {
+		if !e.matches(ev, p, r.Match, state, render) {
 			continue
 		}
 		// A frequency gate is applied only once the fields match: it records the
@@ -674,7 +691,7 @@ func freqBucketKey(ruleIdx int, f *frequency, ev *model.WebSocketEvent, p *model
 // the pre-rules daemon; user rules use the field matcher. state is the ledger
 // snapshot the field matcher tests `state` conditions against (nil when no rule
 // uses state — see matchState).
-func (e *Engine) matches(ev *model.WebSocketEvent, p *model.Post, m Match, state map[string]string) bool {
+func (e *Engine) matches(ev *model.WebSocketEvent, p *model.Post, m Match, state map[string]string, render func(*template.Template) string) bool {
 	meID, meName := "", ""
 	if e.me != nil {
 		meID, meName = e.me.Id, e.me.Username
@@ -682,14 +699,14 @@ func (e *Engine) matches(ev *model.WebSocketEvent, p *model.Post, m Match, state
 	if m.builtin {
 		return isDirectMention(ev, p, meID, meName, e.opts.NotifySelf)
 	}
-	return matchPost(ev, p, m, meID, meName, state)
+	return matchPost(ev, p, m, meID, meName, state, render)
 }
 
 // matchPost evaluates the field conditions of a (non-builtin) match. Pure for
 // testability: every condition it reads comes from the event/post, the reader's
 // id and username for the Mention check, plus the ledger snapshot for `state`
 // conditions.
-func matchPost(ev *model.WebSocketEvent, p *model.Post, m Match, meID, meName string, state map[string]string) bool {
+func matchPost(ev *model.WebSocketEvent, p *model.Post, m Match, meID, meName string, state map[string]string, render func(*template.Template) string) bool {
 	isDM := eventStr(ev, "channel_type") == string(model.ChannelTypeDirect)
 	if m.dm != nil && *m.dm != isDM {
 		return false
@@ -722,12 +739,12 @@ func matchPost(ev *model.WebSocketEvent, p *model.Post, m Match, meID, meName st
 		}
 	}
 	for _, c := range m.state {
-		if !c.eval(state) {
+		if !c.eval(state, render) {
 			return false
 		}
 	}
 	// A nested not: matches the whole post only when the sub-match does not.
-	if m.not != nil && matchPost(ev, p, *m.not, meID, meName, state) {
+	if m.not != nil && matchPost(ev, p, *m.not, meID, meName, state, render) {
 		return false
 	}
 	return true
@@ -926,6 +943,32 @@ func (e *Engine) matchState() map[string]string {
 		return nil
 	}
 	return e.loadState()
+}
+
+// stateKeyRenderer returns a function that expands a state condition's key
+// template against this post. The post's template data (the same envelope map
+// the action templates use) is built lazily on first use and cached, so a post
+// that never evaluates a templated key pays nothing, and one that evaluates
+// several builds the envelope once.
+func (e *Engine) stateKeyRenderer(ev *model.WebSocketEvent, p *model.Post) func(*template.Template) string {
+	var data map[string]any
+	built := false
+	return func(t *template.Template) string {
+		if t == nil {
+			return ""
+		}
+		if !built {
+			if d, err := envelopeMap(e.buildEnvelope(ev, p)); err == nil {
+				data = d
+			}
+			built = true
+		}
+		var b strings.Builder
+		if err := t.Execute(&b, data); err != nil {
+			return ""
+		}
+		return b.String()
+	}
 }
 
 // rulesUseState reports whether any rule (including nested not: blocks) carries

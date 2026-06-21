@@ -342,7 +342,7 @@ func TestStateCondEval(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := c.cond.eval(state); got != c.want {
+			if got := c.cond.eval(state, nil); got != c.want {
 				t.Errorf("eval = %v, want %v", got, c.want)
 			}
 		})
@@ -355,21 +355,21 @@ func TestMatchPostState(t *testing.T) {
 	state := map[string]string{"failure_count": "3"}
 
 	hit, _ := compileMatch(MatchSpec{State: []StateCondSpec{{Key: "failure_count", Gte: f64(3)}}})
-	if !matchPost(ev, p, hit, "", "", state) {
+	if !matchPost(ev, p, hit, "", "", state, nil) {
 		t.Error("failure_count >= 3 should match when state has 3")
 	}
 	miss, _ := compileMatch(MatchSpec{State: []StateCondSpec{{Key: "failure_count", Gte: f64(4)}}})
-	if matchPost(ev, p, miss, "", "", state) {
+	if matchPost(ev, p, miss, "", "", state, nil) {
 		t.Error("failure_count >= 4 should not match")
 	}
 	// State conditions AND with the field conditions.
 	both, _ := compileMatch(MatchSpec{Authors: []string{"alice"}, State: []StateCondSpec{{Key: "failure_count", Gte: f64(1)}}})
-	if matchPost(ev, p, both, "", "", state) {
+	if matchPost(ev, p, both, "", "", state, nil) {
 		t.Error("author mismatch should fail even when the state condition holds")
 	}
 	// A nested not: with a state condition inverts against the same snapshot.
 	notState, _ := compileMatch(MatchSpec{Not: &MatchSpec{State: []StateCondSpec{{Key: "failure_count", Gte: f64(3)}}}})
-	if matchPost(ev, p, notState, "", "", state) {
+	if matchPost(ev, p, notState, "", "", state, nil) {
 		t.Error("not{failure_count>=3} should not match when it holds")
 	}
 }
@@ -431,6 +431,112 @@ func TestUsesStateGate(t *testing.T) {
 	}
 }
 
+func intp(v int) *int { return &v }
+
+// TestHotMentionCountdown is the headline cross-message rule: a trigger term
+// arms a per-channel window, and a mention while the window is open escalates —
+// driven entirely by a templated state key (hot:{{ .channel_id }}). It uses log
+// actions in place of notify so firing is observable, and a small window (3).
+func TestHotMentionCountdown(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "listen.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	var mu sync.Mutex
+	var lines []string
+	lg := log.New(writerFunc(func(b []byte) (int, error) {
+		mu.Lock()
+		lines = append(lines, string(b))
+		mu.Unlock()
+		return len(b), nil
+	}), "", 0)
+
+	e := &Engine{
+		store:       st,
+		log:         lg,
+		me:          &model.User{Id: "u-me", Username: "corne"},
+		freqWindows: map[string][]time.Time{},
+	}
+	const hotKey = "hot:{{ .channel_id }}"
+	e.rules = mustCompile(t,
+		RuleSpec{Name: "hot-mention",
+			Match:   MatchSpec{Mention: true, State: []StateCondSpec{{Key: hotKey, Gte: f64(1)}}},
+			Actions: []ActionSpec{{Type: ActionLog, Text: "ESCALATE"}}},
+		RuleSpec{Name: "tick",
+			Match:   MatchSpec{State: []StateCondSpec{{Key: hotKey, Gte: f64(1)}}},
+			Actions: []ActionSpec{{Type: ActionStateIncr, Key: hotKey, By: intp(-1)}}},
+		RuleSpec{Name: "arm",
+			Match:   MatchSpec{Message: "(?i)urgent"},
+			Actions: []ActionSpec{{Type: ActionStateSet, Key: hotKey, Value: "3"}}},
+		RuleSpec{Name: "normal",
+			Match:   MatchSpec{Mention: true, Not: &MatchSpec{State: []StateCondSpec{{Key: hotKey, Gte: f64(1)}}}},
+			Actions: []ActionSpec{{Type: ActionLog, Text: "NORMAL"}}},
+	)
+	e.usesState = rulesUseState(e.rules)
+	if !e.usesState {
+		t.Fatal("rules use templated state keys; usesState should be true")
+	}
+
+	msg := func(chanID, body string, mention bool) {
+		p := &model.Post{Id: "p", ChannelId: chanID, UserId: "u-bob", Message: body}
+		data := map[string]string{"channel_type": "O", "sender_name": "@bob", "channel_display_name": chanID}
+		if mention {
+			data["mentions"] = mentionsData(t, "u-me")
+		}
+		e.applyRules(t.Context(), postedEvent(t, p, data), p)
+	}
+
+	msg("c1", "urgent: prod is down", false) // arm hot:c1 = 3
+	msg("c1", "@corne can you look", true)   // within window → ESCALATE
+	msg("c1", "thanks", false)               // tick → 2
+	msg("c1", "ok", false)                   // tick → 1, then... (see note)
+	msg("c1", "@corne ping again", true)     // window expired → NORMAL
+	msg("c2", "@corne unrelated", true)      // c2 never armed → NORMAL
+
+	mu.Lock()
+	defer mu.Unlock()
+	var escalate, normal int
+	for _, l := range lines {
+		if strings.Contains(l, "ESCALATE") {
+			escalate++
+		}
+		if strings.Contains(l, "NORMAL") {
+			normal++
+		}
+	}
+	if escalate != 1 {
+		t.Errorf("ESCALATE = %d, want 1 (the mention inside the window)", escalate)
+	}
+	if normal != 2 {
+		t.Errorf("NORMAL = %d, want 2 (expired window + unrelated channel)", normal)
+	}
+	// The two channels keep independent windows.
+	if v, _, _ := e.store.GetState("hot:c2"); v != "" {
+		t.Errorf("hot:c2 = %q, want unset (c2 never saw a trigger term)", v)
+	}
+}
+
+func TestStateMatchKeyTemplatedPerChannel(t *testing.T) {
+	e := newStoreEngine(t)
+	_ = e.store.SetState("hot:c1", "2")
+	e.rules = mustCompile(t, RuleSpec{
+		Match:   MatchSpec{State: []StateCondSpec{{Key: "hot:{{ .channel_id }}", Gte: f64(1)}}},
+		Actions: []ActionSpec{{Type: ActionStateSet, Key: "fired", Value: "{{ .channel_id }}"}},
+	})
+	e.usesState = rulesUseState(e.rules)
+
+	// A message in c1 (hot) fires; one in c2 (no hot key) does not.
+	for _, ch := range []string{"c2", "c1"} {
+		p := &model.Post{Id: "p", ChannelId: ch, UserId: "u-bob", Message: "x"}
+		e.applyRules(t.Context(), postedEvent(t, p, map[string]string{"channel_type": "O", "sender_name": "@bob", "channel_display_name": ch}), p)
+	}
+	if v, ok, _ := e.store.GetState("fired"); !ok || v != "c1" {
+		t.Fatalf("fired = %q ok=%v, want c1 (only the hot channel matched its own key)", v, ok)
+	}
+}
+
 func TestCompileStateCondErrors(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -438,6 +544,7 @@ func TestCompileStateCondErrors(t *testing.T) {
 	}{
 		{"no key", []RuleSpec{{Match: MatchSpec{State: []StateCondSpec{{Gte: f64(1)}}}, Actions: []ActionSpec{{Type: ActionLog}}}}},
 		{"no operator", []RuleSpec{{Match: MatchSpec{State: []StateCondSpec{{Key: "k"}}}, Actions: []ActionSpec{{Type: ActionLog}}}}},
+		{"bad key template", []RuleSpec{{Match: MatchSpec{State: []StateCondSpec{{Key: "hot:{{ .channel", Gte: f64(1)}}}, Actions: []ActionSpec{{Type: ActionLog}}}}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
