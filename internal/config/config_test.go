@@ -239,3 +239,30 @@ rules:
 		t.Errorf("state_set fields not parsed: %+v", a)
 	}
 }
+
+// TestRulesYAMLAnchor confirms a YAML anchor/alias works for sharing a regexp
+// between the arm and tick rules (the hot-mention pattern in docs/rules.md).
+func TestRulesYAMLAnchor(t *testing.T) {
+	const y = `
+rules:
+  - name: arm
+    match:
+      message: &terms "(?i)urgent|sev-1"
+    actions: [ { type: state_set, key: "hot:{{ .channel_id }}", value: "5" } ]
+  - name: tick
+    match:
+      state: { key: "hot:{{ .channel_id }}", gte: 1 }
+      not: { message: *terms }
+    actions: [ { type: state_incr, key: "hot:{{ .channel_id }}", by: -1 } ]
+`
+	var c Config
+	if err := yaml.Unmarshal([]byte(y), &c); err != nil {
+		t.Fatalf("anchor parse: %v", err)
+	}
+	if c.Rules[0].Match.Message != "(?i)urgent|sev-1" {
+		t.Fatalf("arm message = %q", c.Rules[0].Match.Message)
+	}
+	if c.Rules[1].Match.Not == nil || c.Rules[1].Match.Not.Message != "(?i)urgent|sev-1" {
+		t.Fatalf("alias not resolved: %+v", c.Rules[1].Match.Not)
+	}
+}

@@ -478,7 +478,16 @@ in the last ~5 messages, and then I got @-mentioned?":
 
 ```yaml
 rules:
-  # 1) ESCALATE: I'm mentioned while this channel is still "hot".
+  # 1) ARM: a trigger term opens a ~5-message window for this channel.
+  - name: arm-hot
+    match:
+      message: &terms "(?i)urgent|sev-?1|p1|outage|prod(uction)? down"
+    actions:
+      - type: state_set
+        key: "hot:{{ .channel_id }}"
+        value: "5"
+
+  # 2) ESCALATE: I'm mentioned while this channel is still "hot".
   - name: hot-mention
     match:
       mention: true
@@ -487,23 +496,15 @@ rules:
       - type: notify
         urgent: true
 
-  # 2) TICK: every message in a hot channel counts the window down by one.
+  # 3) TICK: each NON-term message in a hot channel counts the window down.
   - name: tick-hot
     match:
       state: { key: "hot:{{ .channel_id }}", gte: 1 }
+      not: { message: *terms }
     actions:
       - type: state_incr
         key: "hot:{{ .channel_id }}"
         by: -1
-
-  # 3) ARM: a trigger term opens a ~5-message window for this channel.
-  - name: arm-hot
-    match:
-      message: "(?i)urgent|sev-?1|p1|outage|prod(uction)? down"
-    actions:
-      - type: state_set
-        key: "hot:{{ .channel_id }}"
-        value: "5"
 
   # 4) NORMAL: an ordinary mention (channel not hot) → regular notification.
   - name: mention
@@ -514,12 +515,22 @@ rules:
       - type: notify
 ```
 
-Rules 1 and 4 are mutually exclusive (the `not:` in rule 4), so a mention fires
-*either* the urgent path *or* the normal one, never both — and an ordinary
-mention in a channel that never saw a term still notifies (an absent `hot:` key
-fails `gte: 1`, so `not:` lets rule 4 through). The window is **per channel** —
-a term in `#ops` can't escalate a mention in `#random`. Rule order matters: the
-tick runs before the arm so the arming message itself doesn't consume the window.
+(The `&terms` / `*terms` is a YAML anchor so the term regexp is written once.)
+
+Why this order:
+
+- **ARM first** so a message that is *both* a term and an @-mention ("sev-1,
+  @corne!") arms the window and then escalates in the same pass — putting it
+  later would let that high-signal message fall through both notify rules.
+- **TICK skips term messages** (`not: { message: *terms }`) and runs *after* the
+  escalate check, so the arming message doesn't consume its own window and a
+  mention on the last message of the window still escalates.
+- Rules 2 and 4 are **mutually exclusive** (the `not:` in rule 4), so a mention
+  fires *either* the urgent path *or* the normal one, never both — and an
+  ordinary mention in a channel that never saw a term still notifies (an absent
+  `hot:` key fails `gte: 1`, so `not:` lets rule 4 through).
+- The window is **per channel** — a term in `#ops` can't escalate a mention in
+  `#random`.
 
 ### Live-only, like side effects
 

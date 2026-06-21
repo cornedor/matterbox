@@ -460,16 +460,20 @@ func TestHotMentionCountdown(t *testing.T) {
 		freqWindows: map[string][]time.Time{},
 	}
 	const hotKey = "hot:{{ .channel_id }}"
+	const terms = "(?i)urgent"
+	// Order matters: arm first (so a term+mention message escalates), then the
+	// escalate check, then tick (skipping term messages so the arming message
+	// doesn't consume its own window), then the normal-mention fallback.
 	e.rules = mustCompile(t,
+		RuleSpec{Name: "arm",
+			Match:   MatchSpec{Message: terms},
+			Actions: []ActionSpec{{Type: ActionStateSet, Key: hotKey, Value: "3"}}},
 		RuleSpec{Name: "hot-mention",
 			Match:   MatchSpec{Mention: true, State: []StateCondSpec{{Key: hotKey, Gte: f64(1)}}},
 			Actions: []ActionSpec{{Type: ActionLog, Text: "ESCALATE"}}},
 		RuleSpec{Name: "tick",
-			Match:   MatchSpec{State: []StateCondSpec{{Key: hotKey, Gte: f64(1)}}},
+			Match:   MatchSpec{State: []StateCondSpec{{Key: hotKey, Gte: f64(1)}}, Not: &MatchSpec{Message: terms}},
 			Actions: []ActionSpec{{Type: ActionStateIncr, Key: hotKey, By: intp(-1)}}},
-		RuleSpec{Name: "arm",
-			Match:   MatchSpec{Message: "(?i)urgent"},
-			Actions: []ActionSpec{{Type: ActionStateSet, Key: hotKey, Value: "3"}}},
 		RuleSpec{Name: "normal",
 			Match:   MatchSpec{Mention: true, Not: &MatchSpec{State: []StateCondSpec{{Key: hotKey, Gte: f64(1)}}}},
 			Actions: []ActionSpec{{Type: ActionLog, Text: "NORMAL"}}},
@@ -488,12 +492,13 @@ func TestHotMentionCountdown(t *testing.T) {
 		e.applyRules(t.Context(), postedEvent(t, p, data), p)
 	}
 
-	msg("c1", "urgent: prod is down", false) // arm hot:c1 = 3
-	msg("c1", "@corne can you look", true)   // within window → ESCALATE
-	msg("c1", "thanks", false)               // tick → 2
-	msg("c1", "ok", false)                   // tick → 1, then... (see note)
-	msg("c1", "@corne ping again", true)     // window expired → NORMAL
-	msg("c2", "@corne unrelated", true)      // c2 never armed → NORMAL
+	msg("c1", "urgent: prod is down", false)     // arm hot:c1 = 3
+	msg("c1", "@corne can you look", true)       // within window → ESCALATE; tick → 2
+	msg("c1", "thanks", false)                   // tick → 1
+	msg("c1", "ok", false)                       // tick → 0
+	msg("c1", "@corne ping again", true)         // window expired → NORMAL
+	msg("c2", "@corne unrelated", true)          // c2 never armed → NORMAL
+	msg("c1", "@corne urgent regression!", true) // term + mention in one → re-arm AND ESCALATE
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -506,8 +511,8 @@ func TestHotMentionCountdown(t *testing.T) {
 			normal++
 		}
 	}
-	if escalate != 1 {
-		t.Errorf("ESCALATE = %d, want 1 (the mention inside the window)", escalate)
+	if escalate != 2 {
+		t.Errorf("ESCALATE = %d, want 2 (mention in window + term-and-mention message)", escalate)
 	}
 	if normal != 2 {
 		t.Errorf("NORMAL = %d, want 2 (expired window + unrelated channel)", normal)
