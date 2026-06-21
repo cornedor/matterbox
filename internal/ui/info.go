@@ -143,6 +143,7 @@ func (m Model) fetchInfoMembers(channelID string) tea.Cmd {
 // panel, resolving any sender names the UI can't already name.
 func (m Model) fetchInfoPinned(channelID string) tea.Cmd {
 	client, ctx := m.client, m.ctx
+	known := snapshotNames(m.userNames)
 	return func() tea.Msg {
 		pl, err := client.PinnedPosts(ctx, channelID)
 		if err != nil {
@@ -151,7 +152,7 @@ func (m Model) fetchInfoPinned(channelID string) tea.Cmd {
 		posts := orderedPinned(pl)
 		need := map[string]struct{}{}
 		for _, p := range posts {
-			if _, have := m.userNames[p.UserId]; !have {
+			if _, have := known[p.UserId]; !have {
 				need[p.UserId] = struct{}{}
 			}
 		}

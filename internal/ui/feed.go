@@ -193,10 +193,13 @@ func (m *Model) buildFeed() tea.Cmd {
 
 // fetchFeed pulls each target channel's unread posts (and a little cached
 // context) on a worker goroutine and returns them as a feedLoadedMsg.
-// Value receiver so the closure captures a copy of m, mirroring
-// fetchPosts — reading m.userNames / m.store here is the same pattern
-// used elsewhere in this package.
+// Value receiver so the closure captures a copy of m, mirroring fetchPosts.
+// known is a private snapshot of m.userNames taken here on the main
+// goroutine: the closure runs on a worker, so reading the live m.userNames
+// inside it would race the Update loop's writes and crash with "concurrent
+// map read and map write".
 func (m Model) fetchFeed(seq int, targets []feedTarget) tea.Cmd {
+	known := snapshotNames(m.userNames)
 	return func() tea.Msg {
 		// Refresh the read boundary from the server. m.members is captured
 		// once at startup and never updated, so its LastViewedAt drifts
@@ -259,12 +262,12 @@ func (m Model) fetchFeed(seq int, targets []feedTarget) tea.Cmd {
 				mention:   t.mention,
 			})
 			for _, p := range ctxPosts {
-				if _, have := m.userNames[p.UserId]; !have {
+				if _, have := known[p.UserId]; !have {
 					need[p.UserId] = struct{}{}
 				}
 			}
 			for _, p := range unread {
-				if _, have := m.userNames[p.UserId]; !have {
+				if _, have := known[p.UserId]; !have {
 					need[p.UserId] = struct{}{}
 				}
 			}

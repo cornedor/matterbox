@@ -1358,6 +1358,7 @@ func (m Model) sendMessage(channelID, rootID, text string, fileIDs []string) tea
 // fetchThread loads every post in the thread rooted at rootID, in
 // chronological order, and resolves any unseen sender usernames.
 func (m Model) fetchThread(rootID string) tea.Cmd {
+	known := snapshotNames(m.userNames)
 	return func() tea.Msg {
 		pl, err := m.client.Thread(m.ctx, rootID)
 		if err != nil {
@@ -1367,7 +1368,7 @@ func (m Model) fetchThread(rootID string) tea.Cmd {
 
 		need := map[string]struct{}{}
 		for _, p := range ordered {
-			if _, have := m.userNames[p.UserId]; !have {
+			if _, have := known[p.UserId]; !have {
 				need[p.UserId] = struct{}{}
 			}
 		}
@@ -1566,14 +1567,19 @@ func orderOldestFirst(pl *model.PostList) []*model.Post {
 }
 
 // resolveSenderNames fetches usernames for any post authors in `posts` not
-// already known to m.userNames, returning them keyed userID → username.
+// already present in `known`, returning them keyed userID → username.
 // Shared by the post-fetch commands so each doesn't re-implement the same
 // "collect unknown ids → look them up" dance. Returns an empty (non-nil)
 // map when every author is already cached.
-func (m Model) resolveSenderNames(posts []*model.Post) (map[string]string, error) {
+//
+// `known` must be a private snapshot of m.userNames taken on the main
+// goroutine (see snapshotNames): this runs inside a tea.Cmd closure on a
+// worker goroutine, so reading the live m.userNames here would race the
+// Update loop's writes and crash with "concurrent map read and map write".
+func (m Model) resolveSenderNames(posts []*model.Post, known map[string]string) (map[string]string, error) {
 	need := map[string]struct{}{}
 	for _, p := range posts {
-		if _, have := m.userNames[p.UserId]; !have {
+		if _, have := known[p.UserId]; !have {
 			need[p.UserId] = struct{}{}
 		}
 	}
@@ -1596,13 +1602,14 @@ func (m Model) resolveSenderNames(posts []*model.Post) (map[string]string, error
 }
 
 func (m Model) fetchPosts(channelID string) tea.Cmd {
+	known := snapshotNames(m.userNames)
 	return func() tea.Msg {
 		pl, err := m.client.Posts(m.ctx, channelID, 60)
 		if err != nil {
 			return errMsg{err}
 		}
 		ordered := orderOldestFirst(pl)
-		users, err := m.resolveSenderNames(ordered)
+		users, err := m.resolveSenderNames(ordered, known)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -1827,13 +1834,14 @@ func mergePostsByTime(existing, incoming []*model.Post) []*model.Post {
 // channel. Use this when reopening a channel whose history is already
 // in the cache: paint cached → call this → append the gap.
 func (m Model) fetchPostsAfter(channelID, afterPostID string) tea.Cmd {
+	known := snapshotNames(m.userNames)
 	return func() tea.Msg {
 		pl, err := m.client.PostsAfter(m.ctx, channelID, afterPostID, 200)
 		if err != nil {
 			return errMsg{err}
 		}
 		ordered := orderOldestFirst(pl)
-		users, err := m.resolveSenderNames(ordered)
+		users, err := m.resolveSenderNames(ordered, known)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -1858,13 +1866,14 @@ const reconcilePageSize = 200
 // anchored at the newest server post rather than the newest *cached* one,
 // it surfaces posts hidden beneath a stale cache high-water mark.
 func (m Model) fetchRecent(channelID string) tea.Cmd {
+	known := snapshotNames(m.userNames)
 	return func() tea.Msg {
 		pl, err := m.client.Posts(m.ctx, channelID, reconcilePageSize)
 		if err != nil {
 			return errMsg{err}
 		}
 		ordered := orderOldestFirst(pl)
-		users, err := m.resolveSenderNames(ordered)
+		users, err := m.resolveSenderNames(ordered, known)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -1886,13 +1895,14 @@ const historyPageSize = olderPageSize
 // history the cache never held. atChannelStart (PrevPostId == "") reports
 // the genuine start of the channel, as opposed to merely the cache floor.
 func (m Model) fetchOlder(channelID, beforePostID string) tea.Cmd {
+	known := snapshotNames(m.userNames)
 	return func() tea.Msg {
 		pl, err := m.client.PostsBefore(m.ctx, channelID, beforePostID, historyPageSize)
 		if err != nil {
 			return errMsg{err}
 		}
 		ordered := orderOldestFirst(pl)
-		users, err := m.resolveSenderNames(ordered)
+		users, err := m.resolveSenderNames(ordered, known)
 		if err != nil {
 			return errMsg{err}
 		}
@@ -1913,13 +1923,14 @@ func (m Model) fetchOlder(channelID, beforePostID string) tea.Cmd {
 // (NextPostId == "") reports that the page reaches the channel's newest
 // post.
 func (m Model) fetchNewer(channelID, afterPostID string) tea.Cmd {
+	known := snapshotNames(m.userNames)
 	return func() tea.Msg {
 		pl, err := m.client.PostsAfter(m.ctx, channelID, afterPostID, historyPageSize)
 		if err != nil {
 			return errMsg{err}
 		}
 		ordered := orderOldestFirst(pl)
-		users, err := m.resolveSenderNames(ordered)
+		users, err := m.resolveSenderNames(ordered, known)
 		if err != nil {
 			return errMsg{err}
 		}
