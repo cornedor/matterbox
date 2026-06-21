@@ -26,12 +26,14 @@ const DefaultBatch = 64
 // hard 2048 tokens (its trained length — the server rejects longer inputs and
 // raising -c can't lift it). A long message is split into chunks of at most this
 // many runes; each chunk's vector is then mean-pooled into one vector for the
-// post (see RunOnce). 1500 runes is comfortably under 2048 tokens for ordinary
-// text (the observed density is well below 1 token/rune) while leaving headroom
-// for denser content and the document prefix. Splitting (not truncating) keeps
+// post (see RunOnce). 1200 runes keeps ordinary and moderately dense text (code,
+// URLs — up to ~1.7 tokens/rune) inside 2048 tokens with the document prefix.
+// This is only a first-try heuristic: a rune cap can't *guarantee* a token
+// count, so a chunk that still overflows is split further at embed time (see
+// embedSpan) rather than aborting the backfill. Splitting (not truncating) keeps
 // the tail of a long paste searchable, and guarantees every post gets a vector
 // so it's never re-queued forever.
-const maxChunkRunes = 1500
+const maxChunkRunes = 1200
 
 // Indexer embeds missing posts under a single model identity. It holds no
 // mutable state, so the same value can be reused across batches and is safe to
@@ -162,6 +164,13 @@ func (ix *Indexer) Backfill(ctx context.Context, progress func(total int)) (int,
 // (≤ maxChunkRunes) always fits, so even one oversized input is sent on its own.
 const maxRequestRunes = 6000
 
+// minSplitRunes is the floor for overflow recovery: an input shorter than this
+// that *still* overflows the model's context is surfaced as an error rather than
+// split toward zero. No realistic text tokenizes to >2048 tokens in this few
+// runes, so reaching the floor signals a genuine misconfiguration (e.g. a
+// server started with a tiny -c) worth reporting instead of looping.
+const minSplitRunes = 64
+
 // embedAll embeds inputs in size-bounded sub-requests and concatenates the
 // results in order, so the returned slice still aligns one-to-one with inputs.
 // Splitting by total runes keeps each call within the server's batch budget
@@ -178,7 +187,7 @@ func (ix *Indexer) embedAll(ctx context.Context, inputs []string) ([][]float32, 
 			runes += r
 			j++
 		}
-		vecs, err := ix.client.Embed(ctx, inputs[i:j])
+		vecs, err := ix.embedSpan(ctx, inputs[i:j])
 		if err != nil {
 			return nil, err
 		}
@@ -186,6 +195,75 @@ func (ix *Indexer) embedAll(ctx context.Context, inputs []string) ([][]float32, 
 		i = j
 	}
 	return out, nil
+}
+
+// embedSpan embeds one sub-request, recovering from the server's hard context
+// limit so a single over-long message can't halt the whole backfill. A batch
+// that overflows is retried one input at a time (isolating the culprit so the
+// well-sized inputs aren't penalised); an individual input that still overflows
+// is split and mean-pooled into one vector by embedOversized — preserving the
+// one-vector-per-input contract embedAll's callers rely on. Non-overflow errors
+// (server down, decode failure) are returned as-is so the caller can back off.
+func (ix *Indexer) embedSpan(ctx context.Context, span []string) ([][]float32, error) {
+	vecs, err := ix.client.Embed(ctx, span)
+	if err == nil {
+		return vecs, nil
+	}
+	if !embed.IsOverflow(err) {
+		return nil, err
+	}
+	if len(span) > 1 {
+		out := make([][]float32, 0, len(span))
+		for _, in := range span {
+			v, err := ix.embedSpan(ctx, []string{in})
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, v...)
+		}
+		return out, nil
+	}
+	v, err := ix.embedOversized(ctx, span[0])
+	if err != nil {
+		return nil, err
+	}
+	return [][]float32{v}, nil
+}
+
+// embedOversized embeds an input the server rejected as too long by halving it
+// on a rune boundary and mean-pooling the pieces into one vector (the store
+// renormalizes on write, so summing is enough — the direction is the mean). It
+// routes the halves back through embedSpan, so a piece that is itself still too
+// long is split again. The document prefix rides on the left half only; for this
+// rare fallback on a giant dense paste that imperfection is immaterial next to
+// keeping the message searchable at all. Below minSplitRunes it gives up and
+// surfaces the error rather than recursing toward an empty input.
+func (ix *Indexer) embedOversized(ctx context.Context, input string) ([]float32, error) {
+	r := []rune(input)
+	if len(r) <= minSplitRunes {
+		return nil, fmt.Errorf("embed: input still over the context limit at %d runes (server context too small?)", len(r))
+	}
+	mid := len(r) / 2
+	var sum []float32
+	for _, piece := range []string{strings.TrimSpace(string(r[:mid])), strings.TrimSpace(string(r[mid:]))} {
+		if piece == "" {
+			continue
+		}
+		vecs, err := ix.embedSpan(ctx, []string{piece})
+		if err != nil {
+			return nil, err
+		}
+		if sum == nil {
+			sum = make([]float32, len(vecs[0]))
+		}
+		for j := range vecs[0] {
+			sum[j] += vecs[0][j]
+		}
+	}
+	if sum == nil {
+		return nil, fmt.Errorf("embed: oversized input reduced to empty")
+	}
+	return sum, nil
 }
 
 // chunks splits a message into pieces of at most maxChunkRunes runes, trimmed,

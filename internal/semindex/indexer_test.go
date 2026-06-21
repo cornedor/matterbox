@@ -3,6 +3,7 @@ package semindex
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -165,6 +166,69 @@ func TestLongMessageIsChunkedIntoOneVector(t *testing.T) {
 		}
 	}
 	// It must not be re-queued (it got a vector).
+	if again, _ := ix.Backfill(context.Background(), nil); again != 0 {
+		t.Errorf("re-run embedded %d, want 0 (no poison-pill retry)", again)
+	}
+}
+
+// fakeOverflowServer mimics EmbeddingGemma's hard context cap: any request
+// carrying an input longer than limitRunes is rejected with llama.cpp's
+// overflow 400 (the whole request fails, as the real server does); otherwise it
+// returns one unit vector per input.
+func fakeOverflowServer(t *testing.T, limitRunes int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Input []string `json:"input"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		for _, in := range req.Input {
+			if len([]rune(in)) > limitRunes {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, `{"error":{"message":"input is larger than the max context size. skipping","type":"exceed_context_size_error"}}`)
+				return
+			}
+		}
+		type item struct {
+			Index     int       `json:"index"`
+			Embedding []float32 `json:"embedding"`
+		}
+		var resp struct {
+			Data []item `json:"data"`
+		}
+		for i := range req.Input {
+			v := make([]float32, 8)
+			v[i%8] = 1
+			resp.Data = append(resp.Data, item{Index: i, Embedding: v})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+}
+
+// An input that overflows the model's context must be split and pooled, not
+// abort the backfill — and a recovered post must not be re-queued forever.
+func TestOverflowInputIsSplitNotFatal(t *testing.T) {
+	st := tempStore(t)
+	// Limit small enough that even a single full-size chunk overflows, forcing
+	// the split-and-pool recovery to recurse a couple of levels.
+	srv := fakeOverflowServer(t, maxChunkRunes/3)
+	defer srv.Close()
+
+	mkPost(st, t, "ok", "a perfectly ordinary message")
+	mkPost(st, t, "dense", strings.Repeat("x", maxChunkRunes)) // one chunk, too long
+
+	ix := New(st, embed.New(srv.URL, "", "m", 8), "m", 8, 8)
+	total, err := ix.Backfill(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("backfill should recover from overflow, got: %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("embedded %d posts, want 2 (overflow recovered)", total)
+	}
+	if n, _ := st.VectorCount(ix.Tag()); n != 2 {
+		t.Errorf("VectorCount = %d, want 2", n)
+	}
 	if again, _ := ix.Backfill(context.Background(), nil); again != 0 {
 		t.Errorf("re-run embedded %d, want 0 (no poison-pill retry)", again)
 	}

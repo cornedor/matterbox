@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -71,6 +72,35 @@ func embeddingsURL(endpoint string) string {
 	return e + "/v1/embeddings"
 }
 
+// OverflowError reports that the server rejected an input for exceeding the
+// model's hard context window (llama.cpp answers such a request with HTTP 400
+// and an "exceed_context_size_error"). It is kept distinct from a generic
+// server failure so the indexer can recover by splitting the offending text
+// instead of aborting the whole backfill — a too-long message would otherwise
+// be a poison pill, re-queued and re-failed on every run. See IsOverflow.
+type OverflowError struct {
+	Status string // HTTP status line, e.g. "400 Bad Request"
+	Detail string // server message (may be truncated)
+}
+
+func (e *OverflowError) Error() string {
+	return fmt.Sprintf("embeddings server %s: %s", e.Status, e.Detail)
+}
+
+// IsOverflow reports whether err is, or wraps, an OverflowError.
+func IsOverflow(err error) bool {
+	var oe *OverflowError
+	return errors.As(err, &oe)
+}
+
+// isOverflowBody recognises the context-overflow response by llama.cpp's stable
+// error-type code, with the human-readable phrase as a fallback for other
+// OpenAI-compatible servers that word it differently.
+func isOverflowBody(body string) bool {
+	return strings.Contains(body, "exceed_context_size_error") ||
+		strings.Contains(body, "larger than the max context size")
+}
+
 type embeddingRequest struct {
 	Model string   `json:"model"`
 	Input []string `json:"input"`
@@ -127,8 +157,12 @@ func (c *Client) Embed(ctx context.Context, inputs []string) ([][]float32, error
 	}
 	if resp.StatusCode != http.StatusOK {
 		msg := strings.TrimSpace(string(body))
+		overflow := resp.StatusCode == http.StatusBadRequest && isOverflowBody(msg)
 		if len(msg) > 300 {
 			msg = msg[:300] + "…"
+		}
+		if overflow {
+			return nil, &OverflowError{Status: resp.Status, Detail: msg}
 		}
 		return nil, fmt.Errorf("embeddings server %s: %s", resp.Status, msg)
 	}

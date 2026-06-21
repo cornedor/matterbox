@@ -122,6 +122,27 @@ func TestEmbedServerError(t *testing.T) {
 	}
 }
 
+func TestEmbedOverflowClassified(t *testing.T) {
+	// A 400 with llama.cpp's overflow error type must be an OverflowError...
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"message":"input (2095 tokens) is larger than the max context size (2048 tokens). skipping","type":"exceed_context_size_error","n_prompt_tokens":2095,"n_ctx":2048}}`)
+	}))
+	defer srv.Close()
+	if _, err := New(srv.URL, "", "m", 0).Embed(context.Background(), []string{"x"}); err == nil || !IsOverflow(err) {
+		t.Errorf("overflow 400 not classified: %v", err)
+	}
+
+	// ...but an ordinary failure (503) must not be.
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "model not loaded", http.StatusServiceUnavailable)
+	}))
+	defer srv2.Close()
+	if _, err := New(srv2.URL, "", "m", 0).Embed(context.Background(), []string{"x"}); err == nil || IsOverflow(err) {
+		t.Errorf("503 wrongly classified as overflow: %v", err)
+	}
+}
+
 func TestEmbedCountMismatch(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Two inputs requested, one vector returned.
