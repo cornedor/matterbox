@@ -81,6 +81,12 @@ type Options struct {
 	// Requires TelegramChatID, the only sender the bot obeys.
 	TwoWay bool
 
+	// Rules are the compiled per-post rules (from the `rules:` config block).
+	// When empty the daemon synthesises a default rule from the Notify*
+	// options that reproduces the legacy mention/DM → Telegram bridge, so an
+	// existing config behaves exactly as before. See rules.go.
+	Rules []Rule
+
 	// /ask agentic search. AskEndpoint+AskModel come from the summary chat
 	// server (set regardless of Summarize); empty disables /ask. AskPrompt frames
 	// the agent, AskMaxSteps bounds its tool-call rounds, AskTimeout bounds the
@@ -107,6 +113,12 @@ type Engine struct {
 	me     *model.User
 	opts   Options
 	log    *log.Logger
+
+	// rules drives the reaction to each incoming post. Either the user's
+	// configured rules (opts.Rules) or, when they configured none, the
+	// synthesised default that reproduces the legacy mention/DM → Telegram
+	// bridge (see defaultRules).
+	rules []Rule
 
 	wg sync.WaitGroup // tracks in-flight notify + inbound goroutines for shutdown
 
@@ -205,6 +217,11 @@ func New(client *mm.Client, st *store.Store, ch *chat.Client, tg *telegram.Clien
 	if start, end, ok := parseQuietHours(opts.QuietHours); ok {
 		e.quietStart, e.quietEnd, e.quietOn = start, end, true
 	}
+	if len(opts.Rules) > 0 {
+		e.rules = opts.Rules
+	} else {
+		e.rules = defaultRules(opts)
+	}
 	return e
 }
 
@@ -291,20 +308,11 @@ func (e *Engine) handle(ctx context.Context, ev *model.WebSocketEvent) {
 			return
 		}
 		e.ingest(p)
-		if e.opts.NotifyOnMention && e.me != nil && isDirectMention(ev, p, e.me.Id, e.me.Username, e.opts.NotifySelf) {
-			isDM := eventStr(ev, "channel_type") == string(model.ChannelTypeDirect)
-			switch {
-			case isDM && !e.opts.NotifyDMs:
-				// DM notifications disabled; still cached for /unread.
-			case e.opts.RespectMutes && e.isMuted(p.ChannelId):
-				e.log.Printf("mention in muted channel %s — skipped", p.ChannelId)
-			case e.inQuietHoursNow():
-				e.log.Printf("mention during quiet hours — skipped (cached; use /unread)")
-			default:
-				e.wg.Add(1)
-				go e.notify(ctx, ev, p)
-			}
-		}
+		// Everything that reacts to a new post — the Telegram notification
+		// included — flows through the rules engine. The notification is just
+		// the default rule (notifyGate applies the do-not-disturb policy that
+		// used to live inline here); user-configured rules replace it.
+		e.applyRules(ctx, ev, p)
 	case model.WebsocketEventPostEdited:
 		if p := postFromEvent(ev); p != nil {
 			e.ingest(p)
@@ -327,8 +335,10 @@ func (e *Engine) ingest(p *model.Post) {
 }
 
 // notify builds and delivers a notification for a direct mention / DM. Runs in
-// its own goroutine; respects ctx (cancelled on shutdown).
-func (e *Engine) notify(ctx context.Context, ev *model.WebSocketEvent, p *model.Post) {
+// its own goroutine; respects ctx (cancelled on shutdown). summarize selects
+// whether the body is an LLM summary of the surrounding context or the raw
+// message text — resolved per notify action by the caller (notifyGate).
+func (e *Engine) notify(ctx context.Context, ev *model.WebSocketEvent, p *model.Post, summarize bool) {
 	defer e.wg.Done()
 
 	// Delay-then-read-check: wait the configured window, then query the
@@ -356,7 +366,7 @@ func (e *Engine) notify(ctx context.Context, ev *model.WebSocketEvent, p *model.
 	label := channelLabel(ev, senderFallback)
 
 	body := strings.TrimSpace(p.Message)
-	if e.chat != nil && e.opts.Summarize {
+	if e.chat != nil && summarize {
 		if s, err := e.summarize(ctx, ev, p, label); err != nil {
 			e.log.Printf("summarize failed for %s, sending raw text: %v", label, err)
 		} else if s != "" {
