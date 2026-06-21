@@ -34,6 +34,10 @@ local LLM.
   Mattermost's server-side drafts API, so each channel keeps its own draft,
   switching channels never loses what you typed, and a draft started here shows
   up (and stays in sync) in the webapp, mobile, and across restarts.
+- **Rules engine** — make the `listen` daemon react to messages: match on
+  channel/author/text/mention and run actions (notify, run a local command,
+  POST a webhook, react, mark read). The Telegram bridge is itself just the
+  default rule. See [docs/rules.md](docs/rules.md).
 
 The AI features (summaries, semantic/agentic search) are entirely optional and talk
 to any OpenAI-compatible endpoint — point them at a local
@@ -239,3 +243,13 @@ tail -f ~/Library/Logs/matterbox-listen.log
 Configure under the `telegram` and `listen` sections in `config.yaml`
 (set `telegram.bot_token` from @BotFather and `telegram.chat_id`). The daemon is
 safe to run alongside the TUI — both write idempotent rows into the WAL-mode store.
+
+### Rules
+
+What the daemon does with each incoming message is driven by rules. With no
+`rules:` block it behaves exactly as before — forwarding your @mentions and DMs
+to Telegram (that default *is* a rule). Add a `rules:` block to take over: match
+on channel, author, message text, mention, attachments, or thread status, and
+run actions — `notify`, `exec` (run a local command with the message piped in as
+JSON), `webhook`, `react`, `mark_read`, or `log`. See
+[docs/rules.md](docs/rules.md) for the full reference and examples.

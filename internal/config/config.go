@@ -110,6 +110,13 @@ type Config struct {
 	// notify on direct mentions / DMs, whether to summarize the surrounding
 	// context with the chat model, and the summary prompt. See internal/listen.
 	Listen ListenConfig `yaml:"listen"`
+	// Rules are per-message reactions evaluated by the `matterbox listen`
+	// daemon: when a rule's conditions match an incoming post, its actions run
+	// (notify, run a command, POST a webhook, react, mark read, log). When
+	// empty the daemon falls back to the built-in notification behaviour
+	// described by the listen.* options. See internal/listen/rules.go and
+	// docs/rules.md.
+	Rules []RuleConfig `yaml:"rules,omitempty"`
 	// Jira configures the issue side panel: press the open-reference key (v) on
 	// a message naming a Jira issue to fetch it from Jira Cloud and show it
 	// inline. An empty base_url/email/api_token disables the panel. See
@@ -246,6 +253,58 @@ type ListenConfig struct {
 	// notification is suppressed. 0 = deliver immediately. Pointer so an absent
 	// key defaults to 60.
 	NotifyDelaySeconds *int `yaml:"notify_delay_seconds"`
+}
+
+// RuleConfig is one rule in the `rules:` list for the `matterbox listen`
+// daemon. It is the YAML form; internal/listen compiles it (validating globs,
+// regexps, and action types at startup). See docs/rules.md.
+type RuleConfig struct {
+	// Name labels the rule in the daemon log (optional).
+	Name string `yaml:"name,omitempty"`
+	// Stop halts evaluation of later rules once this one matches.
+	Stop bool `yaml:"stop,omitempty"`
+	// Match holds the conditions; all set conditions must hold (AND). An empty
+	// match matches every non-system, non-empty post.
+	Match RuleMatchConfig `yaml:"match"`
+	// Actions run in order when Match passes.
+	Actions []RuleActionConfig `yaml:"actions"`
+}
+
+// RuleMatchConfig holds a rule's conditions. See internal/listen.MatchSpec.
+type RuleMatchConfig struct {
+	// Channel is a case-insensitive glob (*, ?) over the channel's display
+	// name, or an exact channel id.
+	Channel string `yaml:"channel,omitempty"`
+	// Author is a username (no leading @), matched case-insensitively.
+	Author string `yaml:"author,omitempty"`
+	// Message is an RE2 regexp over the body (prefix (?i) for case-insensitive).
+	Message string `yaml:"message,omitempty"`
+	// Mention requires that you were directly named (@you).
+	Mention bool `yaml:"mention,omitempty"`
+	// DM, when set, requires a direct message (true) or a channel (false).
+	DM *bool `yaml:"dm,omitempty"`
+	// HasFile requires at least one attachment.
+	HasFile bool `yaml:"has_file,omitempty"`
+	// IsThread, when set, requires a thread reply (true) or a root post (false).
+	IsThread *bool `yaml:"is_thread,omitempty"`
+}
+
+// RuleActionConfig is one action. type is required; the remaining fields are
+// read per type. See internal/listen.ActionSpec.
+type RuleActionConfig struct {
+	// Type is one of: notify, exec, webhook, react, mark_read, log.
+	Type string `yaml:"type"`
+	// Summarize (notify) overrides listen.summarize for this rule only.
+	Summarize *bool `yaml:"summarize,omitempty"`
+	// Command (exec) is the argv; the post is piped to stdin as JSON and its
+	// fields exported as MATTERBOX_* env vars.
+	Command []string `yaml:"command,omitempty"`
+	// URL (webhook) receives the post envelope as a JSON POST body.
+	URL string `yaml:"url,omitempty"`
+	// Emoji (react) is the Mattermost emoji shortcode to add (no colons).
+	Emoji string `yaml:"emoji,omitempty"`
+	// Text (log) is an optional prefix for the log line.
+	Text string `yaml:"text,omitempty"`
 }
 
 // GiphyConfig configures pasted-Giphy-link expansion. Defaults in fillDefaults.
@@ -832,6 +891,15 @@ func writeConfig(p string, cfg *Config) error {
 		"#             the notification, then checks the server's read state — if any\n" +
 		"#             client marked the channel read during the window the notification\n" +
 		"#             is suppressed (0 = deliver immediately, no read-check).\n" +
+		"# rules:      per-message automation for `matterbox listen`. Each rule has a\n" +
+		"#             match (conditions, ANDed) and actions (run in order). Match on\n" +
+		"#             channel (display-name glob or id), author, message (RE2 regexp),\n" +
+		"#             mention (you were @named), dm, has_file, is_thread. Actions:\n" +
+		"#             notify (Telegram), exec (run a command; the post is piped in as\n" +
+		"#             JSON + MATTERBOX_* env vars), webhook (POST the post as JSON),\n" +
+		"#             react (emoji), mark_read, log. stop: true ends evaluation. With\n" +
+		"#             no rules the daemon uses a built-in notify rule from the listen\n" +
+		"#             options above. Full reference + examples in docs/rules.md.\n" +
 		"# jira:       the issue side panel. Press v on a message naming a Jira\n" +
 		"#             issue to fetch it from Jira Cloud and view it inline.\n" +
 		"#             base_url is the instance root (https://you.atlassian.net);\n" +
