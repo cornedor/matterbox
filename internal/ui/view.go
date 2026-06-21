@@ -1168,7 +1168,7 @@ func statusGlyph(status, filled, hollow string) (string, lipgloss.Style) {
 // dmStatusDot returns the presence glyph + style for a DM channel's partner.
 // ok is false only for non-DM channels and unresolvable partners; offline
 // partners get the grey hollow dot.
-func (m Model) dmStatusDot(c *model.Channel, filled, hollow string) (string, lipgloss.Style, bool) {
+func (m *Model) dmStatusDot(c *model.Channel, filled, hollow string) (string, lipgloss.Style, bool) {
 	id := m.dmPartnerID(c)
 	if id == "" {
 		return "", lipgloss.Style{}, false
@@ -1190,7 +1190,7 @@ func (m Model) myStatusDot(filled, hollow string) (string, lipgloss.Style, bool)
 // dmCustomStatus returns a DM partner's custom status when the feature is
 // enabled, the partner has one set, and it hasn't expired. ok is false
 // otherwise.
-func (m Model) dmCustomStatus(c *model.Channel) (model.CustomStatus, bool) {
+func (m *Model) dmCustomStatus(c *model.Channel) (model.CustomStatus, bool) {
 	if !m.showCustomStatus {
 		return model.CustomStatus{}, false
 	}
