@@ -2242,7 +2242,7 @@ func (m Model) threadTeamID() string {
 // dmPartnerID returns the *other* user's id in a direct-message channel —
 // the participant who isn't the logged-in user. It returns "" for non-DM
 // channels and for the note-to-self DM. DM channel names are "userID1__userID2".
-func (m Model) dmPartnerID(c *model.Channel) string {
+func (m *Model) dmPartnerID(c *model.Channel) string {
 	if c == nil || c.Type != model.ChannelTypeDirect {
 		return ""
 	}
@@ -2286,7 +2286,7 @@ func (m Model) dmPartnerIDs() []string {
 }
 
 // channelLabel renders the per-row label, resolving DM partner usernames.
-func (m Model) channelLabel(c *model.Channel) string {
+func (m *Model) channelLabel(c *model.Channel) string {
 	switch c.Type {
 	case model.ChannelTypeDirect:
 		other := m.dmPartnerID(c)
