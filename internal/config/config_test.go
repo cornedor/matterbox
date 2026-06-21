@@ -183,3 +183,59 @@ rules:
 		t.Errorf("webhook header not parsed: %q", h)
 	}
 }
+
+// TestRulesStateAndFrequency confirms the frequency block, the state match
+// (single mapping and list forms), and the state_* action fields all decode.
+func TestRulesStateAndFrequency(t *testing.T) {
+	const y = `
+rules:
+  - name: single state condition
+    match:
+      state:
+        key: failures
+        gte: 3
+      frequency:
+        count: 3
+        within: 10m
+        by: author
+    actions:
+      - type: state_incr
+        key: "failures:{{ .author }}"
+        by: 2
+  - name: list of state conditions
+    match:
+      state:
+        - { key: failures, gte: 1 }
+        - { key: muted, ne: "true" }
+    actions:
+      - type: state_set
+        key: last
+        value: "{{ .create_at }}"
+`
+	var c Config
+	if err := yaml.Unmarshal([]byte(y), &c); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(c.Rules) != 2 {
+		t.Fatalf("want 2 rules, got %d", len(c.Rules))
+	}
+
+	one := c.Rules[0]
+	if len(one.Match.State) != 1 || one.Match.State[0].Key != "failures" || one.Match.State[0].Gte == nil || *one.Match.State[0].Gte != 3 {
+		t.Errorf("single state condition not parsed: %+v", one.Match.State)
+	}
+	if one.Match.Frequency == nil || one.Match.Frequency.Count != 3 || one.Match.Frequency.Within != "10m" || one.Match.Frequency.By != "author" {
+		t.Errorf("frequency not parsed: %+v", one.Match.Frequency)
+	}
+	if a := one.Actions[0]; a.Key != "failures:{{ .author }}" || a.By == nil || *a.By != 2 {
+		t.Errorf("state_incr fields not parsed: %+v", a)
+	}
+
+	two := c.Rules[1]
+	if len(two.Match.State) != 2 || two.Match.State[1].Ne == nil || *two.Match.State[1].Ne != "true" {
+		t.Errorf("state condition list not parsed: %+v", two.Match.State)
+	}
+	if a := two.Actions[0]; a.Key != "last" || a.Value != "{{ .create_at }}" {
+		t.Errorf("state_set fields not parsed: %+v", a)
+	}
+}

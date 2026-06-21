@@ -229,6 +229,21 @@ func matchSpec(m config.RuleMatchConfig) listen.MatchSpec {
 			By:     m.Frequency.By,
 		}
 	}
+	if len(m.State) > 0 {
+		spec.State = make([]listen.StateCondSpec, len(m.State))
+		for i, c := range m.State {
+			spec.State[i] = listen.StateCondSpec{
+				Key:    c.Key,
+				Exists: c.Exists,
+				Eq:     c.Eq,
+				Ne:     c.Ne,
+				Gt:     c.Gt,
+				Gte:    c.Gte,
+				Lt:     c.Lt,
+				Lte:    c.Lte,
+			}
+		}
+	}
 	return spec
 }
 

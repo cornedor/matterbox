@@ -314,6 +314,140 @@ func TestCompileStateActionErrors(t *testing.T) {
 	}
 }
 
+// --- state matching -------------------------------------------------------
+
+func f64(v float64) *float64 { return &v }
+func str(v string) *string   { return &v }
+
+func TestStateCondEval(t *testing.T) {
+	state := map[string]string{"count": "3", "flag": "on", "junk": "NaN"}
+	cases := []struct {
+		name string
+		cond stateCond
+		want bool
+	}{
+		{"gte hit", stateCond{key: "count", gte: f64(3)}, true},
+		{"gte miss", stateCond{key: "count", gte: f64(4)}, false},
+		{"gt boundary", stateCond{key: "count", gt: f64(3)}, false},
+		{"lt hit", stateCond{key: "count", lt: f64(5)}, true},
+		{"range hit", stateCond{key: "count", gte: f64(1), lt: f64(10)}, true},
+		{"range miss", stateCond{key: "count", gte: f64(1), lt: f64(3)}, false},
+		{"eq hit", stateCond{key: "flag", eq: str("on")}, true},
+		{"eq miss", stateCond{key: "flag", eq: str("off")}, false},
+		{"ne hit", stateCond{key: "flag", ne: str("off")}, true},
+		{"exists hit", stateCond{key: "flag", exists: ptrBool(true)}, true},
+		{"absent via exists:false", stateCond{key: "missing", exists: ptrBool(false)}, true},
+		{"absent fails numeric", stateCond{key: "missing", gte: f64(0)}, false},
+		{"non-numeric fails numeric", stateCond{key: "junk", gte: f64(0)}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.cond.eval(state); got != c.want {
+				t.Errorf("eval = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestMatchPostState(t *testing.T) {
+	p := &model.Post{Id: "p", ChannelId: "c1", UserId: "u-bob", Message: "hi"}
+	ev := postedEvent(t, p, map[string]string{"channel_type": "O", "sender_name": "@bob"})
+	state := map[string]string{"failure_count": "3"}
+
+	hit, _ := compileMatch(MatchSpec{State: []StateCondSpec{{Key: "failure_count", Gte: f64(3)}}})
+	if !matchPost(ev, p, hit, "", "", state) {
+		t.Error("failure_count >= 3 should match when state has 3")
+	}
+	miss, _ := compileMatch(MatchSpec{State: []StateCondSpec{{Key: "failure_count", Gte: f64(4)}}})
+	if matchPost(ev, p, miss, "", "", state) {
+		t.Error("failure_count >= 4 should not match")
+	}
+	// State conditions AND with the field conditions.
+	both, _ := compileMatch(MatchSpec{Authors: []string{"alice"}, State: []StateCondSpec{{Key: "failure_count", Gte: f64(1)}}})
+	if matchPost(ev, p, both, "", "", state) {
+		t.Error("author mismatch should fail even when the state condition holds")
+	}
+	// A nested not: with a state condition inverts against the same snapshot.
+	notState, _ := compileMatch(MatchSpec{Not: &MatchSpec{State: []StateCondSpec{{Key: "failure_count", Gte: f64(3)}}}})
+	if matchPost(ev, p, notState, "", "", state) {
+		t.Error("not{failure_count>=3} should not match when it holds")
+	}
+}
+
+// TestApplyRulesStateThresholdSamePost is the headline behaviour: one rule
+// increments a counter, a later rule matches on the new value within the SAME
+// message (the snapshot is refreshed after the mutating rule).
+func TestApplyRulesStateThresholdSamePost(t *testing.T) {
+	e := newStoreEngine(t)
+	if err := e.store.SetState("failures", "2"); err != nil { // already two failures
+		t.Fatalf("seed: %v", err)
+	}
+	// A state write stands in for the "page" side effect, so the test can assert
+	// the threshold rule actually fired.
+	e.rules = mustCompile(t,
+		RuleSpec{
+			Name:    "count",
+			Match:   MatchSpec{Authors: []string{"deploybot"}, Message: "(?i)failed"},
+			Actions: []ActionSpec{{Type: ActionStateIncr, Key: "failures"}},
+		},
+		RuleSpec{
+			Name:    "page-on-3",
+			Match:   MatchSpec{State: []StateCondSpec{{Key: "failures", Gte: f64(3)}}},
+			Actions: []ActionSpec{{Type: ActionStateSet, Key: "paged", Value: "yes"}},
+		},
+	)
+	e.usesState = rulesUseState(e.rules) // New() does this in production
+	p := &model.Post{Id: "p", ChannelId: "c1", UserId: "u-bot", Message: "build Failed"}
+	ev := postedEvent(t, p, map[string]string{"channel_type": "O", "sender_name": "@deploybot"})
+	e.applyRules(t.Context(), ev, p)
+
+	// The incr took failures 2→3, and the threshold rule saw 3 in the same post.
+	if v, _, _ := e.store.GetState("failures"); v != "3" {
+		t.Fatalf("failures = %q, want 3", v)
+	}
+	if v, ok, _ := e.store.GetState("paged"); !ok || v != "yes" {
+		t.Fatalf("paged = %q ok=%v, want yes (threshold rule must see the same-post incr)", v, ok)
+	}
+}
+
+func TestUsesStateGate(t *testing.T) {
+	// No state condition anywhere → matchState returns nil (no per-message read).
+	e := newStoreEngine(t)
+	e.rules = mustCompile(t, RuleSpec{Match: MatchSpec{Authors: []string{"bob"}}, Actions: []ActionSpec{{Type: ActionLog}}})
+	e.usesState = rulesUseState(e.rules)
+	if e.usesState {
+		t.Error("a ruleset with no state condition should not set usesState")
+	}
+	if e.matchState() != nil {
+		t.Error("matchState should be nil when no rule uses state")
+	}
+	// A state condition nested in not: still counts.
+	e.rules = mustCompile(t, RuleSpec{
+		Match:   MatchSpec{Not: &MatchSpec{State: []StateCondSpec{{Key: "k", Exists: ptrBool(true)}}}},
+		Actions: []ActionSpec{{Type: ActionLog}},
+	})
+	if !rulesUseState(e.rules) {
+		t.Error("a state condition inside not: should set usesState")
+	}
+}
+
+func TestCompileStateCondErrors(t *testing.T) {
+	cases := []struct {
+		name  string
+		specs []RuleSpec
+	}{
+		{"no key", []RuleSpec{{Match: MatchSpec{State: []StateCondSpec{{Gte: f64(1)}}}, Actions: []ActionSpec{{Type: ActionLog}}}}},
+		{"no operator", []RuleSpec{{Match: MatchSpec{State: []StateCondSpec{{Key: "k"}}}, Actions: []ActionSpec{{Type: ActionLog}}}}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := CompileRules(c.specs); err == nil {
+				t.Errorf("want compile error for %s", c.name)
+			}
+		})
+	}
+}
+
 func TestCompileStateIncrBy(t *testing.T) {
 	rules := mustCompile(t, RuleSpec{Actions: []ActionSpec{{Type: ActionStateIncr, Key: "k"}}})
 	if rules[0].Actions[0].by != 1 {

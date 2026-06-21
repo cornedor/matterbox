@@ -103,6 +103,12 @@ type MatchSpec struct {
 	// of every matching message. The window is in-memory and live-only (see
 	// frequency).
 	Frequency *FrequencySpec
+	// State conditions match against the persistent ledger (the state_* actions):
+	// every condition must hold (AND). Lets a rule react to accumulated context —
+	// "this author's failure_count is at least 3" — that no single message
+	// carries. Within one post the ledger is re-read after a rule mutates it, so
+	// a rule can match on a counter an earlier rule just incremented.
+	State []StateCondSpec
 }
 
 // FrequencySpec is the config form of a rule's rolling-window gate.
@@ -115,6 +121,21 @@ type FrequencySpec struct {
 	// By groups the counting: "author" counts per sender, "channel" per channel,
 	// and "global" (the default, also "" ) counts every match together.
 	By string
+}
+
+// StateCondSpec is one condition on a ledger key. Key is required; every set
+// operator is ANDed (e.g. gte:1 + lt:10 is a range). Comparisons treat the
+// stored value as text (Eq/Ne) or, for the inequalities, as a number — a
+// non-numeric value never satisfies a numeric comparison.
+type StateCondSpec struct {
+	Key    string   // the ledger key to read
+	Exists *bool    // require the key be present (true) or absent (false)
+	Eq     *string  // value equals this exactly (string compare)
+	Ne     *string  // value differs from this
+	Gt     *float64 // value (as a number) >  this
+	Gte    *float64 // value (as a number) >= this
+	Lt     *float64 // value (as a number) <  this
+	Lte    *float64 // value (as a number) <= this
 }
 
 // ActionSpec is the config form of one action.
@@ -162,6 +183,10 @@ type Rule struct {
 	Stop    bool
 	Match   Match
 	Actions []Action
+	// mutatesState is true when any action writes the ledger, so applyRules knows
+	// to re-read the snapshot after this rule for the benefit of later `state`
+	// conditions. Precomputed so the hot path doesn't rescan the actions.
+	mutatesState bool
 }
 
 // Match is a compiled MatchSpec: the globs/regexps are pre-compiled and the
@@ -185,6 +210,9 @@ type Match struct {
 	// field conditions pass (matchPost never reads it — it is stateful and must
 	// not run during catch-up replay or pure match tests).
 	freq *frequency
+	// state holds the compiled ledger conditions; matchPost evaluates them against
+	// the snapshot it is handed (so it stays pure and testable).
+	state []stateCond
 }
 
 // frequency is a compiled FrequencySpec: a rolling-window threshold. The engine
@@ -195,6 +223,51 @@ type frequency struct {
 	count  int
 	within time.Duration
 	by     string // "author" | "channel" | "global"
+}
+
+// stateCond is a compiled StateCondSpec — one condition on a ledger key. eval
+// reports whether the snapshot satisfies it.
+type stateCond struct {
+	key              string
+	exists           *bool
+	eq, ne           *string
+	gt, gte, lt, lte *float64
+}
+
+// eval reports whether the ledger snapshot satisfies this condition. An absent
+// key has no value, so any value comparison (eq/ne/numeric) against it fails;
+// use exists:false to match absence. A non-numeric stored value never satisfies
+// a numeric comparison.
+func (c stateCond) eval(state map[string]string) bool {
+	val, present := state[c.key]
+	if c.exists != nil && *c.exists != present {
+		return false
+	}
+	if c.eq != nil && val != *c.eq {
+		return false
+	}
+	if c.ne != nil && val == *c.ne {
+		return false
+	}
+	if c.gt != nil || c.gte != nil || c.lt != nil || c.lte != nil {
+		n, err := strconv.ParseFloat(strings.TrimSpace(val), 64)
+		if err != nil {
+			return false
+		}
+		if c.gt != nil && !(n > *c.gt) {
+			return false
+		}
+		if c.gte != nil && !(n >= *c.gte) {
+			return false
+		}
+		if c.lt != nil && !(n < *c.lt) {
+			return false
+		}
+		if c.lte != nil && !(n <= *c.lte) {
+			return false
+		}
+	}
+	return true
 }
 
 // Action is a compiled ActionSpec. The state actions carry their key/value as
@@ -243,9 +316,23 @@ func CompileRules(specs []RuleSpec) ([]Rule, error) {
 			}
 			actions = append(actions, ca)
 		}
-		rules = append(rules, Rule{Name: name, Stop: s.Stop, Match: m, Actions: actions})
+		rules = append(rules, Rule{
+			Name: name, Stop: s.Stop, Match: m, Actions: actions,
+			mutatesState: actionsMutateState(actions),
+		})
 	}
 	return rules, nil
+}
+
+// actionsMutateState reports whether any action writes the ledger.
+func actionsMutateState(actions []Action) bool {
+	for _, a := range actions {
+		switch a.Type {
+		case ActionStateSet, ActionStateIncr, ActionStateDel:
+			return true
+		}
+	}
+	return false
 }
 
 func compileMatch(s MatchSpec) (Match, error) {
@@ -288,6 +375,13 @@ func compileMatch(s MatchSpec) (Match, error) {
 		}
 		m.freq = f
 	}
+	for _, sc := range s.State {
+		c, err := compileStateCond(sc)
+		if err != nil {
+			return Match{}, fmt.Errorf("state: %w", err)
+		}
+		m.state = append(m.state, c)
+	}
 	return m, nil
 }
 
@@ -315,6 +409,29 @@ func compileFrequency(s FrequencySpec) (*frequency, error) {
 		return nil, fmt.Errorf("unknown by %q (want author, channel, or global)", s.By)
 	}
 	return &frequency{count: s.Count, within: within, by: by}, nil
+}
+
+// compileStateCond validates a StateCondSpec: a key is required, and at least
+// one operator must be set (a bare key would match nothing meaningful). A
+// gt/gte and lt/lte pair forms a range.
+func compileStateCond(s StateCondSpec) (stateCond, error) {
+	if strings.TrimSpace(s.Key) == "" {
+		return stateCond{}, fmt.Errorf("condition needs a key")
+	}
+	if s.Exists == nil && s.Eq == nil && s.Ne == nil &&
+		s.Gt == nil && s.Gte == nil && s.Lt == nil && s.Lte == nil {
+		return stateCond{}, fmt.Errorf("condition on %q needs an operator (exists, eq, ne, gt, gte, lt, lte)", s.Key)
+	}
+	return stateCond{
+		key:    s.Key,
+		exists: s.Exists,
+		eq:     s.Eq,
+		ne:     s.Ne,
+		gt:     s.Gt,
+		gte:    s.Gte,
+		lt:     s.Lt,
+		lte:    s.Lte,
+	}, nil
 }
 
 func compileAction(a ActionSpec) (Action, error) {
@@ -457,8 +574,9 @@ func (e *Engine) hasNotifyRule() bool {
 // rules instead of the old hardcoded mention/DM test, so a config that, say,
 // only notifies for one channel no longer gets a catch-up digest for the rest.
 func (e *Engine) notifyMatches(ev *model.WebSocketEvent, p *model.Post) bool {
+	state := e.matchState()
 	for _, r := range e.rules {
-		if ruleHasNotify(r) && e.matches(ev, p, r.Match) {
+		if ruleHasNotify(r) && e.matches(ev, p, r.Match, state) {
 			return true
 		}
 	}
@@ -474,9 +592,13 @@ func (e *Engine) applyRules(ctx context.Context, ev *model.WebSocketEvent, p *mo
 	if p == nil || p.DeleteAt != 0 || p.IsSystemMessage() || strings.TrimSpace(p.Message) == "" {
 		return
 	}
+	// The ledger snapshot is read once up front (nil when no rule uses `state`),
+	// then refreshed after any rule whose actions wrote state, so a later rule's
+	// `state` condition observes what an earlier rule's state_incr just stored.
+	state := e.matchState()
 	for i := range e.rules {
 		r := e.rules[i]
-		if !e.matches(ev, p, r.Match) {
+		if !e.matches(ev, p, r.Match, state) {
 			continue
 		}
 		// A frequency gate is applied only once the fields match: it records the
@@ -487,6 +609,9 @@ func (e *Engine) applyRules(ctx context.Context, ev *model.WebSocketEvent, p *mo
 			continue
 		}
 		e.runActions(ctx, ev, p, r.Actions)
+		if e.usesState && r.mutatesState {
+			state = e.matchState()
+		}
 		if r.Stop {
 			return
 		}
@@ -546,8 +671,10 @@ func freqBucketKey(ruleIdx int, f *frequency, ev *model.WebSocketEvent, p *model
 
 // matches reports whether a post satisfies a rule's conditions. The builtin
 // match defers to isDirectMention so the default rule behaves identically to
-// the pre-rules daemon; user rules use the field matcher.
-func (e *Engine) matches(ev *model.WebSocketEvent, p *model.Post, m Match) bool {
+// the pre-rules daemon; user rules use the field matcher. state is the ledger
+// snapshot the field matcher tests `state` conditions against (nil when no rule
+// uses state — see matchState).
+func (e *Engine) matches(ev *model.WebSocketEvent, p *model.Post, m Match, state map[string]string) bool {
 	meID, meName := "", ""
 	if e.me != nil {
 		meID, meName = e.me.Id, e.me.Username
@@ -555,13 +682,14 @@ func (e *Engine) matches(ev *model.WebSocketEvent, p *model.Post, m Match) bool 
 	if m.builtin {
 		return isDirectMention(ev, p, meID, meName, e.opts.NotifySelf)
 	}
-	return matchPost(ev, p, m, meID, meName)
+	return matchPost(ev, p, m, meID, meName, state)
 }
 
 // matchPost evaluates the field conditions of a (non-builtin) match. Pure for
-// testability: every condition it reads comes from the event/post, plus the
-// reader's id and username for the Mention check.
-func matchPost(ev *model.WebSocketEvent, p *model.Post, m Match, meID, meName string) bool {
+// testability: every condition it reads comes from the event/post, the reader's
+// id and username for the Mention check, plus the ledger snapshot for `state`
+// conditions.
+func matchPost(ev *model.WebSocketEvent, p *model.Post, m Match, meID, meName string, state map[string]string) bool {
 	isDM := eventStr(ev, "channel_type") == string(model.ChannelTypeDirect)
 	if m.dm != nil && *m.dm != isDM {
 		return false
@@ -593,8 +721,13 @@ func matchPost(ev *model.WebSocketEvent, p *model.Post, m Match, meID, meName st
 			return false
 		}
 	}
+	for _, c := range m.state {
+		if !c.eval(state) {
+			return false
+		}
+	}
 	// A nested not: matches the whole post only when the sub-match does not.
-	if m.not != nil && matchPost(ev, p, *m.not, meID, meName) {
+	if m.not != nil && matchPost(ev, p, *m.not, meID, meName, state) {
 		return false
 	}
 	return true
@@ -783,6 +916,34 @@ func (e *Engine) loadState() map[string]string {
 		return nil
 	}
 	return st
+}
+
+// matchState returns the ledger snapshot used to evaluate `state` conditions,
+// or nil when no rule has any — so a config that never matches on state pays no
+// per-message read.
+func (e *Engine) matchState() map[string]string {
+	if !e.usesState {
+		return nil
+	}
+	return e.loadState()
+}
+
+// rulesUseState reports whether any rule (including nested not: blocks) carries
+// a state condition; the engine caches it as usesState.
+func rulesUseState(rules []Rule) bool {
+	for _, r := range rules {
+		if matchUsesState(r.Match) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchUsesState(m Match) bool {
+	if len(m.state) > 0 {
+		return true
+	}
+	return m.not != nil && matchUsesState(*m.not)
 }
 
 // postFileNames returns the attachment filenames carried in the post metadata,

@@ -126,6 +126,10 @@ type Engine struct {
 	freqMu      sync.Mutex
 	freqWindows map[string][]time.Time
 
+	// usesState caches whether any rule matches on the ledger, so a config that
+	// never does pays no per-message state read (see matchState).
+	usesState bool
+
 	// now is the engine's clock, overridable in tests so the frequency window
 	// can be driven deterministically. nil means time.Now (see clock).
 	now func() time.Time
@@ -233,6 +237,7 @@ func New(client *mm.Client, st *store.Store, ch *chat.Client, tg *telegram.Clien
 	} else {
 		e.rules = defaultRules(opts)
 	}
+	e.usesState = rulesUseState(e.rules)
 	return e
 }
 

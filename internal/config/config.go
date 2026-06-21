@@ -295,6 +295,9 @@ type RuleMatchConfig struct {
 	// fields match, the actions run only once `count` matches accumulate within
 	// `within` (optionally grouped `by` author/channel). See internal/listen.
 	Frequency *RuleFrequencyConfig `yaml:"frequency,omitempty"`
+	// State matches against the persistent ledger (the state_* actions). A single
+	// condition or a list (all ANDed). See internal/listen.StateCondSpec.
+	State StateMatchList `yaml:"state,omitempty"`
 }
 
 // RuleFrequencyConfig is the rolling-window gate on a rule. See
@@ -306,6 +309,43 @@ type RuleFrequencyConfig struct {
 	Within string `yaml:"within"`
 	// By groups the counting: author, channel, or global (default).
 	By string `yaml:"by,omitempty"`
+}
+
+// RuleStateMatchConfig is one condition on a ledger key. See
+// internal/listen.StateCondSpec.
+type RuleStateMatchConfig struct {
+	// Key is the ledger key to read (required).
+	Key string `yaml:"key"`
+	// Exists requires the key be present (true) or absent (false).
+	Exists *bool `yaml:"exists,omitempty"`
+	// Eq / Ne compare the stored value as a string.
+	Eq *string `yaml:"eq,omitempty"`
+	Ne *string `yaml:"ne,omitempty"`
+	// Gt / Gte / Lt / Lte compare the stored value as a number.
+	Gt  *float64 `yaml:"gt,omitempty"`
+	Gte *float64 `yaml:"gte,omitempty"`
+	Lt  *float64 `yaml:"lt,omitempty"`
+	Lte *float64 `yaml:"lte,omitempty"`
+}
+
+// StateMatchList accepts either a single state condition (a mapping) or a list
+// of them, always unmarshalling to a slice (every entry ANDed) — mirroring
+// StringList's single-or-list ergonomics for the common one-condition case.
+type StateMatchList []RuleStateMatchConfig
+
+// UnmarshalYAML accepts a single condition mapping or a sequence of them.
+func (s *StateMatchList) UnmarshalYAML(unmarshal func(any) error) error {
+	var one RuleStateMatchConfig
+	if err := unmarshal(&one); err == nil {
+		*s = StateMatchList{one}
+		return nil
+	}
+	var many []RuleStateMatchConfig
+	if err := unmarshal(&many); err != nil {
+		return err
+	}
+	*s = StateMatchList(many)
+	return nil
 }
 
 // RuleActionConfig is one action. type is required; the remaining fields are
@@ -956,7 +996,9 @@ func writeConfig(p string, cfg *Config) error {
 		"#             author take a single value or a list (match any), and a nested\n" +
 		"#             not: inverts a sub-match. A frequency: { count, within, by }\n" +
 		"#             block fires the rule only on a burst (count matches within the\n" +
-		"#             window, grouped by author/channel/global). Actions: notify\n" +
+		"#             window, grouped by author/channel/global); a state: condition\n" +
+		"#             (or list) matches on the persistent ledger (key + exists/eq/ne/\n" +
+		"#             gt/gte/lt/lte). Actions: notify\n" +
 		"#             (Telegram; urgent bypasses quiet_hours/mutes, chat_id routes\n" +
 		"#             elsewhere), exec (run a command; the post is piped in as JSON +\n" +
 		"#             MATTERBOX_* env vars), webhook (POST the post as JSON; headers\n" +

@@ -228,6 +228,7 @@ Different fields are ANDed; an empty `match` matches every message.
 | `is_thread` | `true` = only thread replies; `false` = only root posts; unset = either. |
 | `not` | A nested `match` block that **inverts**: the rule fires only when the post does **not** satisfy it. Recursive. |
 | `frequency` | A rolling-window threshold: even when the fields match, fire only on a **burst**. See below. |
+| `state` | Match on the persistent [ledger](#matching-on-the-ledger) — e.g. `failure_count` is at least 3. |
 
 `channel`/`author` as a list is an OR; combine with `not` to subtract. For
 example, "anything in the ops channels except from the bots":
@@ -410,12 +411,67 @@ A field or `.state` key that doesn't exist renders as empty, not an error.
 - **`state_incr` is atomic**, so two messages updating the same counter at once
   can't lose a write.
 
+### Matching on the ledger
+
+Writing the ledger is only half of it — a `match.state` condition reads it, so
+one rule can react to what another counted. Each condition names a `key` and one
+or more operators, all ANDed:
+
+| Operator | Meaning |
+|---|---|
+| `exists` | `true` = key is present; `false` = key is absent. |
+| `eq` / `ne` | Value equals / doesn't equal this (string compare). |
+| `gt` / `gte` / `lt` / `lte` | Value, **as a number**, compared to this (a range is `gte` + `lt`). |
+
+`state` takes a single condition or a list (all ANDed). The canonical pairing —
+count failures in one rule, page when the count crosses a threshold in another:
+
+```yaml
+rules:
+  - name: count-failures
+    match: { author: deploybot, message: "(?i)failed" }
+    actions:
+      - type: state_incr
+        key: failures
+  - name: page-on-streak
+    match:
+      state:
+        key: failures
+        gte: 3            # ← reads what count-failures just wrote
+    actions:
+      - type: notify
+        urgent: true
+      - type: state_del
+        key: failures      # reset so the next streak starts clean
+  - name: clear-on-success
+    match: { author: deploybot, message: "(?i)succeeded" }
+    actions:
+      - type: state_del
+        key: failures
+```
+
+**Same-message visibility.** Within one incoming message the ledger is re-read
+after any rule that wrote it, so `page-on-streak` sees the `failures` value
+`count-failures` just incremented — the page fires on the *third* failure, not
+the fourth. An absent key satisfies `exists: false` but no value comparison
+(there's nothing to compare); a non-numeric value never satisfies a numeric
+operator.
+
+This overlaps with [`frequency`](#rate-limiting-with-frequency) but trades off
+differently: `frequency` is in-memory and self-pruning (great for "N in the last
+T minutes"), while a ledger counter is exact, persistent across restarts, and
+yours to reset — better when the threshold must survive a restart or the count
+is cleared by an explicit event (a green deploy) rather than by time.
+
 ### Live-only, like side effects
 
 State actions only run for **live** messages. The [reconnect
 catch-up](#catch-up-after-a-reconnect) drives `notify` only — it never replays
 `state_set`/`state_incr`/`state_del` (nor `exec`/`webhook`/`react`), so a
 reconnect can't double-count a failure or re-fire a side effect for history.
+(`state` *match* conditions are evaluated in catch-up against the current ledger,
+but since the historical messages don't mutate it, this just reflects "does this
+rule's threshold currently hold".)
 
 ## Examples
 
@@ -526,7 +582,7 @@ rules:
 `exec` runs commands from your own config, as you, on your own machine — same
 trust level as a shell alias. Each run is bounded by a timeout and runs off the
 ingest path, so a slow or hung command can't block message caching or take the
-daemon down. A bad glob, regexp, **template, or `frequency` duration**, or an
-unknown action `type`, is reported at startup so a typo fails loud rather than
-silently never firing. `state_*` writes touch only matterbox's own database
+daemon down. A bad glob, regexp, **template, `frequency` duration, or `state` condition**
+(missing key / no operator), or an unknown action `type`, is reported at startup
+so a typo fails loud rather than silently never firing. `state_*` writes touch only matterbox's own database
 (the `rule_state` table), never your Mattermost server.
