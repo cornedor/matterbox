@@ -1,6 +1,9 @@
 # Compiled binary (build with `go build -o matterbox .` or run via `go run .`)
 /matterbox
 
+# Cross-compiled deploy artifacts (e.g. dist/matterbox-linux-amd64)
+/dist/
+
 # Go test binaries (`go test -c`)
 *.test
 
