@@ -272,11 +272,12 @@ type RuleConfig struct {
 
 // RuleMatchConfig holds a rule's conditions. See internal/listen.MatchSpec.
 type RuleMatchConfig struct {
-	// Channel is a case-insensitive glob (*, ?) over the channel's display
-	// name, or an exact channel id.
-	Channel string `yaml:"channel,omitempty"`
-	// Author is a username (no leading @), matched case-insensitively.
-	Author string `yaml:"author,omitempty"`
+	// Channel is a case-insensitive glob (*, ?) over the channel's display name,
+	// or an exact channel id. Accepts a single value or a list (match any).
+	Channel StringList `yaml:"channel,omitempty"`
+	// Author is a username (no leading @), matched case-insensitively. Accepts a
+	// single value or a list (match any).
+	Author StringList `yaml:"author,omitempty"`
 	// Message is an RE2 regexp over the body (prefix (?i) for case-insensitive).
 	Message string `yaml:"message,omitempty"`
 	// Mention requires that you were directly named (@you).
@@ -287,6 +288,9 @@ type RuleMatchConfig struct {
 	HasFile bool `yaml:"has_file,omitempty"`
 	// IsThread, when set, requires a thread reply (true) or a root post (false).
 	IsThread *bool `yaml:"is_thread,omitempty"`
+	// Not inverts a nested match: the rule fires only when the post does NOT
+	// satisfy it (e.g. everything in a channel except posts from a bot).
+	Not *RuleMatchConfig `yaml:"not,omitempty"`
 }
 
 // RuleActionConfig is one action. type is required; the remaining fields are
@@ -296,15 +300,46 @@ type RuleActionConfig struct {
 	Type string `yaml:"type"`
 	// Summarize (notify) overrides listen.summarize for this rule only.
 	Summarize *bool `yaml:"summarize,omitempty"`
+	// Urgent (notify) delivers even during quiet hours / for muted channels.
+	Urgent bool `yaml:"urgent,omitempty"`
+	// ChatID (notify) overrides the destination Telegram chat for this rule.
+	ChatID string `yaml:"chat_id,omitempty"`
 	// Command (exec) is the argv; the post is piped to stdin as JSON and its
 	// fields exported as MATTERBOX_* env vars.
 	Command []string `yaml:"command,omitempty"`
 	// URL (webhook) receives the post envelope as a JSON POST body.
 	URL string `yaml:"url,omitempty"`
+	// Headers (webhook) are extra request headers; values are expanded from the
+	// daemon's environment ($TOKEN) so secrets stay out of the config.
+	Headers map[string]string `yaml:"headers,omitempty"`
 	// Emoji (react) is the Mattermost emoji shortcode to add (no colons).
 	Emoji string `yaml:"emoji,omitempty"`
 	// Text (log) is an optional prefix for the log line.
 	Text string `yaml:"text,omitempty"`
+}
+
+// StringList is a YAML field that accepts either a single scalar ("ops") or a
+// list (["ops", "alerts"]), so a condition can match one value or several
+// without a breaking schema change. It always unmarshals to a slice.
+type StringList []string
+
+// UnmarshalYAML accepts a scalar or a sequence of scalars.
+func (s *StringList) UnmarshalYAML(unmarshal func(any) error) error {
+	var one string
+	if err := unmarshal(&one); err == nil {
+		if one == "" {
+			*s = nil
+		} else {
+			*s = StringList{one}
+		}
+		return nil
+	}
+	var many []string
+	if err := unmarshal(&many); err != nil {
+		return err
+	}
+	*s = StringList(many)
+	return nil
 }
 
 // GiphyConfig configures pasted-Giphy-link expansion. Defaults in fillDefaults.
@@ -894,12 +929,16 @@ func writeConfig(p string, cfg *Config) error {
 		"# rules:      per-message automation for `matterbox listen`. Each rule has a\n" +
 		"#             match (conditions, ANDed) and actions (run in order). Match on\n" +
 		"#             channel (display-name glob or id), author, message (RE2 regexp),\n" +
-		"#             mention (you were @named), dm, has_file, is_thread. Actions:\n" +
-		"#             notify (Telegram), exec (run a command; the post is piped in as\n" +
-		"#             JSON + MATTERBOX_* env vars), webhook (POST the post as JSON),\n" +
-		"#             react (emoji), mark_read, log. stop: true ends evaluation. With\n" +
-		"#             no rules the daemon uses a built-in notify rule from the listen\n" +
-		"#             options above. Full reference + examples in docs/rules.md.\n" +
+		"#             mention (you were @named), dm, has_file, is_thread; channel and\n" +
+		"#             author take a single value or a list (match any), and a nested\n" +
+		"#             not: inverts a sub-match. Actions: notify (Telegram; urgent\n" +
+		"#             bypasses quiet_hours/mutes, chat_id routes elsewhere), exec (run\n" +
+		"#             a command; the post is piped in as JSON + MATTERBOX_* env vars),\n" +
+		"#             webhook (POST the post as JSON; headers add request headers,\n" +
+		"#             values expanded from $ENV), react (emoji), mark_read, log.\n" +
+		"#             stop: true ends evaluation. With no rules the daemon uses a\n" +
+		"#             built-in notify rule from the listen options above. Full\n" +
+		"#             reference + examples in docs/rules.md.\n" +
 		"# jira:       the issue side panel. Press v on a message naming a Jira\n" +
 		"#             issue to fetch it from Jira Cloud and view it inline.\n" +
 		"#             base_url is the instance root (https://you.atlassian.net);\n" +

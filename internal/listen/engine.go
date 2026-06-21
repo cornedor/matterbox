@@ -338,8 +338,13 @@ func (e *Engine) ingest(p *model.Post) {
 // its own goroutine; respects ctx (cancelled on shutdown). summarize selects
 // whether the body is an LLM summary of the surrounding context or the raw
 // message text — resolved per notify action by the caller (notifyGate).
-func (e *Engine) notify(ctx context.Context, ev *model.WebSocketEvent, p *model.Post, summarize bool) {
+func (e *Engine) notify(ctx context.Context, ev *model.WebSocketEvent, p *model.Post, opts notifyOpts) {
 	defer e.wg.Done()
+	summarize := opts.summarize
+	chatID := opts.chatID
+	// Two-way reply buttons only work for the configured chat (the only sender
+	// the bot obeys), so a rule routing to a different chat gets a plain message.
+	twoWay := e.inboundEnabled() && chatID == e.opts.TelegramChatID
 
 	// Delay-then-read-check: wait the configured window, then query the
 	// Mattermost server for the channel's LastViewedAt. Any client — TUI,
@@ -383,7 +388,7 @@ func (e *Engine) notify(ctx context.Context, ev *model.WebSocketEvent, p *model.
 	// With two-way enabled, offer an explicit mark-read button and remember the
 	// Mattermost message so a Telegram reply or emoji reaction can act on it.
 	var keyboard [][]telegram.Button
-	if e.inboundEnabled() {
+	if twoWay {
 		keyboard = [][]telegram.Button{{
 			{Text: "✓ Read", Data: "r:" + p.ChannelId},
 		}}
@@ -405,18 +410,18 @@ func (e *Engine) notify(ctx context.Context, ev *model.WebSocketEvent, p *model.
 		if len(caption) > captionCap {
 			caption = caption[:captionCap-1] + "…"
 		}
-		if msgID, err = e.tg.SendPhoto(ctx, e.opts.TelegramChatID, caption, name, data, keyboard); err != nil {
+		if msgID, err = e.tg.SendPhoto(ctx, chatID, caption, name, data, keyboard); err != nil {
 			e.log.Printf("send photo failed for %s, falling back to text: %v", label, err)
-			msgID, err = e.tg.Send(ctx, e.opts.TelegramChatID, text, keyboard)
+			msgID, err = e.tg.Send(ctx, chatID, text, keyboard)
 		}
 	} else {
-		msgID, err = e.tg.Send(ctx, e.opts.TelegramChatID, text, keyboard)
+		msgID, err = e.tg.Send(ctx, chatID, text, keyboard)
 	}
 	if err != nil {
 		e.log.Printf("telegram delivery failed for %s: %v", label, err)
 		return
 	}
-	if e.inboundEnabled() {
+	if twoWay {
 		root := p.RootId
 		if root == "" {
 			root = p.Id
@@ -836,8 +841,14 @@ func (e *Engine) advanceCursor(ms int64) {
 // catchUp delivers (as one consolidated message) the direct mentions / DMs that
 // arrived while the daemon was disconnected — unread, newer than the cursor, and
 // within catchupMaxAge — then advances the cursor. Runs after every connect.
+//
+// The candidate set (unread mentions + DMs) is replayed through the rules so the
+// digest honours the user's notify rules; it is deliberately scoped to that
+// bounded set (the only thing the server lets us query cheaply on reconnect) and
+// to notify only — exec/webhook/react are live-only and never re-fire for
+// historical posts. See docs/rules.md.
 func (e *Engine) catchUp(ctx context.Context) {
-	if !e.opts.NotifyOnMention || e.me == nil || e.tg == nil {
+	if !e.hasNotifyRule() || e.me == nil || e.tg == nil {
 		return
 	}
 	cursor := e.cursor()
@@ -899,6 +910,22 @@ func (e *Engine) catchUp(ctx context.Context) {
 	sort.SliceStable(items, func(i, j int) bool { return items[i].post.CreateAt < items[j].post.CreateAt })
 	lbl := e.buildLabeler(ctx, chIDs, authorIDs)
 
+	// Keep only the missed posts a notify rule would actually fire on, so a
+	// config that narrows or replaces the default notification (e.g. notify for
+	// one channel only) gets a catch-up digest that matches its live behaviour.
+	kept := items[:0]
+	for _, it := range items {
+		ev := e.catchupEvent(chByID[it.channelID], it.post, lbl.names[it.post.UserId])
+		if e.notifyMatches(ev, it.post) {
+			kept = append(kept, it)
+		}
+	}
+	items = kept
+	if len(items) == 0 {
+		e.advanceCursor(now)
+		return
+	}
+
 	var b strings.Builder
 	fmt.Fprintf(&b, "📥 While you were away — %s:", plural(len(items), "mention", "mentions"))
 	const show = 20
@@ -916,6 +943,26 @@ func (e *Engine) catchUp(ctx context.Context) {
 	e.sendTG(ctx, b.String())
 	e.advanceCursor(now)
 	e.log.Printf("catch-up: %d missed mention(s)", len(items))
+}
+
+// catchupEvent synthesises the "posted" event a missed post would have carried,
+// so the catch-up path can match it against the same rules the live path uses.
+// It fills the fields the matcher reads (channel type/name/team, sender, and —
+// when the reader is named in the text — the mentions set).
+func (e *Engine) catchupEvent(ch *model.Channel, p *model.Post, authorName string) *model.WebSocketEvent {
+	ev := model.NewWebSocketEvent(model.WebsocketEventPosted, "", p.ChannelId, "", nil, "")
+	if ch != nil {
+		ev.Add("channel_type", string(ch.Type))
+		ev.Add("channel_display_name", ch.DisplayName)
+		ev.Add("team_id", ch.TeamId)
+	}
+	if authorName != "" {
+		ev.Add("sender_name", "@"+authorName)
+	}
+	if e.me != nil && mentionsName(p.Message, e.me.Username) {
+		ev.Add("mentions", `["`+e.me.Id+`"]`)
+	}
+	return ev
 }
 
 // refreshTeams loads team id → URL name (for permalinks) once at startup.

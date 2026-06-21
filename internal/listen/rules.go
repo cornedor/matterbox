@@ -59,12 +59,14 @@ type RuleSpec struct {
 // MatchSpec is the config form of a rule's conditions. All set conditions are
 // ANDed; an all-zero MatchSpec matches every (non-system, non-empty) post.
 type MatchSpec struct {
-	// Channel is a case-insensitive glob (*, ?) over the channel's display
-	// name, or an exact channel id. Empty matches any channel.
-	Channel string
-	// Author is a username (without the leading @), matched case-insensitively
-	// against the post's sender. Empty matches any author.
-	Author string
+	// Channels is a list of case-insensitive globs (*, ?) over the channel's
+	// display name, or exact channel ids; a post matches the condition when it
+	// matches ANY entry (OR). Empty matches any channel.
+	Channels []string
+	// Authors is a list of usernames (without the leading @), matched
+	// case-insensitively against the post's sender; a post matches when the
+	// sender equals ANY entry (OR). Empty matches any author.
+	Authors []string
 	// Message is an RE2 regexp matched against the message body (add (?i) for
 	// case-insensitive). Empty matches any body.
 	Message string
@@ -79,6 +81,10 @@ type MatchSpec struct {
 	// IsThread, when non-nil, requires the post be a thread reply (true) or a
 	// root post (false). Nil matches either.
 	IsThread *bool
+	// Not, when set, inverts a nested match: the rule matches only when the post
+	// does NOT satisfy this sub-match. Lets a rule say "everything in #ops
+	// except from the bots" in one place. Recursive.
+	Not *MatchSpec
 }
 
 // ActionSpec is the config form of one action.
@@ -88,11 +94,23 @@ type ActionSpec struct {
 	// Summarize (notify) overrides the daemon's summarize setting for this rule
 	// only. Nil inherits Options.Summarize.
 	Summarize *bool
+	// Urgent (notify) delivers even during quiet hours and for muted channels —
+	// the do-not-disturb bypass for an on-call keyword. Self/DM gating still
+	// applies. Default false.
+	Urgent bool
+	// ChatID (notify) overrides the destination Telegram chat for this rule.
+	// Empty uses telegram.chat_id. A rule sending to a non-default chat does not
+	// get the two-way reply buttons (those only work for the configured chat).
+	ChatID string
 	// Command (exec) is the argv to run; the post envelope is piped to its
 	// stdin as JSON and the key fields are exported as MATTERBOX_* env vars.
 	Command []string
 	// URL (webhook) is POSTed the post envelope as a JSON body.
 	URL string
+	// Headers (webhook) are extra HTTP headers sent with the POST; values are
+	// expanded with the daemon's environment ($TOKEN / ${TOKEN}) so secrets stay
+	// out of the config file. Use e.g. Authorization for authenticated endpoints.
+	Headers map[string]string
 	// Emoji (react) is the Mattermost emoji shortcode to add, without colons.
 	Emoji string
 	// Text (log) is an optional prefix for the log line.
@@ -115,14 +133,15 @@ type Match struct {
 	// reproduced byte-for-byte. Never set from user config.
 	builtin bool
 
-	channelRaw string
-	channelRe  *regexp.Regexp
-	author     string
-	messageRe  *regexp.Regexp
-	mention    bool
-	dm         *bool
-	hasFile    bool
-	isThread   *bool
+	channelsRaw []string
+	channelRes  []*regexp.Regexp
+	authors     []string
+	messageRe   *regexp.Regexp
+	mention     bool
+	dm          *bool
+	hasFile     bool
+	isThread    *bool
+	not         *Match
 }
 
 // Action is a compiled ActionSpec (currently identical, kept distinct so the
@@ -130,8 +149,11 @@ type Match struct {
 type Action struct {
 	Type      string
 	Summarize *bool
+	Urgent    bool
+	ChatID    string
 	Command   []string
 	URL       string
+	Headers   map[string]string
 	Emoji     string
 	Text      string
 }
@@ -168,19 +190,22 @@ func CompileRules(specs []RuleSpec) ([]Rule, error) {
 
 func compileMatch(s MatchSpec) (Match, error) {
 	m := Match{
-		channelRaw: s.Channel,
-		author:     s.Author,
-		mention:    s.Mention,
-		dm:         s.DM,
-		hasFile:    s.HasFile,
-		isThread:   s.IsThread,
+		channelsRaw: s.Channels,
+		authors:     s.Authors,
+		mention:     s.Mention,
+		dm:          s.DM,
+		hasFile:     s.HasFile,
+		isThread:    s.IsThread,
 	}
-	if s.Channel != "" {
-		re, err := globToRegexp(s.Channel)
-		if err != nil {
-			return Match{}, fmt.Errorf("bad channel glob %q: %w", s.Channel, err)
+	for _, ch := range s.Channels {
+		if ch == "" {
+			continue
 		}
-		m.channelRe = re
+		re, err := globToRegexp(ch)
+		if err != nil {
+			return Match{}, fmt.Errorf("bad channel glob %q: %w", ch, err)
+		}
+		m.channelRes = append(m.channelRes, re)
 	}
 	if s.Message != "" {
 		re, err := regexp.Compile(s.Message)
@@ -188,6 +213,13 @@ func compileMatch(s MatchSpec) (Match, error) {
 			return Match{}, fmt.Errorf("bad message regexp %q: %w", s.Message, err)
 		}
 		m.messageRe = re
+	}
+	if s.Not != nil {
+		nm, err := compileMatch(*s.Not)
+		if err != nil {
+			return Match{}, fmt.Errorf("not: %w", err)
+		}
+		m.not = &nm
 	}
 	return m, nil
 }
@@ -217,8 +249,11 @@ func compileAction(a ActionSpec) (Action, error) {
 	return Action{
 		Type:      a.Type,
 		Summarize: a.Summarize,
+		Urgent:    a.Urgent,
+		ChatID:    a.ChatID,
 		Command:   a.Command,
 		URL:       a.URL,
+		Headers:   a.Headers,
 		Emoji:     strings.Trim(a.Emoji, ": "),
 		Text:      a.Text,
 	}, nil
@@ -256,6 +291,41 @@ func defaultRules(opts Options) []Rule {
 		Match:   Match{builtin: true},
 		Actions: []Action{{Type: ActionNotify}},
 	}}
+}
+
+// ruleHasNotify reports whether a rule can deliver a Telegram notification.
+func ruleHasNotify(r Rule) bool {
+	for _, a := range r.Actions {
+		if a.Type == ActionNotify {
+			return true
+		}
+	}
+	return false
+}
+
+// hasNotifyRule reports whether any compiled rule can notify. It gates the
+// reconnect catch-up: a daemon with no notify rule (cache-warmer only) skips it.
+func (e *Engine) hasNotifyRule() bool {
+	for _, r := range e.rules {
+		if ruleHasNotify(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// notifyMatches reports whether some rule with a notify action matches the
+// post — i.e. whether a live post would have produced a notification. The
+// catch-up path uses it to replay missed mentions/DMs through the user's actual
+// rules instead of the old hardcoded mention/DM test, so a config that, say,
+// only notifies for one channel no longer gets a catch-up digest for the rest.
+func (e *Engine) notifyMatches(ev *model.WebSocketEvent, p *model.Post) bool {
+	for _, r := range e.rules {
+		if ruleHasNotify(r) && e.matches(ev, p, r.Match) {
+			return true
+		}
+	}
+	return false
 }
 
 // applyRules evaluates the engine's rules against an ingested post, running the
@@ -303,15 +373,15 @@ func matchPost(ev *model.WebSocketEvent, p *model.Post, m Match, meID, meName st
 	if m.mention && !(wsMentions(ev)[meID] && mentionsName(p.Message, meName)) {
 		return false
 	}
-	if m.author != "" {
+	if len(m.authors) > 0 {
 		sender := strings.TrimPrefix(eventStr(ev, "sender_name"), "@")
-		if !strings.EqualFold(sender, m.author) {
+		if !matchesAny(sender, m.authors) {
 			return false
 		}
 	}
-	if m.channelRe != nil {
+	if len(m.channelRes) > 0 {
 		name := eventStr(ev, "channel_display_name")
-		if !m.channelRe.MatchString(name) && m.channelRaw != p.ChannelId {
+		if !matchesChannel(name, p.ChannelId, m) {
 			return false
 		}
 	}
@@ -327,7 +397,37 @@ func matchPost(ev *model.WebSocketEvent, p *model.Post, m Match, meID, meName st
 			return false
 		}
 	}
+	// A nested not: matches the whole post only when the sub-match does not.
+	if m.not != nil && matchPost(ev, p, *m.not, meID, meName) {
+		return false
+	}
 	return true
+}
+
+// matchesAny reports whether sender equals any of authors (case-insensitive).
+func matchesAny(sender string, authors []string) bool {
+	for _, a := range authors {
+		if a != "" && strings.EqualFold(sender, a) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesChannel reports whether the channel display name matches any of the
+// compiled globs, or its id equals any raw entry (the exact-id fallback).
+func matchesChannel(name, channelID string, m Match) bool {
+	for _, re := range m.channelRes {
+		if re.MatchString(name) {
+			return true
+		}
+	}
+	for _, raw := range m.channelsRaw {
+		if raw == channelID {
+			return true
+		}
+	}
+	return false
 }
 
 // postHasFile reports whether the post carries an attachment, from either the
@@ -347,7 +447,7 @@ func (e *Engine) runActions(ctx context.Context, ev *model.WebSocketEvent, p *mo
 	for _, a := range actions {
 		switch a.Type {
 		case ActionNotify:
-			e.notifyGate(ctx, ev, p, e.summarizeFor(a))
+			e.notifyGate(ctx, ev, p, e.notifyOptsFor(a))
 		case ActionExec:
 			a := a
 			e.wg.Add(1)
@@ -369,65 +469,117 @@ func (e *Engine) runActions(ctx context.Context, ev *model.WebSocketEvent, p *mo
 	}
 }
 
-// summarizeFor resolves a notify action's effective summarize setting: the
-// per-rule override if present, else the daemon default.
-func (e *Engine) summarizeFor(a Action) bool {
+// notifyOpts carries a notify action's resolved delivery settings through the
+// gate into the delivery goroutine.
+type notifyOpts struct {
+	summarize bool   // LLM summary (true) vs raw message text (false)
+	urgent    bool   // bypass quiet hours + muted-channel suppression
+	chatID    string // destination chat; "" → the configured telegram.chat_id
+}
+
+// notifyOptsFor resolves a notify action's effective delivery settings: the
+// per-rule overrides if present, else the daemon defaults.
+func (e *Engine) notifyOptsFor(a Action) notifyOpts {
+	summarize := e.opts.Summarize
 	if a.Summarize != nil {
-		return *a.Summarize
+		summarize = *a.Summarize
 	}
-	return e.opts.Summarize
+	chatID := a.ChatID
+	if chatID == "" {
+		chatID = e.opts.TelegramChatID
+	}
+	return notifyOpts{summarize: summarize, urgent: a.Urgent, chatID: chatID}
 }
 
 // notifyGate applies the notification policy (skip own messages, muted
 // channels, and quiet hours, and honour notify_dms) before spinning off the
 // delivery. This is the same gate the pre-rules daemon applied inline in
 // handle(); centralising it here means every notify action — default or
-// user-defined — respects the same do-not-disturb settings.
-func (e *Engine) notifyGate(ctx context.Context, ev *model.WebSocketEvent, p *model.Post, summarize bool) {
+// user-defined — respects the same do-not-disturb settings. An urgent action
+// bypasses the quiet-hours and muted-channel suppression (but not the self / DM
+// gates), so an on-call keyword still pages while you're heads-down.
+func (e *Engine) notifyGate(ctx context.Context, ev *model.WebSocketEvent, p *model.Post, opts notifyOpts) {
 	if e.me != nil && p.UserId == e.me.Id && !e.opts.NotifySelf {
 		return
 	}
 	if eventStr(ev, "channel_type") == string(model.ChannelTypeDirect) && !e.opts.NotifyDMs {
 		return
 	}
-	if e.opts.RespectMutes && e.isMuted(p.ChannelId) {
-		e.log.Printf("mention in muted channel %s — skipped", p.ChannelId)
-		return
-	}
-	if e.inQuietHoursNow() {
-		e.log.Printf("mention during quiet hours — skipped (cached; use /unread)")
-		return
+	if !opts.urgent {
+		if e.opts.RespectMutes && e.isMuted(p.ChannelId) {
+			e.log.Printf("mention in muted channel %s — skipped", p.ChannelId)
+			return
+		}
+		if e.inQuietHoursNow() {
+			e.log.Printf("mention during quiet hours — skipped (cached; use /unread)")
+			return
+		}
 	}
 	e.wg.Add(1)
-	go e.notify(ctx, ev, p, summarize)
+	go e.notify(ctx, ev, p, opts)
 }
 
 // envelope is the JSON view of a post passed to exec/webhook actions. It is
-// intentionally flat and stable so scripts can depend on it.
+// intentionally flat and stable so scripts can depend on it: fields are only
+// ever added, never renamed or removed.
 type envelope struct {
-	PostID    string `json:"post_id"`
-	ChannelID string `json:"channel_id"`
-	Channel   string `json:"channel"`
-	Author    string `json:"author"`
-	Message   string `json:"message"`
-	IsDM      bool   `json:"is_dm"`
-	CreateAt  int64  `json:"create_at"`
-	Permalink string `json:"permalink,omitempty"`
+	PostID    string   `json:"post_id"`
+	ChannelID string   `json:"channel_id"`
+	Channel   string   `json:"channel"`
+	TeamID    string   `json:"team_id,omitempty"`
+	Team      string   `json:"team,omitempty"`
+	Author    string   `json:"author"`
+	Message   string   `json:"message"`
+	IsDM      bool     `json:"is_dm"`
+	IsThread  bool     `json:"is_thread"`
+	RootID    string   `json:"root_id,omitempty"`
+	Mentioned bool     `json:"mentioned"`
+	Files     []string `json:"files,omitempty"`
+	CreateAt  int64    `json:"create_at"`
+	Permalink string   `json:"permalink,omitempty"`
 }
 
 // buildEnvelope assembles the exec/webhook payload from the event + post,
 // using only data already in hand (no extra API calls on the ingest path).
 func (e *Engine) buildEnvelope(ev *model.WebSocketEvent, p *model.Post) envelope {
+	meID, meName := "", ""
+	if e.me != nil {
+		meID, meName = e.me.Id, e.me.Username
+	}
+	teamID := eventStr(ev, "team_id")
+	e.teamsMu.RLock()
+	team := e.teams[teamID]
+	e.teamsMu.RUnlock()
 	return envelope{
 		PostID:    p.Id,
 		ChannelID: p.ChannelId,
 		Channel:   eventStr(ev, "channel_display_name"),
+		TeamID:    teamID,
+		Team:      team,
 		Author:    strings.TrimPrefix(eventStr(ev, "sender_name"), "@"),
 		Message:   p.Message,
 		IsDM:      eventStr(ev, "channel_type") == string(model.ChannelTypeDirect),
+		IsThread:  p.RootId != "" && p.RootId != p.Id,
+		RootID:    p.RootId,
+		Mentioned: wsMentions(ev)[meID] && mentionsName(p.Message, meName),
+		Files:     postFileNames(p),
 		CreateAt:  p.CreateAt,
 		Permalink: e.permalink(ev, p.Id),
 	}
+}
+
+// postFileNames returns the attachment filenames carried in the post metadata,
+// or nil. Uses only embedded metadata (no fetch); a post that has FileIds but
+// no metadata reports no names but still trips has_file / the file count.
+func postFileNames(p *model.Post) []string {
+	if p.Metadata == nil || len(p.Metadata.Files) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(p.Metadata.Files))
+	for _, f := range p.Metadata.Files {
+		names = append(names, f.Name)
+	}
+	return names
 }
 
 // runExec runs a rule's command with the post envelope on stdin (as JSON) and
@@ -461,9 +613,15 @@ func execEnv(env envelope) []string {
 		"MATTERBOX_POST_ID="+env.PostID,
 		"MATTERBOX_CHANNEL_ID="+env.ChannelID,
 		"MATTERBOX_CHANNEL="+env.Channel,
+		"MATTERBOX_TEAM_ID="+env.TeamID,
+		"MATTERBOX_TEAM="+env.Team,
 		"MATTERBOX_AUTHOR="+env.Author,
 		"MATTERBOX_MESSAGE="+env.Message,
 		"MATTERBOX_IS_DM="+boolStr(env.IsDM),
+		"MATTERBOX_IS_THREAD="+boolStr(env.IsThread),
+		"MATTERBOX_ROOT_ID="+env.RootID,
+		"MATTERBOX_MENTIONED="+boolStr(env.Mentioned),
+		"MATTERBOX_FILES="+strings.Join(env.Files, ","),
 		"MATTERBOX_PERMALINK="+env.Permalink,
 	)
 }
@@ -485,6 +643,12 @@ func (e *Engine) runWebhook(ctx context.Context, ev *model.WebSocketEvent, p *mo
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Custom headers (e.g. Authorization) override the default; values are
+	// expanded from the daemon's environment so a token can live in $TOKEN
+	// rather than the config file.
+	for k, v := range a.Headers {
+		req.Header.Set(k, os.ExpandEnv(v))
+	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		e.log.Printf("rule webhook %s failed: %v", a.URL, err)
