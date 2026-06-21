@@ -2246,10 +2246,23 @@ func (m Model) dmPartnerID(c *model.Channel) string {
 	if c == nil || c.Type != model.ChannelTypeDirect {
 		return ""
 	}
-	for _, id := range strings.Split(c.Name, "__") {
-		if id != "" && (m.me == nil || id != m.me.Id) {
-			return id
-		}
+	// DM names are exactly "userID1__userID2". strings.Cut avoids the slice
+	// allocation strings.Split would make here — this is called several times
+	// per visible row on every View (status, custom status, label, presence
+	// dot), so the per-call garbage adds up in the render hot path.
+	a, b, ok := strings.Cut(c.Name, "__")
+	if !ok {
+		return ""
+	}
+	me := ""
+	if m.me != nil {
+		me = m.me.Id
+	}
+	if a != "" && a != me {
+		return a
+	}
+	if b != "" && b != me {
+		return b
 	}
 	return ""
 }

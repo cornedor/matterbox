@@ -36,6 +36,36 @@ func TestBucketChannelsSortsDMsByRecency(t *testing.T) {
 	}
 }
 
+func TestDMPartnerID(t *testing.T) {
+	m := &Model{me: &model.User{Id: "me"}}
+	cases := []struct {
+		name string
+		ch   *model.Channel
+		want string
+	}{
+		{"partner first", &model.Channel{Type: model.ChannelTypeDirect, Name: "other__me"}, "other"},
+		{"partner second", &model.Channel{Type: model.ChannelTypeDirect, Name: "me__other"}, "other"},
+		{"note to self", &model.Channel{Type: model.ChannelTypeDirect, Name: "me__me"}, ""},
+		{"not a dm", &model.Channel{Type: model.ChannelTypeOpen, Name: "town-square"}, ""},
+		{"nil channel", nil, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := m.dmPartnerID(tc.ch); got != tc.want {
+				t.Errorf("dmPartnerID = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	// dmPartnerID is on the sidebar render hot path (called several times per
+	// visible row per View). It must not allocate — strings.Cut over the
+	// "a__b" name, not strings.Split.
+	dm := &model.Channel{Type: model.ChannelTypeDirect, Name: "me__other"}
+	if n := testing.AllocsPerRun(100, func() { m.dmPartnerID(dm) }); n != 0 {
+		t.Errorf("dmPartnerID allocates %.0f times/call, want 0", n)
+	}
+}
+
 func TestTouchChannelActivityBumpsDM(t *testing.T) {
 	m := &Model{}
 	m.bucketChannels([]*model.Channel{
