@@ -10,6 +10,149 @@ This is the kind of automation a server-side Mattermost plugin can't give you:
 it's per-user, runs on *your* machine, and can run *your* commands. Think
 procmail/Sieve, but for chat.
 
+## Creating a rule, step by step
+
+### 1. Open your config
+
+Rules live under a top-level `rules:` key in your matterbox config file:
+
+```
+~/.config/matterbox/config.yaml
+```
+
+(On first run matterbox writes this file with documented defaults. If a
+`rules:` key isn't there yet, just add one — see below.)
+
+### 2. Understand the shape
+
+A rule is a `match` (when it fires) plus an ordered list of `actions` (what it
+does). The list under `rules:` is evaluated top to bottom for every incoming
+message:
+
+```yaml
+rules:
+  - name: my-first-rule     # optional label, shown in the daemon log
+    match:                  # all conditions here must hold (AND)
+      channel: "Engineering"
+      message: "(?i)deploy"
+    actions:                # run in order when the match passes
+      - type: log
+        text: "deploy mentioned"
+```
+
+`name` is optional (it just labels log lines). `match` and `actions` are the
+substance. An empty `match:` matches *every* message — handy with a narrow
+action, dangerous with `notify`.
+
+### 3. Write your first rule
+
+Start with a `log` action — it's free, synchronous, and can't spam anyone, so
+it's the safest way to confirm a rule matches what you think it does. This one
+logs whenever a teammate posts in a channel whose name starts with "Ops":
+
+```yaml
+rules:
+  - name: watch-ops
+    match:
+      channel: "Ops*"
+    actions:
+      - type: log
+        text: "ops activity"
+```
+
+### 4. Restart the daemon and check it loaded
+
+Rules are compiled and validated when the daemon starts, so restart it after
+every edit:
+
+```sh
+# Linux (systemd --user)
+systemctl --user restart matterbox-listen.service
+journalctl --user -u matterbox-listen -f
+
+# macOS (launchd)
+launchctl kickstart -k gui/$(id -u)/com.matterbox.listen
+tail -f ~/Library/Logs/matterbox-listen.log
+
+# or just run it in the foreground while you iterate
+matterbox listen
+```
+
+The startup line reports how many rules loaded:
+
+```
+matterbox listen: cache=… two_way=true … rules=1 configured
+```
+
+If a glob, regexp, or action type is wrong, the daemon **refuses to start** and
+tells you which rule and why — a typo fails loud rather than silently never
+firing:
+
+```
+rules: rule "watch-ops": bad message regexp "(": error parsing regexp: …
+```
+
+Fix the config and restart.
+
+### 5. Watch it fire, then swap in a real action
+
+With the daemon log open, post a test message that should match. You'll see your
+`log` line appear. Once the `match` is doing what you want, replace `log` with
+the action you actually need — `notify`, `exec`, `webhook`, `react`, or
+`mark_read` (see the [Actions](#actions) reference below):
+
+```yaml
+rules:
+  - name: watch-ops
+    match:
+      channel: "Ops*"
+      message: "(?i)sev-1|pagerduty"
+    actions:
+      - type: exec
+        command: ["/home/me/bin/page-me.sh"]
+      - type: notify
+        summarize: false
+    stop: true
+```
+
+> **Heads up:** the moment you add *any* `rules:`, the built-in mention/DM
+> Telegram bridge is no longer applied — your list is the whole policy. If you
+> still want mention notifications, include a `notify` rule yourself (see
+> [The notification bridge is just a rule](#the-notification-bridge-is-just-a-rule)).
+
+### 6. Test exec / webhook safely
+
+`exec` and `webhook` receive the message as a JSON envelope (and `exec` also as
+`MATTERBOX_*` env vars). To see exactly what your script receives, point it at a
+throwaway command first:
+
+```yaml
+    actions:
+      - type: exec
+        command: ["sh", "-c", "cat >> /tmp/matterbox-rule.log"]
+```
+
+Post a matching message, then inspect `/tmp/matterbox-rule.log` to see the
+envelope. The [exec / webhook payload](#the-exec--webhook-payload) section
+documents every field.
+
+You can also exercise a rule against your own messages without involving anyone
+else: run the daemon with `--notify-self` and post in your self-DM.
+
+### Authoring tips
+
+- **Order matters.** Rules fire top to bottom; put specific rules first and use
+  `stop: true` on a rule that should be the last word for a message.
+- **Conditions are ANDed.** Add fields to narrow; remove fields to widen. There
+  is no OR within one rule — write two rules instead (as the default
+  mention/DM behaviour does).
+- **`channel` matches the display name**, not `team/channel` — use the name as
+  it appears in the sidebar (globbing with `*`/`?`), or paste an exact channel
+  id.
+- **Use `(?i)`** at the start of a `message` regexp for case-insensitive
+  matching.
+- **Iterate with `log`**, promote to real actions once the match is right.
+
 ## The notification bridge is just a rule
 
 The daemon's original behaviour — *"on a direct @mention or DM, summarise the
