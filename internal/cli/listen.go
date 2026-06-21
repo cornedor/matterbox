@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"matterbox/internal/chat"
+	"matterbox/internal/config"
 	"matterbox/internal/embed"
 	"matterbox/internal/listen"
 	"matterbox/internal/store"
@@ -36,6 +37,11 @@ func newListenCmd() *cobra.Command {
 			"the same chat server as the `summary` command and fall back to the raw\n" +
 			"message text when it is down. With no telegram.bot_token the daemon only\n" +
 			"keeps the cache warm.\n\n" +
+			"What the daemon does with each message is driven by rules (the `rules:`\n" +
+			"config block): match on channel/author/text/mention and run actions —\n" +
+			"notify, run a local command, POST a webhook, react, mark read. With no\n" +
+			"rules configured the Telegram bridge above is applied as the default\n" +
+			"rule. See docs/rules.md.\n\n" +
 			"Intended to run under a process supervisor. `make install` drops a\n" +
 			"(disabled) service for your OS — systemd --user on Linux, a launchd\n" +
 			"LaunchAgent on macOS — which you then enable once configured:\n\n" +
@@ -115,6 +121,15 @@ func runListen(ctx context.Context, out io.Writer, notifySelf bool) error {
 		notifyDelay = *cfg.Listen.NotifyDelaySeconds
 	}
 
+	// Compile the user's rules up front so a bad glob/regexp/action is a
+	// startup error, not a rule that silently never fires. Empty leaves
+	// opts.Rules nil — the daemon then synthesises the built-in notification
+	// rule from the Notify* options below.
+	rules, err := listen.CompileRules(ruleSpecs(cfg.Rules))
+	if err != nil {
+		return fmt.Errorf("rules: %w", err)
+	}
+
 	opts := listen.Options{
 		ServerURL:          cfg.ServerURL,
 		NotifyOnMention:    cfg.Listen.NotifyOnMention != nil && *cfg.Listen.NotifyOnMention,
@@ -127,6 +142,7 @@ func runListen(ctx context.Context, out io.Writer, notifySelf bool) error {
 		RespectMutes:       cfg.Listen.RespectMutes != nil && *cfg.Listen.RespectMutes,
 		QuietHours:         cfg.Listen.QuietHours,
 		TwoWay:             cfg.Listen.TwoWay != nil && *cfg.Listen.TwoWay,
+		Rules:              rules,
 
 		AskEndpoint: cfg.Summary.Endpoint,
 		AskAPIKey:   cfg.Summary.APIKey,
@@ -140,9 +156,9 @@ func runListen(ctx context.Context, out io.Writer, notifySelf bool) error {
 	}
 
 	logger.Printf("matterbox listen: starting as @%s on %s", me.Username, cfg.ServerURL)
-	logger.Printf("matterbox listen: cache=%s notify_on_mention=%t notify_dms=%t notify_delay=%ds summarize=%t notify_self=%t respect_mutes=%t two_way=%t ask=%t quiet_hours=%q telegram=%s",
+	logger.Printf("matterbox listen: cache=%s notify_on_mention=%t notify_dms=%t notify_delay=%ds summarize=%t notify_self=%t respect_mutes=%t two_way=%t ask=%t quiet_hours=%q telegram=%s rules=%s",
 		p, opts.NotifyOnMention, opts.NotifyDMs, opts.NotifyDelaySeconds, opts.Summarize, opts.NotifySelf, opts.RespectMutes, opts.TwoWay,
-		opts.AskEndpoint != "" && opts.AskModel != "", cfg.Listen.QuietHours, telegramState(tgClient, cfg.Telegram.ChatID))
+		opts.AskEndpoint != "" && opts.AskModel != "", cfg.Listen.QuietHours, telegramState(tgClient, cfg.Telegram.ChatID), rulesState(len(rules)))
 
 	eng := listen.New(client, st, chatClient, tgClient, me, opts, logger)
 
@@ -156,6 +172,50 @@ func runListen(ctx context.Context, out io.Writer, notifySelf bool) error {
 	}
 	logger.Printf("matterbox listen: stopped")
 	return nil
+}
+
+// ruleSpecs maps the config's YAML rule structs to the listen package's
+// pre-compilation specs, keeping the config package a leaf (no dependency on
+// internal/listen).
+func ruleSpecs(cfg []config.RuleConfig) []listen.RuleSpec {
+	specs := make([]listen.RuleSpec, len(cfg))
+	for i, r := range cfg {
+		actions := make([]listen.ActionSpec, len(r.Actions))
+		for j, a := range r.Actions {
+			actions[j] = listen.ActionSpec{
+				Type:      a.Type,
+				Summarize: a.Summarize,
+				Command:   a.Command,
+				URL:       a.URL,
+				Emoji:     a.Emoji,
+				Text:      a.Text,
+			}
+		}
+		specs[i] = listen.RuleSpec{
+			Name: r.Name,
+			Stop: r.Stop,
+			Match: listen.MatchSpec{
+				Channel:  r.Match.Channel,
+				Author:   r.Match.Author,
+				Message:  r.Match.Message,
+				Mention:  r.Match.Mention,
+				DM:       r.Match.DM,
+				HasFile:  r.Match.HasFile,
+				IsThread: r.Match.IsThread,
+			},
+			Actions: actions,
+		}
+	}
+	return specs
+}
+
+// rulesState renders the rule count for the startup log: "default (built-in
+// notify)" when the user configured none, else "N configured".
+func rulesState(n int) string {
+	if n == 0 {
+		return "default (built-in notify)"
+	}
+	return fmt.Sprintf("%d configured", n)
 }
 
 // telegramState renders the Telegram configuration for the startup log without
