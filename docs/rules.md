@@ -143,12 +143,13 @@ else: run the daemon with `--notify-self` and post in your self-DM.
 
 - **Order matters.** Rules fire top to bottom; put specific rules first and use
   `stop: true` on a rule that should be the last word for a message.
-- **Conditions are ANDed.** Add fields to narrow; remove fields to widen. There
-  is no OR within one rule — write two rules instead (as the default
-  mention/DM behaviour does).
+- **Conditions are ANDed.** Add fields to narrow; remove fields to widen.
+  Different *fields* are ANDed; within `channel` or `author` a **list** is ORed
+  (`channel: [ops, "eng-*"]` matches either). For "everything except…", nest a
+  `not:` block.
 - **`channel` matches the display name**, not `team/channel` — use the name as
   it appears in the sidebar (globbing with `*`/`?`), or paste an exact channel
-  id.
+  id. It accepts a single value or a list.
 - **Use `(?i)`** at the start of a `message` regexp for case-insensitive
   matching.
 - **Iterate with `log`**, promote to real actions once the match is right.
@@ -182,7 +183,22 @@ notifications, include a `notify` rule yourself (copy the block above).
 
 The `notify` action always honours the daemon's do-not-disturb settings —
 `respect_mutes`, `quiet_hours`, and `notify_dms` — and the per-channel
-read-check (`notify_delay_seconds`), exactly as the built-in bridge does.
+read-check (`notify_delay_seconds`), exactly as the built-in bridge does. A rule
+that must page through quiet hours and mutes can opt out with `urgent: true`
+(the self/DM gates still apply); see [Actions](#actions).
+
+### Catch-up after a reconnect
+
+When the daemon (re)connects it sends a single "📥 While you were away" digest
+of the mentions and DMs that arrived while it was offline. That digest is now
+filtered through your rules: a message is only included if a rule with a
+`notify` action matches it, so narrowing or routing your notifications narrows
+the catch-up too. Two deliberate bounds: the catch-up only considers unread
+**mentions and DMs** (the set the server lets the daemon query cheaply on
+reconnect, not every unread post), and it only drives `notify` — `exec`,
+`webhook`, and `react` are **live-only** and never re-fire for historical
+messages, so a reconnect can't replay side effects. The digest always goes to
+the default `telegram.chat_id` (per-rule `chat_id` applies to live messages).
 
 ## How rules are evaluated
 
@@ -193,51 +209,80 @@ evaluation — no later rule runs for that message.
 
 ## Conditions (`match`)
 
-All set conditions are ANDed; an empty `match` matches every message.
+Different fields are ANDed; an empty `match` matches every message.
 
 | Field | Meaning |
 |---|---|
-| `channel` | Case-insensitive glob (`*`, `?`) over the channel's **display name**, or an exact channel id. |
-| `author` | Username (no leading `@`), matched case-insensitively. |
+| `channel` | Case-insensitive glob (`*`, `?`) over the channel's **display name**, or an exact channel id. A single value or a list (matches **any**). |
+| `author` | Username (no leading `@`), matched case-insensitively. A single value or a list (matches **any**). |
 | `message` | [RE2](https://github.com/google/re2/wiki/Syntax) regexp over the body. Prefix `(?i)` for case-insensitive. |
 | `mention` | `true` requires you were directly @named (the same test the bridge uses). |
 | `dm` | `true` = only direct messages; `false` = only channels; unset = either. |
 | `has_file` | `true` requires at least one attachment. |
 | `is_thread` | `true` = only thread replies; `false` = only root posts; unset = either. |
+| `not` | A nested `match` block that **inverts**: the rule fires only when the post does **not** satisfy it. Recursive. |
+
+`channel`/`author` as a list is an OR; combine with `not` to subtract. For
+example, "anything in the ops channels except from the bots":
+
+```yaml
+match:
+  channel: ["Ops*", "Incidents"]
+  not:
+    author: [deploybot, alertmanager]
+```
 
 ## Actions
 
 | `type` | Fields | What it does |
 |---|---|---|
-| `notify` | `summarize` (optional bool) | Summarise + deliver to Telegram. `summarize` overrides `listen.summarize` for this rule. |
+| `notify` | `summarize`, `urgent`, `chat_id` (all optional) | Summarise + deliver to Telegram. `summarize` overrides `listen.summarize`; `urgent: true` delivers even during quiet hours / for muted channels; `chat_id` routes to a different Telegram chat. |
 | `exec` | `command` (argv list) | Run a local command. The message is piped to its **stdin as JSON** and exported as `MATTERBOX_*` env vars. 30s timeout. |
-| `webhook` | `url` | HTTP `POST` the message envelope as a JSON body. 15s timeout. |
+| `webhook` | `url`, `headers` (optional map) | HTTP `POST` the message envelope as a JSON body. `headers` adds request headers; values are expanded from the daemon's environment (`$TOKEN` / `${TOKEN}`). 15s timeout. |
 | `react` | `emoji` (shortcode) | Add an emoji reaction to the message. |
 | `mark_read` | — | Mark the message's channel read. |
 | `log` | `text` (optional prefix) | Write a line to the daemon log. |
 
+`urgent` bypasses only the do-not-disturb suppression (`quiet_hours`,
+`respect_mutes`); the self and `notify_dms` gates still apply. A rule that routes
+to a non-default `chat_id` is delivery-only — the two-way reply buttons work just
+for the configured `telegram.chat_id`.
+
 ### The exec / webhook payload
 
-Both `exec` (on stdin) and `webhook` (as the POST body) receive the same flat,
-stable JSON envelope:
+Both `exec` (on stdin) and `webhook` (as the POST body) receive the same flat
+JSON envelope. Fields are only ever **added**, never renamed or removed, so a
+script can depend on them:
 
 ```json
 {
   "post_id": "abc123",
   "channel_id": "xyz789",
   "channel": "Engineering",
+  "team_id": "t1",
+  "team": "core",
   "author": "bob",
   "message": "deploying now",
   "is_dm": false,
+  "is_thread": false,
+  "root_id": "",
+  "mentioned": true,
+  "files": ["diagram.png"],
   "create_at": 1700000000000,
-  "permalink": "https://mm.example.com/eng/pl/abc123"
+  "permalink": "https://mm.example.com/core/pl/abc123"
 }
 ```
 
-`exec` additionally exports each field as an environment variable so a quick
-script needn't parse JSON: `MATTERBOX_POST_ID`, `MATTERBOX_CHANNEL_ID`,
-`MATTERBOX_CHANNEL`, `MATTERBOX_AUTHOR`, `MATTERBOX_MESSAGE`,
-`MATTERBOX_IS_DM`, `MATTERBOX_PERMALINK`.
+`team`/`team_id`, `root_id`, and `permalink` are omitted when empty; `mentioned`
+is whether *you* were @named; `files` lists attachment names (present only when
+the post carries file metadata).
+
+`exec` additionally exports each scalar field as an environment variable so a
+quick script needn't parse JSON: `MATTERBOX_POST_ID`, `MATTERBOX_CHANNEL_ID`,
+`MATTERBOX_CHANNEL`, `MATTERBOX_TEAM_ID`, `MATTERBOX_TEAM`, `MATTERBOX_AUTHOR`,
+`MATTERBOX_MESSAGE`, `MATTERBOX_IS_DM`, `MATTERBOX_IS_THREAD`,
+`MATTERBOX_ROOT_ID`, `MATTERBOX_MENTIONED`, `MATTERBOX_FILES` (comma-separated),
+and `MATTERBOX_PERMALINK`.
 
 ## Examples
 
@@ -282,7 +327,27 @@ rules:
       - type: mark_read
 ```
 
-Mirror everything in a channel to an external system:
+Page through quiet hours when on-call is summoned, and route it to a separate
+chat:
+
+```yaml
+rules:
+  - name: oncall
+    match:
+      channel: ["Ops*", "Incidents"]
+      message: "(?i)@oncall|sev-1"
+      not:
+        author: [statusbot]
+    actions:
+      - type: notify
+        urgent: true          # ignore quiet_hours + mutes
+        chat_id: "-1001234567" # a dedicated on-call chat
+        summarize: false
+    stop: true
+```
+
+Mirror everything in a channel to an authenticated external system (the token
+comes from the daemon's environment, not the config file):
 
 ```yaml
 rules:
@@ -291,6 +356,8 @@ rules:
     actions:
       - type: webhook
         url: https://hooks.example.com/incidents
+        headers:
+          Authorization: "Bearer ${INCIDENTS_TOKEN}"
 ```
 
 ## Safety

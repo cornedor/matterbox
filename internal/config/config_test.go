@@ -123,3 +123,63 @@ func TestNavModifierLegacyMigration(t *testing.T) {
 		t.Errorf("legacy toggle not cleared after migration: got %v", c.Keybindings.CtrlArrowNav)
 	}
 }
+
+// TestRulesScalarOrList confirms the rules schema accepts channel/author as
+// either a single scalar or a list, decodes the new action fields, and recurses
+// into a not: block — the parts a future change must not break.
+func TestRulesScalarOrList(t *testing.T) {
+	const y = `
+rules:
+  - name: scalar form
+    match:
+      channel: ops
+      author: alice
+    actions:
+      - type: notify
+        urgent: true
+        chat_id: "-100"
+  - name: list form
+    match:
+      channel: [ops, "eng-*"]
+      author: [alice, bob]
+      not:
+        author: bot
+    actions:
+      - type: webhook
+        url: https://example.com/hook
+        headers:
+          Authorization: "Bearer ${TOKEN}"
+`
+	var c Config
+	if err := yaml.Unmarshal([]byte(y), &c); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(c.Rules) != 2 {
+		t.Fatalf("want 2 rules, got %d", len(c.Rules))
+	}
+
+	scalar := c.Rules[0]
+	if len(scalar.Match.Channel) != 1 || scalar.Match.Channel[0] != "ops" {
+		t.Errorf("scalar channel = %v, want [ops]", scalar.Match.Channel)
+	}
+	if len(scalar.Match.Author) != 1 || scalar.Match.Author[0] != "alice" {
+		t.Errorf("scalar author = %v, want [alice]", scalar.Match.Author)
+	}
+	if a := scalar.Actions[0]; !a.Urgent || a.ChatID != "-100" {
+		t.Errorf("notify action overrides not parsed: %+v", a)
+	}
+
+	list := c.Rules[1]
+	if len(list.Match.Channel) != 2 || list.Match.Channel[1] != "eng-*" {
+		t.Errorf("list channel = %v, want [ops eng-*]", list.Match.Channel)
+	}
+	if len(list.Match.Author) != 2 {
+		t.Errorf("list author = %v, want two entries", list.Match.Author)
+	}
+	if list.Match.Not == nil || len(list.Match.Not.Author) != 1 || list.Match.Not.Author[0] != "bot" {
+		t.Errorf("not: block not parsed: %+v", list.Match.Not)
+	}
+	if h := list.Actions[0].Headers["Authorization"]; h != "Bearer ${TOKEN}" {
+		t.Errorf("webhook header not parsed: %q", h)
+	}
+}

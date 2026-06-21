@@ -47,19 +47,24 @@ func TestMatchPost(t *testing.T) {
 		want bool
 	}{
 		{"empty matches anything", MatchSpec{}, "anything", nil, true},
-		{"author match (case-insensitive)", MatchSpec{Author: "BOB"}, "hi", nil, true},
-		{"author mismatch", MatchSpec{Author: "alice"}, "hi", nil, false},
-		{"channel glob", MatchSpec{Channel: "Eng*"}, "hi", nil, true},
-		{"channel glob miss", MatchSpec{Channel: "Ops*"}, "hi", nil, false},
-		{"channel exact id", MatchSpec{Channel: "c1"}, "hi", nil, true},
+		{"author match (case-insensitive)", MatchSpec{Authors: []string{"BOB"}}, "hi", nil, true},
+		{"author mismatch", MatchSpec{Authors: []string{"alice"}}, "hi", nil, false},
+		{"author list (OR) hit", MatchSpec{Authors: []string{"alice", "bob"}}, "hi", nil, true},
+		{"author list (OR) miss", MatchSpec{Authors: []string{"alice", "carol"}}, "hi", nil, false},
+		{"channel glob", MatchSpec{Channels: []string{"Eng*"}}, "hi", nil, true},
+		{"channel glob miss", MatchSpec{Channels: []string{"Ops*"}}, "hi", nil, false},
+		{"channel list (OR) hit", MatchSpec{Channels: []string{"Ops*", "Eng*"}}, "hi", nil, true},
+		{"channel exact id", MatchSpec{Channels: []string{"c1"}}, "hi", nil, true},
 		{"message regexp", MatchSpec{Message: `(?i)deploy`}, "Please DEPLOY now", nil, true},
 		{"message regexp miss", MatchSpec{Message: `deploy`}, "nothing here", nil, false},
 		{"dm required but channel", MatchSpec{DM: ptrBool(true)}, "hi", nil, false},
 		{"not-dm required and channel", MatchSpec{DM: ptrBool(false)}, "hi", nil, true},
 		{"mention hit", MatchSpec{Mention: true}, "@corne look", map[string]string{"mentions": mentionsData(t, meID)}, true},
 		{"mention miss (not named)", MatchSpec{Mention: true}, "@channel look", map[string]string{"mentions": mentionsData(t, meID)}, false},
-		{"combined AND all hold", MatchSpec{Author: "bob", Message: "ship it"}, "ship it", nil, true},
-		{"combined AND one fails", MatchSpec{Author: "bob", Message: "ship it"}, "hold on", nil, false},
+		{"combined AND all hold", MatchSpec{Authors: []string{"bob"}, Message: "ship it"}, "ship it", nil, true},
+		{"combined AND one fails", MatchSpec{Authors: []string{"bob"}, Message: "ship it"}, "hold on", nil, false},
+		{"not excludes author", MatchSpec{Channels: []string{"Eng*"}, Not: &MatchSpec{Authors: []string{"bob"}}}, "hi", nil, false},
+		{"not keeps others", MatchSpec{Channels: []string{"Eng*"}, Not: &MatchSpec{Authors: []string{"alice"}}}, "hi", nil, true},
 	}
 
 	for _, c := range cases {
@@ -112,7 +117,8 @@ func TestCompileRulesErrors(t *testing.T) {
 		specs []RuleSpec
 	}{
 		{"bad message regexp", []RuleSpec{{Match: MatchSpec{Message: "("}, Actions: []ActionSpec{{Type: ActionLog}}}}},
-		{"no actions", []RuleSpec{{Match: MatchSpec{Author: "bob"}}}},
+		{"no actions", []RuleSpec{{Match: MatchSpec{Authors: []string{"bob"}}}}},
+		{"bad not glob", []RuleSpec{{Match: MatchSpec{Not: &MatchSpec{Message: "("}}, Actions: []ActionSpec{{Type: ActionLog}}}}},
 		{"unknown action", []RuleSpec{{Actions: []ActionSpec{{Type: "explode"}}}}},
 		{"exec without command", []RuleSpec{{Actions: []ActionSpec{{Type: ActionExec}}}}},
 		{"webhook without url", []RuleSpec{{Actions: []ActionSpec{{Type: ActionWebhook}}}}},
@@ -132,7 +138,7 @@ func TestCompileRulesOK(t *testing.T) {
 	rules := mustCompile(t,
 		RuleSpec{
 			Name:    "pager",
-			Match:   MatchSpec{Channel: "ops/*", Message: "(?i)sev-1"},
+			Match:   MatchSpec{Channels: []string{"ops/*"}, Message: "(?i)sev-1"},
 			Actions: []ActionSpec{{Type: ActionExec, Command: []string{"true"}}, {Type: ActionNotify}},
 			Stop:    true,
 		},
@@ -270,8 +276,8 @@ func TestApplyRulesStopAndSkip(t *testing.T) {
 
 	e := &Engine{log: lg}
 	e.rules = mustCompile(t,
-		RuleSpec{Name: "first", Match: MatchSpec{Author: "bob"}, Actions: []ActionSpec{{Type: ActionLog, Text: "FIRST"}}, Stop: true},
-		RuleSpec{Name: "second", Match: MatchSpec{Author: "bob"}, Actions: []ActionSpec{{Type: ActionLog, Text: "SECOND"}}},
+		RuleSpec{Name: "first", Match: MatchSpec{Authors: []string{"bob"}}, Actions: []ActionSpec{{Type: ActionLog, Text: "FIRST"}}, Stop: true},
+		RuleSpec{Name: "second", Match: MatchSpec{Authors: []string{"bob"}}, Actions: []ActionSpec{{Type: ActionLog, Text: "SECOND"}}},
 	)
 
 	p := &model.Post{Id: "p", ChannelId: "c1", UserId: "u-bob", Message: "hi"}
@@ -295,3 +301,124 @@ func TestApplyRulesStopAndSkip(t *testing.T) {
 type writerFunc func([]byte) (int, error)
 
 func (w writerFunc) Write(b []byte) (int, error) { return w(b) }
+
+// TestBuildEnvelopeEnriched pins the stable exec/webhook contract: the envelope
+// carries thread, mention, team, and file context, not just the basics.
+func TestBuildEnvelopeEnriched(t *testing.T) {
+	e := newTestEngine(t, Options{ServerURL: "https://mm.example.com"})
+	e.me = &model.User{Id: "u-me", Username: "corne"}
+	e.teams = map[string]string{"t1": "core"}
+
+	p := &model.Post{
+		Id: "p1", ChannelId: "c1", UserId: "u-bob", RootId: "root1",
+		Message:  "@corne see this",
+		FileIds:  []string{"f1"},
+		Metadata: &model.PostMetadata{Files: []*model.FileInfo{{Name: "diagram.png"}}},
+		CreateAt: 123,
+	}
+	ev := postedEvent(t, p, map[string]string{
+		"channel_type": "O", "channel_display_name": "Eng", "sender_name": "@bob",
+		"team_id": "t1", "mentions": mentionsData(t, "u-me"),
+	})
+
+	env := e.buildEnvelope(ev, p)
+	if !env.IsThread || env.RootID != "root1" {
+		t.Errorf("thread fields wrong: is_thread=%v root=%q", env.IsThread, env.RootID)
+	}
+	if !env.Mentioned {
+		t.Error("mentioned should be true (named + server-resolved)")
+	}
+	if env.Team != "core" || env.TeamID != "t1" {
+		t.Errorf("team fields wrong: team=%q team_id=%q", env.Team, env.TeamID)
+	}
+	if len(env.Files) != 1 || env.Files[0] != "diagram.png" {
+		t.Errorf("files = %v, want [diagram.png]", env.Files)
+	}
+	if env.Permalink != "https://mm.example.com/core/pl/p1" {
+		t.Errorf("permalink = %q", env.Permalink)
+	}
+}
+
+// TestRunWebhookHeaders verifies custom headers are sent and their values are
+// expanded from the environment (so a token need not sit in the config file).
+func TestRunWebhookHeaders(t *testing.T) {
+	t.Setenv("MB_TEST_TOKEN", "s3cret")
+	var (
+		mu             sync.Mutex
+		gotAuth, gotST string
+	)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotAuth = r.Header.Get("Authorization")
+		gotST = r.Header.Get("X-Static")
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	e := newTestEngine(t, Options{})
+	p := &model.Post{Id: "p", ChannelId: "c", UserId: "u-bob", Message: "hi"}
+	ev := postedEvent(t, p, map[string]string{"channel_type": "O"})
+	a := Action{Type: ActionWebhook, URL: srv.URL, Headers: map[string]string{
+		"Authorization": "Bearer ${MB_TEST_TOKEN}",
+		"X-Static":      "plain",
+	}}
+	e.wg.Add(1)
+	e.runWebhook(t.Context(), ev, p, a)
+	e.wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if gotAuth != "Bearer s3cret" {
+		t.Errorf("Authorization = %q, want expanded token", gotAuth)
+	}
+	if gotST != "plain" {
+		t.Errorf("X-Static = %q", gotST)
+	}
+}
+
+// TestNotifyOptsFor checks per-rule notify overrides resolve over the daemon
+// defaults (and that absent overrides inherit them).
+func TestNotifyOptsFor(t *testing.T) {
+	e := newTestEngine(t, Options{Summarize: true, TelegramChatID: "main"})
+
+	def := e.notifyOptsFor(Action{Type: ActionNotify})
+	if !def.summarize || def.urgent || def.chatID != "main" {
+		t.Errorf("defaults not inherited: %+v", def)
+	}
+
+	over := e.notifyOptsFor(Action{Type: ActionNotify, Summarize: ptrBool(false), Urgent: true, ChatID: "other"})
+	if over.summarize || !over.urgent || over.chatID != "other" {
+		t.Errorf("overrides not applied: %+v", over)
+	}
+}
+
+// TestNotifyMatches verifies the catch-up helpers: hasNotifyRule reflects
+// whether any rule can notify, and notifyMatches only counts posts a notify
+// rule actually matches (a react-only rule does not produce a catch-up entry).
+func TestNotifyMatches(t *testing.T) {
+	e := newTestEngine(t, Options{})
+	e.me = &model.User{Id: "u-me", Username: "corne"}
+	e.rules = mustCompile(t,
+		RuleSpec{Match: MatchSpec{Channels: []string{"Eng*"}}, Actions: []ActionSpec{{Type: ActionNotify}}},
+		RuleSpec{Match: MatchSpec{Channels: []string{"Op*"}}, Actions: []ActionSpec{{Type: ActionReact, Emoji: "eyes"}}},
+	)
+	if !e.hasNotifyRule() {
+		t.Fatal("hasNotifyRule should be true")
+	}
+
+	p := &model.Post{Id: "p", ChannelId: "c1", UserId: "u-bob", Message: "hi"}
+	eng := postedEvent(t, p, map[string]string{"channel_type": "O", "channel_display_name": "Engineering"})
+	if !e.notifyMatches(eng, p) {
+		t.Error("post in Engineering should match the notify rule")
+	}
+	ops := postedEvent(t, p, map[string]string{"channel_type": "O", "channel_display_name": "Operations"})
+	if e.notifyMatches(ops, p) {
+		t.Error("post matching only a react rule should not count as a notify match")
+	}
+
+	e.rules = mustCompile(t, RuleSpec{Match: MatchSpec{}, Actions: []ActionSpec{{Type: ActionLog}}})
+	if e.hasNotifyRule() {
+		t.Error("a log-only ruleset has no notify rule")
+	}
+}

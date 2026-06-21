@@ -185,28 +185,41 @@ func ruleSpecs(cfg []config.RuleConfig) []listen.RuleSpec {
 			actions[j] = listen.ActionSpec{
 				Type:      a.Type,
 				Summarize: a.Summarize,
+				Urgent:    a.Urgent,
+				ChatID:    a.ChatID,
 				Command:   a.Command,
 				URL:       a.URL,
+				Headers:   a.Headers,
 				Emoji:     a.Emoji,
 				Text:      a.Text,
 			}
 		}
 		specs[i] = listen.RuleSpec{
-			Name: r.Name,
-			Stop: r.Stop,
-			Match: listen.MatchSpec{
-				Channel:  r.Match.Channel,
-				Author:   r.Match.Author,
-				Message:  r.Match.Message,
-				Mention:  r.Match.Mention,
-				DM:       r.Match.DM,
-				HasFile:  r.Match.HasFile,
-				IsThread: r.Match.IsThread,
-			},
+			Name:    r.Name,
+			Stop:    r.Stop,
+			Match:   matchSpec(r.Match),
 			Actions: actions,
 		}
 	}
 	return specs
+}
+
+// matchSpec maps a config match (recursing into not:) to the listen form.
+func matchSpec(m config.RuleMatchConfig) listen.MatchSpec {
+	spec := listen.MatchSpec{
+		Channels: []string(m.Channel),
+		Authors:  []string(m.Author),
+		Message:  m.Message,
+		Mention:  m.Mention,
+		DM:       m.DM,
+		HasFile:  m.HasFile,
+		IsThread: m.IsThread,
+	}
+	if m.Not != nil {
+		not := matchSpec(*m.Not)
+		spec.Not = &not
+	}
+	return spec
 }
 
 // rulesState renders the rule count for the startup log: "default (built-in
