@@ -120,6 +120,16 @@ type Engine struct {
 	// bridge (see defaultRules).
 	rules []Rule
 
+	// freqWindows backs the rules' frequency gate: a sliding window of recent
+	// match times per (rule, group) key (see frequencyAllows). In-memory and
+	// live-only — cleared on restart, never touched by catch-up.
+	freqMu      sync.Mutex
+	freqWindows map[string][]time.Time
+
+	// now is the engine's clock, overridable in tests so the frequency window
+	// can be driven deterministically. nil means time.Now (see clock).
+	now func() time.Time
+
 	wg sync.WaitGroup // tracks in-flight notify + inbound goroutines for shutdown
 
 	// quiet-hours window (minutes-of-day), parsed from opts.QuietHours in New.
@@ -211,8 +221,9 @@ func New(client *mm.Client, st *store.Store, ch *chat.Client, tg *telegram.Clien
 	}
 	e := &Engine{
 		client: client, store: st, chat: ch, tg: tg, me: me, opts: opts, log: logger,
-		muted: map[string]bool{},
-		teams: map[string]string{},
+		muted:       map[string]bool{},
+		teams:       map[string]string{},
+		freqWindows: map[string][]time.Time{},
 	}
 	if start, end, ok := parseQuietHours(opts.QuietHours); ok {
 		e.quietStart, e.quietEnd, e.quietOn = start, end, true
@@ -223,6 +234,15 @@ func New(client *mm.Client, st *store.Store, ch *chat.Client, tg *telegram.Clien
 		e.rules = defaultRules(opts)
 	}
 	return e
+}
+
+// clock returns the current time through the engine's overridable now hook,
+// defaulting to time.Now. Tests set e.now to drive the frequency window.
+func (e *Engine) clock() time.Time {
+	if e.now != nil {
+		return e.now()
+	}
+	return time.Now()
 }
 
 // Run connects, consumes events, and reconnects with exponential backoff until

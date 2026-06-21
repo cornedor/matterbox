@@ -291,6 +291,21 @@ type RuleMatchConfig struct {
 	// Not inverts a nested match: the rule fires only when the post does NOT
 	// satisfy it (e.g. everything in a channel except posts from a bot).
 	Not *RuleMatchConfig `yaml:"not,omitempty"`
+	// Frequency gates the rule on a rolling-window threshold: even when the
+	// fields match, the actions run only once `count` matches accumulate within
+	// `within` (optionally grouped `by` author/channel). See internal/listen.
+	Frequency *RuleFrequencyConfig `yaml:"frequency,omitempty"`
+}
+
+// RuleFrequencyConfig is the rolling-window gate on a rule. See
+// internal/listen.FrequencySpec.
+type RuleFrequencyConfig struct {
+	// Count is how many matches within the window fire the rule (>= 1).
+	Count int `yaml:"count"`
+	// Within is the window length as a Go duration ("10m", "1h30m").
+	Within string `yaml:"within"`
+	// By groups the counting: author, channel, or global (default).
+	By string `yaml:"by,omitempty"`
 }
 
 // RuleActionConfig is one action. type is required; the remaining fields are
@@ -316,6 +331,14 @@ type RuleActionConfig struct {
 	Emoji string `yaml:"emoji,omitempty"`
 	// Text (log) is an optional prefix for the log line.
 	Text string `yaml:"text,omitempty"`
+	// Key (state_set/state_incr/state_del) is the ledger key, a text/template
+	// over the post (e.g. "failures:{{ .author }}").
+	Key string `yaml:"key,omitempty"`
+	// Value (state_set) is the value to store, a text/template over the post and
+	// current state (e.g. "{{ .create_at }}").
+	Value string `yaml:"value,omitempty"`
+	// By (state_incr) is the amount to add; nil means 1 (negative decrements).
+	By *int `yaml:"by,omitempty"`
 }
 
 // StringList is a YAML field that accepts either a single scalar ("ops") or a
@@ -931,11 +954,16 @@ func writeConfig(p string, cfg *Config) error {
 		"#             channel (display-name glob or id), author, message (RE2 regexp),\n" +
 		"#             mention (you were @named), dm, has_file, is_thread; channel and\n" +
 		"#             author take a single value or a list (match any), and a nested\n" +
-		"#             not: inverts a sub-match. Actions: notify (Telegram; urgent\n" +
-		"#             bypasses quiet_hours/mutes, chat_id routes elsewhere), exec (run\n" +
-		"#             a command; the post is piped in as JSON + MATTERBOX_* env vars),\n" +
-		"#             webhook (POST the post as JSON; headers add request headers,\n" +
-		"#             values expanded from $ENV), react (emoji), mark_read, log.\n" +
+		"#             not: inverts a sub-match. A frequency: { count, within, by }\n" +
+		"#             block fires the rule only on a burst (count matches within the\n" +
+		"#             window, grouped by author/channel/global). Actions: notify\n" +
+		"#             (Telegram; urgent bypasses quiet_hours/mutes, chat_id routes\n" +
+		"#             elsewhere), exec (run a command; the post is piped in as JSON +\n" +
+		"#             MATTERBOX_* env vars), webhook (POST the post as JSON; headers\n" +
+		"#             add request headers, values expanded from $ENV), react (emoji),\n" +
+		"#             mark_read, log, and the persistent ledger actions state_set /\n" +
+		"#             state_incr / state_del (key/value are templates over the post,\n" +
+		"#             exposed to later actions via .state and MATTERBOX_STATE*).\n" +
 		"#             stop: true ends evaluation. With no rules the daemon uses a\n" +
 		"#             built-in notify rule from the listen options above. Full\n" +
 		"#             reference + examples in docs/rules.md.\n" +

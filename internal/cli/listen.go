@@ -192,6 +192,9 @@ func ruleSpecs(cfg []config.RuleConfig) []listen.RuleSpec {
 				Headers:   a.Headers,
 				Emoji:     a.Emoji,
 				Text:      a.Text,
+				Key:       a.Key,
+				Value:     a.Value,
+				By:        a.By,
 			}
 		}
 		specs[i] = listen.RuleSpec{
@@ -218,6 +221,13 @@ func matchSpec(m config.RuleMatchConfig) listen.MatchSpec {
 	if m.Not != nil {
 		not := matchSpec(*m.Not)
 		spec.Not = &not
+	}
+	if m.Frequency != nil {
+		spec.Frequency = &listen.FrequencySpec{
+			Count:  m.Frequency.Count,
+			Within: m.Frequency.Within,
+			By:     m.Frequency.By,
+		}
 	}
 	return spec
 }

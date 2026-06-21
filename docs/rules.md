@@ -6,6 +6,11 @@ reaction programmable: when a message matches a set of conditions, the daemon
 runs one or more actions — forward it to Telegram, run a local command, POST a
 webhook, add a reaction, mark the channel read, or just log it.
 
+Rules also have *memory*: a [`frequency`](#rate-limiting-with-frequency) window
+fires only on a burst ("three sev-1s in ten minutes"), and a [persistent
+ledger](#persistent-state-the-ledger) lets rules count and remember across
+messages.
+
 This is the kind of automation a server-side Mattermost plugin can't give you:
 it's per-user, runs on *your* machine, and can run *your* commands. Think
 procmail/Sieve, but for chat.
@@ -196,8 +201,9 @@ filtered through your rules: a message is only included if a rule with a
 the catch-up too. Two deliberate bounds: the catch-up only considers unread
 **mentions and DMs** (the set the server lets the daemon query cheaply on
 reconnect, not every unread post), and it only drives `notify` — `exec`,
-`webhook`, and `react` are **live-only** and never re-fire for historical
-messages, so a reconnect can't replay side effects. The digest always goes to
+`webhook`, `react`, and the `state_*` ledger actions are **live-only** and never
+re-fire for historical messages, so a reconnect can't replay side effects or
+double-count a counter. The `frequency` window is likewise live-only. The digest always goes to
 the default `telegram.chat_id` (per-rule `chat_id` applies to live messages).
 
 ## How rules are evaluated
@@ -221,6 +227,7 @@ Different fields are ANDed; an empty `match` matches every message.
 | `has_file` | `true` requires at least one attachment. |
 | `is_thread` | `true` = only thread replies; `false` = only root posts; unset = either. |
 | `not` | A nested `match` block that **inverts**: the rule fires only when the post does **not** satisfy it. Recursive. |
+| `frequency` | A rolling-window threshold: even when the fields match, fire only on a **burst**. See below. |
 
 `channel`/`author` as a list is an OR; combine with `not` to subtract. For
 example, "anything in the ops channels except from the bots":
@@ -232,6 +239,49 @@ match:
     author: [deploybot, alertmanager]
 ```
 
+### Rate limiting with `frequency`
+
+The fields above answer *"does this one message match?"* — they're stateless.
+`frequency` adds memory: it counts how often the rest of the `match` has held
+recently, and fires the rule's actions only once that count crosses a threshold
+within a rolling window. The classic use is *"don't page me for one sev-1, but
+do if there are three in ten minutes"*:
+
+```yaml
+rules:
+  - name: sev1-storm
+    match:
+      channel: "Ops Alerts"
+      message: "(?i)sev-1"
+      frequency:
+        count: 3        # fire once this many matches …
+        within: 10m     # … land inside this rolling window
+        by: author      # optional: count separately per author (or channel)
+    actions:
+      - type: notify
+        urgent: true
+```
+
+| Field | Meaning |
+|---|---|
+| `count` | How many matches within the window trigger the rule (≥ 1). |
+| `within` | The window length, as a Go duration: `10m`, `1h30m`, `45s`. |
+| `by` | Count separately per `author`, per `channel`, or together (`global`, the default). |
+
+**Semantics.** Every matching message records a hit in a sliding window;
+hits older than `within` fall out. The rule fires on the message that fills the
+window to `count`, and the window then **resets** — so it re-arms only after
+another full burst, rather than firing again on the 4th, 5th, … message. With
+`by: author`, each author has an independent window (one noisy author can't trip
+a threshold meant for the room as a whole); `by: channel` does the same per
+channel.
+
+The window is **in-memory and live-only**: it starts empty on every (re)start,
+and the [reconnect catch-up](#catch-up-after-a-reconnect) never feeds historical
+messages through it. A frequency gate is therefore best for "happening right
+now" bursts, not for thresholds that must survive a restart — for that, count
+into the [persistent ledger](#persistent-state-the-ledger) instead.
+
 ## Actions
 
 | `type` | Fields | What it does |
@@ -242,6 +292,9 @@ match:
 | `react` | `emoji` (shortcode) | Add an emoji reaction to the message. |
 | `mark_read` | — | Mark the message's channel read. |
 | `log` | `text` (optional prefix) | Write a line to the daemon log. |
+| `state_set` | `key`, `value` | Write `value` into the persistent ledger under `key`. Both are templates (see below). |
+| `state_incr` | `key`, `by` (optional, default 1) | Add `by` to the integer stored at `key` (a missing/non-numeric value counts as 0). Negative decrements. |
+| `state_del` | `key` | Remove `key` from the ledger. |
 
 `urgent` bypasses only the do-not-disturb suppression (`quiet_hours`,
 `respect_mutes`); the self and `notify_dms` gates still apply. A rule that routes
@@ -269,20 +322,100 @@ script can depend on them:
   "mentioned": true,
   "files": ["diagram.png"],
   "create_at": 1700000000000,
-  "permalink": "https://mm.example.com/core/pl/abc123"
+  "permalink": "https://mm.example.com/core/pl/abc123",
+  "state": { "failure_count": "3", "last_failure_time": "1700000000000" }
 }
 ```
 
 `team`/`team_id`, `root_id`, and `permalink` are omitted when empty; `mentioned`
 is whether *you* were @named; `files` lists attachment names (present only when
-the post carries file metadata).
+the post carries file metadata); `state` is a snapshot of the [persistent
+ledger](#persistent-state-the-ledger) (omitted when empty).
 
 `exec` additionally exports each scalar field as an environment variable so a
 quick script needn't parse JSON: `MATTERBOX_POST_ID`, `MATTERBOX_CHANNEL_ID`,
 `MATTERBOX_CHANNEL`, `MATTERBOX_TEAM_ID`, `MATTERBOX_TEAM`, `MATTERBOX_AUTHOR`,
 `MATTERBOX_MESSAGE`, `MATTERBOX_IS_DM`, `MATTERBOX_IS_THREAD`,
 `MATTERBOX_ROOT_ID`, `MATTERBOX_MENTIONED`, `MATTERBOX_FILES` (comma-separated),
-and `MATTERBOX_PERMALINK`.
+and `MATTERBOX_PERMALINK`. The ledger is exported as `MATTERBOX_STATE` (the whole
+map as JSON) plus one `MATTERBOX_STATE_<KEY>` per entry (the key upper-cased,
+non-alphanumerics collapsed to `_`), e.g. `MATTERBOX_STATE_FAILURE_COUNT=3`.
+
+## Persistent state (the ledger)
+
+The `match` conditions and most actions are stateless — each message is judged
+on its own. The **ledger** breaks that: a small key/value store, persisted in
+the message database (`rule_state` table) and therefore surviving restarts, that
+rules read and write. It's how a rule carries context from one message to the
+next — a running failure count, the timestamp of the last deploy, a flag that a
+later rule checks.
+
+Three actions write it:
+
+```yaml
+rules:
+  - name: track-deploy-failures
+    match:
+      author: deploybot
+      message: "(?i)failed"
+    actions:
+      - type: state_set
+        key: last_failure_time
+        value: "{{ .create_at }}"
+      - type: state_incr
+        key: failure_count          # 0 → 1 → 2 … (created on first use)
+  - name: clear-on-success
+    match:
+      author: deploybot
+      message: "(?i)succeeded"
+    actions:
+      - type: state_del
+        key: failure_count          # reset the counter on a green deploy
+```
+
+### Templating keys and values
+
+`state_set`/`state_incr`/`state_del` `key`, and `state_set` `value`, are
+[Go `text/template`](https://pkg.go.dev/text/template) strings expanded against
+the message. The data is exactly the [exec/webhook envelope](#the-exec--webhook-payload)
+above — so `{{ .author }}`, `{{ .channel }}`, `{{ .create_at }}`, `{{ .message }}`,
+`{{ .is_dm }}`, … all work — **plus** the current ledger under `.state`, so a
+template can read a value another action just wrote:
+
+```yaml
+actions:
+  - type: state_incr
+    key: deploy_failures
+  # state_* actions run in order, so this sees the value the incr just stored.
+  - type: state_set
+    key: last_failure_count
+    value: "deploy #{{ .state.deploy_failures }} failed"
+```
+
+A per-message **key** can vary too — `key: "failures:{{ .author }}"` keeps an
+independent counter per author. Note that `.state.NAME` only works for keys that
+are valid template identifiers; to read a key built from a template (e.g.
+`failures:bob`) use the `index` function: `{{ index .state "failures:bob" }}`.
+A field or `.state` key that doesn't exist renders as empty, not an error.
+
+### How state flows to other actions
+
+- **Order is guaranteed.** Within one rule, `state_*` actions run synchronously
+  in the order written, *before* the `exec`/`webhook` actions that follow them
+  are dispatched — so a script invoked later in the same rule sees the values
+  this rule just wrote.
+- **`exec` and `webhook`** receive the whole ledger: in the JSON envelope under
+  `state`, and `exec` also as `MATTERBOX_STATE` / `MATTERBOX_STATE_<KEY>` env
+  vars (see above).
+- **`state_incr` is atomic**, so two messages updating the same counter at once
+  can't lose a write.
+
+### Live-only, like side effects
+
+State actions only run for **live** messages. The [reconnect
+catch-up](#catch-up-after-a-reconnect) drives `notify` only — it never replays
+`state_set`/`state_incr`/`state_del` (nor `exec`/`webhook`/`react`), so a
+reconnect can't double-count a failure or re-fire a side effect for history.
 
 ## Examples
 
@@ -360,10 +493,40 @@ rules:
           Authorization: "Bearer ${INCIDENTS_TOKEN}"
 ```
 
+Escalate only on a deploy-failure streak — count failures in the ledger, and
+when the count reaches three, run a script with the count in its environment and
+reset it:
+
+```yaml
+rules:
+  - name: count-failures
+    match: { author: deploybot, message: "(?i)failed" }
+    actions:
+      - type: state_incr
+        key: deploy_failures
+  - name: clear-failures
+    match: { author: deploybot, message: "(?i)succeeded" }
+    actions:
+      - type: state_del
+        key: deploy_failures
+  - name: escalate
+    match:
+      author: deploybot
+      message: "(?i)failed"
+      frequency: { count: 3, within: 30m }   # three failures in half an hour
+    actions:
+      - type: exec
+        command: ["/home/me/bin/escalate.sh"]   # reads $MATTERBOX_STATE_DEPLOY_FAILURES
+      - type: state_del
+        key: deploy_failures
+```
+
 ## Safety
 
 `exec` runs commands from your own config, as you, on your own machine — same
 trust level as a shell alias. Each run is bounded by a timeout and runs off the
 ingest path, so a slow or hung command can't block message caching or take the
-daemon down. A bad glob, regexp, or unknown action `type` is reported at
-startup so a typo fails loud rather than silently never firing.
+daemon down. A bad glob, regexp, **template, or `frequency` duration**, or an
+unknown action `type`, is reported at startup so a typo fails loud rather than
+silently never firing. `state_*` writes touch only matterbox's own database
+(the `rule_state` table), never your Mattermost server.

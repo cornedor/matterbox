@@ -128,6 +128,13 @@ END;
 // been notified, so a restart neither loses nor replays them). notif_targets
 // maps a sent Telegram notification to the Mattermost message it's about, so a
 // reply or emoji reaction survives a daemon restart instead of losing context.
+//
+// rule_state is the persistent ledger written by the state_set/state_incr/
+// state_del rule actions: a user-visible key/value store, separate from the
+// daemon-internal meta table so a user's counters can't collide with (or be
+// wiped alongside) the catch-up cursor. value is TEXT; state_incr treats it as
+// an integer (CAST). It survives restart so a rule can carry context — a
+// failure count, a last-seen timestamp — across the daemon's whole lifetime.
 const listenSchemaSQL = `
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
@@ -139,6 +146,11 @@ CREATE TABLE IF NOT EXISTS notif_targets (
     root_id    TEXT NOT NULL,
     post_id    TEXT NOT NULL,
     created_at INTEGER NOT NULL    -- unix-ms when the notification was sent
+);
+CREATE TABLE IF NOT EXISTS rule_state (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at INTEGER NOT NULL    -- unix-ms of the last write
 );
 `
 
