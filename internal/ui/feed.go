@@ -36,6 +36,12 @@ type feedEntry struct {
 	context   []*model.Post // already-read context (≤ feedContextLines)
 	unread    []*model.Post // unread posts, oldest→newest (≤ feedUnreadMax)
 	mention   bool          // had a mention at build time (border tint hint)
+	// phantom marks a channel the server still counts as unread but with no
+	// genuine message to show — the unread post was deleted (or is a system
+	// post), leaving an off-by-one in the server's root counter. The bubble
+	// renders an explanatory line instead of messages; opening or marking it
+	// read clears the stale count. See fetchFeed.
+	phantom bool
 }
 
 // lastActivity returns the create time of the newest unread post, used
@@ -241,6 +247,20 @@ func (m Model) fetchFeed(seq int, targets []feedTarget) tea.Cmd {
 			}
 			full := unreadFromPostList(pl, lv)
 			if len(full) == 0 {
+				// The server still counts this channel as unread, but nothing
+				// past the boundary is a genuine message — the unread post was
+				// deleted or is a system post, leaving a stale root counter.
+				// Surface a labelled "phantom" bubble (with no messages) so the
+				// feed and the tab badge agree and the user can clear the count
+				// by opening or marking it read, rather than silently dropping
+				// it and leaving an unexplained badge.
+				if t.unreadCount > 0 || t.mention {
+					entries = append(entries, feedEntry{
+						channelID: t.channelID,
+						mention:   t.mention,
+						phantom:   true,
+					})
+				}
 				continue
 			}
 			// Persist the whole since-boundary page, not just the capped
@@ -507,6 +527,7 @@ func (m *Model) feedAppendPosted(p *model.Post) {
 			u = u[len(u)-feedUnreadMax:]
 		}
 		m.feed.entries[i].unread = u
+		m.feed.entries[i].phantom = false // a real message arrived; no longer a ghost
 		if m.onFeedTab() {
 			m.renderFeedResults()
 		}
@@ -555,7 +576,7 @@ func (m *Model) feedRemovePost(postID string) {
 	}
 	out := m.feed.entries[:0]
 	for _, e := range m.feed.entries {
-		if len(e.unread) > 0 {
+		if len(e.unread) > 0 || e.phantom {
 			out = append(out, e)
 		}
 	}
@@ -693,6 +714,22 @@ func (m Model) renderFeedBubble(outerW int, e feedEntry, selected bool) string {
 	if n <= 0 {
 		n = len(e.unread)
 	}
+
+	// A phantom channel has a stale server count but no message to show: the
+	// unread post was deleted or is a system post. Render a single line that
+	// names the discrepancy and the way out, instead of a "new" count and an
+	// empty body. Opening or marking it read clears the count.
+	if e.phantom {
+		if n > 0 {
+			header += " · " + strconv.Itoa(n) + " stale"
+		} else {
+			header += " · stale" // count already cleared elsewhere; drop next refresh
+		}
+		body := lipgloss.NewStyle().Foreground(dimColor).
+			Render("no unread messages — the count is out of sync · enter opens · m clears it")
+		return bubbleBox(inner, header, []string{body}, borderColor, selected)
+	}
+
 	header += " · " + strconv.Itoa(n) + " new"
 	if mc := m.mentions[e.channelID]; mc > 0 {
 		header += " · " + plural(mc, "mention", "mentions")

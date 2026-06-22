@@ -1,11 +1,18 @@
 package ui
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/mm"
 )
 
 func newBreadcrumbModel() Model {
@@ -157,6 +164,67 @@ func TestFeedEntryLastActivity(t *testing.T) {
 	}
 	if got := (feedEntry{}).lastActivity(); got != 0 {
 		t.Errorf("empty lastActivity = %d; want 0", got)
+	}
+}
+
+// TestFetchFeedPhantomEntry covers the off-by-one ghost: a channel the server
+// still counts as unread whose only post past the read boundary is deleted (or
+// a system post). unreadFromPostList drops it, so `full` is empty — but rather
+// than vanish (leaving the tab badge counting a channel the pane never shows),
+// fetchFeed must surface a phantom entry: a stale count with no message, which
+// opening or marking read will clear.
+func TestFetchFeedPhantomEntry(t *testing.T) {
+	mustJSON := func(v any) []byte {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		return b
+	}
+	// One post past the boundary, but deleted — the exact town-square case:
+	// it bumped total_msg_count_root yet leaves nothing to read.
+	postsJSON := mustJSON(model.PostList{
+		Order: []string{"p1"},
+		Posts: map[string]*model.Post{
+			"p1": {Id: "p1", ChannelId: "c", CreateAt: 1000, DeleteAt: 2000, Message: "gone"},
+		},
+	})
+	membersJSON := mustJSON(model.ChannelMembersWithTeamData{})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/channel_members"):
+			_, _ = w.Write(membersJSON)
+		case strings.HasSuffix(r.URL.Path, "/posts"):
+			_, _ = w.Write(postsJSON)
+		default:
+			http.Error(w, "unexpected path: "+r.URL.Path, http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	m := Model{
+		client:    mm.New(srv.URL, "token"),
+		ctx:       context.Background(),
+		me:        &model.User{Id: "me", Username: "me"},
+		userNames: map[string]string{"me": "me"},
+	}
+
+	targets := []feedTarget{{channelID: "c", lastViewedAt: 1, unreadCount: 1}}
+	msg, ok := m.fetchFeed(1, targets)().(feedLoadedMsg)
+	if !ok {
+		t.Fatalf("fetchFeed did not return feedLoadedMsg")
+	}
+	if len(msg.entries) != 1 {
+		t.Fatalf("entries = %d; want 1 phantom entry", len(msg.entries))
+	}
+	switch e := msg.entries[0]; {
+	case !e.phantom:
+		t.Error("entry.phantom = false; want true")
+	case len(e.unread) != 0:
+		t.Errorf("entry.unread = %d; want 0 (phantom has no message)", len(e.unread))
+	case e.channelID != "c":
+		t.Errorf("entry.channelID = %q; want \"c\"", e.channelID)
 	}
 }
 
