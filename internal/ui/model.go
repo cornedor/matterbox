@@ -1874,25 +1874,40 @@ func mergePostsByTime(existing, incoming []*model.Post) []*model.Post {
 }
 
 // reconcileDeletedPosts detects posts deleted on the server while matterbox
-// was offline. page is the channel's authoritative newest window (oldest→
-// newest, deleted posts omitted by the server); loaded is the currently
-// visible/cached slice after merging the page in. It returns the slice with
-// the offline-deleted posts removed, plus their Ids so the caller can
-// soft-delete them in the store.
+// was offline, by their absence from a contiguous, gap-free server page.
+// page is oldest→newest with deleted posts omitted by the server; loaded is
+// the visible slice after the page was merged in. It returns the slice with
+// the offline-deleted posts removed, plus their Ids for soft-deletion.
 //
-// Correctness rests on one property of the newest-N page: every non-deleted
-// post with create_at strictly greater than the page's oldest entry is in
-// the page (a newer non-deleted post could not have been paged out without
-// displacing that oldest entry). So a loaded post past that floor that the
-// page omits is necessarily deleted. The floor is strict (>) to stay clear
-// of create_at ties right at the page boundary, where pagination — not a
-// deletion — could explain the absence. Posts already flagged deleted, and
-// optimistic stubs (empty Id), are skipped.
+// A loaded post is treated as deleted only when its create_at falls strictly
+// inside the (floor, ceil) window the page is authoritative for and the page
+// omits it:
+//
+//   - floor is the page's oldest create_at. Posts older than the page could
+//     simply have been paginated out, so their absence proves nothing.
+//   - ceil is the page's newest create_at. Posts newer than the page are
+//     spared because absence there is ambiguous: a message that arrived live
+//     over WebSocket after the server snapshot but before this merge is also
+//     "newer and absent", and must not be mistaken for a deletion. (The
+//     trade-off: a deletion of the very newest message, with nothing posted
+//     since, isn't caught until something newer arrives — it then falls below
+//     ceil and reconciles. A false delete of a live message would be worse.)
+//
+// Both bounds are strict so a create_at tie at either edge — explainable by
+// pagination rather than a delete — is left alone. The endpoints themselves
+// are in the page, so excluding them costs no real coverage. Posts already
+// flagged deleted, and optimistic stubs (empty Id), are skipped.
+//
+// The window framing makes this correct for any contiguous server page, not
+// just the newest one: the warm-open recent window (ceil = newest activity)
+// and the scroll-back/forward history pagers (an interior slice bounded on
+// both sides) all share it.
 func reconcileDeletedPosts(loaded, page []*model.Post) (kept []*model.Post, deletedIDs []string) {
 	if len(page) == 0 {
 		return loaded, nil
 	}
-	floor := page[0].CreateAt // oldest in the authoritative window
+	floor := page[0].CreateAt          // oldest in the authoritative window
+	ceil := page[len(page)-1].CreateAt // newest in the authoritative window
 	have := make(map[string]struct{}, len(page))
 	for _, p := range page {
 		if p != nil {
@@ -1901,7 +1916,8 @@ func reconcileDeletedPosts(loaded, page []*model.Post) (kept []*model.Post, dele
 	}
 	kept = loaded[:0]
 	for _, p := range loaded {
-		if p != nil && p.Id != "" && p.DeleteAt == 0 && p.CreateAt > floor {
+		if p != nil && p.Id != "" && p.DeleteAt == 0 &&
+			p.CreateAt > floor && p.CreateAt < ceil {
 			if _, ok := have[p.Id]; !ok {
 				deletedIDs = append(deletedIDs, p.Id)
 				continue
@@ -1910,6 +1926,26 @@ func reconcileDeletedPosts(loaded, page []*model.Post) (kept []*model.Post, dele
 		kept = append(kept, p)
 	}
 	return kept, deletedIDs
+}
+
+// reconcileMissingDeletes removes from the open channel's loaded slice any
+// post the authoritative server page omits from its interior window (i.e.
+// deleted while matterbox was offline — see reconcileDeletedPosts), drops the
+// stale render/feed state for each, and returns a Cmd to soft-delete them in
+// the store. Shared by every handler that merges a contiguous server page:
+// the warm-open recent window and the scroll history pagers. nil Cmd when
+// nothing was reconciled.
+func (m *Model) reconcileMissingDeletes(page []*model.Post) tea.Cmd {
+	kept, deletedIDs := reconcileDeletedPosts(m.posts, page)
+	if len(deletedIDs) == 0 {
+		return nil
+	}
+	m.posts = kept
+	for _, id := range deletedIDs {
+		m.invalidatePostLines(id)
+		m.feedRemovePost(id)
+	}
+	return m.persistMarkDeleted(0, deletedIDs...)
 }
 
 // fetchPostsAfter pulls every post created after afterPostID in the

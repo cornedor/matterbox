@@ -316,15 +316,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// reconcileDeletes false — absence there only means "not in this page".
 		var deletedCmd tea.Cmd
 		if msg.reconcileDeletes {
-			var deletedIDs []string
-			m.posts, deletedIDs = reconcileDeletedPosts(m.posts, msg.posts)
-			if len(deletedIDs) > 0 {
-				for _, id := range deletedIDs {
-					m.invalidatePostLines(id)
-					m.feedRemovePost(id)
-				}
-				deletedCmd = m.persistMarkDeleted(0, deletedIDs...)
-			}
+			deletedCmd = m.reconcileMissingDeletes(msg.posts)
 		}
 		switch {
 		case wasAtBottom:
@@ -383,6 +375,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// older history lands above it without the screen jumping.
 			anchorID, within := m.msgFreeAnchor()
 			m.posts = mergePostsByTime(m.posts, msg.posts)
+			// This PostsBefore page is authoritative for its interior, so a
+			// cached post it omits there was deleted while we were offline.
+			deletedCmd := m.reconcileMissingDeletes(msg.posts)
 			// Follow the top post with the selection so the tail can be trimmed.
 			if idx := m.postIndexByID(anchorID); idx >= 0 {
 				m.postIdx = idx
@@ -400,7 +395,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.msgFreeOffset = m.msgRowStarts[idx] + within
 				m.msgsView.SetYOffset(m.msgFreeOffset)
 			}
-			return m, persistCmd
+			return m, tea.Batch(persistCmd, deletedCmd)
 		}
 		// Merge by create_at (mergePostsByTime inserts across any interior
 		// hole the cache would skip) while keeping the selected post pinned
@@ -411,6 +406,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			selID = m.posts[m.postIdx].Id
 		}
 		m.posts = mergePostsByTime(m.posts, msg.posts)
+		deletedCmd := m.reconcileMissingDeletes(msg.posts)
 		if selID != "" {
 			for i, p := range m.posts {
 				if p.Id == selID {
@@ -431,7 +427,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.trimPostWindowTail()
 		m.status = ""
 		m.renderMessages()
-		return m, persistCmd
+		return m, tea.Batch(persistCmd, deletedCmd)
 
 	case newerPostsMsg:
 		// Forward mirror of olderPostsMsg (scroll-down past the loaded tail).
@@ -453,6 +449,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// it) without the screen jumping.
 			anchorID, within := m.msgFreeAnchor()
 			m.posts = mergePostsByTime(m.posts, msg.posts)
+			deletedCmd := m.reconcileMissingDeletes(msg.posts)
 			if idx := m.postIndexByID(anchorID); idx >= 0 {
 				m.postIdx = idx
 			}
@@ -469,13 +466,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.msgFreeOffset = m.msgRowStarts[idx] + within
 				m.msgsView.SetYOffset(m.msgFreeOffset)
 			}
-			return m, persistCmd
+			return m, tea.Batch(persistCmd, deletedCmd)
 		}
 		selID := ""
 		if m.postIdx >= 0 && m.postIdx < len(m.posts) {
 			selID = m.posts[m.postIdx].Id
 		}
 		m.posts = mergePostsByTime(m.posts, msg.posts)
+		deletedCmd := m.reconcileMissingDeletes(msg.posts)
 		if selID != "" {
 			for i, p := range m.posts {
 				if p.Id == selID {
@@ -496,7 +494,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.trimPostWindowHead()
 		m.status = ""
 		m.renderMessages()
-		return m, persistCmd
+		return m, tea.Batch(persistCmd, deletedCmd)
 
 	case markViewedMsg:
 		// The dwell elapsed. Ignore if the user switched away or refocused

@@ -184,6 +184,58 @@ func TestReconcileSkipsStubsAndAlreadyDeleted(t *testing.T) {
 	}
 }
 
+// TestReconcileSparesNewerThanCeil guards the ceiling: a message that arrived
+// live over WebSocket after the server snapshot but before the merge is newer
+// than the page and absent from it — yet it must NOT be mistaken for a
+// deletion (the bug a floor-only check would have).
+func TestReconcileSparesNewerThanCeil(t *testing.T) {
+	loaded := []*model.Post{p("a", 100), p("b", 200), p("live", 300)}
+	page := []*model.Post{p("a", 100), p("b", 200)} // ceil = 200; "live" arrived after
+
+	kept, deleted := reconcileDeletedPosts(loaded, page)
+	if order := ids(kept); !eq(order, []string{"a", "b", "live"}) {
+		t.Fatalf("live arrival wrongly dropped: got %v", order)
+	}
+	if len(deleted) != 0 {
+		t.Fatalf("live arrival reconciled as delete: %v", deleted)
+	}
+}
+
+// TestReconcileInteriorWindow is the older-history shape: a page bounded on
+// both sides (PostsBefore/PostsAfter). A post deleted strictly inside the
+// window is reconciled; posts at/above the page's newest (the anchor we
+// paged from) are spared.
+func TestReconcileInteriorWindow(t *testing.T) {
+	loaded := []*model.Post{p("o1", 100), p("goneMid", 150), p("o2", 200), p("anchor", 300)}
+	page := []*model.Post{p("o1", 100), p("o2", 200)} // interior window (100, 200)
+
+	kept, deleted := reconcileDeletedPosts(loaded, page)
+	if order := ids(kept); !eq(order, []string{"o1", "o2", "anchor"}) {
+		t.Fatalf("interior delete not reconciled / anchor not spared: got %v", order)
+	}
+	if !eq(deleted, []string{"goneMid"}) {
+		t.Fatalf("wrong deleted set: got %v, want [goneMid]", deleted)
+	}
+}
+
+// TestOlderPostsHandlerReconcilesDelete drives the scroll-up handler: paging
+// older history surfaces that a post in the fetched range was deleted while
+// offline, and it must vanish from the view while the rest merges normally.
+func TestOlderPostsHandlerReconcilesDelete(t *testing.T) {
+	// Loaded window holds a since-deleted middle post; selection on the tail.
+	m := pagingModel([]*model.Post{p("o1", 100), p("goneMid", 150), p("o2", 200)}, 2)
+	msg := olderPostsMsg{
+		channelID: "c",
+		posts:     []*model.Post{p("o1", 100), p("o2", 200)}, // server omits goneMid
+	}
+	out, _ := m.update(msg)
+	got := out.(Model)
+
+	if order := ids(got.posts); !eq(order, []string{"o1", "o2"}) {
+		t.Fatalf("offline-deleted post not reconciled on scroll-up: got %v", order)
+	}
+}
+
 // TestReconcileEmptyPageNoOp: an empty authoritative page (transient/empty
 // response) must leave the loaded slice untouched — never nuke the cache.
 func TestReconcileEmptyPageNoOp(t *testing.T) {
