@@ -699,6 +699,36 @@ func (s *Store) Delete(id string) error {
 	return nil
 }
 
+// MarkDeleted soft-deletes a post by setting delete_at (and update_at) on
+// its row, leaving the row, its archived revisions, and its raw_json blob
+// intact. Every read path filters delete_at = 0, so the post stops
+// appearing in channels, the feed, and search while remaining recoverable
+// (and visible on the SQL tab). A non-positive deleteAt is treated as "now".
+// Posts already soft-deleted, and unknown Ids, are left untouched — the
+// WHERE delete_at = 0 guard means re-observing a deletion is a no-op and
+// can't clobber an earlier (server-authoritative) delete timestamp.
+//
+// raw_json is intentionally not rewritten: the column is authoritative for
+// the deletion, and since callers only ever unmarshal blobs of non-deleted
+// rows, the DeleteAt embedded in the stored JSON is never read for a
+// soft-deleted post. This keeps the live (WS post_deleted) path and the
+// reopen reconcile path — which has no fresh post JSON to store — uniform.
+func (s *Store) MarkDeleted(id string, deleteAt int64) error {
+	if s == nil || id == "" {
+		return nil
+	}
+	if deleteAt <= 0 {
+		deleteAt = time.Now().UnixMilli()
+	}
+	if _, err := s.db.Exec(
+		`UPDATE posts SET delete_at = ?, update_at = ? WHERE id = ? AND delete_at = 0`,
+		deleteAt, deleteAt, id,
+	); err != nil {
+		return fmt.Errorf("mark deleted: %w", err)
+	}
+	return nil
+}
+
 // RecentForChannel returns up to limit most-recent non-deleted posts
 // for the channel, ordered oldest→newest (i.e. ready to assign to the
 // UI's m.posts slice without reversal).

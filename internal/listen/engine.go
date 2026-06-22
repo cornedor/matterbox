@@ -358,7 +358,9 @@ func (e *Engine) handle(ctx context.Context, ev *model.WebSocketEvent) {
 		}
 	case model.WebsocketEventPostDeleted:
 		if p := postFromEvent(ev); p != nil {
-			if err := e.store.Delete(p.Id); err != nil {
+			// Soft-delete so the shared cache treats deletions uniformly with
+			// the TUI (set delete_at, keep the row); read paths filter it out.
+			if err := e.store.MarkDeleted(p.Id, p.DeleteAt); err != nil {
 				e.log.Printf("delete post %s: %v", p.Id, err)
 			}
 		}

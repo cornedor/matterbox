@@ -2,6 +2,7 @@ package ui
 
 import (
 	"testing"
+	"time"
 
 	"charm.land/bubbles/v2/viewport"
 	"github.com/mattermost/mattermost/server/public/model"
@@ -116,6 +117,114 @@ func TestMergeEmptyIncoming(t *testing.T) {
 	want := []string{"a", "b"}
 	if !eq(got, want) {
 		t.Fatalf("empty incoming changed slice: got %v; want %v", got, want)
+	}
+}
+
+// TestReconcileDeletesAbsentPost is the offline-delete case: a post sits in
+// the cache, then is deleted on the server while matterbox is closed. The
+// authoritative recent page omits it, so the reconcile must drop it and
+// report its Id for soft-deletion. Posts the page still carries stay put.
+func TestReconcileDeletesAbsentPost(t *testing.T) {
+	loaded := []*model.Post{p("a", 100), p("gone", 200), p("c", 300)}
+	page := []*model.Post{p("a", 100), p("c", 300)} // "gone" deleted server-side
+
+	kept, deleted := reconcileDeletedPosts(loaded, page)
+	if order := ids(kept); !eq(order, []string{"a", "c"}) {
+		t.Fatalf("absent post not dropped: got %v", order)
+	}
+	if !eq(deleted, []string{"gone"}) {
+		t.Fatalf("wrong deleted set: got %v, want [gone]", deleted)
+	}
+}
+
+// TestReconcileSparesOlderThanFloor guards the strict-floor bound: a cached
+// post older than the page's oldest entry is simply out of the window the
+// page is authoritative for (it could have been paged out), so its absence
+// must NOT be read as a deletion.
+func TestReconcileSparesOlderThanFloor(t *testing.T) {
+	loaded := []*model.Post{p("ancient", 50), p("a", 100), p("b", 200)}
+	page := []*model.Post{p("a", 100), p("b", 200)} // floor = 100; ancient < floor
+
+	kept, deleted := reconcileDeletedPosts(loaded, page)
+	if order := ids(kept); !eq(order, []string{"ancient", "a", "b"}) {
+		t.Fatalf("post older than floor wrongly dropped: got %v", order)
+	}
+	if len(deleted) != 0 {
+		t.Fatalf("nothing should be deleted, got %v", deleted)
+	}
+}
+
+// TestReconcileSparesFloorTie: a post at exactly the floor create_at is left
+// alone, because a tie there can be explained by pagination rather than a
+// delete (the floor comparison is strict).
+func TestReconcileSparesFloorTie(t *testing.T) {
+	loaded := []*model.Post{p("a", 100), p("tie", 100), p("b", 200)}
+	page := []*model.Post{p("a", 100), p("b", 200)} // floor = 100; "tie" also at 100
+
+	_, deleted := reconcileDeletedPosts(loaded, page)
+	if len(deleted) != 0 {
+		t.Fatalf("floor-tie post wrongly deleted: got %v", deleted)
+	}
+}
+
+// TestReconcileSkipsStubsAndAlreadyDeleted: an optimistic own-send (empty
+// Id) and an already-soft-deleted post must never be reconciled away.
+func TestReconcileSkipsStubsAndAlreadyDeleted(t *testing.T) {
+	stub := &model.Post{Id: "", CreateAt: 0, Message: "sending…"}
+	dead := &model.Post{Id: "dead", CreateAt: 250, DeleteAt: 240}
+	loaded := []*model.Post{p("a", 100), dead, p("b", 300), stub}
+	page := []*model.Post{p("a", 100), p("b", 300)}
+
+	kept, deleted := reconcileDeletedPosts(loaded, page)
+	if len(deleted) != 0 {
+		t.Fatalf("stub/already-deleted reconciled: got %v", deleted)
+	}
+	if order := ids(kept); !eq(order, []string{"a", "dead", "b", ""}) {
+		t.Fatalf("slice disturbed: got %v", order)
+	}
+}
+
+// TestReconcileEmptyPageNoOp: an empty authoritative page (transient/empty
+// response) must leave the loaded slice untouched — never nuke the cache.
+func TestReconcileEmptyPageNoOp(t *testing.T) {
+	loaded := []*model.Post{p("a", 100), p("b", 200)}
+	kept, deleted := reconcileDeletedPosts(loaded, nil)
+	if order := ids(kept); !eq(order, []string{"a", "b"}) {
+		t.Fatalf("empty page mutated slice: got %v", order)
+	}
+	if len(deleted) != 0 {
+		t.Fatalf("empty page reported deletions: %v", deleted)
+	}
+}
+
+// TestGapFillReconcilesDeleteOnlyWhenAuthoritative drives the whole
+// postsGapFilledMsg handler twice over the same state. A forward fill
+// (reconcileDeletes=false) that omits a post must NOT delete it; the
+// authoritative recent window (reconcileDeletes=true) must.
+func TestGapFillReconcilesDeleteOnlyWhenAuthoritative(t *testing.T) {
+	mk := func() Model {
+		m := pagingModel([]*model.Post{p("a", 100), p("gone", 200), p("c", 300)}, 2)
+		m.markReadDelay = time.Second // keep scheduleMarkViewed off the client path
+		return m
+	}
+
+	// Forward fill: absence proves nothing, "gone" stays.
+	fwd, _ := mk().update(postsGapFilledMsg{
+		channelID: "c",
+		posts:     []*model.Post{p("a", 100), p("c", 300)},
+	})
+	if order := ids(fwd.(Model).posts); !eq(order, []string{"a", "gone", "c"}) {
+		t.Fatalf("forward fill dropped a post it shouldn't: got %v", order)
+	}
+
+	// Authoritative window: "gone" was deleted offline and must disappear.
+	auth, _ := mk().update(postsGapFilledMsg{
+		channelID:        "c",
+		posts:            []*model.Post{p("a", 100), p("c", 300)},
+		reconcileDeletes: true,
+	})
+	if order := ids(auth.(Model).posts); !eq(order, []string{"a", "c"}) {
+		t.Fatalf("offline-deleted post not reconciled away: got %v", order)
 	}
 }
 

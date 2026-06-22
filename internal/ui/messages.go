@@ -38,10 +38,18 @@ type postsLoadedMsg struct {
 // loaded range as well as extend it — see fetchRecent (warm-open recent-
 // window reconcile) and fetchPostsAfter (forward fill from a cached post).
 // Empty `posts` means there was nothing to reconcile.
+//
+// reconcileDeletes marks the page as the channel's *authoritative* newest
+// window (fetchRecent, anchored at "now"): within it, a cached post newer
+// than the page's oldest entry that the server didn't return must have been
+// deleted while we were away, so the handler soft-deletes it. A forward
+// fill (fetchPostsAfter) leaves this false — its window isn't anchored at
+// now, so absence there proves nothing.
 type postsGapFilledMsg struct {
-	channelID string
-	posts     []*model.Post
-	users     map[string]string
+	channelID        string
+	posts            []*model.Post
+	users            map[string]string
+	reconcileDeletes bool
 }
 
 // olderPostsMsg carries a server-fetched page of posts strictly older than

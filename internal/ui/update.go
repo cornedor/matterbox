@@ -310,6 +310,22 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		wasAtBottom := m.postIdx >= len(m.posts)-1
 		m.posts = mergePostsByTime(m.posts, msg.posts)
+		// On the authoritative recent window (fetchRecent), a cached post the
+		// server no longer returns was deleted while we were offline. Drop it
+		// from the view and soft-delete it in the store. A forward fill leaves
+		// reconcileDeletes false — absence there only means "not in this page".
+		var deletedCmd tea.Cmd
+		if msg.reconcileDeletes {
+			var deletedIDs []string
+			m.posts, deletedIDs = reconcileDeletedPosts(m.posts, msg.posts)
+			if len(deletedIDs) > 0 {
+				for _, id := range deletedIDs {
+					m.invalidatePostLines(id)
+					m.feedRemovePost(id)
+				}
+				deletedCmd = m.persistMarkDeleted(0, deletedIDs...)
+			}
+		}
 		switch {
 		case wasAtBottom:
 			m.postIdx = len(m.posts) - 1
@@ -335,6 +351,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(
 			m.scheduleMarkViewed(msg.channelID),
 			persistCmd,
+			deletedCmd,
 		)
 
 	case olderPostsMsg:
@@ -1191,7 +1208,7 @@ func (m *Model) applyPostDeleted(ev *model.WebSocketEvent) tea.Cmd {
 		m.cancelEdit()
 		m.status = "message was deleted; edit cancelled"
 	}
-	persistCmd := m.persistDelete(p.Id)
+	persistCmd := m.persistMarkDeleted(p.DeleteAt, p.Id)
 	if m.isCurrentChannel(p.ChannelId) {
 		for i, ex := range m.posts {
 			if ex.Id == p.Id {

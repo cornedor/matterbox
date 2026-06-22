@@ -1873,6 +1873,45 @@ func mergePostsByTime(existing, incoming []*model.Post) []*model.Post {
 	return append(merged, stubs...)
 }
 
+// reconcileDeletedPosts detects posts deleted on the server while matterbox
+// was offline. page is the channel's authoritative newest window (oldest→
+// newest, deleted posts omitted by the server); loaded is the currently
+// visible/cached slice after merging the page in. It returns the slice with
+// the offline-deleted posts removed, plus their Ids so the caller can
+// soft-delete them in the store.
+//
+// Correctness rests on one property of the newest-N page: every non-deleted
+// post with create_at strictly greater than the page's oldest entry is in
+// the page (a newer non-deleted post could not have been paged out without
+// displacing that oldest entry). So a loaded post past that floor that the
+// page omits is necessarily deleted. The floor is strict (>) to stay clear
+// of create_at ties right at the page boundary, where pagination — not a
+// deletion — could explain the absence. Posts already flagged deleted, and
+// optimistic stubs (empty Id), are skipped.
+func reconcileDeletedPosts(loaded, page []*model.Post) (kept []*model.Post, deletedIDs []string) {
+	if len(page) == 0 {
+		return loaded, nil
+	}
+	floor := page[0].CreateAt // oldest in the authoritative window
+	have := make(map[string]struct{}, len(page))
+	for _, p := range page {
+		if p != nil {
+			have[p.Id] = struct{}{}
+		}
+	}
+	kept = loaded[:0]
+	for _, p := range loaded {
+		if p != nil && p.Id != "" && p.DeleteAt == 0 && p.CreateAt > floor {
+			if _, ok := have[p.Id]; !ok {
+				deletedIDs = append(deletedIDs, p.Id)
+				continue
+			}
+		}
+		kept = append(kept, p)
+	}
+	return kept, deletedIDs
+}
+
 // fetchPostsAfter pulls every post created after afterPostID in the
 // channel. Use this when reopening a channel whose history is already
 // in the cache: paint cached → call this → append the gap.
@@ -1920,7 +1959,7 @@ func (m Model) fetchRecent(channelID string) tea.Cmd {
 		if err != nil {
 			return errMsg{err}
 		}
-		return postsGapFilledMsg{channelID: channelID, posts: ordered, users: users}
+		return postsGapFilledMsg{channelID: channelID, posts: ordered, users: users, reconcileDeletes: true}
 	}
 }
 
@@ -2002,15 +2041,21 @@ func (m Model) persistPosts(posts ...*model.Post) tea.Cmd {
 	}
 }
 
-// persistDelete removes a post by Id from the store. No-op when the
-// store is unavailable.
-func (m Model) persistDelete(id string) tea.Cmd {
-	if m.store == nil || id == "" {
+// persistMarkDeleted soft-deletes the given posts in the store on a worker
+// goroutine (see store.MarkDeleted: sets delete_at, keeps the row). deleteAt
+// is the server's deletion timestamp when known (the WS post_deleted event),
+// or 0 — meaning "now" — for posts found missing during a reopen reconcile.
+// No-op when the store is unavailable or no Ids are given.
+func (m Model) persistMarkDeleted(deleteAt int64, ids ...string) tea.Cmd {
+	if m.store == nil || len(ids) == 0 {
 		return nil
 	}
 	st := m.store
+	cp := append([]string(nil), ids...)
 	return func() tea.Msg {
-		_ = st.Delete(id)
+		for _, id := range cp {
+			_ = st.MarkDeleted(id, deleteAt)
+		}
 		return nil
 	}
 }

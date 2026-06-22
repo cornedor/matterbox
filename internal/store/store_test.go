@@ -103,6 +103,72 @@ func TestDelete(t *testing.T) {
 	}
 }
 
+func TestMarkDeleted(t *testing.T) {
+	s := tempStore(t)
+	p := mkPost("p1aaaaaaaaaaaaaaaaaaaaaaaa", "c1", "deleted offline", 100)
+	if err := s.Upsert(p); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := s.MarkDeleted(p.Id, 250); err != nil {
+		t.Fatalf("mark deleted: %v", err)
+	}
+	// Soft delete hides it from channel reads...
+	got, _ := s.RecentForChannel("c1", 10)
+	if len(got) != 0 {
+		t.Errorf("soft-deleted post still visible: %d remain", len(got))
+	}
+	// ...but the row survives with delete_at set (recoverable / SQL tab).
+	var deleteAt int64
+	if err := s.db.QueryRow(`SELECT delete_at FROM posts WHERE id = ?`, p.Id).Scan(&deleteAt); err != nil {
+		t.Fatalf("row gone after soft delete: %v", err)
+	}
+	if deleteAt != 250 {
+		t.Errorf("delete_at = %d, want 250", deleteAt)
+	}
+}
+
+func TestMarkDeletedDefaultsToNow(t *testing.T) {
+	s := tempStore(t)
+	p := mkPost("p1aaaaaaaaaaaaaaaaaaaaaaaa", "c1", "gone", 100)
+	if err := s.Upsert(p); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	before := time.Now().UnixMilli()
+	if err := s.MarkDeleted(p.Id, 0); err != nil { // 0 → "now"
+		t.Fatalf("mark deleted: %v", err)
+	}
+	var deleteAt int64
+	if err := s.db.QueryRow(`SELECT delete_at FROM posts WHERE id = ?`, p.Id).Scan(&deleteAt); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if deleteAt < before {
+		t.Errorf("delete_at %d not set to ~now (>= %d)", deleteAt, before)
+	}
+}
+
+// A second observation of the same deletion (e.g. WS event then reconcile)
+// must not clobber the first, server-authoritative timestamp.
+func TestMarkDeletedIdempotent(t *testing.T) {
+	s := tempStore(t)
+	p := mkPost("p1aaaaaaaaaaaaaaaaaaaaaaaa", "c1", "gone", 100)
+	if err := s.Upsert(p); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := s.MarkDeleted(p.Id, 250); err != nil {
+		t.Fatalf("first mark: %v", err)
+	}
+	if err := s.MarkDeleted(p.Id, 999); err != nil {
+		t.Fatalf("second mark: %v", err)
+	}
+	var deleteAt int64
+	if err := s.db.QueryRow(`SELECT delete_at FROM posts WHERE id = ?`, p.Id).Scan(&deleteAt); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if deleteAt != 250 {
+		t.Errorf("delete_at = %d, want first value 250 preserved", deleteAt)
+	}
+}
+
 func TestLatestPostID(t *testing.T) {
 	s := tempStore(t)
 	id, err := s.LatestPostID("c1")
