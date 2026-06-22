@@ -149,6 +149,11 @@ uninstall: ## Remove the installed binary, completion files, login handler, and 
 test: ## Run the test suite
 	$(GO) test ./...
 
+.PHONY: bench
+bench: ## Run the benchmarks (BENCH=<regex> to filter, e.g. BENCH=RenderMarkdown)
+	$(GO) test ./... -run '^$$' -bench '$(BENCH)' -benchmem
+BENCH ?= .
+
 .PHONY: vet
 vet: ## Run go vet
 	$(GO) vet ./...
