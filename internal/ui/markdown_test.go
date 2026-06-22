@@ -82,14 +82,20 @@ func TestRenderInlineUnderscoreEmphasis(t *testing.T) {
 }
 
 // The original bug: a whole line wrapped in _..._ (with inline code inside)
-// left the underscores literal. It must now italicise and keep the code spans.
+// left the underscores literal. It must now italicise and keep the code spans,
+// and the outer italic must continue past the inline code (the code span's
+// reset must not wipe the enclosing emphasis).
 func TestRenderInlineUnderscoreSpanWithCode(t *testing.T) {
 	got := renderInline("_Type `go north` to begin._", nil, nil, "")
 	if plain := ansi.Strip(got); strings.Contains(plain, "_") {
 		t.Fatalf("underscores not consumed: %q", plain)
 	}
-	if want := mdCodeStyle.Render("go north"); !strings.Contains(got, want) {
+	if want := renderCodeSpan("go north"); !strings.Contains(got, want) {
 		t.Fatalf("code span inside italic lost styling: %q", got)
+	}
+	want := mdItalicStyle.Render("Type " + renderCodeSpan("go north") + " to begin.")
+	if got != want {
+		t.Fatalf("renderInline(...) = %q, want %q", got, want)
 	}
 }
 

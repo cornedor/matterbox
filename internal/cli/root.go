@@ -40,9 +40,10 @@ func newRootCmd() *cobra.Command {
 		Short: "A terminal client for Mattermost",
 		Long: "matterbox is a TUI Mattermost client.\n\n" +
 			"Run with no arguments to open the interactive UI, or use a subcommand\n" +
-			"(login, send, read, unread, mark-read, search, channels, digest, whoami,\n" +
-			"embed, listen, keys) to work with messages non-interactively for scripting\n" +
-			"or to run the background sync/notification daemon (listen).",
+			"(login, send, reply, react, read, unread, mark-read, search, channels,\n" +
+			"digest, whoami, embed, listen, keys) to work with messages\n" +
+			"non-interactively for scripting or to run the background sync/notification\n" +
+			"daemon (listen).",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		// No subcommand → open the interactive UI, exactly as before.
@@ -52,7 +53,7 @@ func newRootCmd() *cobra.Command {
 	}
 	root.Flags().StringVar(&pprofAddr, "pprof", "",
 		"if set (e.g. localhost:6060), serve net/http/pprof on this address")
-	root.AddCommand(newLoginCmd(), newURLHandlerCmd(), newRegisterHandlerCmd(), newSendCmd(), newReadCmd(), newUnreadCmd(), newMarkReadCmd(), newSearchCmd(), newChannelsCmd(), newDigestCmd(), newWhoamiCmd(), newEmbedCmd(), newListenCmd(), newKeysCmd())
+	root.AddCommand(newLoginCmd(), newURLHandlerCmd(), newRegisterHandlerCmd(), newSendCmd(), newReplyCmd(), newReactCmd(), newReadCmd(), newUnreadCmd(), newMarkReadCmd(), newSearchCmd(), newChannelsCmd(), newDigestCmd(), newWhoamiCmd(), newEmbedCmd(), newListenCmd(), newKeysCmd())
 	return root
 }
 

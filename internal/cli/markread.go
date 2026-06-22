@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/spf13/cobra"
@@ -19,12 +20,14 @@ func newMarkReadCmd() *cobra.Command {
 			"has. Useful for scripting a \"catch up\", or for dismissing a noisy\n" +
 			"channel without actually reading it.\n\n" +
 			"Each channel is team/channel (e.g. eng/general) or @user for a direct\n" +
-			"message — the same addresses read/send/unread use. Several can be given\n" +
-			"at once; they're marked read left to right and the command stops at the\n" +
-			"first one that fails to resolve:\n\n" +
+			"message — the same addresses read/send/unread use — or a raw channel id,\n" +
+			"so a `matterbox listen` exec rule can pass $MATTERBOX_CHANNEL_ID straight\n" +
+			"through. Several can be given at once; they're marked read left to right\n" +
+			"and the command stops at the first one that fails to resolve:\n\n" +
 			"  matterbox mark-read eng/general\n" +
 			"  matterbox mark-read @alice\n" +
-			"  matterbox mark-read eng/general eng/random @bob",
+			"  matterbox mark-read eng/general eng/random @bob\n" +
+			"  matterbox mark-read 8x4k9y…  (a channel id)",
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runMarkRead(cmd.Context(), args)
@@ -61,11 +64,19 @@ type channelViewer interface {
 // resolve or whose view call errors, so a typo doesn't silently skip a channel.
 func markRead(ctx context.Context, v channelViewer, me *model.User, specs []string, out io.Writer) error {
 	for _, spec := range specs {
-		ch, err := resolveChannel(ctx, v, me, spec)
-		if err != nil {
-			return err
+		// A bare 26-char channel id (no team/ or @user) is viewed directly:
+		// the `matterbox listen` notification buttons pass $MATTERBOX_CHANNEL_ID,
+		// which carries no URL slug to resolve. Anything else is a team/channel
+		// or @user spec resolved as usual.
+		channelID := strings.TrimSpace(spec)
+		if !model.IsValidId(channelID) {
+			ch, err := resolveChannel(ctx, v, me, spec)
+			if err != nil {
+				return err
+			}
+			channelID = ch.Id
 		}
-		if err := v.ViewChannel(ctx, me.Id, ch.Id); err != nil {
+		if err := v.ViewChannel(ctx, me.Id, channelID); err != nil {
 			return fmt.Errorf("mark %s read: %w", spec, err)
 		}
 		fmt.Fprintf(out, "matterbox: marked %s read\n", spec)

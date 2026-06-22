@@ -59,6 +59,24 @@ func TestMarkRead(t *testing.T) {
 		}
 	})
 
+	t.Run("marks a raw channel id read without resolving", func(t *testing.T) {
+		f := &fakeViewer{}
+		// A valid 26-char Mattermost id is used directly; resolveChannel
+		// (ChannelByName/UserByUsername) must not be consulted.
+		id := model.NewId()
+		var out bytes.Buffer
+		if err := markRead(context.Background(), f, me, []string{id}, &out); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(f.viewedCh) != 1 || f.viewedCh[0] != id {
+			t.Errorf("viewed channels = %v, want [%s]", f.viewedCh, id)
+		}
+		if f.gotTeam != "" || f.gotChannel != "" || f.gotUsername != "" {
+			t.Errorf("a raw id should bypass resolution, but resolver was called (team=%q channel=%q user=%q)",
+				f.gotTeam, f.gotChannel, f.gotUsername)
+		}
+	})
+
 	t.Run("marks several channels read in order", func(t *testing.T) {
 		f := &fakeViewer{}
 		f.channel = &model.Channel{Id: "chan1"}

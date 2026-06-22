@@ -17,8 +17,12 @@ var (
 	mdStrikeStyle    = lipgloss.NewStyle().Strikethrough(true)
 	mdCodeStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
 	mdCodeBlockStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("14"))
-	mdFenceStyle     = lipgloss.NewStyle().Foreground(dimColor)
-	mdQuoteBarStyle  = lipgloss.NewStyle().Foreground(dimColor)
+	// mdCodeOpen is the ANSI lead sequence mdCodeStyle emits before content.
+	// Extracted once so inline code can be closed with a foreground-only reset
+	// that does not wipe enclosing character styles (italic, bold, strike).
+	mdCodeOpen      = ansiOpenSeq(mdCodeStyle)
+	mdFenceStyle    = lipgloss.NewStyle().Foreground(dimColor)
+	mdQuoteBarStyle = lipgloss.NewStyle().Foreground(dimColor)
 
 	mdLinkStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Underline(true)
 	// mdLinkHoverStyle paints the link under the mouse: the same blue underline
@@ -39,15 +43,34 @@ var (
 	// surrounding text, so adjacent spans like "_a_ _b_" both still match.
 	mdBoldUnderscoreRe   = regexp.MustCompile(`\b__([^_]+?)__\b`)
 	mdItalicUnderscoreRe = regexp.MustCompile(`\b_([^_\s][^_]*?)_\b`)
-	mdImageRe    = regexp.MustCompile(`!\[([^\]]*)\]\(([^)\s]+)\)`)
-	mdLinkRe     = regexp.MustCompile(`\[([^\]]+)\]\(([^)\s]+)\)`)
-	mdURLRe      = regexp.MustCompile(`https?://[^\s<>\x00]+`)
+	mdImageRe            = regexp.MustCompile(`!\[([^\]]*)\]\(([^)\s]+)\)`)
+	mdLinkRe             = regexp.MustCompile(`\[([^\]]+)\]\(([^)\s]+)\)`)
+	mdURLRe              = regexp.MustCompile(`https?://[^\s<>\x00]+`)
 )
 
 const (
 	mdCodeSentinel = "\x00MDCODE"
 	mdLinkSentinel = "\x00MDLINK"
 )
+
+// ansiOpenSeq returns the ANSI escape sequence a style emits immediately
+// before its content. The sentinel must not appear in the style's output.
+func ansiOpenSeq(s lipgloss.Style) string {
+	const sentinel = "\x00"
+	r := s.Render(sentinel)
+	if i := strings.Index(r, sentinel); i >= 0 {
+		return r[:i]
+	}
+	return ""
+}
+
+// renderCodeSpan styles inline code with the configured foreground colour but
+// closes it with \x1b[39m (reset foreground only) instead of lipgloss's usual
+// \x1b[0m (reset all). That preserves enclosing emphasis spans: a code span
+// inside _..._ no longer cancels the outer italic.
+func renderCodeSpan(content string) string {
+	return mdCodeOpen + content + "\x1b[39m"
+}
 
 // osc8Link wraps text in an OSC 8 hyperlink escape pointing at url. The
 // terminal (Ghostty) makes the whole run clickable and keeps it
@@ -363,7 +386,7 @@ func renderInline(s string, ei *emojiImages, mr mrInlineFn, self string) string 
 	})
 
 	for i, c := range codes {
-		s = strings.Replace(s, mdCodeSentinel+strconv.Itoa(i)+"\x00", mdCodeStyle.Render(c), 1)
+		s = strings.Replace(s, mdCodeSentinel+strconv.Itoa(i)+"\x00", renderCodeSpan(c), 1)
 	}
 	for i, l := range links {
 		s = strings.Replace(s, mdLinkSentinel+strconv.Itoa(i)+"\x00", osc8Link(l.url, mdLinkStyle.Render(l.text)), 1)
