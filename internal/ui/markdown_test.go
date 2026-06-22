@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -53,6 +54,64 @@ func TestRenderInlineBalancedParensKept(t *testing.T) {
 	got := renderInline(url, nil, nil, "")
 	if !strings.Contains(got, osc8Open+url+"\x1b\\") {
 		t.Fatalf("balanced parens dropped from target: %q", got)
+	}
+}
+
+// Underscore emphasis must render like its asterisk twin: _x_ italic, __x__
+// bold. Mattermost accepts both delimiter families.
+func TestRenderInlineUnderscoreEmphasis(t *testing.T) {
+	tests := []struct {
+		name, in, want string
+		style          lipgloss.Style
+	}{
+		{"italic", "say _hello_ now", "hello", mdItalicStyle},
+		{"bold", "say __hello__ now", "hello", mdBoldStyle},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := renderInline(tt.in, nil, nil, "")
+			if want := tt.style.Render(tt.want); !strings.Contains(got, want) {
+				t.Fatalf("renderInline(%q) = %q, want styled %q", tt.in, got, want)
+			}
+			// The delimiters must be gone from the visible text.
+			if plain := ansi.Strip(got); strings.Contains(plain, "_") {
+				t.Fatalf("underscore delimiters left in visible text: %q", plain)
+			}
+		})
+	}
+}
+
+// The original bug: a whole line wrapped in _..._ (with inline code inside)
+// left the underscores literal. It must now italicise and keep the code spans.
+func TestRenderInlineUnderscoreSpanWithCode(t *testing.T) {
+	got := renderInline("_Type `go north` to begin._", nil, nil, "")
+	if plain := ansi.Strip(got); strings.Contains(plain, "_") {
+		t.Fatalf("underscores not consumed: %q", plain)
+	}
+	if want := mdCodeStyle.Render("go north"); !strings.Contains(got, want) {
+		t.Fatalf("code span inside italic lost styling: %q", got)
+	}
+}
+
+// Underscores inside identifiers must NOT become emphasis — the CommonMark
+// intraword rule, which the \b guards enforce.
+func TestRenderInlineUnderscoreIntrawordUntouched(t *testing.T) {
+	for _, in := range []string{"call snake_case_fn here", "use a_b_c value"} {
+		got := ansi.Strip(renderInline(in, nil, nil, ""))
+		if got != in {
+			t.Fatalf("intraword underscores altered: renderInline(%q) -> %q", in, got)
+		}
+	}
+}
+
+// Two adjacent italic spans on one line must both render — \b is zero-width, so
+// the space between them is not consumed by the first match.
+func TestRenderInlineUnderscoreAdjacentSpans(t *testing.T) {
+	got := renderInline("go _north_ or _south_", nil, nil, "")
+	for _, w := range []string{"north", "south"} {
+		if want := mdItalicStyle.Render(w); !strings.Contains(got, want) {
+			t.Fatalf("adjacent span %q not italicised in %q", w, got)
+		}
 	}
 }
 

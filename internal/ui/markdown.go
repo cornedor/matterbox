@@ -30,6 +30,15 @@ var (
 	mdBoldRe     = regexp.MustCompile(`\*\*([^*]+?)\*\*`)
 	mdItalicRe   = regexp.MustCompile(`\*([^*\s][^*]*?)\*`)
 	mdStrikeRe   = regexp.MustCompile(`~~([^~]+?)~~`)
+	// Underscore emphasis (_italic_, __bold__). Mattermost/CommonMark accept
+	// both `*` and `_`, but underscores can't form *intraword* emphasis — that
+	// is what keeps snake_case and __init__-style identifiers from being
+	// italicised. The leading/trailing `\b` enforce that boundary: `_` is a word
+	// character, so `\b_` only matches an underscore whose neighbour is a
+	// non-word char (or string edge). Because `\b` is zero-width it consumes no
+	// surrounding text, so adjacent spans like "_a_ _b_" both still match.
+	mdBoldUnderscoreRe   = regexp.MustCompile(`\b__([^_]+?)__\b`)
+	mdItalicUnderscoreRe = regexp.MustCompile(`\b_([^_\s][^_]*?)_\b`)
 	mdImageRe    = regexp.MustCompile(`!\[([^\]]*)\]\(([^)\s]+)\)`)
 	mdLinkRe     = regexp.MustCompile(`\[([^\]]+)\]\(([^)\s]+)\)`)
 	mdURLRe      = regexp.MustCompile(`https?://[^\s<>\x00]+`)
@@ -335,10 +344,18 @@ func renderInline(s string, ei *emojiImages, mr mrInlineFn, self string) string 
 		})
 	}
 
+	// Bold before italic for each delimiter family so the double-marker form
+	// isn't eaten by the single-marker pass.
 	s = mdBoldRe.ReplaceAllStringFunc(s, func(m string) string {
 		return mdBoldStyle.Render(m[2 : len(m)-2])
 	})
+	s = mdBoldUnderscoreRe.ReplaceAllStringFunc(s, func(m string) string {
+		return mdBoldStyle.Render(m[2 : len(m)-2])
+	})
 	s = mdItalicRe.ReplaceAllStringFunc(s, func(m string) string {
+		return mdItalicStyle.Render(m[1 : len(m)-1])
+	})
+	s = mdItalicUnderscoreRe.ReplaceAllStringFunc(s, func(m string) string {
 		return mdItalicStyle.Render(m[1 : len(m)-1])
 	})
 	s = mdStrikeRe.ReplaceAllStringFunc(s, func(m string) string {
