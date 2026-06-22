@@ -111,6 +111,43 @@ func TestMatchPostDMAndThreadAndFile(t *testing.T) {
 	}
 }
 
+// TestMatchPostFromMe pins the self filter: from_me:false excludes the reader's
+// own posts (the fix for a DM rule firing on messages you send), from_me:true
+// targets only them, and unset matches either.
+func TestMatchPostFromMe(t *testing.T) {
+	const meID, meName = "u-me", "corne"
+
+	mine := &model.Post{Id: "p1", ChannelId: "d1", UserId: meID, Message: "i sent this"}
+	mineEv := postedEvent(t, mine, map[string]string{"channel_type": "D", "sender_name": "@corne"})
+	theirs := &model.Post{Id: "p2", ChannelId: "d1", UserId: "u-bob", Message: "bob sent this"}
+	theirsEv := postedEvent(t, theirs, map[string]string{"channel_type": "D", "sender_name": "@bob"})
+
+	cases := []struct {
+		name       string
+		spec       MatchSpec
+		mineWant   bool
+		theirsWant bool
+	}{
+		{"from_me:false excludes mine", MatchSpec{FromMe: ptrBool(false)}, false, true},
+		{"from_me:true targets mine", MatchSpec{FromMe: ptrBool(true)}, true, false},
+		{"unset matches either", MatchSpec{}, true, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m, err := compileMatch(c.spec)
+			if err != nil {
+				t.Fatalf("compileMatch: %v", err)
+			}
+			if got := matchPost(mineEv, mine, m, meID, meName, "", nil, nil); got != c.mineWant {
+				t.Errorf("own post: matchPost = %v, want %v", got, c.mineWant)
+			}
+			if got := matchPost(theirsEv, theirs, m, meID, meName, "", nil, nil); got != c.theirsWant {
+				t.Errorf("other's post: matchPost = %v, want %v", got, c.theirsWant)
+			}
+		})
+	}
+}
+
 func TestCompileRulesErrors(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -220,6 +257,57 @@ func TestRunExecPipesEnvelope(t *testing.T) {
 	}
 	if got.PostID != "p1" || got.Channel != "Ops" || got.Author != "bob" || got.Message != "deploy now" || got.IsDM {
 		t.Errorf("envelope mismatch: %+v", got)
+	}
+}
+
+// TestRunExecTemplatesCommand pins the templated argv: a command argument like
+// "{{ .author }} sent a message" is expanded against the post before exec, so a
+// script receives the post fields as ordinary arguments — not just on stdin.
+func TestRunExecTemplatesCommand(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses /bin/sh")
+	}
+	dir := t.TempDir()
+	out := filepath.Join(dir, "arg.txt")
+
+	e := newTestEngine(t, Options{})
+	p := &model.Post{Id: "p1", ChannelId: "c1", UserId: "u-bob", Message: "deploy now", CreateAt: 1700000000000}
+	ev := postedEvent(t, p, map[string]string{"channel_type": "O", "channel_display_name": "Ops", "sender_name": "@bob"})
+
+	// Compile through compileAction so the argv templates are built like a real rule.
+	a, err := compileAction(ActionSpec{
+		Type:    ActionExec,
+		Command: []string{"sh", "-c", `printf '%s' "$1" > ` + out, "sh", "{{ .author }} sent a message"},
+	})
+	if err != nil {
+		t.Fatalf("compileAction(exec): %v", err)
+	}
+	e.wg.Add(1)
+	e.runExec(t.Context(), ev, p, a)
+	e.wg.Wait()
+
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read captured arg: %v", err)
+	}
+	if want := "bob sent a message"; string(got) != want {
+		t.Errorf("rendered arg = %q, want %q", got, want)
+	}
+}
+
+// TestCompileExecCommandTemplate covers compile-time validation of the argv
+// templates: a malformed template is a startup error (like a bad send body),
+// and a plain command compiles into one template per element.
+func TestCompileExecCommandTemplate(t *testing.T) {
+	ca, err := compileAction(ActionSpec{Type: ActionExec, Command: []string{"notify-send", "{{ .author }}"}})
+	if err != nil {
+		t.Fatalf("compileAction(exec): %v", err)
+	}
+	if len(ca.cmdTmpls) != 2 {
+		t.Fatalf("want 2 compiled argv templates, got %d", len(ca.cmdTmpls))
+	}
+	if _, err := compileAction(ActionSpec{Type: ActionExec, Command: []string{"notify-send", "{{ .author "}}); err == nil {
+		t.Error("a malformed command template must fail compilation")
 	}
 }
 

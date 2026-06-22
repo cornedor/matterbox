@@ -95,6 +95,12 @@ type MatchSpec struct {
 	// DM, when non-nil, requires the post be in a direct message (true) or not
 	// (false). Nil matches either.
 	DM *bool
+	// FromMe, when non-nil, requires the post be the reader's own (true) or
+	// someone else's (false). Nil matches either. It is the self-test the notify
+	// and send actions apply internally, surfaced as a match condition so the
+	// other actions (exec/webhook/react) can gate on it too — `from_me: false`
+	// keeps a DM rule from firing on your own outgoing messages.
+	FromMe *bool
 	// HasFile requires at least one attached file.
 	HasFile bool
 	// IsThread, when non-nil, requires the post be a thread reply (true) or a
@@ -182,8 +188,10 @@ type ActionSpec struct {
 	// Empty uses telegram.chat_id. A rule sending to a non-default chat does not
 	// get the two-way reply buttons (those only work for the configured chat).
 	ChatID string
-	// Command (exec) is the argv to run; the post envelope is piped to its
-	// stdin as JSON and the key fields are exported as MATTERBOX_* env vars.
+	// Command (exec) is the argv to run; each element is a text/template over the
+	// post (e.g. "{{ .author }} sent a message"), so an argument can carry post
+	// fields. The post envelope is also piped to its stdin as JSON and the key
+	// fields are exported as MATTERBOX_* env vars.
 	Command []string
 	// URL (webhook) is POSTed the post envelope as a JSON body.
 	URL string
@@ -242,6 +250,7 @@ type Match struct {
 	messageRe   *regexp.Regexp
 	mention     bool
 	dm          *bool
+	fromMe      *bool
 	hasFile     bool
 	isThread    *bool
 	not         *Match
@@ -351,6 +360,9 @@ type Action struct {
 	valueTmpl *template.Template
 	// textTmpl is the compiled send message body (the Text field).
 	textTmpl *template.Template
+	// cmdTmpls are the compiled forms of the exec Command argv: each element is a
+	// template over the post envelope, so a command can carry {{ .author }} etc.
+	cmdTmpls []*template.Template
 	by       int64
 }
 
@@ -405,6 +417,7 @@ func compileMatch(s MatchSpec) (Match, error) {
 		authors:     s.Authors,
 		mention:     s.Mention,
 		dm:          s.DM,
+		fromMe:      s.FromMe,
 		hasFile:     s.HasFile,
 		isThread:    s.IsThread,
 	}
@@ -572,6 +585,14 @@ func compileAction(a ActionSpec) (Action, error) {
 	case ActionExec:
 		if len(a.Command) == 0 {
 			return Action{}, fmt.Errorf("exec action needs a command")
+		}
+		ca.cmdTmpls = make([]*template.Template, len(a.Command))
+		for i, arg := range a.Command {
+			t, err := compileTemplate(arg)
+			if err != nil {
+				return Action{}, fmt.Errorf("exec: bad command template %q: %w", arg, err)
+			}
+			ca.cmdTmpls[i] = t
 		}
 	case ActionWebhook:
 		if strings.TrimSpace(a.URL) == "" {
@@ -914,6 +935,15 @@ func matchPost(ev *model.WebSocketEvent, p *model.Post, m Match, meID, meName, t
 	if m.dm != nil && *m.dm != isDM {
 		return false
 	}
+	// The same p.UserId == me test the notify/send actions apply internally, so an
+	// exec/webhook/react rule can exclude (from_me: false) or target (true) the
+	// reader's own posts. With no known reader (meID == "") nothing is "from me".
+	if m.fromMe != nil {
+		isMe := meID != "" && p.UserId == meID
+		if *m.fromMe != isMe {
+			return false
+		}
+	}
 	if m.mention && !(wsMentions(ev)[meID] && mentionsName(p.Message, meName)) {
 		return false
 	}
@@ -1236,7 +1266,8 @@ func postFileNames(p *model.Post) []string {
 
 // runExec runs a rule's command with the post envelope on stdin (as JSON) and
 // the key fields exported as MATTERBOX_* environment variables, bounded by
-// execTimeout. Output is logged (truncated); a failure is logged, not fatal.
+// execTimeout. The argv is rendered per post (each element is a template over
+// the envelope). Output is logged (truncated); a failure is logged, not fatal.
 func (e *Engine) runExec(ctx context.Context, ev *model.WebSocketEvent, p *model.Post, a Action) {
 	defer e.wg.Done()
 	env := e.buildEnvelope(ev, p)
@@ -1245,17 +1276,50 @@ func (e *Engine) runExec(ctx context.Context, ev *model.WebSocketEvent, p *model
 		e.log.Printf("rule exec: marshal envelope: %v", err)
 		return
 	}
+	argv, err := renderCommand(a, env)
+	if err != nil {
+		e.log.Printf("rule exec: render command: %v", err)
+		return
+	}
 	cctx, cancel := context.WithTimeout(ctx, execTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, a.Command[0], a.Command[1:]...)
+	cmd := exec.CommandContext(cctx, argv[0], argv[1:]...)
 	cmd.Stdin = bytes.NewReader(payload)
 	cmd.Env = execEnv(env)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		e.log.Printf("rule exec %v failed: %v (%s)", a.Command, err, truncateForLog(string(out)))
+		e.log.Printf("rule exec %v failed: %v (%s)", argv, err, truncateForLog(string(out)))
 		return
 	}
-	e.log.Printf("rule exec %v ok%s", a.Command, logSuffix(string(out)))
+	e.log.Printf("rule exec %v ok%s", argv, logSuffix(string(out)))
+}
+
+// renderCommand expands an exec action's templated argv against the post
+// envelope, so a command like ["notify-send", "{{ .author }} sent a message"]
+// is filled in per post. When the templates aren't compiled (an Action built
+// directly rather than through compileAction, e.g. in a test) it falls back to
+// the raw Command. It errors if any argument fails to render or the executable
+// (argv[0]) renders empty — exec'ing "" would be a confusing failure.
+func renderCommand(a Action, env envelope) ([]string, error) {
+	if len(a.cmdTmpls) == 0 {
+		return a.Command, nil
+	}
+	data, err := envelopeMap(env)
+	if err != nil {
+		return nil, err
+	}
+	argv := make([]string, len(a.cmdTmpls))
+	for i, t := range a.cmdTmpls {
+		var b strings.Builder
+		if err := t.Execute(&b, data); err != nil {
+			return nil, err
+		}
+		argv[i] = b.String()
+	}
+	if strings.TrimSpace(argv[0]) == "" {
+		return nil, fmt.Errorf("command rendered an empty executable")
+	}
+	return argv, nil
 }
 
 // execEnv builds the child environment: the parent's plus the MATTERBOX_* post

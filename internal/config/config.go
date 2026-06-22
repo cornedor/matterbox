@@ -289,6 +289,11 @@ type RuleMatchConfig struct {
 	Mention bool `yaml:"mention,omitempty"`
 	// DM, when set, requires a direct message (true) or a channel (false).
 	DM *bool `yaml:"dm,omitempty"`
+	// FromMe, when set, requires the post be your own (true) or someone else's
+	// (false). `from_me: false` is the way to keep a DM rule from firing on the
+	// messages you send — exec/webhook/react have no built-in self-skip the way
+	// notify/send do.
+	FromMe *bool `yaml:"from_me,omitempty"`
 	// HasFile requires at least one attachment.
 	HasFile bool `yaml:"has_file,omitempty"`
 	// IsThread, when set, requires a thread reply (true) or a root post (false).
@@ -1019,7 +1024,8 @@ func writeConfig(p string, cfg *Config) error {
 		"# rules:      per-message automation for `matterbox listen`. Each rule has a\n" +
 		"#             match (conditions, ANDed) and actions (run in order). Match on\n" +
 		"#             channel (display-name glob or id), author, message (RE2 regexp),\n" +
-		"#             mention (you were @named), dm, has_file, is_thread; channel and\n" +
+		"#             mention (you were @named), dm, from_me (your own posts; set\n" +
+		"#             false to skip them), has_file, is_thread; channel and\n" +
 		"#             author take a single value or a list (match any), and a nested\n" +
 		"#             not: inverts a sub-match. A frequency: { count, within, by }\n" +
 		"#             block fires the rule only on a burst (count matches within the\n" +

@@ -230,6 +230,7 @@ Different fields are ANDed; an empty `match` matches every message.
 | `message` | [RE2](https://github.com/google/re2/wiki/Syntax) regexp over the body. Prefix `(?i)` for case-insensitive. |
 | `mention` | `true` requires you were directly @named (the same test the bridge uses). |
 | `dm` | `true` = only direct messages; `false` = only channels; unset = either. |
+| `from_me` | `true` = only your own posts; `false` = only others'; unset = either. `from_me: false` is how you keep a rule from firing on the messages **you** send — `exec`/`webhook`/`react` have no built-in self-skip the way `notify`/`send` do. |
 | `has_file` | `true` requires at least one attachment. |
 | `is_thread` | `true` = only thread replies; `false` = only root posts; unset = either. |
 | `not` | A nested `match` block that **inverts**: the rule fires only when the post does **not** satisfy it. Recursive. |
@@ -333,7 +334,7 @@ a per-day ledger key from [`{{ today }}`](#templating-keys-and-values).
 | `type` | Fields | What it does |
 |---|---|---|
 | `notify` | `summarize`, `urgent`, `chat_id` (all optional) | Summarise + deliver to Telegram. `summarize` overrides `listen.summarize`; `urgent: true` delivers even during quiet hours / for muted channels; `chat_id` routes to a different Telegram chat. |
-| `exec` | `command` (argv list) | Run a local command. The message is piped to its **stdin as JSON** and exported as `MATTERBOX_*` env vars. 30s timeout. |
+| `exec` | `command` (argv list) | Run a local command. Each argv element is a [template](#templating-keys-and-values) over the post, so an argument can carry `{{ .author }}`, `{{ .message }}`, … (e.g. `["notify-send", "{{ .author }} sent a message"]`). The message is also piped to its **stdin as JSON** and exported as `MATTERBOX_*` env vars. 30s timeout. |
 | `webhook` | `url`, `headers` (optional map) | HTTP `POST` the message envelope as a JSON body. `headers` adds request headers; values are expanded from the daemon's environment (`$TOKEN` / `${TOKEN}`). 15s timeout. |
 | `react` | `emoji` (shortcode) | Add an emoji reaction to the message. |
 | `mark_read` | — | Mark the message's channel read. |
@@ -422,7 +423,8 @@ rules:
 
 ### Templating keys and values
 
-`state_set`/`state_incr`/`state_del` `key`, and `state_set` `value`, are
+`state_set`/`state_incr`/`state_del` `key`, `state_set` `value`, the `send`
+`text`, and each element of an `exec` `command`, are
 [Go `text/template`](https://pkg.go.dev/text/template) strings expanded against
 the message. The data is exactly the [exec/webhook envelope](#the-exec--webhook-payload)
 above — so `{{ .author }}`, `{{ .channel }}`, `{{ .create_at }}`, `{{ .message }}`,
@@ -446,7 +448,7 @@ are valid template identifiers; to read a key built from a template (e.g.
 A field or `.state` key that doesn't exist renders as empty, not an error.
 
 Two date helpers are available on top of the post fields, in every template
-(state keys/values, state-match keys, and the `send` body):
+(state keys/values, state-match keys, the `send` body, and `exec` command args):
 
 | Function | Renders |
 |---|---|
@@ -629,7 +631,7 @@ rules:
     match: { mention: true }
     actions:
       - type: exec
-        command: ["notify-send", "Mattermost mention"]
+        command: ["notify-send", "{{ .author }} mentioned you", "{{ .message }}"]
 ```
 
 Auto-react with 👀 when a bot drops a deploy notice, and mark it read:

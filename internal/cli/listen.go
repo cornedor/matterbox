@@ -218,6 +218,7 @@ func matchSpec(m config.RuleMatchConfig) listen.MatchSpec {
 		Message:  m.Message,
 		Mention:  m.Mention,
 		DM:       m.DM,
+		FromMe:   m.FromMe,
 		HasFile:  m.HasFile,
 		IsThread: m.IsThread,
 	}
