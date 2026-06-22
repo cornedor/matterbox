@@ -149,6 +149,13 @@ type Engine struct {
 	seenMu     sync.Mutex
 	lastSeenMs int64
 
+	// lastIngestMs is the cache backfill watermark: the point up to which the
+	// local cache was known caught up. Persisted (key ingestCursorKey) and used
+	// on reconnect to bound how far back the gap-fill looks for channels we have
+	// no cached baseline for. Touched only on the Run goroutine (loadIngestCursor
+	// → backfill → advanceIngest run sequentially there), so it needs no lock.
+	lastIngestMs int64
+
 	// teams maps team id → URL name for building post permalinks; defaultTeam is
 	// the fallback when a post carries no team (DMs). Loaded once at startup.
 	teamsMu     sync.RWMutex
@@ -196,6 +203,13 @@ const askProgressInterval = 2 * time.Second
 
 // cursorKey is the meta-table key for the catch-up cursor.
 const cursorKey = "listen.last_seen_ms"
+
+// ingestCursorKey is the meta-table key for the cache backfill watermark.
+const ingestCursorKey = "listen.last_ingest_ms"
+
+// backfillPageSize is how many posts the reconnect gap-fill pulls per
+// PostsAfter round-trip while draining a channel forward to the live tail.
+const backfillPageSize = 200
 
 // catchupMaxAge bounds how far back catch-up looks, so a daemon that was off for
 // weeks doesn't surface a flood of stale mentions on its first reconnect.
@@ -260,9 +274,10 @@ func (e *Engine) clock() time.Time {
 // ctx is cancelled. It returns ctx.Err() once all in-flight notifications have
 // drained, so a caller wiring it to SIGINT/SIGTERM gets a clean shutdown.
 func (e *Engine) Run(ctx context.Context) error {
-	e.loadCursor()      // catch-up watermark (set to now on first ever run)
-	e.refreshTeams(ctx) // team names for permalinks
-	e.refreshMuted(ctx) // best-effort initial mute set, before events flow
+	e.loadCursor()       // catch-up watermark (set to now on first ever run)
+	e.loadIngestCursor() // cache backfill watermark (likewise now on first run)
+	e.refreshTeams(ctx)  // team names for permalinks
+	e.refreshMuted(ctx)  // best-effort initial mute set, before events flow
 	if e.inboundEnabled() {
 		e.log.Printf("two-way enabled: replies + commands accepted from chat %s", e.opts.TelegramChatID)
 		e.wg.Add(1)
@@ -295,6 +310,7 @@ func (e *Engine) Run(ctx context.Context) error {
 		attempt = 0
 		e.log.Printf("connected (%s)", e.opts.ServerURL)
 		go e.refreshMuted(ctx) // pick up mute changes made while we were away
+		e.backfill(ctx)        // ingest posts that arrived during the gap (cache warmer)
 		e.catchUp(ctx)         // notify mentions that arrived while disconnected
 		e.consume(ctx, wsc)
 		wsc.Close()
@@ -875,6 +891,160 @@ func (e *Engine) advanceCursor(ms int64) {
 	if err := e.store.SetMeta(cursorKey, strconv.FormatInt(ms, 10)); err != nil {
 		e.log.Printf("persist cursor: %v", err)
 	}
+}
+
+// loadIngestCursor reads the cache backfill watermark from the store. On the
+// first ever run (no stored value) it is set to now, so the daemon starts
+// warming the cache from the present rather than replaying history.
+func (e *Engine) loadIngestCursor() {
+	if v, ok, err := e.store.GetMeta(ingestCursorKey); err != nil {
+		e.log.Printf("load ingest cursor: %v", err)
+	} else if ok {
+		if ms, perr := strconv.ParseInt(v, 10, 64); perr == nil {
+			e.lastIngestMs = ms
+			return
+		}
+	}
+	e.lastIngestMs = time.Now().UnixMilli()
+	if err := e.store.SetMeta(ingestCursorKey, strconv.FormatInt(e.lastIngestMs, 10)); err != nil {
+		e.log.Printf("init ingest cursor: %v", err)
+	}
+}
+
+// ingestFloor is the oldest timestamp the backfill will reach back to: the
+// watermark, clamped so a daemon that was off for longer than catchupMaxAge
+// doesn't try to refetch weeks of history for a channel it never cached.
+func (e *Engine) ingestFloor() int64 {
+	floor := time.Now().Add(-catchupMaxAge).UnixMilli()
+	if e.lastIngestMs > floor {
+		return e.lastIngestMs
+	}
+	return floor
+}
+
+// advanceIngest moves the backfill watermark forward (never back) and persists.
+func (e *Engine) advanceIngest(ms int64) {
+	if ms <= e.lastIngestMs {
+		return
+	}
+	e.lastIngestMs = ms
+	if err := e.store.SetMeta(ingestCursorKey, strconv.FormatInt(ms, 10)); err != nil {
+		e.log.Printf("persist ingest cursor: %v", err)
+	}
+}
+
+// ingestMany upserts a batch of fetched posts into the cache. Errors are logged,
+// not fatal — one bad write shouldn't abort the rest of the backfill.
+func (e *Engine) ingestMany(posts []*model.Post) {
+	if len(posts) == 0 {
+		return
+	}
+	if err := e.store.UpsertMany(posts); err != nil {
+		e.log.Printf("backfill persist %d post(s): %v", len(posts), err)
+	}
+}
+
+// backfill closes the local-cache gap left by a disconnect: the WebSocket only
+// delivers events from connect onward, so anything posted while the daemon was
+// down never reaches ingest(). Run after every (re)connect — independent of
+// notification settings, since keeping the cache warm is the daemon's primary
+// job — it walks the user's channels and pulls the posts each one gained since
+// the cache last saw it, writing them into the store.
+//
+// For a channel with cached history the cursor is the newest cached post, so the
+// fetch is exactly the gap. For one we have no baseline for, the watermark
+// (floored to catchupMaxAge) bounds how far back to seed. Channels with no
+// server-side activity past what we already hold are skipped without a fetch.
+func (e *Engine) backfill(ctx context.Context) {
+	if e.me == nil {
+		return // need the user id to enumerate channels
+	}
+	channels, err := e.client.AllChannels(ctx, e.me.Id)
+	if err != nil {
+		e.log.Printf("backfill: list channels: %v", err)
+		return
+	}
+	floor := e.ingestFloor()
+	var filled int
+	for _, ch := range channels {
+		if ctx.Err() != nil {
+			return
+		}
+		if ch == nil || ch.DeleteAt != 0 {
+			continue
+		}
+		latestID, latestAt, err := e.store.LatestPost(ch.Id)
+		if err != nil {
+			e.log.Printf("backfill: latest cached post for %s: %v", ch.Id, err)
+			continue
+		}
+		// Skip channels whose newest server post we already hold (or that have
+		// none past the floor): nothing to fetch. LastPostAt is the channel's
+		// newest post time, so this never skips a channel with a real gap.
+		baseline := floor
+		if latestAt > baseline {
+			baseline = latestAt
+		}
+		if ch.LastPostAt <= baseline {
+			continue
+		}
+		filled += e.backfillChannel(ctx, ch.Id, latestID, floor)
+	}
+	// We are caught up as of now; mark it so the next reconnect after live
+	// ingestion doesn't rescan channels back to this connect.
+	e.advanceIngest(time.Now().UnixMilli())
+	if filled > 0 {
+		e.log.Printf("cache backfill: ingested %d post(s) across the reconnect gap", filled)
+	}
+}
+
+// backfillChannel pulls and ingests the posts a single channel gained since the
+// cache last saw it, returning how many were written. With a cached cursor it
+// drains forward page by page to the live tail; without one it seeds the window
+// newer than sinceMs. Best-effort: a fetch error logs and stops that channel.
+func (e *Engine) backfillChannel(ctx context.Context, channelID, cursorID string, sinceMs int64) int {
+	total := 0
+	if cursorID == "" {
+		// No cached baseline — seed the posts newer than the watermark. A single
+		// server-capped page; a channel that was silent for the whole daemon
+		// uptime and then saw a >1000-post burst during one disconnect is the
+		// only case this can't fully cover, and live ingest resumes regardless.
+		pl, err := e.client.PostsSince(ctx, channelID, sinceMs)
+		if err != nil {
+			e.log.Printf("backfill: posts since for %s: %v", channelID, err)
+			return 0
+		}
+		posts := postsByCreateAt(pl)
+		e.ingestMany(posts)
+		return len(posts)
+	}
+	// Drain forward from the newest cached post, advancing the cursor each page,
+	// until the server reports no more posts after it.
+	for {
+		if ctx.Err() != nil {
+			return total
+		}
+		pl, err := e.client.PostsAfter(ctx, channelID, cursorID, backfillPageSize)
+		if err != nil {
+			e.log.Printf("backfill: posts after for %s: %v", channelID, err)
+			return total
+		}
+		posts := postsByCreateAt(pl) // oldest-first
+		if len(posts) == 0 {
+			break
+		}
+		e.ingestMany(posts)
+		total += len(posts)
+		newest := posts[len(posts)-1].Id
+		// PostsAfter(after=cursorID) excludes cursorID, so the newest returned
+		// must move forward; if it doesn't (a misbehaving server), stop rather
+		// than spin re-ingesting the same page.
+		if pl.NextPostId == "" || newest == cursorID {
+			break
+		}
+		cursorID = newest
+	}
+	return total
 }
 
 // catchUp delivers (as one consolidated message) the direct mentions / DMs that

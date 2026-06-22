@@ -939,6 +939,32 @@ LIMIT 1`
 	return id, nil
 }
 
+// LatestPost returns the most recent (by create_at) non-deleted post id +
+// its create_at (unix-ms) stored for the channel, or ("", 0) if none. The
+// listen daemon uses it on reconnect both as the cache high-water mark (to
+// decide whether a channel has server-side posts it hasn't cached) and as the
+// cursor for Client.PostsAfter when draining the disconnect gap.
+func (s *Store) LatestPost(channelID string) (string, int64, error) {
+	if s == nil || channelID == "" {
+		return "", 0, nil
+	}
+	const q = `
+SELECT id, create_at FROM posts
+WHERE channel_id = ? AND delete_at = 0
+ORDER BY create_at DESC
+LIMIT 1`
+	var id string
+	var createAt int64
+	err := s.db.QueryRow(q, channelID).Scan(&id, &createAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", 0, nil
+		}
+		return "", 0, fmt.Errorf("latest post: %w", err)
+	}
+	return id, createAt, nil
+}
+
 // OldestPost returns the oldest (by create_at) non-deleted post id +
 // its create_at (unix-ms) stored for the channel, or ("", 0) if none.
 // Used as the cursor for Client.PostsBefore when extending a channel's

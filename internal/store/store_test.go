@@ -126,6 +126,30 @@ func TestLatestPostID(t *testing.T) {
 	}
 }
 
+func TestLatestPost(t *testing.T) {
+	s := tempStore(t)
+	// Unknown channel → zero values, no error.
+	id, at, err := s.LatestPost("c1")
+	if err != nil {
+		t.Fatalf("latest empty: %v", err)
+	}
+	if id != "" || at != 0 {
+		t.Errorf("want (\"\", 0) for unknown channel, got (%q, %d)", id, at)
+	}
+	p1 := mkPost("p1aaaaaaaaaaaaaaaaaaaaaaaa", "c1", "first", 100)
+	p2 := mkPost("p2aaaaaaaaaaaaaaaaaaaaaaaa", "c1", "second", 200)
+	if err := s.UpsertMany([]*model.Post{p1, p2}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	id, at, err = s.LatestPost("c1")
+	if err != nil {
+		t.Fatalf("latest: %v", err)
+	}
+	if id != p2.Id || at != 200 {
+		t.Errorf("want (%s, 200), got (%s, %d)", p2.Id, id, at)
+	}
+}
+
 func TestRecentLimit(t *testing.T) {
 	s := tempStore(t)
 	for i := 0; i < 5; i++ {
