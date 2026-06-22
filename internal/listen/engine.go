@@ -313,11 +313,19 @@ func (e *Engine) Run(ctx context.Context) error {
 }
 
 // consume drains the event channel until it closes (disconnect) or ctx is
-// cancelled.
+// cancelled. It also watches PingTimeoutChannel: a silent half-open drop (no
+// FIN/RST reaches us) never errors the reader's deadline-less NextReader, so
+// EventChannel would never close and we'd sit on a dead socket forever. The
+// client's ping watchdog signals such a death (~65s with no server ping);
+// returning hands control back to Run, which Closes the dead socket (breaking
+// the stuck reader) and reconnects.
 func (e *Engine) consume(ctx context.Context, wsc *model.WebSocketClient) {
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-wsc.PingTimeoutChannel:
+			e.log.Printf("websocket ping timeout (no server ping ~65s); treating as disconnect")
 			return
 		case ev, ok := <-wsc.EventChannel:
 			if !ok {

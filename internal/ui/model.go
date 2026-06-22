@@ -1482,13 +1482,27 @@ func (m *Model) appendOptimistic(channelID, rootID, text string, fileIDs []strin
 // waitWSEvent yields a tea.Cmd that blocks until the next WebSocket
 // event arrives, then returns it as a wsEventMsg. The caller is
 // responsible for re-scheduling this cmd after handling the event.
+//
+// It also watches PingTimeoutChannel. A *silent* connection drop (half-open
+// TCP after a sleep/Wi-Fi switch/NAT timeout, where no FIN/RST reaches us)
+// never errors the reader's NextReader — which has no read deadline — so
+// EventChannel never closes and this would otherwise block forever, leaving
+// the UI stuck with a dead socket until restart. The Mattermost client's ping
+// watchdog signals such a death on PingTimeoutChannel (~65s with no server
+// ping). We Close() the dead socket to unblock its reader goroutine, then
+// emit wsClosedMsg so the normal backoff → connectWS reconnect path runs.
 func waitWSEvent(ws *model.WebSocketClient) tea.Cmd {
 	return func() tea.Msg {
-		ev, ok := <-ws.EventChannel
-		if !ok {
-			return wsClosedMsg{}
+		select {
+		case ev, ok := <-ws.EventChannel:
+			if !ok {
+				return wsClosedMsg{}
+			}
+			return wsEventMsg{ev: ev}
+		case <-ws.PingTimeoutChannel:
+			ws.Close()
+			return wsClosedMsg{err: fmt.Errorf("ping timeout")}
 		}
-		return wsEventMsg{ev: ev}
 	}
 }
 
