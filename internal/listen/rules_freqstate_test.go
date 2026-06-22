@@ -355,21 +355,21 @@ func TestMatchPostState(t *testing.T) {
 	state := map[string]string{"failure_count": "3"}
 
 	hit, _ := compileMatch(MatchSpec{State: []StateCondSpec{{Key: "failure_count", Gte: f64(3)}}})
-	if !matchPost(ev, p, hit, "", "", state, nil) {
+	if !matchPost(ev, p, hit, "", "", "", state, nil) {
 		t.Error("failure_count >= 3 should match when state has 3")
 	}
 	miss, _ := compileMatch(MatchSpec{State: []StateCondSpec{{Key: "failure_count", Gte: f64(4)}}})
-	if matchPost(ev, p, miss, "", "", state, nil) {
+	if matchPost(ev, p, miss, "", "", "", state, nil) {
 		t.Error("failure_count >= 4 should not match")
 	}
 	// State conditions AND with the field conditions.
 	both, _ := compileMatch(MatchSpec{Authors: []string{"alice"}, State: []StateCondSpec{{Key: "failure_count", Gte: f64(1)}}})
-	if matchPost(ev, p, both, "", "", state, nil) {
+	if matchPost(ev, p, both, "", "", "", state, nil) {
 		t.Error("author mismatch should fail even when the state condition holds")
 	}
 	// A nested not: with a state condition inverts against the same snapshot.
 	notState, _ := compileMatch(MatchSpec{Not: &MatchSpec{State: []StateCondSpec{{Key: "failure_count", Gte: f64(3)}}}})
-	if matchPost(ev, p, notState, "", "", state, nil) {
+	if matchPost(ev, p, notState, "", "", "", state, nil) {
 		t.Error("not{failure_count>=3} should not match when it holds")
 	}
 }

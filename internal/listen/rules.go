@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/mm"
 )
 
 // A rule is a declarative reaction to an incoming post: when its Match passes,
@@ -36,6 +38,7 @@ const (
 	ActionWebhook   = "webhook"    // HTTP POST the post envelope as JSON
 	ActionReact     = "react"      // add an emoji reaction to the post
 	ActionMarkRead  = "mark_read"  // mark the post's channel read
+	ActionSend      = "send"       // post a message (to the trigger's channel or a configured one)
 	ActionLog       = "log"        // write a line to the daemon log
 	ActionStateSet  = "state_set"  // write a value into the persistent rule ledger
 	ActionStateIncr = "state_incr" // add to an integer value in the ledger
@@ -45,7 +48,7 @@ const (
 // validActionTypes lists every accepted action type for the unknown-type error.
 var validActionTypes = []string{
 	ActionNotify, ActionExec, ActionWebhook, ActionReact, ActionMarkRead,
-	ActionLog, ActionStateSet, ActionStateIncr, ActionStateDel,
+	ActionSend, ActionLog, ActionStateSet, ActionStateIncr, ActionStateDel,
 }
 
 // execTimeout bounds a single exec action so a hung command can't pin a
@@ -74,6 +77,11 @@ type MatchSpec struct {
 	// display name, or exact channel ids; a post matches the condition when it
 	// matches ANY entry (OR). Empty matches any channel.
 	Channels []string
+	// Teams is a list of case-insensitive globs (*, ?) over the team's URL name
+	// (the slug in the channel URL, e.g. "core"), or exact team ids; a post
+	// matches when its team matches ANY entry (OR). Empty matches any team. A
+	// direct message carries no team, so a Teams condition never matches a DM.
+	Teams []string
 	// Authors is a list of usernames (without the leading @), matched
 	// case-insensitively against the post's sender; a post matches when the
 	// sender equals ANY entry (OR). Empty matches any author.
@@ -103,12 +111,33 @@ type MatchSpec struct {
 	// of every matching message. The window is in-memory and live-only (see
 	// frequency).
 	Frequency *FrequencySpec
+	// Cooldown, when set, gates the rule to fire at most once per interval: even
+	// once the fields match, the actions run only if the rule hasn't fired within
+	// the last Every (optionally per author/channel/team). The last-fire time is
+	// persisted, so the interval survives a restart. Use it for "do this every N
+	// days/weeks" — the general form of a once-per-day greeting.
+	Cooldown *CooldownSpec
 	// State conditions match against the persistent ledger (the state_* actions):
 	// every condition must hold (AND). Lets a rule react to accumulated context —
 	// "this author's failure_count is at least 3" — that no single message
 	// carries. Within one post the ledger is re-read after a rule mutates it, so
 	// a rule can match on a counter an earlier rule just incremented.
 	State []StateCondSpec
+}
+
+// CooldownSpec is the config form of a rule's minimum-interval gate: the
+// inverse of FrequencySpec. Where frequency fires on a burst, cooldown fires at
+// most once per Every, then stays quiet — "greet every 2 days", "digest weekly".
+// Unlike the in-memory frequency window, the last-fire time is persisted, so the
+// interval is honoured across a daemon restart.
+type CooldownSpec struct {
+	// Every is the minimum time between firings as a Go duration string ("48h",
+	// "168h", "30m"). Required.
+	Every string
+	// By groups the cooldown: "author" keeps a separate interval per sender,
+	// "channel" per channel, "team" per team, and "global" (the default, also "")
+	// is one interval for the whole rule.
+	By string
 }
 
 // FrequencySpec is the config form of a rule's rolling-window gate.
@@ -164,8 +193,16 @@ type ActionSpec struct {
 	Headers map[string]string
 	// Emoji (react) is the Mattermost emoji shortcode to add, without colons.
 	Emoji string
-	// Text (log) is an optional prefix for the log line.
+	// Text is the optional prefix for the log line (log), or the message body —
+	// a text/template over the post — for the send action.
 	Text string
+	// Channel (send) is the target channel: "team/channel" or "@user". Empty
+	// posts into the same channel the triggering message arrived in.
+	Channel string
+	// Thread (send) posts the message as a reply in the triggering post's thread
+	// instead of a new top-level post. Ignored when Channel is set (a configured
+	// target channel is not the trigger's thread).
+	Thread bool
 	// Key (state_set/state_incr/state_del) is the ledger key to act on. It is a
 	// Go text/template expanded against the post (e.g. "failures:{{ .author }}"
 	// for a per-author counter), so one rule can address many keys.
@@ -199,6 +236,8 @@ type Match struct {
 
 	channelsRaw []string
 	channelRes  []*regexp.Regexp
+	teamsRaw    []string
+	teamRes     []*regexp.Regexp
 	authors     []string
 	messageRe   *regexp.Regexp
 	mention     bool
@@ -210,6 +249,9 @@ type Match struct {
 	// field conditions pass (matchPost never reads it — it is stateful and must
 	// not run during catch-up replay or pure match tests).
 	freq *frequency
+	// cool is the compiled minimum-interval gate, likewise applied by the engine
+	// (not matchPost) after the fields pass and persisted across restarts.
+	cool *cooldown
 	// state holds the compiled ledger conditions; matchPost evaluates them against
 	// the snapshot it is handed (so it stays pure and testable).
 	state []stateCond
@@ -223,6 +265,15 @@ type frequency struct {
 	count  int
 	within time.Duration
 	by     string // "author" | "channel" | "global"
+}
+
+// cooldown is a compiled CooldownSpec: a minimum interval between firings. The
+// engine reads the last-fire time from the persistent meta store, fires when it
+// is at least `every` old (or unset), and records the new time — so the gate
+// holds across restarts. Keyed per (rule, group) like frequency.
+type cooldown struct {
+	every time.Duration
+	by    string // "author" | "channel" | "team" | "global"
 }
 
 // stateCond is a compiled StateCondSpec — one condition on a ledger key. The
@@ -291,12 +342,16 @@ type Action struct {
 	Headers   map[string]string
 	Emoji     string
 	Text      string
+	Channel   string // send: target ("team/channel" or "@user"); "" = trigger's channel
+	Thread    bool   // send: reply in the trigger's thread
 
 	// State action fields. keyTmpl/valueTmpl are the compiled forms of the
 	// Key/Value strings; by is the resolved state_incr amount (default 1).
 	keyTmpl   *template.Template
 	valueTmpl *template.Template
-	by        int64
+	// textTmpl is the compiled send message body (the Text field).
+	textTmpl *template.Template
+	by       int64
 }
 
 // CompileRules validates and compiles user rule specs. It returns an error on
@@ -346,6 +401,7 @@ func actionsMutateState(actions []Action) bool {
 func compileMatch(s MatchSpec) (Match, error) {
 	m := Match{
 		channelsRaw: s.Channels,
+		teamsRaw:    s.Teams,
 		authors:     s.Authors,
 		mention:     s.Mention,
 		dm:          s.DM,
@@ -361,6 +417,16 @@ func compileMatch(s MatchSpec) (Match, error) {
 			return Match{}, fmt.Errorf("bad channel glob %q: %w", ch, err)
 		}
 		m.channelRes = append(m.channelRes, re)
+	}
+	for _, tm := range s.Teams {
+		if tm == "" {
+			continue
+		}
+		re, err := globToRegexp(tm)
+		if err != nil {
+			return Match{}, fmt.Errorf("bad team glob %q: %w", tm, err)
+		}
+		m.teamRes = append(m.teamRes, re)
 	}
 	if s.Message != "" {
 		re, err := regexp.Compile(s.Message)
@@ -382,6 +448,13 @@ func compileMatch(s MatchSpec) (Match, error) {
 			return Match{}, fmt.Errorf("frequency: %w", err)
 		}
 		m.freq = f
+	}
+	if s.Cooldown != nil {
+		c, err := compileCooldown(*s.Cooldown)
+		if err != nil {
+			return Match{}, fmt.Errorf("cooldown: %w", err)
+		}
+		m.cool = c
 	}
 	for _, sc := range s.State {
 		c, err := compileStateCond(sc)
@@ -417,6 +490,29 @@ func compileFrequency(s FrequencySpec) (*frequency, error) {
 		return nil, fmt.Errorf("unknown by %q (want author, channel, or global)", s.By)
 	}
 	return &frequency{count: s.Count, within: within, by: by}, nil
+}
+
+// compileCooldown validates and normalises a CooldownSpec. A missing or
+// non-positive interval, or an unknown grouping, is a startup error so the gate
+// can't silently misbehave.
+func compileCooldown(s CooldownSpec) (*cooldown, error) {
+	every, err := time.ParseDuration(s.Every)
+	if err != nil {
+		return nil, fmt.Errorf("bad every %q: %w", s.Every, err)
+	}
+	if every <= 0 {
+		return nil, fmt.Errorf("every must be positive, got %s", every)
+	}
+	by := strings.ToLower(strings.TrimSpace(s.By))
+	switch by {
+	case "", "global":
+		by = "global"
+	case "author", "channel", "team":
+		// ok
+	default:
+		return nil, fmt.Errorf("unknown by %q (want author, channel, team, or global)", s.By)
+	}
+	return &cooldown{every: every, by: by}, nil
 }
 
 // compileStateCond validates a StateCondSpec: a key is required, and at least
@@ -458,10 +554,21 @@ func compileAction(a ActionSpec) (Action, error) {
 		Headers:   a.Headers,
 		Emoji:     strings.Trim(a.Emoji, ": "),
 		Text:      a.Text,
+		Channel:   strings.TrimSpace(a.Channel),
+		Thread:    a.Thread,
 	}
 	switch a.Type {
 	case ActionNotify, ActionMarkRead, ActionLog:
 		// no required fields
+	case ActionSend:
+		if strings.TrimSpace(a.Text) == "" {
+			return Action{}, fmt.Errorf("send action needs text")
+		}
+		tt, err := compileTemplate(a.Text)
+		if err != nil {
+			return Action{}, fmt.Errorf("send: bad text template: %w", err)
+		}
+		ca.textTmpl = tt
 	case ActionExec:
 		if len(a.Command) == 0 {
 			return Action{}, fmt.Errorf("exec action needs a command")
@@ -518,12 +625,34 @@ func compileAction(a ActionSpec) (Action, error) {
 	return ca, nil
 }
 
-// compileTemplate parses a state action's key/value template. missingkey=zero
-// renders an absent field (or absent state key) as the zero value — an empty
-// string — instead of "<no value>", so a template referencing a not-yet-set
-// counter degrades quietly.
+// templateClock is the time source for the now/today template functions. It is
+// a package var rather than time.Now directly so a test can drive a date-
+// dependent rule (e.g. a once-per-day key built from {{ today }})
+// deterministically.
+var templateClock = time.Now
+
+// templateFuncs are the helpers available in rule templates — state keys/values
+// and the send body — on top of text/template's built-ins. now/today expose the
+// daemon's clock so a rule can build a per-day ledger key ("greeted:{{ today }}")
+// or stamp a message with the time, which the field set alone can't express.
+func templateFuncs() template.FuncMap {
+	return template.FuncMap{
+		// now is the current local time; format it with Go's reference layout,
+		// e.g. {{ now.Format "15:04" }}.
+		"now": func() time.Time { return templateClock() },
+		// today is the current local date as "2006-01-02" — a ready-made per-day
+		// key, e.g. key: "greeted:{{ today }}".
+		"today": func() string { return templateClock().Format("2006-01-02") },
+	}
+}
+
+// compileTemplate parses a rule template (a state action's key/value, or the
+// send body). missingkey=zero renders an absent field (or absent state key) as
+// the zero value — an empty string — instead of "<no value>", so a template
+// referencing a not-yet-set counter degrades quietly. templateFuncs adds the
+// now/today date helpers.
 func compileTemplate(text string) (*template.Template, error) {
-	return template.New("state").Option("missingkey=zero").Parse(text)
+	return template.New("state").Option("missingkey=zero").Funcs(templateFuncs()).Parse(text)
 }
 
 // globToRegexp turns a shell-ish glob (* and ?) into an anchored,
@@ -618,6 +747,13 @@ func (e *Engine) applyRules(ctx context.Context, ev *model.WebSocketEvent, p *mo
 		if !e.matches(ev, p, r.Match, state, render) {
 			continue
 		}
+		// A cooldown gate suppresses the rule until its interval has elapsed since
+		// the last firing. Checked read-only first, so a post that is still on
+		// cooldown skips the rule without recording a frequency hit; the new fire
+		// time is written only once the rule actually runs (below).
+		if r.Match.cool != nil && !e.cooldownReady(r, ev, p) {
+			continue
+		}
 		// A frequency gate is applied only once the fields match: it records the
 		// hit and reports whether the window has now reached the threshold. When
 		// it hasn't, the rule neither runs its actions nor honours Stop — it is as
@@ -626,6 +762,9 @@ func (e *Engine) applyRules(ctx context.Context, ev *model.WebSocketEvent, p *mo
 			continue
 		}
 		e.runActions(ctx, ev, p, r.Actions)
+		if r.Match.cool != nil {
+			e.recordCooldown(r, ev, p)
+		}
 		if e.usesState && r.mutatesState {
 			state = e.matchState()
 		}
@@ -686,6 +825,57 @@ func freqBucketKey(ruleIdx int, f *frequency, ev *model.WebSocketEvent, p *model
 	return strconv.Itoa(ruleIdx) + "\x00" + group
 }
 
+// cooldownReady reports whether the rule may fire now — i.e. it has never fired
+// for this (rule, group), or its interval has elapsed since it last did. It only
+// reads the persisted last-fire time; recordCooldown commits the new one once
+// the rule actually runs. A read error fails open (ready) and is logged, so a
+// transient store hiccup delays nothing.
+func (e *Engine) cooldownReady(r Rule, ev *model.WebSocketEvent, p *model.Post) bool {
+	key := cooldownMetaKey(r.Name, r.Match.cool, ev, p)
+	v, ok, err := e.store.GetMeta(key)
+	if err != nil {
+		e.log.Printf("rule %s: read cooldown: %v", r.Name, err)
+		return true
+	}
+	if !ok {
+		return true // never fired
+	}
+	last, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return true // unreadable timestamp — treat as ready
+	}
+	return e.clock().Sub(time.UnixMilli(last)) >= r.Match.cool.every
+}
+
+// recordCooldown stamps the rule's last-fire time for this (rule, group) in the
+// persistent meta store, re-arming the interval. Called only after the rule's
+// actions are dispatched, so a gate that blocked the firing never advances it.
+func (e *Engine) recordCooldown(r Rule, ev *model.WebSocketEvent, p *model.Post) {
+	key := cooldownMetaKey(r.Name, r.Match.cool, ev, p)
+	if err := e.store.SetMeta(key, strconv.FormatInt(e.clock().UnixMilli(), 10)); err != nil {
+		e.log.Printf("rule %s: record cooldown: %v", r.Name, err)
+	}
+}
+
+// cooldownMetaKey is the meta-store key for a rule's cooldown: a reserved
+// "cooldown:" namespace (kept out of the user-facing rule_state ledger), the
+// rule name, and the group selected by `by`. The NUL separator can't appear in a
+// name, channel id, or username, so distinct (rule, group) pairs never collide.
+func cooldownMetaKey(ruleName string, c *cooldown, ev *model.WebSocketEvent, p *model.Post) string {
+	var group string
+	switch c.by {
+	case "author":
+		group = strings.TrimPrefix(eventStr(ev, "sender_name"), "@")
+	case "channel":
+		group = p.ChannelId
+	case "team":
+		group = eventStr(ev, "team_id")
+	default: // global
+		group = ""
+	}
+	return "cooldown:" + ruleName + "\x00" + group
+}
+
 // matches reports whether a post satisfies a rule's conditions. The builtin
 // match defers to isDirectMention so the default rule behaves identically to
 // the pre-rules daemon; user rules use the field matcher. state is the ledger
@@ -699,14 +889,27 @@ func (e *Engine) matches(ev *model.WebSocketEvent, p *model.Post, m Match, state
 	if m.builtin {
 		return isDirectMention(ev, p, meID, meName, e.opts.NotifySelf)
 	}
-	return matchPost(ev, p, m, meID, meName, state, render)
+	return matchPost(ev, p, m, meID, meName, e.teamName(ev), state, render)
+}
+
+// teamName resolves an event's team id to its URL name (slug) for the team
+// matcher, via the same id→name map buildEnvelope uses for permalinks. A post
+// with no team (a DM) resolves to "", which matchesTeam treats as no match.
+func (e *Engine) teamName(ev *model.WebSocketEvent) string {
+	id := eventStr(ev, "team_id")
+	if id == "" {
+		return ""
+	}
+	e.teamsMu.RLock()
+	defer e.teamsMu.RUnlock()
+	return e.teams[id]
 }
 
 // matchPost evaluates the field conditions of a (non-builtin) match. Pure for
 // testability: every condition it reads comes from the event/post, the reader's
 // id and username for the Mention check, plus the ledger snapshot for `state`
 // conditions.
-func matchPost(ev *model.WebSocketEvent, p *model.Post, m Match, meID, meName string, state map[string]string, render func(*template.Template) string) bool {
+func matchPost(ev *model.WebSocketEvent, p *model.Post, m Match, meID, meName, teamName string, state map[string]string, render func(*template.Template) string) bool {
 	isDM := eventStr(ev, "channel_type") == string(model.ChannelTypeDirect)
 	if m.dm != nil && *m.dm != isDM {
 		return false
@@ -723,6 +926,11 @@ func matchPost(ev *model.WebSocketEvent, p *model.Post, m Match, meID, meName st
 	if len(m.channelRes) > 0 {
 		name := eventStr(ev, "channel_display_name")
 		if !matchesChannel(name, p.ChannelId, m) {
+			return false
+		}
+	}
+	if len(m.teamRes) > 0 {
+		if !matchesTeam(teamName, eventStr(ev, "team_id"), m) {
 			return false
 		}
 	}
@@ -744,7 +952,7 @@ func matchPost(ev *model.WebSocketEvent, p *model.Post, m Match, meID, meName st
 		}
 	}
 	// A nested not: matches the whole post only when the sub-match does not.
-	if m.not != nil && matchPost(ev, p, *m.not, meID, meName, state, render) {
+	if m.not != nil && matchPost(ev, p, *m.not, meID, meName, teamName, state, render) {
 		return false
 	}
 	return true
@@ -770,6 +978,25 @@ func matchesChannel(name, channelID string, m Match) bool {
 	}
 	for _, raw := range m.channelsRaw {
 		if raw == channelID {
+			return true
+		}
+	}
+	return false
+}
+
+// matchesTeam reports whether the team URL name matches any of the compiled
+// globs, or its id equals any raw entry (the exact-id fallback) — mirroring
+// matchesChannel. An empty name (a DM, which has no team) never matches: the
+// globs are skipped and the raw entries are non-empty, so a direct message is
+// excluded from any team condition.
+func matchesTeam(name, teamID string, m Match) bool {
+	for _, re := range m.teamRes {
+		if name != "" && re.MatchString(name) {
+			return true
+		}
+	}
+	for _, raw := range m.teamsRaw {
+		if raw != "" && raw == teamID {
 			return true
 		}
 	}
@@ -809,6 +1036,10 @@ func (e *Engine) runActions(ctx context.Context, ev *model.WebSocketEvent, p *mo
 		case ActionMarkRead:
 			e.wg.Add(1)
 			go e.runMarkRead(ctx, p)
+		case ActionSend:
+			a := a
+			e.wg.Add(1)
+			go e.runSend(ctx, ev, p, a)
 		case ActionLog:
 			e.runLog(ev, p, a)
 		case ActionStateSet, ActionStateIncr, ActionStateDel:
@@ -1126,6 +1357,82 @@ func (e *Engine) runReact(ctx context.Context, p *model.Post, a Action) {
 	if err := e.client.AddReaction(ctx, e.me.Id, p.Id, a.Emoji); err != nil {
 		e.log.Printf("rule react %q on %s: %v", a.Emoji, p.Id, err)
 	}
+}
+
+// runSend posts a message in reaction to the triggering post. The body is a
+// template (so it can carry {{ .author }}, {{ today }}, …). With no Channel it
+// posts into the channel the trigger arrived in; a Channel ("team/channel" or
+// "@user") routes it elsewhere. Own posts are skipped (unless notify_self) so an
+// ungated send rule can't loop on the very message it just posted.
+func (e *Engine) runSend(ctx context.Context, ev *model.WebSocketEvent, p *model.Post, a Action) {
+	defer e.wg.Done()
+	if e.me == nil {
+		return
+	}
+	if p.UserId == e.me.Id && !e.opts.NotifySelf {
+		return
+	}
+	body, err := e.renderTemplate(a.textTmpl, ev, p)
+	if err != nil {
+		e.log.Printf("rule send: render text: %v", err)
+		return
+	}
+	if strings.TrimSpace(body) == "" {
+		e.log.Printf("rule send: text rendered empty — skipped")
+		return
+	}
+	channelID, rootID := p.ChannelId, ""
+	if a.Thread {
+		if rootID = p.RootId; rootID == "" {
+			rootID = p.Id
+		}
+	}
+	if a.Channel != "" {
+		id, err := e.resolveSendTarget(ctx, a.Channel)
+		if err != nil {
+			e.log.Printf("rule send: resolve %q: %v", a.Channel, err)
+			return
+		}
+		channelID, rootID = id, "" // a configured channel is not the trigger's thread
+	}
+	if _, err := e.client.Send(ctx, channelID, rootID, body, nil); err != nil {
+		e.log.Printf("rule send to %s: %v", channelID, err)
+	}
+}
+
+// resolveSendTarget turns a send action's channel spec ("team/channel" or
+// "@user"/"@a,@b") into a channel id, caching the result: channel ids are
+// stable across renames, so a send rule that targets a fixed channel resolves it
+// once rather than on every matching post.
+func (e *Engine) resolveSendTarget(ctx context.Context, spec string) (string, error) {
+	spec = strings.TrimSpace(spec)
+	e.sendChanMu.Lock()
+	id, ok := e.sendChan[spec]
+	e.sendChanMu.Unlock()
+	if ok {
+		return id, nil
+	}
+	var ch *model.Channel
+	var err error
+	if strings.HasPrefix(spec, "@") {
+		ch, err = mm.ResolveRecipients(ctx, e.client, e.me.Id, spec)
+	} else {
+		team, channel, found := strings.Cut(spec, "/")
+		if !found || team == "" || channel == "" {
+			return "", fmt.Errorf("channel %q must be team/channel (e.g. eng/general) or @user", spec)
+		}
+		ch, err = e.client.ChannelByName(ctx, team, channel)
+	}
+	if err != nil {
+		return "", err
+	}
+	e.sendChanMu.Lock()
+	if e.sendChan == nil {
+		e.sendChan = map[string]string{}
+	}
+	e.sendChan[spec] = ch.Id
+	e.sendChanMu.Unlock()
+	return ch.Id, nil
 }
 
 // runMarkRead marks the triggering post's channel read.

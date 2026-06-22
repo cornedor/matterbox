@@ -275,6 +275,11 @@ type RuleMatchConfig struct {
 	// Channel is a case-insensitive glob (*, ?) over the channel's display name,
 	// or an exact channel id. Accepts a single value or a list (match any).
 	Channel StringList `yaml:"channel,omitempty"`
+	// Team is a case-insensitive glob (*, ?) over the team's URL name (the slug
+	// in the channel URL, e.g. "core"), or an exact team id. Accepts a single
+	// value or a list (match any). A DM carries no team, so a team condition
+	// never matches a direct message.
+	Team StringList `yaml:"team,omitempty"`
 	// Author is a username (no leading @), matched case-insensitively. Accepts a
 	// single value or a list (match any).
 	Author StringList `yaml:"author,omitempty"`
@@ -295,6 +300,12 @@ type RuleMatchConfig struct {
 	// fields match, the actions run only once `count` matches accumulate within
 	// `within` (optionally grouped `by` author/channel). See internal/listen.
 	Frequency *RuleFrequencyConfig `yaml:"frequency,omitempty"`
+	// Cooldown gates the rule to fire at most once per interval: even when the
+	// fields match, the actions run only if the rule hasn't fired within the last
+	// `every` (optionally grouped `by` author/channel/team). Persisted, so the
+	// interval survives a restart. The general form of "once a day/week". See
+	// internal/listen.CooldownSpec.
+	Cooldown *RuleCooldownConfig `yaml:"cooldown,omitempty"`
 	// State matches against the persistent ledger (the state_* actions). A single
 	// condition or a list (all ANDed). See internal/listen.StateCondSpec.
 	State StateMatchList `yaml:"state,omitempty"`
@@ -308,6 +319,15 @@ type RuleFrequencyConfig struct {
 	// Within is the window length as a Go duration ("10m", "1h30m").
 	Within string `yaml:"within"`
 	// By groups the counting: author, channel, or global (default).
+	By string `yaml:"by,omitempty"`
+}
+
+// RuleCooldownConfig is the minimum-interval gate on a rule. See
+// internal/listen.CooldownSpec.
+type RuleCooldownConfig struct {
+	// Every is the minimum time between firings as a Go duration ("48h", "168h").
+	Every string `yaml:"every"`
+	// By groups the cooldown: author, channel, team, or global (default).
 	By string `yaml:"by,omitempty"`
 }
 
@@ -351,7 +371,7 @@ func (s *StateMatchList) UnmarshalYAML(unmarshal func(any) error) error {
 // RuleActionConfig is one action. type is required; the remaining fields are
 // read per type. See internal/listen.ActionSpec.
 type RuleActionConfig struct {
-	// Type is one of: notify, exec, webhook, react, mark_read, log.
+	// Type is one of: notify, exec, webhook, react, mark_read, send, log.
 	Type string `yaml:"type"`
 	// Summarize (notify) overrides listen.summarize for this rule only.
 	Summarize *bool `yaml:"summarize,omitempty"`
@@ -369,8 +389,15 @@ type RuleActionConfig struct {
 	Headers map[string]string `yaml:"headers,omitempty"`
 	// Emoji (react) is the Mattermost emoji shortcode to add (no colons).
 	Emoji string `yaml:"emoji,omitempty"`
-	// Text (log) is an optional prefix for the log line.
+	// Text is the log line prefix (log), or the message body — a text/template
+	// over the post — for the send action.
 	Text string `yaml:"text,omitempty"`
+	// Channel (send) is the target channel — "team/channel" or "@user". Empty
+	// posts into the channel the triggering message arrived in.
+	Channel string `yaml:"channel,omitempty"`
+	// Thread (send) posts as a reply in the triggering post's thread instead of a
+	// new top-level post. Ignored when Channel is set.
+	Thread bool `yaml:"thread,omitempty"`
 	// Key (state_set/state_incr/state_del) is the ledger key, a text/template
 	// over the post (e.g. "failures:{{ .author }}").
 	Key string `yaml:"key,omitempty"`

@@ -192,6 +192,8 @@ func ruleSpecs(cfg []config.RuleConfig) []listen.RuleSpec {
 				Headers:   a.Headers,
 				Emoji:     a.Emoji,
 				Text:      a.Text,
+				Channel:   a.Channel,
+				Thread:    a.Thread,
 				Key:       a.Key,
 				Value:     a.Value,
 				By:        a.By,
@@ -211,6 +213,7 @@ func ruleSpecs(cfg []config.RuleConfig) []listen.RuleSpec {
 func matchSpec(m config.RuleMatchConfig) listen.MatchSpec {
 	spec := listen.MatchSpec{
 		Channels: []string(m.Channel),
+		Teams:    []string(m.Team),
 		Authors:  []string(m.Author),
 		Message:  m.Message,
 		Mention:  m.Mention,
@@ -227,6 +230,12 @@ func matchSpec(m config.RuleMatchConfig) listen.MatchSpec {
 			Count:  m.Frequency.Count,
 			Within: m.Frequency.Within,
 			By:     m.Frequency.By,
+		}
+	}
+	if m.Cooldown != nil {
+		spec.Cooldown = &listen.CooldownSpec{
+			Every: m.Cooldown.Every,
+			By:    m.Cooldown.By,
 		}
 	}
 	if len(m.State) > 0 {

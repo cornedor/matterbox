@@ -155,6 +155,12 @@ type Engine struct {
 	teams       map[string]string
 	defaultTeam string
 
+	// sendChan caches resolved channel ids for `send` actions that target a
+	// configured channel (team/channel or @user), so such a rule resolves the
+	// spec once rather than per matching post. Channel ids survive renames.
+	sendChanMu sync.Mutex
+	sendChan   map[string]string
+
 	// askCatalog caches the channel/team/user snapshot for /ask, rebuilt after
 	// askCatalogTTL so newly-joined channels eventually appear.
 	askMu        sync.Mutex

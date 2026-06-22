@@ -4,7 +4,8 @@ The `matterbox listen` daemon holds a persistent WebSocket connection to your
 Mattermost server and reacts to every incoming message. **Rules** make that
 reaction programmable: when a message matches a set of conditions, the daemon
 runs one or more actions — forward it to Telegram, run a local command, POST a
-webhook, add a reaction, mark the channel read, or just log it.
+webhook, post a message back, add a reaction, mark the channel read, or just log
+it.
 
 Rules also have *memory*: a [`frequency`](#rate-limiting-with-frequency) window
 fires only on a burst ("three sev-1s in ten minutes"), and a [persistent
@@ -155,6 +156,10 @@ else: run the daemon with `--notify-self` and post in your self-DM.
 - **`channel` matches the display name**, not `team/channel` — use the name as
   it appears in the sidebar (globbing with `*`/`?`), or paste an exact channel
   id. It accepts a single value or a list.
+- **`team` matches the team's URL slug** (the `core` in `/core/channels/…`, the
+  same slug `matterbox send` takes), not the team's display name. Use it alone to
+  match every channel in a team, or alongside `channel` to disambiguate a channel
+  name shared across teams.
 - **Use `(?i)`** at the start of a `message` regexp for case-insensitive
   matching.
 - **Iterate with `log`**, promote to real actions once the match is right.
@@ -220,6 +225,7 @@ Different fields are ANDed; an empty `match` matches every message.
 | Field | Meaning |
 |---|---|
 | `channel` | Case-insensitive glob (`*`, `?`) over the channel's **display name**, or an exact channel id. A single value or a list (matches **any**). |
+| `team` | Case-insensitive glob (`*`, `?`) over the team's **URL name** (the slug in the channel URL, e.g. `core`), or an exact team id. A single value or a list (matches **any**). A DM carries no team, so a `team` condition never matches a direct message. |
 | `author` | Username (no leading `@`), matched case-insensitively. A single value or a list (matches **any**). |
 | `message` | [RE2](https://github.com/google/re2/wiki/Syntax) regexp over the body. Prefix `(?i)` for case-insensitive. |
 | `mention` | `true` requires you were directly @named (the same test the bridge uses). |
@@ -228,6 +234,7 @@ Different fields are ANDed; an empty `match` matches every message.
 | `is_thread` | `true` = only thread replies; `false` = only root posts; unset = either. |
 | `not` | A nested `match` block that **inverts**: the rule fires only when the post does **not** satisfy it. Recursive. |
 | `frequency` | A rolling-window threshold: even when the fields match, fire only on a **burst**. See below. |
+| `cooldown` | A minimum interval: even when the fields match, fire at most **once per period** (`every: 48h`), then stay quiet. Persisted across restarts. The general form of "once a day/week". See below. |
 | `state` | Match on the persistent [ledger](#matching-on-the-ledger) — e.g. `failure_count` is at least 3. |
 
 `channel`/`author` as a list is an OR; combine with `not` to subtract. For
@@ -283,6 +290,44 @@ messages through it. A frequency gate is therefore best for "happening right
 now" bursts, not for thresholds that must survive a restart — for that, count
 into the [persistent ledger](#persistent-state-the-ledger) instead.
 
+### Periodic firing with `cooldown`
+
+`frequency` answers *"has this happened enough lately?"*; `cooldown` is the
+inverse — *"has it been long enough since the last time?"*. With a cooldown the
+rule fires on the next matching message, then goes quiet for `every`, then fires
+on the next match after that. It's how you say **"do this at most once a day /
+week / every two days"** without pinning it to a wall-clock time: the trigger is
+still a message, but the rule throttles itself to one firing per interval.
+
+```yaml
+rules:
+  - name: weekly-standup-nudge
+    match:
+      channel: "Engineering"
+      cooldown:
+        every: 168h     # 7 days — fire at most once a week
+        by: channel     # optional: a separate interval per author / channel / team
+    actions:
+      - type: send
+        text: "📅 Reminder: standup notes due!"
+```
+
+| Field | Meaning |
+|---|---|
+| `every` | The minimum time between firings, as a Go duration: `24h` (daily), `48h` (every two days), `168h` (weekly), `30m`. |
+| `by` | Keep a separate interval per `author`, `channel`, or `team`, or one for the whole rule (`global`, the default). |
+
+**Semantics.** The rule fires on a matching message only if it hasn't fired
+within the last `every` (for that `by` group); firing records the time and
+re-arms the interval. Unlike `frequency`, the last-fire time is **persisted**, so
+the interval is honoured across a daemon restart — a `cooldown: { every: 168h }`
+that fired yesterday won't fire again after a restart today. It is still
+**live-only** for *firing* (the [catch-up](#catch-up-after-a-reconnect) never
+trips it), and it composes with the field conditions and `frequency` (all must
+pass). The interval is **rolling** — measured from the last firing, not aligned
+to midnight; for a reset-at-local-midnight "once per calendar day" instead, build
+a per-day ledger key from [`{{ today }}`](#templating-keys-and-values).
+
 ## Actions
 
 | `type` | Fields | What it does |
@@ -292,6 +337,7 @@ into the [persistent ledger](#persistent-state-the-ledger) instead.
 | `webhook` | `url`, `headers` (optional map) | HTTP `POST` the message envelope as a JSON body. `headers` adds request headers; values are expanded from the daemon's environment (`$TOKEN` / `${TOKEN}`). 15s timeout. |
 | `react` | `emoji` (shortcode) | Add an emoji reaction to the message. |
 | `mark_read` | — | Mark the message's channel read. |
+| `send` | `text`, `channel` (optional), `thread` (optional) | Post a message. `text` is a [template](#templating-keys-and-values) (so it can carry `{{ .author }}`, `{{ today }}`, …). With no `channel` it posts into the channel the trigger arrived in; `channel` (`team/channel` or `@user`) routes it elsewhere. `thread: true` replies in the trigger's thread (ignored when `channel` is set). Skips your own posts (unless `--notify-self`) so an ungated rule can't loop on its own output. |
 | `log` | `text` (optional prefix) | Write a line to the daemon log. |
 | `state_set` | `key`, `value` | Write `value` into the persistent ledger under `key`. Both are templates (see below). |
 | `state_incr` | `key`, `by` (optional, default 1) | Add `by` to the integer stored at `key` (a missing/non-numeric value counts as 0). Negative decrements. |
@@ -398,6 +444,21 @@ independent counter per author. Note that `.state.NAME` only works for keys that
 are valid template identifiers; to read a key built from a template (e.g.
 `failures:bob`) use the `index` function: `{{ index .state "failures:bob" }}`.
 A field or `.state` key that doesn't exist renders as empty, not an error.
+
+Two date helpers are available on top of the post fields, in every template
+(state keys/values, state-match keys, and the `send` body):
+
+| Function | Renders |
+|---|---|
+| `{{ today }}` | The current **local** date as `2006-01-02` (e.g. `2026-06-22`). |
+| `{{ now }}` | The current local time as a Go `time.Time`; format it yourself, e.g. `{{ now.Format "15:04" }}`. |
+
+`today` is the building block for **once-per-day** behaviour: put it in a ledger
+key and gate on the key's absence. `key: "greeted:{{ today }}"` with
+`exists: false` matches only the first time that key is seen each calendar day;
+setting it afterwards closes the gate until tomorrow, when the date — and so the
+key — changes. (The per-day keys are tiny and simply accumulate; the date is the
+daemon host's local timezone.)
 
 ### How state flows to other actions
 
@@ -646,12 +707,57 @@ rules:
         key: deploy_failures
 ```
 
+Say good morning the first time anyone posts in your team, and only once a day —
+the `send` action posts the greeting and a [`cooldown`](#periodic-firing-with-cooldown)
+throttles it to one firing per interval:
+
+```yaml
+rules:
+  - name: good-morning
+    match:
+      team: core            # any channel in the "core" team …
+      cooldown:
+        every: 24h          # … but at most once a day (use 48h for every two days, 168h weekly)
+    actions:
+      - type: send
+        text: "Good morning! ☀️"   # posts into the channel that triggered it
+    stop: true
+```
+
+The rule fires on the first matching message, then the cooldown suppresses it
+until `every` has elapsed, when the next message re-arms it. Change `every` to
+`48h`, `168h`, or any [duration](https://pkg.go.dev/time#ParseDuration) for a
+different cadence; add `by: channel` (or `team`) to greet each room
+independently. Drop the `team` line to greet on the first message **anywhere**,
+or add a `channel:` condition to pin the trigger to one room. To greet in a
+*fixed* channel instead of wherever the trigger landed, add `channel: core/general`
+to the `send` action itself.
+
+The cooldown interval is **rolling** (measured from the last greeting). If you'd
+rather it reset at local **midnight** — so the first message at 08:00 always
+greets, even if yesterday's was at 09:00 — gate on a per-day ledger key built
+from `{{ today }}` instead of a cooldown:
+
+```yaml
+  - name: good-morning-calendar
+    match:
+      team: core
+      state: { key: "greeted:{{ today }}", exists: false }   # only if we haven't greeted today
+    actions:
+      - type: state_set
+        key: "greeted:{{ today }}"                           # close the gate until tomorrow
+        value: "1"
+      - type: send
+        text: "Good morning! ☀️"
+    stop: true
+```
+
 ## Safety
 
 `exec` runs commands from your own config, as you, on your own machine — same
 trust level as a shell alias. Each run is bounded by a timeout and runs off the
 ingest path, so a slow or hung command can't block message caching or take the
-daemon down. A bad glob, regexp, **template, `frequency` duration, or `state` condition**
-(missing key / no operator), or an unknown action `type`, is reported at startup
+daemon down. A bad glob, regexp, **template, `frequency`/`cooldown` duration, or
+`state` condition** (missing key / no operator), or an unknown action `type`, is reported at startup
 so a typo fails loud rather than silently never firing. `state_*` writes touch only matterbox's own database
 (the `rule_state` table), never your Mattermost server.
