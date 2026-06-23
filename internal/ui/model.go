@@ -2082,7 +2082,7 @@ func (m *Model) openChannelLoadCmd(channelID string) tea.Cmd {
 // tabAt resolves a 0-based tab index into its kind and (for teams) the
 // team's ID + display name. Tab order is: DMs (if present), Feed, Search,
 // SQL (only when showSQL), teams in their loaded order.
-func (m Model) tabAt(i int) (kind tabKind, id, name string) {
+func (m *Model) tabAt(i int) (kind tabKind, id, name string) {
 	if m.hasDMs {
 		if i == 0 {
 			return tabDM, dmTeamID, "DMs"
@@ -2111,13 +2111,13 @@ func (m Model) tabAt(i int) (kind tabKind, id, name string) {
 
 // currentTeamID returns the team ID corresponding to the focused tab, or
 // the synthetic dmTeamID for the virtual DMs tab.
-func (m Model) currentTeamID() string {
+func (m *Model) currentTeamID() string {
 	_, id, _ := m.tabAt(m.teamIdx)
 	return id
 }
 
 // visibleChannels returns the channels in the current team, filtered.
-func (m Model) visibleChannels() []*model.Channel {
+func (m *Model) visibleChannels() []*model.Channel {
 	all := m.channels[m.currentTeamID()]
 	if m.filterValue == "" {
 		return all
@@ -2135,7 +2135,7 @@ func (m Model) visibleChannels() []*model.Channel {
 // unreadChannels gathers every channel (across all buckets, including
 // DMs) with a non-zero unread or mention count, sorted with mentions
 // first then alphabetically.
-func (m Model) unreadChannels() []*model.Channel {
+func (m *Model) unreadChannels() []*model.Channel {
 	var out []*model.Channel
 	for _, list := range m.channels {
 		for _, c := range list {
