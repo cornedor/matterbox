@@ -1109,6 +1109,10 @@ func (m Model) renderHitLine(p *model.Post, width int, muted, match bool) string
 	prefix := nameStyle.Render(name) + "  " + timeStyle2.Render(ts) + "  "
 	prefixW := lipgloss.Width(prefix)
 	body := strings.ReplaceAll(p.Message, "\n", " ↵ ")
+	// Collapse tabs to a space: this is a single-line preview, and lipgloss
+	// measures a tab as zero cells while the terminal paints it wider, which
+	// would defeat the width-based truncate below (see expandTabs).
+	body = strings.ReplaceAll(body, "\t", " ")
 	body = strings.TrimSpace(body)
 	if width-prefixW > 1 {
 		body = truncate(body, width-prefixW)

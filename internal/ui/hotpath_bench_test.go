@@ -278,3 +278,27 @@ func BenchmarkFeedBadgeCounts(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkExpandTabs measures the tab-normalisation helper renderMarkdown now
+// runs once per (uncached) styling pass. Two inputs bracket the real range: a
+// tab-free message (the overwhelming majority — hits the ContainsRune fast path
+// and returns the input unchanged, zero alloc) and a tab-heavy cookie-dump
+// paste (the worst case that motivated the fix).
+func BenchmarkExpandTabs(b *testing.B) {
+	tabFree := "Sure — here's the summary, a normal chat message with no tabs at all in it."
+	tabHeavy := "_ga\tGA1.1.1388876972\t.justbrands.eu\t/\t2027-06-05\t30\tMedium\n" +
+		"session\teyJhbGciOiJIUzI1NiJ9.aVeryLongUnbrokenToken\t.x.eu\t/\tLax\n" +
+		"AWSALB\tH2T/NsIgUUWF9QJAv0lkE6Rwlkj\tbc.justbrands.eu\t/\t2026-05-08\t130\tMedium"
+	b.Run("tab-free", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = expandTabs(tabFree, 4)
+		}
+	})
+	b.Run("tab-heavy", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			_ = expandTabs(tabHeavy, 4)
+		}
+	})
+}

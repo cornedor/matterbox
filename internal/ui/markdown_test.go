@@ -170,3 +170,42 @@ func TestLinkSurvivesBodyWrap(t *testing.T) {
 		t.Fatalf("OSC 8 close lost during wrap: %q", joined)
 	}
 }
+
+func TestExpandTabs(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"a\tb", "a   b"},        // col 1 -> next stop at 4
+		{"\t", "    "},           // leading tab -> 4 spaces
+		{"ab\tc", "ab  c"},       // col 2 -> stop at 4
+		{"abcd\te", "abcd    e"}, // col 4 (already on a stop) -> full 4
+		{"no tabs here", "no tabs here"},
+		{"x\ty\nz\tw", "x   y\nz   w"}, // column resets after newline
+	}
+	for _, c := range cases {
+		if got := expandTabs(c.in, 4); got != c.want {
+			t.Errorf("expandTabs(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// A tab-laden paste (e.g. a cookie dump) must not leave bare tabs in the
+// rendered body: lipgloss measures a tab as zero cells but the terminal paints
+// it wider, so a surviving tab makes a line render past the pane width and the
+// terminal re-wraps it onto rows the viewport never budgeted for — pushing the
+// layout off-screen. After rendering and wrapping to a width, no visual row may
+// exceed that width.
+func TestTabPasteDoesNotOverflowWidth(t *testing.T) {
+	const width = 40
+	msg := "_ga\tGA1.1.1388876972\t.justbrands.eu\t/\t2027-06-05\t30\tMedium\n" +
+		"session\teyJhbGciOiJIUzI1NiJ9.aVeryLongUnbrokenTokenThatHasToHardWrap\t.x.eu\t/\tLax"
+	body := renderMarkdown(msg, nil, nil, "")
+	if strings.ContainsRune(body, '\t') {
+		t.Fatalf("rendered body still contains a tab: %q", body)
+	}
+	for _, line := range strings.Split(body, "\n") {
+		for _, row := range wrapBodyLine(line, width) {
+			if w := lipgloss.Width(row); w > width {
+				t.Fatalf("visual row exceeds width %d (got %d): %q", width, w, row)
+			}
+		}
+	}
+}
