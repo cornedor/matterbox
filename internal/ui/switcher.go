@@ -173,30 +173,43 @@ func (m Model) handleSwitcherKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // Empty query lists everything (alphabetical).
 func (m *Model) switcherResults() []*model.Channel {
 	needle := strings.ToLower(strings.TrimSpace(m.switcher.Value()))
+	// All sort keys are precomputed per candidate so a comparison is pure
+	// field reads — the tier/openStats lookups happen once each instead of
+	// O(n log n) times inside the ordering below.
 	type match struct {
-		ch    *model.Channel
-		label string
-		band  int
-		score int
+		ch         *model.Channel
+		lowerLabel string
+		band       int
+		score      int
+		tier       int   // 0 mention, 1 unread, 2 neither (attention rank)
+		openCount  int   // persisted usage
+		lastOpened int64 // recency tiebreak for equal usage
 	}
-	var matches []match
-	seen := map[string]bool{}
-	for _, list := range m.channels {
-		for _, c := range list {
-			if seen[c.Id] {
-				continue
-			}
-			seen[c.Id] = true
-			label := m.channelLabel(c)
-			band, score, ok := fuzzyScore(strings.ToLower(label), needle)
-			if !ok {
-				continue
-			}
-			matches = append(matches, match{ch: c, label: label, band: band, score: score})
+	// less reports whether a should rank before b, mirroring a bare ctrl+p's
+	// attention/usage ranking but with coarse (band) match quality so a strong
+	// textual match still wins while comparable matches defer to unread / usage.
+	less := func(a, b match) bool {
+		// 1. Coarse match quality: exact > prefix > substring > subsequence.
+		if a.band != b.band {
+			return a.band < b.band
 		}
+		// 2. Attention: mentions, then unreads.
+		if a.tier != b.tier {
+			return a.tier < b.tier
+		}
+		// 3. Persisted usage, then recency to break count ties.
+		if a.openCount != b.openCount {
+			return a.openCount > b.openCount
+		}
+		if a.lastOpened != b.lastOpened {
+			return a.lastOpened > b.lastOpened
+		}
+		// 4. Finer match position, then label, as a stable last resort.
+		if a.score != b.score {
+			return a.score < b.score
+		}
+		return a.lowerLabel < b.lowerLabel
 	}
-	// tier ranks attention (lower = higher priority): mentions, then
-	// plain unreads, then everything else.
 	tier := func(ch *model.Channel) int {
 		switch {
 		case m.mentions[ch.Id] > 0:
@@ -207,45 +220,42 @@ func (m *Model) switcherResults() []*model.Channel {
 			return 2
 		}
 	}
-	// Ordering keys, in priority order. The first three are the same
-	// attention/usage ranking a bare ctrl+p shows; the only change while
-	// filtering is that match quality is now coarse (band) instead of a
-	// fine score, so it stops dominating. That way typing a name still
-	// jumps to the strongest textual match, but among comparable matches
-	// the unread / most-used channel wins instead of whichever happened to
-	// match at an earlier position.
-	sort.SliceStable(matches, func(i, j int) bool {
-		a, b := matches[i], matches[j]
-		// 1. Coarse match quality: exact > prefix > substring > subsequence.
-		if a.band != b.band {
-			return a.band < b.band
+	// Keep only the best switcherLimit candidates in a small sorted buffer
+	// instead of materialising and sorting every channel — a workspace can
+	// hold thousands, and the overlay shows at most switcherLimit rows.
+	top := make([]match, 0, switcherLimit)
+	seen := map[string]bool{}
+	for _, list := range m.channels {
+		for _, c := range list {
+			if seen[c.Id] {
+				continue
+			}
+			seen[c.Id] = true
+			lower := strings.ToLower(m.channelLabel(c))
+			band, score, ok := fuzzyScore(lower, needle)
+			if !ok {
+				continue
+			}
+			st := m.openStats[c.Id]
+			mt := match{
+				ch: c, lowerLabel: lower, band: band, score: score,
+				tier: tier(c), openCount: st.OpenCount, lastOpened: st.LastOpened,
+			}
+			if len(top) == switcherLimit && !less(mt, top[len(top)-1]) {
+				continue // no better than the worst keeper
+			}
+			pos := sort.Search(len(top), func(i int) bool { return less(mt, top[i]) })
+			if len(top) < switcherLimit {
+				top = append(top, match{})
+				copy(top[pos+1:], top[pos:])
+			} else {
+				copy(top[pos+1:], top[pos:len(top)-1]) // drop the old worst
+			}
+			top[pos] = mt
 		}
-		// 2. Attention: mentions, then unreads.
-		ta, tb := tier(a.ch), tier(b.ch)
-		if ta != tb {
-			return ta < tb
-		}
-		// 3. Persisted usage: most-opened channels rank above never-opened
-		// ones. Recency breaks count ties so a freshly-opened channel beats
-		// an equally-counted dormant one.
-		ca, cb := m.openStats[a.ch.Id], m.openStats[b.ch.Id]
-		if ca.OpenCount != cb.OpenCount {
-			return ca.OpenCount > cb.OpenCount
-		}
-		if ca.LastOpened != cb.LastOpened {
-			return ca.LastOpened > cb.LastOpened
-		}
-		// 4. Finer match position, then label, as a stable last resort.
-		if a.score != b.score {
-			return a.score < b.score
-		}
-		return strings.ToLower(a.label) < strings.ToLower(b.label)
-	})
-	if len(matches) > switcherLimit {
-		matches = matches[:switcherLimit]
 	}
-	out := make([]*model.Channel, 0, len(matches))
-	for _, mt := range matches {
+	out := make([]*model.Channel, 0, len(top))
+	for _, mt := range top {
 		out = append(out, mt.ch)
 	}
 	return out
