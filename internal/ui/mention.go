@@ -106,11 +106,31 @@ func (m *Model) localMentionMatches(query string) []*model.User {
 		return nil
 	}
 	type cand struct {
-		u     *model.User
-		band  int
-		score int
+		id, name string
+		band     int
+		score    int
+		usage    int // mentionUsage[name], read once so the sort below doesn't re-hash
 	}
-	var cands []cand
+	// less reports whether a should rank before b: match quality, then
+	// popularity, then finer match position, then username as a stable last
+	// resort. usage is precomputed so a comparison is pure field reads.
+	less := func(a, b cand) bool {
+		if a.band != b.band {
+			return a.band < b.band // exact > prefix > substring > subsequence
+		}
+		if a.usage != b.usage {
+			return a.usage > b.usage // more-often-mentioned first
+		}
+		if a.score != b.score {
+			return a.score < b.score
+		}
+		return a.name < b.name
+	}
+	// The popup never shows more than mentionLimit rows, so keep only that many
+	// best candidates in a small sorted buffer instead of materialising and
+	// sorting the whole directory. This is O(n·mentionLimit) with no per-user
+	// *model.User allocation — the directory can hold thousands of names.
+	top := make([]cand, 0, mentionLimit)
 	for id, name := range m.userNames {
 		if name == "" {
 			continue
@@ -119,30 +139,22 @@ func (m *Model) localMentionMatches(query string) []*model.User {
 		if !ok {
 			continue
 		}
-		cands = append(cands, cand{u: &model.User{Id: id, Username: name}, band: band, score: score})
+		c := cand{id: id, name: name, band: band, score: score, usage: m.mentionUsage[name]}
+		if len(top) == mentionLimit && !less(c, top[len(top)-1]) {
+			continue // no better than the worst keeper
+		}
+		pos := sort.Search(len(top), func(i int) bool { return less(c, top[i]) })
+		if len(top) < mentionLimit {
+			top = append(top, cand{})
+			copy(top[pos+1:], top[pos:])
+		} else {
+			copy(top[pos+1:], top[pos:len(top)-1]) // drop the old worst
+		}
+		top[pos] = c
 	}
-	sort.SliceStable(cands, func(i, j int) bool {
-		a, b := cands[i], cands[j]
-		// 1. Match quality: exact > prefix > substring > subsequence.
-		if a.band != b.band {
-			return a.band < b.band
-		}
-		// 2. Popularity: more-often-mentioned usernames first.
-		if ua, ub := m.mentionUsage[a.u.Username], m.mentionUsage[b.u.Username]; ua != ub {
-			return ua > ub
-		}
-		// 3. Finer match position, then username as a stable last resort.
-		if a.score != b.score {
-			return a.score < b.score
-		}
-		return a.u.Username < b.u.Username
-	})
-	out := make([]*model.User, 0, mentionLimit)
-	for _, c := range cands {
-		out = append(out, c.u)
-		if len(out) >= mentionLimit {
-			break
-		}
+	out := make([]*model.User, 0, len(top))
+	for _, c := range top {
+		out = append(out, &model.User{Id: c.id, Username: c.name})
 	}
 	return out
 }
