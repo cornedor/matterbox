@@ -233,12 +233,47 @@ func indentedCodeRun(lines []string, i int) (body []string, next int) {
 	return body, i
 }
 
+// expandTabs replaces tab characters with spaces, advancing to the next
+// multiple of tabWidth (column counter resets on each newline). lipgloss
+// measures a tab as zero cells, but the terminal advances it to the next tab
+// stop — so a tab-laden paste (e.g. a cookie dump) measures far narrower than
+// it paints. The viewport then under-counts wrapped rows and the message
+// overflows its budgeted height, pushing the layout off-screen. Expanding tabs
+// up front keeps measured width equal to painted width everywhere downstream.
+// A tabWidth of 4 matches the indent CommonMark assigns a leading tab, so the
+// indented-code detection below still fires.
+func expandTabs(s string, tabWidth int) string {
+	if !strings.ContainsRune(s, '\t') {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+	col := 0
+	for _, r := range s {
+		switch r {
+		case '\t':
+			n := tabWidth - col%tabWidth
+			for i := 0; i < n; i++ {
+				b.WriteByte(' ')
+			}
+			col += n
+		case '\n':
+			b.WriteByte('\n')
+			col = 0
+		default:
+			b.WriteRune(r)
+			col++
+		}
+	}
+	return b.String()
+}
+
 // renderMarkdown renders a Mattermost message body. Each output line is
 // already indented with the two-space message gutter. ei (may be nil) resolves
 // custom server emoji to inline Kitty-graphics placeholders; mr (may be nil)
 // rewrites GitLab MR URLs to inline badge pills.
 func renderMarkdown(msg string, ei *emojiImages, mr mrInlineFn, self string) string {
-	lines := strings.Split(strings.TrimRight(msg, "\n"), "\n")
+	lines := strings.Split(strings.TrimRight(expandTabs(msg, 4), "\n"), "\n")
 	out := make([]string, 0, len(lines))
 	prevBlank := true // start of message counts as preceded by a blank line
 	for i := 0; i < len(lines); i++ {
