@@ -472,7 +472,15 @@ func (m *Model) renderMessages() {
 	rowStarts[len(m.posts)] = visAcc
 	m.msgRowStarts = rowStarts
 	m.applyTextSelHighlight(focusMessages, allLines)
-	m.msgsView.SetContent(strings.Join(allLines, "\n"))
+	// Hand the viewport the line slice directly: SetContent would join these
+	// into one big string only for the viewport to split them straight back.
+	m.msgsView.SetContentLines(allLines)
+	// We just summed every post's wrapped height into visAcc, which is exactly
+	// the viewport's total visual rows — seed the geometry cache with it so the
+	// View that follows reads a hit instead of re-walking the whole window.
+	if m.vcache != nil {
+		primeScrollGeom(&m.vcache.msgs, m.msgsContentVer, width, visAcc)
+	}
 
 	if h := m.msgsView.Height(); h > 0 && selVisStart >= 0 {
 		visStart := selVisStart
@@ -581,7 +589,10 @@ func (m *Model) renderThread() {
 	rowStarts[len(m.threadPosts)] = visAcc
 	m.threadRowStarts = rowStarts
 	m.applyTextSelHighlight(focusThread, allLines)
-	m.threadView.SetContent(strings.Join(allLines, "\n"))
+	m.threadView.SetContentLines(allLines)
+	if m.vcache != nil {
+		primeScrollGeom(&m.vcache.thread, m.threadContentVer, width, visAcc)
+	}
 
 	if h := m.threadView.Height(); h > 0 && selVisStart >= 0 {
 		visStart := selVisStart
@@ -646,7 +657,7 @@ func visualRowsBefore(lines []string, n, maxWidth int) int {
 	}
 	rows := 0
 	for i := 0; i < n; i++ {
-		w := lipgloss.Width(lines[i])
+		w := visualWidth(lines[i])
 		if w <= maxWidth {
 			rows++
 			continue
@@ -654,6 +665,21 @@ func visualRowsBefore(lines []string, n, maxWidth int) int {
 		rows += (w + maxWidth - 1) / maxWidth
 	}
 	return rows
+}
+
+// visualWidth returns the rendered cell width of a single line, equal to
+// lipgloss.Width for every input. When the line is entirely printable ASCII
+// (no ANSI escapes, no control bytes, no multi-byte runes) every byte is one
+// cell, so the width is the byte length — returned from a single scan, skipping
+// lipgloss's grapheme-cluster walk. Anything outside [0x20,0x7e] (a styled
+// line, a tab, or a wide/multi-byte rune) falls back to the accurate path.
+func visualWidth(s string) int {
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c < 0x20 || c >= 0x7f {
+			return lipgloss.Width(s)
+		}
+	}
+	return len(s)
 }
 
 // postVisualRows is visualRowsBefore over a whole post chunk: the number

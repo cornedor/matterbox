@@ -334,6 +334,16 @@ func (m *Model) setChannelMutedLocal(channelID string, muted bool) {
 			m.members[i].NotifyProps = model.StringMap{}
 		}
 		m.members[i].NotifyProps[model.MarkUnreadNotifyProp] = level
+		// Keep the derived muted set (channelMuted's O(1) source) in step with
+		// the member we just flipped.
+		if m.mutedChannels == nil {
+			m.mutedChannels = map[string]bool{}
+		}
+		if muted {
+			m.mutedChannels[channelID] = true
+		} else {
+			delete(m.mutedChannels, channelID)
+		}
 		return
 	}
 }

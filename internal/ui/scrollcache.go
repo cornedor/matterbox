@@ -88,6 +88,21 @@ func scrollGeomFor(g *scrollGeom, vp *viewport.Model, ver uint64) (int, float64)
 	return total, scrollPercentFor(total, vp.Height(), vp.YOffset())
 }
 
+// primeScrollGeom records a freshly-rendered viewport's already-known total
+// visual-row count in its cache slot, so the next scrollGeomFor call (from the
+// View that follows the render) is a hit instead of re-walking — via GetContent
+// + Split + a width measure of every line — the content we just measured. total
+// must equal viewportVisualRows(content, width); renderMessages / renderThread
+// accumulate exactly that as visAcc while laying the lines out. g may be nil
+// (no viewCache, e.g. in tests), in which case priming is a no-op and the read
+// falls back to the live recompute.
+func primeScrollGeom(g *scrollGeom, ver uint64, width, total int) {
+	if g == nil {
+		return
+	}
+	*g = scrollGeom{ver: ver, width: width, totalRows: total, valid: true}
+}
+
 // scrollPercentFor reproduces viewport.Model.ScrollPercent for a known total
 // row count. Keeping the arithmetic bit-identical to the viewport's (the
 // height>=total short-circuit, then yOffset/(total-height) clamped to [0,1])
