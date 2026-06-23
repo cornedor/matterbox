@@ -7,6 +7,12 @@
 # Go test binaries (`go test -c`)
 *.test
 
+# pprof profiles (`go test -cpuprofile=… -memprofile=…`)
+*.cpu
+*.mem
+*.prof
+*.pprof
+
 # Local project notes, not part of the release
 /PLAN.md
 
