@@ -3,6 +3,8 @@ package ui
 import (
 	"strings"
 	"testing"
+
+	"charm.land/bubbles/v2/textarea"
 )
 
 func TestEmojiMatches(t *testing.T) {
@@ -59,6 +61,59 @@ func TestEmojiMatches(t *testing.T) {
 	got = m.emojiMatches("party")
 	if len(got) == 0 || got[0].name != "party_parrot" {
 		t.Errorf("party: custom emoji not surfaced first, got %v", got)
+	}
+}
+
+func TestIsEmojiQuery(t *testing.T) {
+	// Shortcode-shaped queries open the picker.
+	for _, q := range []string{"smile", "smi", "+1", "-1", "e-mail", "non_potable", "8ball", "a"} {
+		if !isEmojiQuery(q) {
+			t.Errorf("isEmojiQuery(%q) = false, want true", q)
+		}
+	}
+	// Text emoticons carry punctuation no shortcode starts with — these must
+	// not open the picker, so ":)" + Enter still sends the message rather than
+	// accepting a ")"-containing shortcode like ":flag_Myanmar_(Burma):".
+	for _, q := range []string{")", "(", "/", "\\", "|", "*", "'(", "p)", ")smile"} {
+		if isEmojiQuery(q) {
+			t.Errorf("isEmojiQuery(%q) = true, want false", q)
+		}
+	}
+}
+
+func TestUpdateEmojiTrigger(t *testing.T) {
+	// The picker opens only for ":" followed by >=2 shortcode characters at a
+	// word boundary. The cursor sits at the end of the value after SetValue.
+	cases := []struct {
+		text string
+		want bool
+	}{
+		// Text emoticons must not open it — this is the reported bug: ":)"
+		// would otherwise match ":flag_Myanmar_(Burma):" and Enter would
+		// accept it instead of sending.
+		{"Welcome :)", false},
+		{"hey :D", false}, // single char after colon
+		{":o", false},
+		{":P", false},
+		{"foo :-)", false}, // 2 chars, but ")" isn't a shortcode char
+		{":", false},       // bare colon
+		{":a", false},      // only one char
+		// Real shortcodes in progress open it.
+		{"nice :sm", true},
+		{":+1", true},
+		{"see :tada", true},
+		// A ':' mid-word (e.g. a URL) is not a word-boundary trigger.
+		{"http://ab", false},
+	}
+	for _, tc := range cases {
+		var m Model
+		m.input = textarea.New()
+		m.input.SetWidth(40)
+		m.input.SetValue(tc.text)
+		m.updateEmoji()
+		if m.emoji.active != tc.want {
+			t.Errorf("updateEmoji(%q): active = %v, want %v", tc.text, m.emoji.active, tc.want)
+		}
 	}
 }
 
