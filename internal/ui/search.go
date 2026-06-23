@@ -1129,8 +1129,7 @@ func styleMentions(body, self string, baseStyle lipgloss.Style) string {
 	if self == "" || body == "" {
 		return baseStyle.Render(body)
 	}
-	escaped := regexp.QuoteMeta(self)
-	re := regexp.MustCompile(`(^|[^a-zA-Z0-9_.-])@` + escaped + `(?:[^a-zA-Z0-9_.-]|$)`)
+	re := selfMentionRe(self)
 	var out strings.Builder
 	last := 0
 	for _, loc := range re.FindAllStringIndex(body, -1) {
