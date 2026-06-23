@@ -142,7 +142,7 @@ func (m Model) lastViewedByChannel() map[string]int64 {
 // channelMuted reports whether the given channel is muted for the current
 // user, per the cached channel-member notify props (mark_unread == mention).
 // Muted channels are deliberately kept out of the unread feed.
-func (m Model) channelMuted(channelID string) bool {
+func (m *Model) channelMuted(channelID string) bool {
 	for _, mb := range m.members {
 		if mb.ChannelId == channelID {
 			return mb.IsChannelMuted()
@@ -155,7 +155,7 @@ func (m Model) channelMuted(channelID string) bool {
 // messages and with mentions for the Feed tab badge. Muted channels are
 // skipped to match buildFeed: they keep their unread/mention counts for the
 // sidebar, but the feed is the "things to read" list they're opted out of.
-func (m Model) feedBadgeCounts() (unread, mention int) {
+func (m *Model) feedBadgeCounts() (unread, mention int) {
 	for id, n := range m.unread {
 		if n > 0 && !m.channelMuted(id) {
 			unread++
