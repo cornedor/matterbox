@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"charm.land/bubbles/v2/textinput"
+	"charm.land/lipgloss/v2"
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
@@ -146,6 +147,132 @@ func BenchmarkFuzzyScore(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				_, _, _ = fuzzyScore(haystack, c.needle)
+			}
+		})
+	}
+}
+
+// BenchmarkStyleMentions measures the self-mention highlighting that runs once
+// per message line inside every search and feed bubble — 50-500 calls per
+// render of a busy results list. The "match" case has the @self the regex
+// looks for; "nomatch" exercises the common case (a line that mentions nobody)
+// where the scan still runs end to end.
+func BenchmarkStyleMentions(b *testing.B) {
+	base := lipgloss.NewStyle()
+	const self = "anders"
+	cases := []struct{ name, body string }{
+		{"nomatch", "shipped the fix, can someone review the diff when free?"},
+		{"match", "hey @anders can you take a look — also cc @bob and @carol please"},
+	}
+	for _, c := range cases {
+		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = styleMentions(c.body, self, base)
+			}
+		})
+	}
+}
+
+// BenchmarkTruncate measures the grapheme-width-aware truncation called
+// hundreds of times per frame (channel names, bubble headers, message
+// snippets, attachment names). "fits" is the early-out; "ascii" and "wide"
+// hit the per-rune width-measuring loop, with wide runes (emoji/CJK) the
+// costlier path.
+func BenchmarkTruncate(b *testing.B) {
+	cases := []struct {
+		name string
+		s    string
+		n    int
+	}{
+		{"fits", "#general", 40},
+		{"ascii", "engineering-platform-incidents-and-postmortems", 20},
+		{"wide", "🚀 platform 事故 incidents 🔥 postmortem review 📊", 20},
+	}
+	for _, c := range cases {
+		b.Run(c.name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = truncate(c.s, c.n)
+			}
+		})
+	}
+}
+
+// benchVisibleModel builds a Model sitting on a team tab with n channels in
+// that team, so visibleChannels exercises the real per-keystroke sidebar
+// filter (lower-casing + channelLabel + substring match for every channel).
+func benchVisibleModel(n int) Model {
+	lists := map[string][]*model.Channel{"t1": make([]*model.Channel, n)}
+	for i := 0; i < n; i++ {
+		lists["t1"][i] = &model.Channel{
+			Id:          "chan" + strconv.Itoa(i),
+			TeamId:      "t1",
+			Type:        model.ChannelTypeOpen,
+			Name:        "channel-" + strconv.Itoa(i),
+			DisplayName: "Channel " + strconv.Itoa(i),
+		}
+	}
+	return Model{
+		teams:     []*model.Team{{Id: "t1", Name: "team", DisplayName: "Team"}},
+		teamIdx:   2, // Feed(0), Search(1), team(2) — land on the team tab
+		channels:  lists,
+		userNames: map[string]string{},
+	}
+}
+
+// BenchmarkVisibleChannels measures the sidebar filter rerun on every keystroke
+// while filtering the channel list. The empty filter is the unfiltered fast
+// path (returns the slice as-is); the typed filter walks every channel.
+func BenchmarkVisibleChannels(b *testing.B) {
+	for _, n := range []int{50, 200, 800} {
+		m := benchVisibleModel(n)
+		b.Run(fmt.Sprintf("empty/chans=%d", n), func(b *testing.B) {
+			m.filterValue = ""
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = m.visibleChannels()
+			}
+		})
+		b.Run(fmt.Sprintf("typed/chans=%d", n), func(b *testing.B) {
+			m.filterValue = "channel 1"
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = m.visibleChannels()
+			}
+		})
+	}
+}
+
+// BenchmarkFeedBadgeCounts measures the Feed-tab badge tally recomputed on
+// every render: a scan of the unread and mention maps, each entry checked
+// against channelMuted (a linear members scan). n is the number of channels
+// carrying unread/mention state.
+func BenchmarkFeedBadgeCounts(b *testing.B) {
+	for _, n := range []int{50, 200, 800} {
+		m := Model{
+			unread:   map[string]int{},
+			mentions: map[string]int{},
+		}
+		for i := 0; i < n; i++ {
+			id := "chan" + strconv.Itoa(i)
+			m.unread[id] = 1
+			if i%4 == 0 {
+				m.mentions[id] = 1
+			}
+			m.members = append(m.members, model.ChannelMemberWithTeamData{
+				ChannelMember: model.ChannelMember{ChannelId: id},
+			})
+		}
+		b.Run(fmt.Sprintf("chans=%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_, _ = m.feedBadgeCounts()
 			}
 		})
 	}

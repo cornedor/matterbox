@@ -4,12 +4,29 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"charm.land/lipgloss/v2"
 	emoji "github.com/kyokomi/emoji/v2"
 
 	"matterbox/internal/gitlab"
 )
+
+// selfMentionReCache memoises the @self mention regex per username. The
+// per-message render paths (search/feed bubbles via styleMentions, post bodies
+// via renderMarkdown) all match the same standalone-@self pattern, and the set
+// of usernames is tiny and effectively fixed (almost always just the logged-in
+// user), so caching avoids a regexp.MustCompile on every rendered line.
+var selfMentionReCache sync.Map // string -> *regexp.Regexp
+
+func selfMentionRe(self string) *regexp.Regexp {
+	if re, ok := selfMentionReCache.Load(self); ok {
+		return re.(*regexp.Regexp)
+	}
+	re := regexp.MustCompile(`(^|[^a-zA-Z0-9_.-])@` + regexp.QuoteMeta(self) + `(?:[^a-zA-Z0-9_.-]|$)`)
+	selfMentionReCache.Store(self, re)
+	return re
+}
 
 var (
 	mdBoldStyle      = lipgloss.NewStyle().Bold(true)
@@ -353,8 +370,7 @@ func renderInline(s string, ei *emojiImages, mr mrInlineFn, self string) string 
 	})
 
 	if self != "" {
-		escaped := regexp.QuoteMeta(self)
-		mentionRe := regexp.MustCompile(`(^|[^a-zA-Z0-9_.-])@` + escaped + `(?:[^a-zA-Z0-9_.-]|$)`)
+		mentionRe := selfMentionRe(self)
 		s = mentionRe.ReplaceAllStringFunc(s, func(m string) string {
 			atUser := "@" + self
 			idx := strings.Index(m, atUser)
