@@ -461,7 +461,7 @@ func (m *Model) renderSQLResults() {
 	if m.sql.truncated {
 		lines = append(lines, "", dim.Render("  … more rows — showing the first "+strconv.Itoa(sqlMaxRows)))
 	}
-	m.sql.view.SetContent(strings.Join(lines, "\n"))
+	m.sql.view.SetContentLines(lines)
 
 	// Scroll the selected row into view (only meaningful while the list has focus).
 	if h := m.sql.view.Height(); h > 0 && decorate && selVisStart >= 0 {

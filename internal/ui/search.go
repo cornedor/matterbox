@@ -941,7 +941,7 @@ func (m *Model) setBubbleViewport(header []string, hits []store.SearchHit, selId
 		acc += visualRowsBefore([]string{row}, 1, vw)
 	}
 	m.search.zones, m.search.zonesTotal = zones, acc
-	m.search.view.SetContent(strings.Join(allLines, "\n"))
+	m.search.view.SetContentLines(allLines)
 
 	if h := m.search.view.Height(); h > 0 && selStart >= 0 {
 		visStart := visualRowsBefore(allLines, selStart, m.search.view.Width())

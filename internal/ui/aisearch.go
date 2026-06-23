@@ -389,7 +389,7 @@ func (m *Model) renderAIResults() {
 	}
 	banner := m.renderAIBanner(innerW)
 	if m.aiSearch.err != nil {
-		m.search.view.SetContent(strings.Join(banner, "\n"))
+		m.search.view.SetContentLines(banner)
 		m.search.view.GotoTop()
 		return
 	}

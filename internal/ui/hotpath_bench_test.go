@@ -268,6 +268,7 @@ func BenchmarkFeedBadgeCounts(b *testing.B) {
 				ChannelMember: model.ChannelMember{ChannelId: id},
 			})
 		}
+		m.rebuildMutedChannels()
 		b.Run(fmt.Sprintf("chans=%d", n), func(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()

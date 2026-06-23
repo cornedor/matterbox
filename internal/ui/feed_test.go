@@ -239,6 +239,7 @@ func TestChannelMuted(t *testing.T) {
 		{ChannelMember: muted},
 		{ChannelMember: loud},
 	}}
+	m.rebuildMutedChannels()
 	if !m.channelMuted("c-muted") {
 		t.Error("channelMuted(c-muted) = false; want true")
 	}
@@ -266,6 +267,7 @@ func TestFeedBadgeCountsSkipsMuted(t *testing.T) {
 		unread:   map[string]int{"c-muted": 3, "c-loud": 1},
 		mentions: map[string]int{"c-muted": 2, "c-loud": 1},
 	}
+	m.rebuildMutedChannels()
 	unread, mention := m.feedBadgeCounts()
 	if unread != 1 {
 		t.Errorf("unread badge = %d; want 1 (muted channel excluded)", unread)

@@ -136,7 +136,7 @@ func (m *Model) renderHistory() {
 	}
 	parts = append(parts, body)
 
-	m.historyView.SetContent(strings.Join(parts, "\n"))
+	m.historyView.SetContentLines(parts)
 }
 
 // latestStamp returns the best timestamp we have for "when did this

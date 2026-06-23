@@ -904,7 +904,7 @@ func (m *Model) renderSummaryViewBody() {
 	default:
 		parts = append(parts, m.renderMarkdownAnswer(answer))
 	}
-	m.summary.view.SetContent(strings.Join(parts, "\n"))
+	m.summary.view.SetContentLines(parts)
 }
 
 // renderMarkdownAnswer renders the finished answer as terminal markdown

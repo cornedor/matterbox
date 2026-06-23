@@ -256,7 +256,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		)
 
 	case membersLoadedMsg:
-		m.members = msg.members
+		m.setMembers(msg.members)
 		m.membersLoaded = true
 		m.applyUnreadFromMembers()
 		return m, nil

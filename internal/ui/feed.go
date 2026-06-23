@@ -141,14 +141,30 @@ func (m Model) lastViewedByChannel() map[string]int64 {
 
 // channelMuted reports whether the given channel is muted for the current
 // user, per the cached channel-member notify props (mark_unread == mention).
-// Muted channels are deliberately kept out of the unread feed.
+// Muted channels are deliberately kept out of the unread feed. The lookup is
+// O(1) against the mutedChannels set setMembers maintains; a nil set (no
+// members loaded yet) reports nothing muted.
 func (m *Model) channelMuted(channelID string) bool {
+	return m.mutedChannels[channelID]
+}
+
+// setMembers installs a fresh channel-member snapshot and rebuilds the derived
+// mutedChannels set. Every assignment to m.members must go through here so the
+// muted set never drifts from the members it summarises.
+func (m *Model) setMembers(ms model.ChannelMembersWithTeamData) {
+	m.members = ms
+	m.rebuildMutedChannels()
+}
+
+// rebuildMutedChannels recomputes the muted-channel set from m.members.
+func (m *Model) rebuildMutedChannels() {
+	muted := make(map[string]bool, len(m.members))
 	for _, mb := range m.members {
-		if mb.ChannelId == channelID {
-			return mb.IsChannelMuted()
+		if mb.IsChannelMuted() {
+			muted[mb.ChannelId] = true
 		}
 	}
-	return false
+	m.mutedChannels = muted
 }
 
 // feedBadgeCounts returns the number of distinct channels with unread
@@ -362,7 +378,7 @@ func (m Model) applyFeedResults(msg feedLoadedMsg) (tea.Model, tea.Cmd) {
 	// next build) sees the same fresh read state instead of the frozen
 	// startup snapshot.
 	if len(msg.members) > 0 {
-		m.members = msg.members
+		m.setMembers(msg.members)
 	}
 	for id, name := range msg.users {
 		m.userNames[id] = name
@@ -664,7 +680,7 @@ func (m *Model) renderFeedResults() {
 		allLines = append(allLines, "")                                // blank separator between bubbles
 	}
 	m.feed.zones, m.feed.zonesTotal = zones, acc
-	m.feed.view.SetContent(strings.Join(allLines, "\n"))
+	m.feed.view.SetContentLines(allLines)
 
 	if h := m.feed.view.Height(); h > 0 && selStart >= 0 {
 		visStart := visualRowsBefore(allLines, selStart, m.feed.view.Width())

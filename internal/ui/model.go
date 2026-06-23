@@ -111,7 +111,12 @@ type Model struct {
 	channelsLoaded bool
 	members        model.ChannelMembersWithTeamData
 	membersLoaded  bool
-	userNames      map[string]string // userID → username
+	// mutedChannels is the set of channel ids the user has muted, derived from
+	// members' notify props. Rebuilt by setMembers whenever members changes so
+	// channelMuted is an O(1) lookup instead of a linear members scan — the feed
+	// badge tally calls it once per unread/mention channel on every render.
+	mutedChannels map[string]bool
+	userNames     map[string]string // userID → username
 
 	// Presence + custom status for DM partners. statuses is the live
 	// presence (online/away/dnd; offline/unknown absent) refreshed by the
