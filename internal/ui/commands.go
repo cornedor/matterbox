@@ -104,6 +104,16 @@ func builtinCommands() []switcherCommand {
 			desc: "echo the raw key events the terminal sends (diagnose option/ctrl/shift+arrow)",
 			run:  runKeyDebug,
 		},
+		{
+			name: "Debug: Copy message ID",
+			desc: "copy the ID of the currently selected message to the clipboard",
+			run:  runCopyMessageID,
+		},
+		{
+			name: "Debug: Copy channel ID",
+			desc: "copy the ID of the currently open channel to the clipboard",
+			run:  runCopyChannelID,
+		},
 	}
 }
 
@@ -114,6 +124,39 @@ func builtinCommands() []switcherCommand {
 func runKeyDebug(m *Model, _ string) tea.Cmd {
 	m.openKeyDebug()
 	return nil
+}
+
+// runCopyMessageID copies the ID of the currently selected post to the
+// system clipboard. It respects focus: a selected thread reply takes
+// precedence over the main message list.
+func runCopyMessageID(m *Model, _ string) tea.Cmd {
+	var p *model.Post
+	switch m.focus {
+	case focusThread:
+		if m.threadIdx >= 0 && m.threadIdx < len(m.threadPosts) {
+			p = m.threadPosts[m.threadIdx]
+		}
+	case focusMessages:
+		if m.postIdx >= 0 && m.postIdx < len(m.posts) {
+			p = m.posts[m.postIdx]
+		}
+	}
+	if p == nil {
+		m.status = "no message selected"
+		return nil
+	}
+	return m.copyText(p.Id, "message ID")
+}
+
+// runCopyChannelID copies the ID of the currently open channel to the
+// system clipboard. If no channel is open (e.g. Feed/Search tab), it shows
+// a status message instead.
+func runCopyChannelID(m *Model, _ string) tea.Cmd {
+	if m.openChannelID == "" {
+		m.status = "no channel open"
+		return nil
+	}
+	return m.copyText(m.openChannelID, "channel ID")
 }
 
 // runShowKeys opens the keyboard cheatsheet popup (see cheatsheet.go). The
