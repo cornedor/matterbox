@@ -144,10 +144,22 @@ func (m *Model) updateEmoji() {
 		return
 	}
 
-	// Require at least one character after the ':' — the picker only opens
-	// once you've typed ":" *and a letter*, never on a bare colon.
+	// Require at least two characters after the ':' before opening — matching
+	// Mattermost and Discord. This keeps the picker from firing on text
+	// emoticons like ":)", ":D" or ":o", and costs nothing real: no shortcode
+	// is shorter than two characters ("+1", "-1", "ok", "up", ...). A bare ":"
+	// stays quiet too.
+	if col-(at+1) < 2 {
+		m.closeEmoji()
+		return
+	}
 	query := strings.ToLower(string(runes[at+1 : col]))
-	if query == "" {
+	// Even with two characters, a query is only a shortcode in progress if it
+	// holds shortcode characters ([a-z0-9_+-]). Anything else is a longer
+	// emoticon like ":-)" or ":'(" — bail so the picker stays closed and Enter
+	// still sends. Without this, a stray ")" matches names that merely contain
+	// one (e.g. ":flag_Myanmar_(Burma):") and Enter would accept that.
+	if !isEmojiQuery(query) {
 		m.closeEmoji()
 		return
 	}
@@ -163,6 +175,23 @@ func (m *Model) updateEmoji() {
 	if len(m.emoji.items) == 0 {
 		m.closeEmoji()
 	}
+}
+
+// isEmojiQuery reports whether s looks like an emoji shortcode in progress:
+// only the characters that can appear in a shortcode name. Text emoticons
+// (":)", ":(", ":/", ":|", ...) carry punctuation that never starts a
+// shortcode, so they're rejected and the picker never opens for them.
+func isEmojiQuery(s string) bool {
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == '_' || r == '+' || r == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // closeEmoji clears the picker.
