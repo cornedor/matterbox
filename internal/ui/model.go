@@ -1751,7 +1751,9 @@ func (m Model) loadFromStore(channelID string) []*model.Post {
 	if m.store == nil {
 		return nil
 	}
-	posts, err := m.store.RecentForChannel(channelID, initialRenderLimit)
+	// includeDeleted=true so a removed message keeps a persistent tombstone in
+	// the transcript across restarts (renderPostLines paints it).
+	posts, err := m.store.RecentForChannel(channelID, initialRenderLimit, true)
 	if err != nil {
 		return nil
 	}
@@ -1770,7 +1772,7 @@ func (m Model) loadOlderFromStore(channelID string, beforeCreateAt int64) []*mod
 	if m.store == nil || channelID == "" || beforeCreateAt <= 0 {
 		return nil
 	}
-	posts, err := m.store.BeforeInChannel(channelID, beforeCreateAt, olderPageSize)
+	posts, err := m.store.BeforeInChannel(channelID, beforeCreateAt, olderPageSize, true)
 	if err != nil {
 		return nil
 	}
@@ -1785,7 +1787,7 @@ func (m Model) loadNewerFromStore(channelID string, afterCreateAt int64) []*mode
 	if m.store == nil || channelID == "" || afterCreateAt <= 0 {
 		return nil
 	}
-	posts, err := m.store.AfterInChannel(channelID, afterCreateAt, olderPageSize)
+	posts, err := m.store.AfterInChannel(channelID, afterCreateAt, olderPageSize, true)
 	if err != nil {
 		return nil
 	}
@@ -1878,6 +1880,36 @@ func mergePostsByTime(existing, incoming []*model.Post) []*model.Post {
 	return append(merged, stubs...)
 }
 
+// mergeTombstones folds the tombstones already on screen (prev, DeleteAt != 0)
+// into a freshly server-fetched slice. A server fetch never returns deleted
+// posts, so a plain replace (postsLoadedMsg) would make a removed message's
+// "message deleted" marker vanish — e.g. on the post-send refetch. The fetched
+// slice stays authoritative for anything it includes; a tombstone is carried
+// over only when its Id isn't in the fetch. Optimistic stubs (empty Id) are
+// ignored. Result is oldest→newest.
+func mergeTombstones(prev, fetched []*model.Post) []*model.Post {
+	have := make(map[string]bool, len(fetched))
+	for _, p := range fetched {
+		if p != nil && p.Id != "" {
+			have[p.Id] = true
+		}
+	}
+	merged := make([]*model.Post, len(fetched), len(fetched)+4)
+	copy(merged, fetched)
+	for _, p := range prev {
+		if p != nil && p.Id != "" && p.DeleteAt != 0 && !have[p.Id] {
+			merged = append(merged, p)
+		}
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		if merged[i].CreateAt != merged[j].CreateAt {
+			return merged[i].CreateAt < merged[j].CreateAt
+		}
+		return merged[i].Id < merged[j].Id
+	})
+	return merged
+}
+
 // fetchPostsAfter pulls every post created after afterPostID in the
 // channel. Use this when reopening a channel whose history is already
 // in the cache: paint cached → call this → append the gap.
@@ -1926,6 +1958,48 @@ func (m Model) fetchRecent(channelID string) tea.Cmd {
 			return errMsg{err}
 		}
 		return postsGapFilledMsg{channelID: channelID, posts: ordered, users: users}
+	}
+}
+
+// syncChannelDeletions reconciles deletions that landed while matterbox was
+// away. fetchRecent (GetPostsForChannel) never returns deleted posts, so a
+// message removed offline would otherwise stay on screen as if still live.
+// PostsSince — keyed on update_at — is the one channel API that *does* return
+// deleted posts (with delete_at set); we persist each as a tombstone and report
+// them so the open transcript flips without a reopen.
+//
+// `since` is the store's MaxUpdateAt watermark, snapshotted by the caller on
+// the UI goroutine *before* fetchRecent is dispatched. Taking it there (rather
+// than re-reading it inside this goroutine) keeps the cursor from being advanced
+// by fetchRecent's concurrently-persisted live posts: were the watermark to move
+// past a missed deletion's update_at, the PostsSince sweep would skip it. Delete
+// then bumps each tombstone's update_at past its delete time so the same
+// deletion isn't re-fetched on every open.
+func (m Model) syncChannelDeletions(channelID string, since int64) tea.Cmd {
+	if m.store == nil || channelID == "" || since <= 0 {
+		return nil // no store, or nothing cached → nothing to reconcile against
+	}
+	st, cl, ctx := m.store, m.client, m.ctx
+	return func() tea.Msg {
+		pl, err := cl.PostsSince(ctx, channelID, since)
+		if err != nil || pl == nil {
+			return nil
+		}
+		// Deleted posts ride in pl.Posts (the map) but not pl.Order, so iterate
+		// the map. Persist now, off the UI goroutine; Delete is idempotent for
+		// rows already tombstoned.
+		var deleted []*model.Post
+		for _, p := range pl.Posts {
+			if p != nil && p.Id != "" && p.DeleteAt != 0 {
+				if err := st.Delete(p); err == nil {
+					deleted = append(deleted, p)
+				}
+			}
+		}
+		if len(deleted) == 0 {
+			return nil
+		}
+		return deletionsSyncedMsg{channelID: channelID, deleted: deleted}
 	}
 }
 
@@ -2007,15 +2081,17 @@ func (m Model) persistPosts(posts ...*model.Post) tea.Cmd {
 	}
 }
 
-// persistDelete removes a post by Id from the store. No-op when the
-// store is unavailable.
-func (m Model) persistDelete(id string) tea.Cmd {
-	if m.store == nil || id == "" {
+// persistDelete soft-deletes a post in the store, leaving a tombstone. Passing
+// the whole post (not just the Id) lets the store seed a tombstone row even when
+// the delete races ahead of the post ever being cached. No-op when the store is
+// unavailable.
+func (m Model) persistDelete(p *model.Post) tea.Cmd {
+	if m.store == nil || p == nil || p.Id == "" {
 		return nil
 	}
 	st := m.store
 	return func() tea.Msg {
-		_ = st.Delete(id)
+		_ = st.Delete(p)
 		return nil
 	}
 }
@@ -2076,7 +2152,12 @@ func (m *Model) openChannelLoadCmd(channelID string) tea.Cmd {
 		// forward-only PostsAfter(newestCached) can never see. fetchRecent
 		// pulls the channel's latest page (anchored at "now") so the merge
 		// fills any such hole. See fetchRecent / the postsGapFilledMsg merge.
-		return tea.Batch(draftCmd, m.fetchRecent(channelID))
+		// syncChannelDeletions runs alongside it to surface any messages removed
+		// while we were away (fetchRecent can't — the API omits deleted posts).
+		// Snapshot the deletion-sync watermark here, before fetchRecent can
+		// persist newer live posts and push it past a missed deletion.
+		deletionSince, _ := m.store.MaxUpdateAt(channelID)
+		return tea.Batch(draftCmd, m.fetchRecent(channelID), m.syncChannelDeletions(channelID, deletionSince))
 	}
 	m.posts = nil
 	m.status = "loading messages…"

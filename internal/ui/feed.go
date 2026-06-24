@@ -289,7 +289,7 @@ func (m Model) fetchFeed(seq int, targets []feedTarget) tea.Cmd {
 			unread := capUnread(full, t.unreadCount)
 			var ctxPosts []*model.Post
 			if m.store != nil {
-				ctxPosts, _ = m.store.BeforeInChannel(t.channelID, unread[0].CreateAt, feedContextLines)
+				ctxPosts, _ = m.store.BeforeInChannel(t.channelID, unread[0].CreateAt, feedContextLines, false)
 			}
 			entries = append(entries, feedEntry{
 				channelID: t.channelID,
@@ -553,7 +553,7 @@ func (m *Model) feedAppendPosted(p *model.Post) {
 	// at the top (newest activity).
 	var ctxPosts []*model.Post
 	if m.store != nil {
-		ctxPosts, _ = m.store.BeforeInChannel(p.ChannelId, p.CreateAt, feedContextLines)
+		ctxPosts, _ = m.store.BeforeInChannel(p.ChannelId, p.CreateAt, feedContextLines, false)
 	}
 	entry := feedEntry{
 		channelID: p.ChannelId,

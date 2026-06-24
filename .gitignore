@@ -12,6 +12,12 @@
 *.mem
 *.prof
 *.pprof
+*.heap
+*.goroutine
+
+# Local filestore written by the server/ PoC when run locally
+# (Mattermost's default FileSettings.Directory layout: data/files/<id>/…)
+/data/
 
 # Local project notes, not part of the release
 /PLAN.md

@@ -40,7 +40,7 @@ func TestUpsertAndRecent(t *testing.T) {
 	if err := s.UpsertMany([]*model.Post{p2, p1}); err != nil { // out-of-order on purpose
 		t.Fatalf("upsert: %v", err)
 	}
-	got, err := s.RecentForChannel("c1", 10)
+	got, err := s.RecentForChannel("c1", 10, false)
 	if err != nil {
 		t.Fatalf("recent: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestUpsertEdit(t *testing.T) {
 	if err := s.Upsert(edited); err != nil {
 		t.Fatalf("upsert edit: %v", err)
 	}
-	got, _ := s.RecentForChannel("c1", 10)
+	got, _ := s.RecentForChannel("c1", 10, false)
 	if len(got) != 1 {
 		t.Fatalf("want 1 post after edit, got %d", len(got))
 	}
@@ -85,21 +85,162 @@ func TestUpsertEdit(t *testing.T) {
 	}
 }
 
+// TestDelete is a soft delete: the row survives as a stripped tombstone so the
+// transcript can show a persistent "message deleted" marker, but the content is
+// gone from the live view, from search, and from the edit-history archive.
 func TestDelete(t *testing.T) {
 	s := tempStore(t)
 	p := mkPost("p1aaaaaaaaaaaaaaaaaaaaaaaa", "c1", "going away", 100)
 	if err := s.Upsert(p); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if err := s.Delete(p.Id); err != nil {
+	// An earlier edit so there's an archived revision to purge on delete.
+	edit := mkPost("p1aaaaaaaaaaaaaaaaaaaaaaaa", "c1", "going away soon", 100)
+	edit.EditAt = 150
+	if err := s.Upsert(edit); err != nil {
+		t.Fatalf("upsert edit: %v", err)
+	}
+
+	if err := s.Delete(p); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	got, _ := s.RecentForChannel("c1", 10)
-	if len(got) != 0 {
-		t.Errorf("post not deleted: %d remain", len(got))
+
+	// Live view (includeDeleted=false) hides it.
+	if got, _ := s.RecentForChannel("c1", 10, false); len(got) != 0 {
+		t.Errorf("tombstone leaked into live view: %d post(s)", len(got))
 	}
+	// Transcript view (includeDeleted=true) keeps a stripped tombstone.
+	got, _ := s.RecentForChannel("c1", 10, true)
+	if len(got) != 1 {
+		t.Fatalf("tombstone missing from transcript view: got %d", len(got))
+	}
+	if got[0].DeleteAt == 0 {
+		t.Error("tombstone should carry a nonzero DeleteAt")
+	}
+	if got[0].Message != "" {
+		t.Errorf("tombstone still holds content: %q", got[0].Message)
+	}
+	// Search and the revision archive must both stop surfacing the content.
 	if n := ftsCount(t, s, "going"); n != 0 {
 		t.Errorf("fts not cleaned: %d", n)
+	}
+	if revs, _ := s.Revisions(p.Id); len(revs) != 0 {
+		t.Errorf("delete left %d revision(s) behind", len(revs))
+	}
+}
+
+// TestDeleteIsTerminal: once a post is soft-deleted, re-upserting its original
+// (pre-delete) content must not bring it back to life — the upsert's delete_at
+// guard keeps the tombstone.
+func TestDeleteIsTerminal(t *testing.T) {
+	s := tempStore(t)
+	p := mkPost("p1aaaaaaaaaaaaaaaaaaaaaaaa", "c1", "secret", 100)
+	if err := s.Upsert(p); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if err := s.Delete(p); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	// A stale refetch tries to write the original content back.
+	if err := s.Upsert(p); err != nil {
+		t.Fatalf("re-upsert: %v", err)
+	}
+	if got, _ := s.RecentForChannel("c1", 10, false); len(got) != 0 {
+		t.Errorf("tombstone resurrected into the live view: %d post(s)", len(got))
+	}
+	got, _ := s.RecentForChannel("c1", 10, true)
+	if len(got) != 1 || got[0].Message != "" {
+		t.Errorf("tombstone clobbered by re-upsert: %+v", got)
+	}
+	if n := ftsCount(t, s, "secret"); n != 0 {
+		t.Errorf("deleted content back in fts: %d", n)
+	}
+}
+
+// TestDeleteUncachedSeedsTombstone covers the race that lost tombstones across
+// a restart: a post_deleted that arrives before the post itself was ever
+// persisted. The event post seeds the tombstone row, and a late upsert of the
+// original (live) content can't resurrect it.
+func TestDeleteUncachedSeedsTombstone(t *testing.T) {
+	s := tempStore(t)
+	p := mkPost("p1aaaaaaaaaaaaaaaaaaaaaaaa", "c1", "ghost", 100)
+
+	// Delete first — the post is not in the store yet.
+	if err := s.Delete(p); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	got, _ := s.RecentForChannel("c1", 10, true)
+	if len(got) != 1 {
+		t.Fatalf("uncached delete didn't seed a tombstone: got %d", len(got))
+	}
+	if got[0].Id != p.Id || got[0].DeleteAt == 0 || got[0].Message != "" {
+		t.Errorf("bad seeded tombstone: %+v", got[0])
+	}
+
+	// A late persist of the original content must not bring it back.
+	if err := s.Upsert(p); err != nil {
+		t.Fatalf("late upsert: %v", err)
+	}
+	if live, _ := s.RecentForChannel("c1", 10, false); len(live) != 0 {
+		t.Errorf("late upsert resurrected the post: %d", len(live))
+	}
+	if n := ftsCount(t, s, "ghost"); n != 0 {
+		t.Errorf("ghost content searchable: %d", n)
+	}
+}
+
+// TestDeleteWatermarkAndIdempotent covers the offline-deletion sync contract:
+// a Delete carrying the server's delete time stamps the tombstone with it and
+// advances MaxUpdateAt past it (so the next PostsSince sweep won't re-report
+// it), and a repeated Delete of an already-tombstoned post is a no-op.
+func TestDeleteWatermarkAndIdempotent(t *testing.T) {
+	s := tempStore(t)
+	p := mkPost("p1aaaaaaaaaaaaaaaaaaaaaaaa", "c1", "hi", 100) // update_at 100
+	if err := s.Upsert(p); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if mx, _ := s.MaxUpdateAt("c1"); mx != 100 {
+		t.Fatalf("MaxUpdateAt = %d, want 100", mx)
+	}
+
+	// A PostsSince sweep reports it deleted far later (offline deletion).
+	del := mkPost("p1aaaaaaaaaaaaaaaaaaaaaaaa", "c1", "hi", 100)
+	del.DeleteAt, del.UpdateAt = 5000, 5000
+	if err := s.Delete(del); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	got, _ := s.RecentForChannel("c1", 10, true)
+	if len(got) != 1 || got[0].DeleteAt != 5000 {
+		t.Fatalf("tombstone should carry the server delete time 5000: %+v", got)
+	}
+	if mx, _ := s.MaxUpdateAt("c1"); mx != 5000 {
+		t.Errorf("watermark didn't advance past the delete: MaxUpdateAt = %d, want 5000", mx)
+	}
+
+	// Re-deleting the same (already tombstoned) post changes nothing.
+	if err := s.Delete(del); err != nil {
+		t.Fatalf("re-delete: %v", err)
+	}
+	if got, _ := s.RecentForChannel("c1", 10, true); len(got) != 1 || got[0].DeleteAt != 5000 {
+		t.Errorf("re-delete disturbed the tombstone: %+v", got)
+	}
+}
+
+// TestMaxUpdateAt: empty channel is 0; otherwise the largest update_at across
+// all rows (deleted included, via the tombstone's stamped delete time).
+func TestMaxUpdateAt(t *testing.T) {
+	s := tempStore(t)
+	if mx, _ := s.MaxUpdateAt("c1"); mx != 0 {
+		t.Errorf("empty channel MaxUpdateAt = %d, want 0", mx)
+	}
+	a := mkPost("p1aaaaaaaaaaaaaaaaaaaaaaaa", "c1", "a", 100)
+	b := mkPost("p2aaaaaaaaaaaaaaaaaaaaaaaa", "c1", "b", 300)
+	b.UpdateAt = 350
+	if err := s.UpsertMany([]*model.Post{a, b}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if mx, _ := s.MaxUpdateAt("c1"); mx != 350 {
+		t.Errorf("MaxUpdateAt = %d, want 350", mx)
 	}
 }
 
@@ -139,7 +280,7 @@ func TestRecentLimit(t *testing.T) {
 			t.Fatalf("upsert: %v", err)
 		}
 	}
-	got, _ := s.RecentForChannel("c1", 3)
+	got, _ := s.RecentForChannel("c1", 3, false)
 	if len(got) != 3 {
 		t.Fatalf("limit not respected: got %d", len(got))
 	}
@@ -220,7 +361,7 @@ func TestUpsertMetadataOnlyChangePersists(t *testing.T) {
 	if err := s.Upsert(enriched); err != nil {
 		t.Fatalf("re-upsert with metadata: %v", err)
 	}
-	got, _ := s.RecentForChannel("c1", 10)
+	got, _ := s.RecentForChannel("c1", 10, false)
 	if len(got) != 1 {
 		t.Fatalf("want 1 post, got %d", len(got))
 	}

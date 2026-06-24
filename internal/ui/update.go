@@ -12,6 +12,8 @@ import (
 	"github.com/charmbracelet/colorprofile"
 	uv "github.com/charmbracelet/ultraviolet"
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/store"
 )
 
 // Update is the bubbletea entry point. It runs the real handler, then —
@@ -267,7 +269,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// keeps growing for unfocused channels we briefly opened.
 			return m, m.persistPosts(msg.posts...)
 		}
-		m.posts = msg.posts
+		// A server fetch never returns deleted posts; carry over any tombstones
+		// already on screen so a full reload (notably the post-send refetch)
+		// doesn't make removed messages vanish. The cache keeps them too, so a
+		// later reopen reloads them — this just covers the in-session replace.
+		m.posts = mergeTombstones(m.posts, msg.posts)
 		for id, name := range msg.users {
 			m.userNames[id] = name
 		}
@@ -284,6 +290,51 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scheduleMarkViewed(msg.channelID),
 			m.persistPosts(msg.posts...),
 		)
+
+	case deletionsSyncedMsg:
+		// Tombstones are already persisted (syncChannelDeletions). If the synced
+		// channel is still open, flip any matching live post in the transcript so
+		// the "message deleted" marker shows without waiting for a reopen — and
+		// mirror applyPostDeleted's handling of an open thread sidebar so the two
+		// delete paths (live WS vs offline sweep) render the same.
+		if msg.channelID != m.openChannelID {
+			return m, nil
+		}
+		changed, threadChanged := false, false
+		for _, d := range msg.deleted {
+			for _, ex := range m.posts {
+				if ex.Id == d.Id && ex.DeleteAt == 0 {
+					markPostDeleted(ex, d.DeleteAt)
+					m.invalidatePostLines(ex.Id)
+					m.feedRemovePost(ex.Id)
+					changed = true
+					break
+				}
+			}
+			if m.threadOpen {
+				// A removed thread root leaves nothing to anchor the sidebar on.
+				if d.Id == m.threadRootID {
+					m.closeThread()
+					threadChanged = false // closeThread already tore the pane down
+					continue
+				}
+				for _, ex := range m.threadPosts {
+					if ex.Id == d.Id && ex.DeleteAt == 0 {
+						markPostDeleted(ex, d.DeleteAt)
+						m.invalidatePostLines(ex.Id)
+						threadChanged = true
+						break
+					}
+				}
+			}
+		}
+		if changed {
+			m.renderMessages()
+		}
+		if threadChanged {
+			m.renderThread()
+		}
+		return m, nil
 
 	case postsGapFilledMsg:
 		// Always persist what we got — even if the user has since
@@ -1191,14 +1242,14 @@ func (m *Model) applyPostDeleted(ev *model.WebSocketEvent) tea.Cmd {
 		m.cancelEdit()
 		m.status = "message was deleted; edit cancelled"
 	}
-	persistCmd := m.persistDelete(p.Id)
+	// Drop the content from the local cache so deleted text doesn't linger on
+	// disk, but leave a tombstone in the live transcript so the message doesn't
+	// silently vanish from under the reader (see deletedPostLines).
+	persistCmd := m.persistDelete(p)
 	if m.isCurrentChannel(p.ChannelId) {
-		for i, ex := range m.posts {
+		for _, ex := range m.posts {
 			if ex.Id == p.Id {
-				m.posts = append(m.posts[:i], m.posts[i+1:]...)
-				if i < m.postIdx {
-					m.postIdx--
-				}
+				markPostDeleted(ex, p.DeleteAt)
 				m.renderMessages()
 				break
 			}
@@ -1206,23 +1257,43 @@ func (m *Model) applyPostDeleted(ev *model.WebSocketEvent) tea.Cmd {
 	}
 	if m.isThreadPost(p) {
 		// If the root itself was deleted, drop the whole sidebar — there's
-		// nothing left to show.
+		// nothing left to anchor it on.
 		if p.Id == m.threadRootID {
 			m.closeThread()
 			return persistCmd
 		}
-		for i, ex := range m.threadPosts {
+		for _, ex := range m.threadPosts {
 			if ex.Id == p.Id {
-				m.threadPosts = append(m.threadPosts[:i], m.threadPosts[i+1:]...)
-				if i < m.threadIdx {
-					m.threadIdx--
-				}
+				markPostDeleted(ex, p.DeleteAt)
 				m.renderThread()
 				break
 			}
 		}
 	}
 	return persistCmd
+}
+
+// markPostDeleted flags p as removed so the render path shows a tombstone in
+// place of its content. The post_deleted event's own DeleteAt isn't reliably
+// populated, so we fall back to any nonzero stamp — only the nonzero-ness
+// matters to the renderer and to postLineFingerprint. We also clear the
+// content from memory: a tombstone never renders the original message, and we
+// don't want the deleted text sitting around in the model.
+func markPostDeleted(p *model.Post, at int64) {
+	if at == 0 {
+		at = p.UpdateAt
+	}
+	if at == 0 {
+		at = p.CreateAt
+	}
+	if at == 0 {
+		at = 1
+	}
+	p.DeleteAt = at
+	// Strip the content the tombstone must never expose (message text, file
+	// metadata, …). Shared with the persisted-tombstone path so the two can't
+	// drift; Props is deliberately kept for the webhook override_username.
+	store.StripTombstoneContent(p)
 }
 
 // isCurrentChannel reports whether channelID is the channel the messages
@@ -1921,6 +1992,10 @@ func (m Model) handleThreadKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		p := m.threadPosts[m.threadIdx]
+		if p.DeleteAt != 0 {
+			m.status = "message was deleted"
+			return m, nil
+		}
 		if p.EditAt == 0 {
 			m.status = "message has not been edited"
 			return m, nil
@@ -1955,6 +2030,10 @@ func (m Model) handleThreadKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		p := m.threadPosts[m.threadIdx]
 		if p.Id == "" {
 			m.status = "message hasn't landed yet"
+			return m, nil
+		}
+		if p.DeleteAt != 0 {
+			m.status = "message was deleted"
 			return m, nil
 		}
 		return m, m.openReactionPicker(p.Id)
@@ -3208,6 +3287,12 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.postIdx < 0 || m.postIdx >= len(m.posts) {
 			return m, nil
 		}
+		if m.posts[m.postIdx].DeleteAt != 0 {
+			// A tombstone keeps its Id/RootId, so without this guard the user
+			// could open a thread on (or reply into) a removed message.
+			m.status = "message was deleted"
+			return m, nil
+		}
 		return m.openThreadForPost(m.posts[m.postIdx])
 	case key.Matches(msg, m.keys.EditPost):
 		if m.postIdx < 0 || m.postIdx >= len(m.posts) {
@@ -3261,10 +3346,20 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.status = "no message selected"
 			return m, nil
 		}
+		if m.posts[m.postIdx].DeleteAt != 0 {
+			// Content is stripped on a tombstone; copying would silently put an
+			// empty string on the clipboard and still report success.
+			m.status = "message was deleted"
+			return m, nil
+		}
 		return m, m.copyPostMarkdown(m.posts[m.postIdx])
 	case key.Matches(msg, m.keys.CopyCode):
 		if m.postIdx < 0 || m.postIdx >= len(m.posts) {
 			m.status = "no message selected"
+			return m, nil
+		}
+		if m.posts[m.postIdx].DeleteAt != 0 {
+			m.status = "message was deleted"
 			return m, nil
 		}
 		return m.copyCodeFromPost(m.posts[m.postIdx])
@@ -3273,6 +3368,10 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		p := m.posts[m.postIdx]
+		if p.DeleteAt != 0 {
+			m.status = "message was deleted"
+			return m, nil
+		}
 		if p.EditAt == 0 {
 			m.status = "message has not been edited"
 			return m, nil
@@ -3286,6 +3385,10 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		p := m.posts[m.postIdx]
 		if p.Id == "" {
 			m.status = "message hasn't landed yet"
+			return m, nil
+		}
+		if p.DeleteAt != 0 {
+			m.status = "message was deleted"
 			return m, nil
 		}
 		return m, m.openReactionPicker(p.Id)
@@ -3304,6 +3407,9 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m Model) canMutatePost(p *model.Post) bool {
 	if p == nil || p.Id == "" || m.me == nil {
 		return false
+	}
+	if p.DeleteAt != 0 {
+		return false // already a tombstone — nothing left to edit or delete
 	}
 	return p.UserId == m.me.Id
 }

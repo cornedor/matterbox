@@ -68,6 +68,7 @@ var (
 	selectedBarStyle   = lipgloss.NewStyle().Foreground(focusedColor)          // selected-post left bar
 	replyHintStyle     = lipgloss.NewStyle().Foreground(dimColor)              // ↳ reply, ↪ N replies
 	editedStyle        = lipgloss.NewStyle().Foreground(dimColor).Italic(true) // right-aligned "edited" tag
+	deletedStyle       = lipgloss.NewStyle().Foreground(dimColor).Italic(true) // "⊘ message deleted" tombstone
 )
 
 // tabBorderWithBottom returns a rounded border with the bottom row
@@ -780,6 +781,23 @@ func withEditedTag(header string, p *model.Post, width int) string {
 	return header + strings.Repeat(" ", pad) + editedStyle.Render(tag)
 }
 
+// deletedPostLines renders the tombstone shown in place of a post whose author
+// removed it: the name/time header keeps the gap in the transcript
+// attributable, and a single dim placeholder stands in for the vanished
+// content. We deliberately render neither the original message, attachments,
+// reactions, nor poll — the whole point of a deletion is that the content is
+// gone. isRoot tags a removed thread root in the sidebar so it still reads as
+// the anchor of the conversation.
+func (m *Model) deletedPostLines(p *model.Post, isRoot bool) []string {
+	header := userStyle.Render(m.postAuthorName(p)) + "  " + timeStyle.Render(formatPostTime(p.CreateAt))
+	if isRoot {
+		header += "  " + replyHintStyle.Render("· root")
+	}
+	// "  " matches the two-space body gutter so the placeholder lines up with
+	// where the message text would have been.
+	return []string{header, "  " + deletedStyle.Render("⊘ message deleted")}
+}
+
 // formatPostTime returns a header timestamp for a post. Posts created
 // within the last 24 hours show only the time ("15:04"); older posts
 // include a short date in front so the user can tell at a glance how
@@ -804,7 +822,8 @@ func formatPostTime(createAtMillis int64) string {
 // it (the root, isRoot, always keeps its header — see groupWithPrev).
 func (m *Model) renderThreadPostLines(p *model.Post, isRoot, grouped bool) ([]string, int) {
 	width := m.threadView.Width()
-	poll := isPoll(p)
+	deleted := p.DeleteAt != 0
+	poll := !deleted && isPoll(p)
 	var fp string
 	if !poll && p.Id != "" {
 		fp = m.postLineFingerprint(p, width, true, isRoot, grouped)
@@ -813,38 +832,43 @@ func (m *Model) renderThreadPostLines(p *model.Post, isRoot, grouped bool) ([]st
 		}
 	}
 	var lines []string
-	if !grouped {
-		name := m.postAuthorName(p)
-		ts := formatPostTime(p.CreateAt)
-		header := userStyle.Render(name) + "  " + timeStyle.Render(ts)
-		if isRoot {
-			header += "  " + replyHintStyle.Render("· root")
+	switch {
+	case deleted:
+		lines = m.deletedPostLines(p, isRoot)
+	default:
+		if !grouped {
+			name := m.postAuthorName(p)
+			ts := formatPostTime(p.CreateAt)
+			header := userStyle.Render(name) + "  " + timeStyle.Render(ts)
+			if isRoot {
+				header += "  " + replyHintStyle.Render("· root")
+			}
+			header = withEditedTag(header, p, width)
+			lines = append(lines, header)
 		}
-		header = withEditedTag(header, p, width)
-		lines = append(lines, header)
-	}
-	if body := m.markdownBody(p); body != "" {
-		for _, l := range strings.Split(body, "\n") {
-			lines = append(lines, wrapBodyLine(l, width)...)
+		if body := m.markdownBody(p); body != "" {
+			for _, l := range strings.Split(body, "\n") {
+				lines = append(lines, wrapBodyLine(l, width)...)
+			}
 		}
-	}
-	if poll {
-		selected := m.focus == focusThread && m.threadIdx >= 0 && m.threadIdx < len(m.threadPosts) && m.threadPosts[m.threadIdx] == p
-		for _, l := range m.renderPoll(p, width, selected) {
-			lines = append(lines, wrapBodyLine(l, width)...)
+		if poll {
+			selected := m.focus == focusThread && m.threadIdx >= 0 && m.threadIdx < len(m.threadPosts) && m.threadPosts[m.threadIdx] == p
+			for _, l := range m.renderPoll(p, width, selected) {
+				lines = append(lines, wrapBodyLine(l, width)...)
+			}
 		}
-	}
-	if att := renderAttachments(p, width); att != "" {
-		for _, l := range strings.Split(att, "\n") {
-			lines = append(lines, wrapBodyLine(l, width)...)
+		if att := renderAttachments(p, width); att != "" {
+			for _, l := range strings.Split(att, "\n") {
+				lines = append(lines, wrapBodyLine(l, width)...)
+			}
 		}
-	}
-	if rx := m.renderReactions(p); rx != "" {
-		lines = append(lines, wrapBodyLine(rx, width)...)
-	}
-	// See renderPostLines: keep a grouped, otherwise-empty post visible.
-	if len(lines) == 0 {
-		lines = append(lines, "  ")
+		if rx := m.renderReactions(p); rx != "" {
+			lines = append(lines, wrapBodyLine(rx, width)...)
+		}
+		// See renderPostLines: keep a grouped, otherwise-empty post visible.
+		if len(lines) == 0 {
+			lines = append(lines, "  ")
+		}
 	}
 	rows := postVisualRows(lines, width)
 	if !poll && p.Id != "" {
@@ -884,6 +908,11 @@ func (m *Model) groupWithPrev(cur, prev *model.Post, inThread bool) bool {
 	if cur.EditAt != 0 {
 		return false
 	}
+	// A removed message renders as a tombstone with its own header, and the
+	// post below it shouldn't fold up into that tombstone either.
+	if cur.DeleteAt != 0 || prev.DeleteAt != 0 {
+		return false
+	}
 	if inThread {
 		return true
 	}
@@ -904,7 +933,8 @@ func (m *Model) groupWithPrev(cur, prev *model.Post, inThread bool) bool {
 // starts straight away (see groupWithPrev).
 func (m *Model) renderPostLines(p *model.Post, grouped bool) ([]string, int) {
 	width := m.msgsView.Width()
-	poll := isPoll(p)
+	deleted := p.DeleteAt != 0
+	poll := !deleted && isPoll(p)
 	var fp string
 	if !poll && p.Id != "" {
 		fp = m.postLineFingerprint(p, width, false, false, grouped)
@@ -913,43 +943,49 @@ func (m *Model) renderPostLines(p *model.Post, grouped bool) ([]string, int) {
 		}
 	}
 	var lines []string
-	if !grouped {
-		name := m.postAuthorName(p)
-		ts := formatPostTime(p.CreateAt)
-		header := userStyle.Render(name) + "  " + timeStyle.Render(ts)
-		if p.RootId != "" {
-			header = replyHintStyle.Render("↳ ") + header
-		} else if p.ReplyCount > 0 {
-			header += "  " + replyHintStyle.Render(fmt.Sprintf("↪ %d", p.ReplyCount))
+	switch {
+	case deleted:
+		lines = m.deletedPostLines(p, false)
+	default:
+		if !grouped {
+			name := m.postAuthorName(p)
+			ts := formatPostTime(p.CreateAt)
+			header := userStyle.Render(name) + "  " + timeStyle.Render(ts)
+			if p.RootId != "" {
+				header = replyHintStyle.Render("↳ ") + header
+			} else if p.ReplyCount > 0 {
+				header += "  " + replyHintStyle.Render(fmt.Sprintf("↪ %d", p.ReplyCount))
+			}
+			header = withEditedTag(header, p, width)
+			lines = append(lines, header)
 		}
-		header = withEditedTag(header, p, width)
-		lines = append(lines, header)
-	}
-	if body := m.markdownBody(p); body != "" {
-		for _, l := range strings.Split(body, "\n") {
-			lines = append(lines, wrapBodyLine(l, width)...)
+		if body := m.markdownBody(p); body != "" {
+			for _, l := range strings.Split(body, "\n") {
+				lines = append(lines, wrapBodyLine(l, width)...)
+			}
 		}
-	}
-	if poll {
-		selected := m.focus == focusMessages && m.postIdx >= 0 && m.postIdx < len(m.posts) && m.posts[m.postIdx] == p
-		for _, l := range m.renderPoll(p, width, selected) {
-			lines = append(lines, wrapBodyLine(l, width)...)
+		if poll {
+			selected := m.focus == focusMessages && m.postIdx >= 0 && m.postIdx < len(m.posts) && m.posts[m.postIdx] == p
+			for _, l := range m.renderPoll(p, width, selected) {
+				lines = append(lines, wrapBodyLine(l, width)...)
+			}
 		}
-	}
-	if att := renderAttachments(p, width); att != "" {
-		for _, l := range strings.Split(att, "\n") {
-			lines = append(lines, wrapBodyLine(l, width)...)
+		if att := renderAttachments(p, width); att != "" {
+			for _, l := range strings.Split(att, "\n") {
+				lines = append(lines, wrapBodyLine(l, width)...)
+			}
 		}
-	}
-	if rx := m.renderReactions(p); rx != "" {
-		lines = append(lines, wrapBodyLine(rx, width)...)
-	}
-	// A grouped post with no body, attachments, reactions, or poll would render
-	// as zero lines and silently vanish (breaking selection geometry). Keep one
-	// blank continuation row so it stays visible and selectable, matching the
-	// single header line it would otherwise have shown.
-	if len(lines) == 0 {
-		lines = append(lines, "  ")
+		if rx := m.renderReactions(p); rx != "" {
+			lines = append(lines, wrapBodyLine(rx, width)...)
+		}
+		// A grouped post with no body, attachments, reactions, or poll would
+		// render as zero lines and silently vanish (breaking selection
+		// geometry). Keep one blank continuation row so it stays visible and
+		// selectable, matching the single header line it would otherwise have
+		// shown.
+		if len(lines) == 0 {
+			lines = append(lines, "  ")
+		}
 	}
 	rows := postVisualRows(lines, width)
 	if !poll && p.Id != "" {
