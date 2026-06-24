@@ -638,7 +638,7 @@ func (m *Model) applyOpenDialog(ev *model.WebSocketEvent) {
 // the caller falls through to its normal handling so existing keys
 // (Tab, ↑/↓, etc.) still work on non-vote keystrokes.
 func (m Model) handlePollKey(p *model.Post, msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
-	if p == nil || p.Id == "" || !isPoll(p) {
+	if p == nil || p.Id == "" || p.DeleteAt != 0 || !isPoll(p) {
 		return m, nil, false
 	}
 	s := msg.String()

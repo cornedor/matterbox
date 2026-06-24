@@ -358,7 +358,7 @@ func (e *Engine) handle(ctx context.Context, ev *model.WebSocketEvent) {
 		}
 	case model.WebsocketEventPostDeleted:
 		if p := postFromEvent(ev); p != nil {
-			if err := e.store.Delete(p.Id); err != nil {
+			if err := e.store.Delete(p); err != nil {
 				e.log.Printf("delete post %s: %v", p.Id, err)
 			}
 		}

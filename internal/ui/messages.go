@@ -44,6 +44,16 @@ type postsGapFilledMsg struct {
 	users     map[string]string
 }
 
+// deletionsSyncedMsg reports posts that were removed while matterbox was away,
+// found by syncChannelDeletions (a PostsSince sweep — the only API that returns
+// deleted posts). They're already persisted as tombstones; the handler also
+// flips any matching live post in the open transcript so the marker shows
+// without a reopen. Empty `deleted` means nothing was missed.
+type deletionsSyncedMsg struct {
+	channelID string
+	deleted   []*model.Post
+}
+
 // olderPostsMsg carries a server-fetched page of posts strictly older than
 // the top of the loaded window (see fetchOlder), merged in when the user
 // scrolls past it. atChannelStart is true when the server reports nothing

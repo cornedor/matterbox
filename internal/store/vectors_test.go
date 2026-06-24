@@ -185,7 +185,7 @@ func TestVectorDeletedWithPost(t *testing.T) {
 	if err := s.UpsertVector("pa", []float32{1, 0}, "m1", 1000); err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
-	if err := s.Delete("pa"); err != nil {
+	if err := s.Delete(&model.Post{Id: "pa"}); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if n, _ := s.VectorCount(""); n != 0 {

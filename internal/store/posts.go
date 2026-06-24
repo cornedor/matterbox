@@ -613,6 +613,12 @@ LIMIT ?`
 // a channel re-fetches ~a page of unchanged posts and needlessly re-indexes
 // each one. When the WHERE is false SQLite treats the conflict as DO NOTHING
 // (no row write, no triggers), so a warm refetch costs nothing.
+//
+// The delete_at half makes a soft-deleted row terminal: once Delete has
+// tombstoned a post, a later refetch carrying its pre-delete content can't
+// resurrect it. A first INSERT (no conflict) is unaffected, and the normal
+// live→deleted transition still applies because the guard tests the existing
+// row's delete_at, not the incoming one's.
 const upsertSQL = `
 INSERT INTO posts (id, channel_id, user_id, root_id, create_at, update_at, edit_at, delete_at, message, raw_json)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -627,6 +633,7 @@ ON CONFLICT(id) DO UPDATE SET
     message    = excluded.message,
     raw_json   = excluded.raw_json
 WHERE posts.raw_json IS NOT excluded.raw_json
+  AND posts.delete_at = 0
 `
 
 // Upsert inserts or updates a single post by Id. Posts with an empty Id
@@ -687,32 +694,154 @@ func (s *Store) UpsertMany(posts []*model.Post) error {
 	return tx.Commit()
 }
 
-// Delete removes a post by Id. The FTS trigger drops the matching
-// shadow row. Deleting a non-existent Id is a no-op.
-func (s *Store) Delete(id string) error {
-	if s == nil || id == "" {
-		return nil
-	}
-	if _, err := s.db.Exec(`DELETE FROM posts WHERE id = ?`, id); err != nil {
-		return fmt.Errorf("delete post: %w", err)
-	}
-	return nil
+// StripTombstoneContent clears the content a deleted post must never retain —
+// the message body, rich metadata, and file attachments — while leaving Props
+// intact so a webhook post keeps its override_username for the tombstone's
+// author line. It is the single source of truth for *what* a tombstone drops,
+// shared by tombstonePost (persisted tombstones) and the UI's markPostDeleted
+// (the live, in-memory ones), so a new content-bearing field can't be stripped
+// from one path and forgotten in the other.
+func StripTombstoneContent(p *model.Post) {
+	p.Message = ""
+	p.Metadata = nil
+	p.FileIds = nil
 }
 
-// RecentForChannel returns up to limit most-recent non-deleted posts
-// for the channel, ordered oldest→newest (i.e. ready to assign to the
-// UI's m.posts slice without reversal).
-func (s *Store) RecentForChannel(channelID string, limit int) ([]*model.Post, error) {
+// tombstonePost strips a post down to a tombstone: its content is cleared (see
+// StripTombstoneContent) and a nonzero DeleteAt is stamped so the row reads as
+// removed. Mirrors the in-memory markPostDeleted in internal/ui so the
+// persisted and live tombstones render identically.
+func tombstonePost(p *model.Post) {
+	if p.DeleteAt == 0 {
+		p.DeleteAt = time.Now().UnixMilli()
+	}
+	StripTombstoneContent(p)
+}
+
+// deleteSQL writes a tombstone, inserting the row when the post was never
+// cached (a delete that races ahead of the post's own persist) and otherwise
+// overwriting the live row. Unlike upsertSQL there is no delete_at guard — the
+// delete must always win; the guard on upsertSQL then keeps a later refetch
+// from resurrecting it. message is forced empty so the posts_au trigger rebuilds
+// an empty FTS shadow row and the removed text stops being searchable.
+const deleteSQL = `
+INSERT INTO posts (id, channel_id, user_id, root_id, create_at, update_at, edit_at, delete_at, message, raw_json)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?)
+ON CONFLICT(id) DO UPDATE SET
+    delete_at = excluded.delete_at,
+    update_at = excluded.update_at,
+    message   = '',
+    raw_json  = excluded.raw_json
+`
+
+// Delete soft-deletes a post: the row is kept but flagged (delete_at set) and
+// its content stripped, so the transcript can show a persistent "message
+// deleted" tombstone across restarts while search, digests, and the embedding
+// index stop surfacing the removed text. The transcript loaders opt back in to
+// these rows via includeDeleted; every other query keeps its delete_at = 0
+// guard.
+//
+// p is the post from the post_deleted event. When the post is already cached
+// the richer stored copy is reused (keeping Props/override_username for the
+// tombstone's author line); when the delete arrives before the post was ever
+// persisted, p seeds a fresh tombstone row so the marker still survives.
+func (s *Store) Delete(p *model.Post) error {
+	if s == nil || p == nil || p.Id == "" {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin delete tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // no-op once committed
+
+	// base is a private clone we can strip without touching the caller's post.
+	// Prefer the cached copy when present — it carries fuller fields (e.g.
+	// Props/override_username for the tombstone's author line).
+	base := p.Clone()
+	var (
+		storedDeleteAt int64
+		raw            []byte
+	)
+	switch err := tx.QueryRow(`SELECT delete_at, raw_json FROM posts WHERE id = ?`, p.Id).Scan(&storedDeleteAt, &raw); {
+	case err == nil:
+		if storedDeleteAt != 0 {
+			// Already a tombstone — the offline-deletion sync re-reports the same
+			// delete on every catch-up, so don't rewrite (and re-churn FTS) here.
+			return tx.Commit()
+		}
+		var stored model.Post
+		if json.Unmarshal(raw, &stored) == nil {
+			base = &stored
+		}
+	case errors.Is(err, sql.ErrNoRows):
+		// Not cached yet — fall through with base seeded from the event.
+	default:
+		return fmt.Errorf("load post for delete: %w", err)
+	}
+	// Carry the authoritative delete time from the event / since-response: the
+	// cached copy we just preferred still has delete_at = 0, so without this the
+	// tombstone would be stamped with now() instead of when it was really removed.
+	if p.DeleteAt != 0 {
+		base.DeleteAt = p.DeleteAt
+	}
+	tombstonePost(base)
+	stripped, err := json.Marshal(base)
+	if err != nil {
+		return fmt.Errorf("marshal tombstone: %w", err)
+	}
+	// Stamp update_at with the delete time so MaxUpdateAt (the offline-deletion
+	// sync cursor) advances past this deletion and won't re-report it forever.
+	updateAt := base.UpdateAt
+	if base.DeleteAt > updateAt {
+		updateAt = base.DeleteAt
+	}
+	if _, err := tx.Exec(deleteSQL,
+		base.Id, base.ChannelId, base.UserId, base.RootId,
+		base.CreateAt, updateAt, base.EditAt, base.DeleteAt, stripped,
+	); err != nil {
+		return fmt.Errorf("soft-delete post: %w", err)
+	}
+	// The posts_capture_revision trigger archived the pre-delete row during the
+	// overwrite above; drop it (and any earlier edit history) so the removed
+	// content doesn't linger in post_revisions. The posts_delete_vector trigger
+	// only fires on a row DELETE, never an UPDATE, so clear the embedding here.
+	if _, err := tx.Exec(`DELETE FROM post_revisions WHERE post_id = ?`, p.Id); err != nil {
+		return fmt.Errorf("purge revisions: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM post_vectors WHERE post_id = ?`, p.Id); err != nil {
+		return fmt.Errorf("purge vector: %w", err)
+	}
+	return tx.Commit()
+}
+
+// deletePredicate returns the SQL fragment that filters out soft-deleted rows,
+// or "" to keep them. It always begins with " AND " so it can be spliced
+// straight after an existing WHERE clause. The transcript loaders pass
+// includeDeleted=true to surface tombstones; everyone else keeps the guard.
+func deletePredicate(includeDeleted bool) string {
+	if includeDeleted {
+		return ""
+	}
+	return " AND delete_at = 0"
+}
+
+// RecentForChannel returns up to limit most-recent posts for the channel,
+// ordered oldest→newest (i.e. ready to assign to the UI's m.posts slice
+// without reversal). includeDeleted keeps soft-deleted rows in the result so
+// the transcript can render their tombstones; pass false to get live posts
+// only.
+func (s *Store) RecentForChannel(channelID string, limit int, includeDeleted bool) ([]*model.Post, error) {
 	if s == nil || channelID == "" || limit <= 0 {
 		return nil, nil
 	}
 	// Two-step sort: pick the newest `limit` by create_at DESC, then
 	// re-sort the result ascending so callers can append directly.
-	const q = `
+	q := `
 SELECT raw_json FROM (
     SELECT rowid, raw_json, create_at
     FROM posts
-    WHERE channel_id = ? AND delete_at = 0
+    WHERE channel_id = ?` + deletePredicate(includeDeleted) + `
     ORDER BY create_at DESC
     LIMIT ?
 ) ORDER BY create_at ASC`
@@ -740,18 +869,19 @@ SELECT raw_json FROM (
 	return out, nil
 }
 
-// AfterInChannel returns up to limit non-deleted posts in the channel
-// strictly newer than afterCreateAt, ordered oldest→newest. Mirror of
-// BeforeInChannel — used to page forward into a channel's history when
-// the user scrolls past the last currently-rendered post (e.g. after
-// opening a search hit centred on an older message).
-func (s *Store) AfterInChannel(channelID string, afterCreateAt int64, limit int) ([]*model.Post, error) {
+// AfterInChannel returns up to limit posts in the channel strictly newer than
+// afterCreateAt, ordered oldest→newest. Mirror of BeforeInChannel — used to
+// page forward into a channel's history when the user scrolls past the last
+// currently-rendered post (e.g. after opening a search hit centred on an older
+// message). includeDeleted keeps soft-deleted rows so the transcript can render
+// their tombstones.
+func (s *Store) AfterInChannel(channelID string, afterCreateAt int64, limit int, includeDeleted bool) ([]*model.Post, error) {
 	if s == nil || channelID == "" || limit <= 0 {
 		return nil, nil
 	}
-	const q = `
+	q := `
 SELECT raw_json FROM posts
-WHERE channel_id = ? AND delete_at = 0 AND create_at > ?
+WHERE channel_id = ?` + deletePredicate(includeDeleted) + ` AND create_at > ?
 ORDER BY create_at ASC
 LIMIT ?`
 	rows, err := s.db.Query(q, channelID, afterCreateAt, limit)
@@ -777,19 +907,20 @@ LIMIT ?`
 	return out, nil
 }
 
-// BeforeInChannel returns up to limit non-deleted posts in the channel
-// strictly older than beforeCreateAt, ordered oldest→newest. Used to
-// page further back into a channel's history when the user scrolls past
-// the top of what's currently rendered.
-func (s *Store) BeforeInChannel(channelID string, beforeCreateAt int64, limit int) ([]*model.Post, error) {
+// BeforeInChannel returns up to limit posts in the channel strictly older than
+// beforeCreateAt, ordered oldest→newest. Used to page further back into a
+// channel's history when the user scrolls past the top of what's currently
+// rendered. includeDeleted keeps soft-deleted rows so the transcript can render
+// their tombstones; the feed's context lines pass false to stay tombstone-free.
+func (s *Store) BeforeInChannel(channelID string, beforeCreateAt int64, limit int, includeDeleted bool) ([]*model.Post, error) {
 	if s == nil || channelID == "" || limit <= 0 {
 		return nil, nil
 	}
-	const q = `
+	q := `
 SELECT raw_json FROM (
     SELECT raw_json, create_at
     FROM posts
-    WHERE channel_id = ? AND delete_at = 0 AND create_at < ?
+    WHERE channel_id = ?` + deletePredicate(includeDeleted) + ` AND create_at < ?
     ORDER BY create_at DESC
     LIMIT ?
 ) ORDER BY create_at ASC`
@@ -937,6 +1068,26 @@ LIMIT 1`
 		return "", fmt.Errorf("latest id: %w", err)
 	}
 	return id, nil
+}
+
+// MaxUpdateAt returns the largest update_at (unix-ms) stored for the channel
+// across all rows — deleted ones included — or 0 if none. It's the cursor for
+// the offline-deletion sync: a deletion that happened while matterbox was away
+// bumps the server post's update_at past this watermark, so PostsSince(MaxUpdateAt)
+// surfaces it (see internal/ui syncChannelDeletions). Delete stamps a tombstone's
+// update_at with its delete time so this advances and a deletion isn't re-reported.
+func (s *Store) MaxUpdateAt(channelID string) (int64, error) {
+	if s == nil || channelID == "" {
+		return 0, nil
+	}
+	var max sql.NullInt64
+	err := s.db.QueryRow(
+		`SELECT MAX(update_at) FROM posts WHERE channel_id = ?`, channelID,
+	).Scan(&max)
+	if err != nil {
+		return 0, fmt.Errorf("max update_at: %w", err)
+	}
+	return max.Int64, nil // NullInt64 zero-values to 0 when no rows match
 }
 
 // OldestPost returns the oldest (by create_at) non-deleted post id +
