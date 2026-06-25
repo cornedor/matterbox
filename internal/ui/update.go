@@ -533,18 +533,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, persistCmd
 
 	case markViewedMsg:
-		// The dwell elapsed. Ignore if the user switched away or refocused
-		// the channel in the meantime (stale generation / different channel).
-		if msg.gen != m.viewGen || msg.channelID != m.openChannelID {
-			return m, nil
-		}
-		// The Feed/Search/SQL tabs show their own pane without opening a channel,
-		// so they leave openChannelID (and viewGen) pointed at the conversation
-		// you came from. A dwell armed for that conversation must not complete
-		// while it's off screen — otherwise jumping from a DM straight to the
-		// Feed marks the DM read even though you never read it. Reopening the
-		// channel re-arms a fresh dwell.
-		if m.onFeedTab() || m.onSearchTab() || m.onSQLTab() {
+		// The dwell elapsed. Ignore if the user switched away or refocused the
+		// channel in the meantime (stale generation / different channel), or if
+		// it's off screen behind a Feed/Search/SQL tab — isCurrentChannel covers
+		// the latter so a dwell armed for a now-backgrounded conversation can't
+		// complete.
+		if msg.gen != m.viewGen || !m.isCurrentChannel(msg.channelID) {
 			return m, nil
 		}
 		delete(m.unread, msg.channelID)
@@ -1310,8 +1304,18 @@ func markPostDeleted(p *model.Post, at int64) {
 // Navigation moves the cursor without opening, so optimistic append and
 // live post events must track m.openChannelID to keep flowing into the
 // visible transcript.
+//
+// The Feed/Search/SQL tabs replace the messages pane with their own, so the
+// open channel is off screen even though m.openChannelID still points at it.
+// Treat it as not-current there: a live post for it must fall through to the
+// background path (bump the unread badge, surface in the feed) rather than be
+// appended to a hidden transcript and silently marked read. Reopening the
+// channel repaints it from the cache.
 func (m *Model) isCurrentChannel(channelID string) bool {
-	return channelID != "" && m.openChannelID == channelID
+	if channelID == "" || m.openChannelID != channelID {
+		return false
+	}
+	return !m.onFeedTab() && !m.onSearchTab() && !m.onSQLTab()
 }
 
 // parsePost extracts and unmarshals the JSON-encoded post embedded in

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
 	"time"
@@ -10,6 +11,50 @@ import (
 
 	"matterbox/internal/store"
 )
+
+// postedEvent builds a `posted` WS event carrying p, mirroring the JSON-string
+// "post" payload Mattermost broadcasts.
+func postedEvent(p *model.Post) *model.WebSocketEvent {
+	ev := model.NewWebSocketEvent(model.WebsocketEventPosted, "", p.ChannelId, "", nil, "")
+	b, _ := json.Marshal(p)
+	ev.Add("post", string(b))
+	return ev
+}
+
+// A message arriving in the open-but-backgrounded DM while the user sits on the
+// Feed tab must bump the unread badge, NOT be silently marked read. The open
+// channel lingers on the DM (openChannelID still points at it) but it's off
+// screen behind the Feed, so isCurrentChannel must report false and the post
+// takes the background path. Regression for the /tmp/mb2.log trace.
+func TestLivePostWhileOnFeedStaysUnread(t *testing.T) {
+	m := Model{
+		me:            &model.User{Id: "me"},
+		userNames:     map[string]string{"me": "me", "u2": "u2"},
+		openChannelID: "dm",   // the DM is still the lingering open channel
+		viewSettled:   true,   // its dwell already completed while it was open
+		unread:        map[string]int{},
+		mentions:      map[string]int{},
+		// No DMs/SQL tabs → tab 0 is the Feed tab.
+		hasDMs:  false,
+		showSQL: false,
+	}
+	if !m.onFeedTab() {
+		t.Fatal("setup: expected to be on the Feed tab")
+	}
+	if m.isCurrentChannel("dm") {
+		t.Fatal("the DM is off screen behind the Feed; isCurrentChannel must be false")
+	}
+
+	before := len(m.posts)
+	m.applyPosted(postedEvent(&model.Post{Id: "p9", ChannelId: "dm", UserId: "u2", CreateAt: 2000, Message: "ping"}))
+
+	if m.unread["dm"] != 1 {
+		t.Fatalf("backgrounded DM unread = %d; want 1 (a message on the Feed must stay unread, not be auto-read)", m.unread["dm"])
+	}
+	if len(m.posts) != before {
+		t.Fatalf("post was appended to the hidden transcript (%d -> %d); the Feed isn't viewing it", before, len(m.posts))
+	}
+}
 
 // Jumping from an open DM to the synthetic Feed tab must NOT mark the DM read.
 // The Feed tab shows its own pane without opening a channel, so openChannelID
