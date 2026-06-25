@@ -146,6 +146,97 @@ func TestReactionPickerNoReactionsHidesSection(t *testing.T) {
 	}
 }
 
+// indexOfName returns the position of name in the picker's current list, or -1.
+func indexOfName(m Model, name string) int {
+	for i, n := range m.reactionPickerNames() {
+		if n == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// TestReactionPickerSurfacesExistingReactions: with an empty query the picker
+// lists the post's existing reactions first — including one (rocket) that isn't
+// in the configured quick-list — so any placed reaction is reachable to toggle.
+func TestReactionPickerSurfacesExistingReactions(t *testing.T) {
+	m := reactionPickerModel()
+	p := m.posts[0]
+	p.Metadata = &model.PostMetadata{Reactions: []*model.Reaction{
+		{UserId: "u1", PostId: "p1", EmojiName: "tada"},   // mine
+		{UserId: "u2", PostId: "p1", EmojiName: "rocket"}, // someone else's, not in quick-list
+	}}
+	names := m.reactionPickerNames()
+	if len(names) < 2 || names[0] != "tada" || names[1] != "rocket" {
+		t.Fatalf("existing reactions not surfaced first: got %v", names)
+	}
+	// The quick-list still follows, with tada (an existing reaction that is also
+	// configured) not duplicated.
+	if strings.Count(strings.Join(names, ","), "tada") != 1 {
+		t.Fatalf("tada duplicated between existing reactions and quick-list: %v", names)
+	}
+	for _, want := range m.reactionEmojis {
+		if indexOfName(m, want) < 0 {
+			t.Fatalf("configured emoji %q dropped from picker: %v", want, names)
+		}
+	}
+}
+
+// TestReactionPickerJoinsOthersReaction: picking a reaction only someone else
+// placed adds the current user to it (the "+1" / send-the-same-reaction case).
+func TestReactionPickerJoinsOthersReaction(t *testing.T) {
+	m := reactionPickerModel()
+	m.width, m.height = 80, 40
+	p := m.posts[0]
+	p.Metadata = &model.PostMetadata{Reactions: []*model.Reaction{
+		{UserId: "u2", PostId: "p1", EmojiName: "rocket"},
+	}}
+	m.reactionPickerIdx = indexOfName(m, "rocket")
+	cmd := m.applyReactionPick()
+	if cmd == nil {
+		t.Fatalf("joining a reaction returned no command")
+	}
+	if !m.userHasReacted(p, "rocket") {
+		t.Fatalf("picking someone else's reaction did not add the current user to it")
+	}
+}
+
+// TestReactionPickerRemovesOwnReaction: re-picking a reaction the user already
+// placed removes it locally (the toggle-off case), even for an emoji that isn't
+// in the configured quick-list.
+func TestReactionPickerRemovesOwnReaction(t *testing.T) {
+	m := reactionPickerModel()
+	m.width, m.height = 80, 40
+	p := m.posts[0]
+	p.Metadata = &model.PostMetadata{Reactions: []*model.Reaction{
+		{UserId: "u1", PostId: "p1", EmojiName: "rocket"},
+	}}
+	m.reactionPickerIdx = indexOfName(m, "rocket")
+	cmd := m.applyReactionPick()
+	if cmd == nil {
+		t.Fatalf("removing a reaction returned no command")
+	}
+	if m.userHasReacted(p, "rocket") {
+		t.Fatalf("re-picking the user's own reaction did not remove it")
+	}
+}
+
+// TestReactionPickerShowsCount: an existing reaction's row carries its count so
+// the user can see how many people placed it before joining/removing.
+func TestReactionPickerShowsCount(t *testing.T) {
+	m := reactionPickerModel()
+	m.width, m.height = 80, 40
+	p := m.posts[0]
+	p.Metadata = &model.PostMetadata{Reactions: []*model.Reaction{
+		{UserId: "u1", PostId: "p1", EmojiName: "tada"},
+		{UserId: "u2", PostId: "p1", EmojiName: "tada"},
+	}}
+	out := m.renderReactionPicker()
+	if !strings.Contains(out, "2  :tada:") {
+		t.Fatalf("picker did not show the tada count:\n%s", out)
+	}
+}
+
 // TestReactionPickerNavClamps: ctrl+n (input_down) advances the cursor and
 // stops at the last row rather than running past it.
 func TestReactionPickerNavClamps(t *testing.T) {
