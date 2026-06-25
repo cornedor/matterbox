@@ -21,7 +21,9 @@ func typingEvent(channelID, userID string) *model.WebSocketEvent {
 // A typing event for the open channel from someone else records the typer
 // and arms the animation.
 func TestApplyTypingEventRecordsOther(t *testing.T) {
-	m := Model{openChannelID: "chan1", me: &model.User{Id: "me"}}
+	// hasDMs puts tab 0 on a channel-viewing tab rather than the synthetic Feed
+	// tab, so the open channel reads as on screen (isCurrentChannel == true).
+	m := Model{openChannelID: "chan1", me: &model.User{Id: "me"}, hasDMs: true}
 	cmd := m.applyTypingEvent(typingEvent("chan1", "alice"))
 	if cmd == nil {
 		t.Fatal("expected an animation tick cmd to be armed")
@@ -55,7 +57,7 @@ func TestApplyTypingEventIgnoresNoise(t *testing.T) {
 
 // A second event from the same run must not stack another tick loop.
 func TestMaybeStartTypingAnimIdempotent(t *testing.T) {
-	m := Model{openChannelID: "chan1", me: &model.User{Id: "me"}}
+	m := Model{openChannelID: "chan1", me: &model.User{Id: "me"}, hasDMs: true}
 	m.applyTypingEvent(typingEvent("chan1", "alice"))
 	if cmd := m.maybeStartTypingAnim(); cmd != nil {
 		t.Fatal("a second start while active must not arm another tick")
