@@ -4,8 +4,9 @@ import (
 	"strconv"
 	"strings"
 
-	"charm.land/bubbles/v2/viewport"
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/viewport"
 )
 
 // viewCache memoizes the layout-heavy parts of a render that don't change on

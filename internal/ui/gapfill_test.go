@@ -3,8 +3,9 @@ package ui
 import (
 	"testing"
 
-	"charm.land/bubbles/v2/viewport"
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/viewport"
 )
 
 // p builds a post with an Id and create_at (unix-ms) for ordering assertions.

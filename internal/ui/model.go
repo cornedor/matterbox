@@ -13,7 +13,6 @@ import (
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/textinput"
-	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/atotto/clipboard"
@@ -28,6 +27,7 @@ import (
 	"matterbox/internal/opener"
 	"matterbox/internal/semindex"
 	"matterbox/internal/store"
+	"matterbox/internal/viewport"
 )
 
 // inputPromptFunc returns a PromptFunc for the input textarea that only

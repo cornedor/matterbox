@@ -7,8 +7,9 @@ import (
 
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/textinput"
-	"charm.land/bubbles/v2/viewport"
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/viewport"
 )
 
 // groupDMTestModel returns a Model with the fields applyGroupDMResolved

@@ -4,9 +4,10 @@ import (
 	"testing"
 
 	"charm.land/bubbles/v2/textarea"
-	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/viewport"
 )
 
 // keyPress builds a KeyPressMsg for a named special key ("up" / "down").

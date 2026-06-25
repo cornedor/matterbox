@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/bubbles/v2/viewport"
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/viewport"
 )
 
 // deletedEvent builds a post_deleted WebSocket event carrying p, the way the

@@ -5,8 +5,9 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/bubbles/v2/viewport"
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/viewport"
 )
 
 // post builds a minimal post for the grouping tests. minute is the

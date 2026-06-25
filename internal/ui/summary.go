@@ -15,11 +15,12 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/spinner"
-	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/glamour"
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/viewport"
 )
 
 // summaryHTTPTimeout bounds a single chat-completions request. Local

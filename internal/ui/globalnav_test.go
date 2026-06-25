@@ -6,9 +6,10 @@ import (
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/textinput"
-	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/viewport"
 )
 
 // ctrlKey builds a ctrl+<code> KeyPressMsg. code is either a special key

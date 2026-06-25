@@ -8,7 +8,6 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textinput"
-	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/mattermost/mattermost/server/public/model"
@@ -16,6 +15,7 @@ import (
 	"matterbox/internal/embed"
 	"matterbox/internal/semindex"
 	"matterbox/internal/store"
+	"matterbox/internal/viewport"
 )
 
 // searchDebounce is how long we wait after the last keystroke before

@@ -4,10 +4,10 @@ import (
 	"strings"
 	"testing"
 
-	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 
 	"matterbox/internal/config"
+	"matterbox/internal/viewport"
 )
 
 // sheetModel builds a renderable Model with the cheatsheet viewport wired up.
