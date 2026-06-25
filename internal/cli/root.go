@@ -40,8 +40,8 @@ func newRootCmd() *cobra.Command {
 		Short: "A terminal client for Mattermost",
 		Long: "matterbox is a TUI Mattermost client.\n\n" +
 			"Run with no arguments to open the interactive UI, or use a subcommand\n" +
-			"(login, send, reply, react, read, unread, mark-read, search, channels,\n" +
-			"digest, whoami, embed, listen, keys) to work with messages\n" +
+			"(login, send, reply, react, read, unread, mark-read, open, search,\n" +
+			"channels, digest, whoami, embed, listen, keys) to work with messages\n" +
 			"non-interactively for scripting or to run the background sync/notification\n" +
 			"daemon (listen).",
 		SilenceUsage:  true,
@@ -53,7 +53,7 @@ func newRootCmd() *cobra.Command {
 	}
 	root.Flags().StringVar(&pprofAddr, "pprof", "",
 		"if set (e.g. localhost:6060), serve net/http/pprof on this address")
-	root.AddCommand(newLoginCmd(), newURLHandlerCmd(), newRegisterHandlerCmd(), newSendCmd(), newReplyCmd(), newReactCmd(), newReadCmd(), newUnreadCmd(), newMarkReadCmd(), newSearchCmd(), newChannelsCmd(), newDigestCmd(), newWhoamiCmd(), newEmbedCmd(), newListenCmd(), newKeysCmd())
+	root.AddCommand(newLoginCmd(), newURLHandlerCmd(), newRegisterHandlerCmd(), newSendCmd(), newReplyCmd(), newReactCmd(), newReadCmd(), newUnreadCmd(), newMarkReadCmd(), newOpenCmd(), newSearchCmd(), newChannelsCmd(), newDigestCmd(), newWhoamiCmd(), newEmbedCmd(), newListenCmd(), newKeysCmd())
 	return root
 }
 
@@ -109,7 +109,12 @@ func runTUI() error {
 	// v.AltScreen = true (set in Model.View). v2 always requests the
 	// kitty "disambiguate escape codes" flag, which makes shift+enter
 	// arrive as a distinct keypress on capable terminals.
-	if _, err := tea.NewProgram(ui.New(client, cfg)).Run(); err != nil {
+	prog := tea.NewProgram(ui.New(client, cfg))
+	// Listen on the control socket so `matterbox open <channel>` (e.g. from a
+	// desktop-notification click) can jump this running TUI to a conversation.
+	stop := ui.ServeControlSocket(prog)
+	defer stop()
+	if _, err := prog.Run(); err != nil {
 		return err
 	}
 	return nil

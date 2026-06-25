@@ -168,6 +168,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, m.resizePreview()
 
+	case openChannelRequestMsg:
+		return m.openChannelExternal(msg.channelID)
+
 	case customEmojiListMsg:
 		if msg.err == nil {
 			m.customEmojiNames = msg.names
