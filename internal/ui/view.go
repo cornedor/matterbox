@@ -1455,20 +1455,7 @@ func (m *Model) renderMessagesPane(height, width int) string {
 
 	// Clamp the header to the pane's inner width so a long custom status can't
 	// wrap to a second row (which would offset the scrollbar's row math).
-	parts := []string{ansi.Truncate(titleRendered, width-2, "…"), m.msgsView.View()}
-	if popup != "" {
-		parts = append(parts, popup)
-	}
-	// The compose textarea + attachment chip strip live in whichever pane
-	// is currently accepting replies: the thread sidebar when it's open,
-	// the messages pane otherwise.
-	if !m.threadOpen {
-		if bar := m.renderAttachmentBar(width - 2); bar != "" {
-			parts = append(parts, bar)
-		}
-		parts = append(parts, m.renderInputBox(width-2))
-	}
-	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
+	titleLine := ansi.Truncate(titleRendered, width-2, "…")
 
 	highlighted := m.focus == focusMessages
 	if !m.threadOpen && (m.focus == focusInput || m.focus == focusAttachments) {
@@ -1479,19 +1466,117 @@ func (m *Model) renderMessagesPane(height, width int) string {
 		borderColor = focusedColor
 	}
 
+	// Split the bordered pane into an upper half (title + message viewport) and a
+	// lower half (mention/emoji popup + attachment chips + compose box). Only the
+	// lower half changes while you type, so the upper half — whose styling
+	// re-measures the display width of every visible message row, the dominant
+	// render cost — is memoized and reused verbatim across keystrokes (see
+	// renderMsgsUpper / scrollbackCache). The viewport always renders exactly its
+	// Height() rows, so title (1 row) + viewport occupy a fixed upperRows; the
+	// lower box takes the rest and carries the pane's bottom border. The two left
+	// borders abut into one continuous column and any bottom padding lands in the
+	// same place, so upper+"\n"+lower is byte-identical to rendering one box.
+	upperRows := 1 + m.msgsView.Height()
+	lowerH := innerH - upperRows
+
+	var upper string
+	var lowerParts []string
+	if lowerH >= 1 {
+		upper = m.renderMsgsUpper(width, upperRows, titleLine, borderColor, highlighted)
+	} else {
+		// Degenerate (very short terminal): no room to split. Fold the title and
+		// viewport into the single lower box — byte-identical to the pre-split,
+		// uncached render.
+		lowerH = innerH
+		lowerParts = append(lowerParts, titleLine, m.msgsView.View())
+	}
+	if popup != "" {
+		lowerParts = append(lowerParts, popup)
+	}
+	// The compose textarea + attachment chip strip live in whichever pane
+	// is currently accepting replies: the thread sidebar when it's open,
+	// the messages pane otherwise.
+	if !m.threadOpen {
+		if bar := m.renderAttachmentBar(width - 2); bar != "" {
+			lowerParts = append(lowerParts, bar)
+		}
+		lowerParts = append(lowerParts, m.renderInputBox(width-2))
+	}
+
 	// lipgloss v2 changed Width() semantics: it now sets the OUTER box
 	// (border included) instead of the content area. The right edge is
 	// painted by renderRightBorder (so the scrollbar can replace the
 	// regular `│` when scrolled), so we omit the right border here and
 	// pass width-1 — JoinHorizontal with the 1-col right border brings
-	// the total back to `width`.
-	style := lipgloss.NewStyle().Border(border).UnsetBorderTop().UnsetBorderRight().
-		Width(width - 1).Height(innerH).BorderForeground(borderColor)
-	box := style.Render(content)
+	// the total back to `width`. The lower box keeps the original left+bottom
+	// border; Height(lowerH) includes that bottom rule.
+	lower := lipgloss.NewStyle().Border(border).UnsetBorderTop().UnsetBorderRight().
+		Width(width-1).Height(lowerH).BorderForeground(borderColor).
+		Render(lipgloss.JoinVertical(lipgloss.Left, lowerParts...))
+
+	box := lower
+	if upper != "" {
+		box = upper + "\n" + lower
+	}
 
 	// Title row is at index 0, viewport at index 1.
 	rightBorder := renderRightBorder(innerH, 1, m.msgsView.Height(), totalRows, scrollPct, borderColor, showScrollbar)
 	return lipgloss.JoinHorizontal(lipgloss.Top, box, rightBorder)
+}
+
+// renderMsgsUpper renders — and memoizes — the scrollback half of the messages
+// pane: the channel title plus the message viewport, framed with the left border
+// only (the lower box carries the bottom border). Styling this re-measures the
+// display width of every visible row via lipgloss, which a pprof of composer
+// typing showed dominating CPU even though the scrollback is unchanged between
+// keystrokes. The fingerprint captures every input the bytes depend on, so an
+// equal key means byte-identical output and the re-style is skipped. Falls back
+// to an uncached render when there's no viewCache (tests build Models without
+// one); the output is identical either way.
+func (m *Model) renderMsgsUpper(width, upperRows int, titleLine string, borderColor color.Color, highlighted bool) string {
+	var c *scrollbackCache
+	var fp string
+	if m.vcache != nil {
+		c = &m.vcache.msgsUpper
+		// Fingerprint inputs: width + upperRows fix the box geometry; the viewport
+		// width, YOffset and content version fix its rendered rows; focus +
+		// highlighted fix the border colour (and guard the focus-dependent
+		// selection bar baked into the content); titleLine is included verbatim
+		// (channel name, presence dot, custom status). Equal key ⇒ identical bytes.
+		var b strings.Builder
+		b.Grow(64 + len(titleLine))
+		b.WriteString(strconv.Itoa(width))
+		b.WriteByte('|')
+		b.WriteString(strconv.Itoa(upperRows))
+		b.WriteByte('|')
+		b.WriteString(strconv.Itoa(m.msgsView.Width()))
+		b.WriteByte('|')
+		b.WriteString(strconv.Itoa(m.msgsView.YOffset()))
+		b.WriteByte('|')
+		b.WriteString(strconv.FormatUint(m.msgsContentVer, 10))
+		b.WriteByte('|')
+		if highlighted {
+			b.WriteByte('1')
+		} else {
+			b.WriteByte('0')
+		}
+		b.WriteString(strconv.Itoa(int(m.focus)))
+		b.WriteByte('\x1f')
+		b.WriteString(titleLine)
+		fp = b.String()
+		if c.valid && c.fp == fp {
+			return c.rendered
+		}
+	}
+
+	content := lipgloss.JoinVertical(lipgloss.Left, titleLine, m.msgsView.View())
+	s := lipgloss.NewStyle().Border(border).UnsetBorderTop().UnsetBorderRight().UnsetBorderBottom().
+		Width(width-1).Height(upperRows).BorderForeground(borderColor).
+		Render(content)
+	if c != nil {
+		*c = scrollbackCache{fp: fp, rendered: s, valid: true}
+	}
+	return s
 }
 
 // renderInputBox renders the compose textarea with a top rule, sized to
