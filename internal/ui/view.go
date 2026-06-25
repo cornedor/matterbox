@@ -11,6 +11,8 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/textwidth"
 )
 
 const channelsWidth = 26
@@ -682,19 +684,13 @@ func visualRowsBefore(lines []string, n, maxWidth int) int {
 	return rows
 }
 
-// visualWidth returns the rendered cell width of a single line, equal to
-// lipgloss.Width for every input. When the line is entirely printable ASCII
-// (no ANSI escapes, no control bytes, no multi-byte runes) every byte is one
-// cell, so the width is the byte length — returned from a single scan, skipping
-// lipgloss's grapheme-cluster walk. Anything outside [0x20,0x7e] (a styled
-// line, a tab, or a wide/multi-byte rune) falls back to the accurate path.
+// visualWidth returns the rendered cell width of a single line, identical to
+// ansi.StringWidth for every input. textwidth.Width fast-paths the styled ASCII
+// and box-drawing lines that make up nearly all rendered rows (the old inline
+// fast path bailed to the grapheme-cluster walk on the first ANSI escape, so a
+// styled line — i.e. almost every line — got no benefit).
 func visualWidth(s string) int {
-	for i := 0; i < len(s); i++ {
-		if c := s[i]; c < 0x20 || c >= 0x7f {
-			return lipgloss.Width(s)
-		}
-	}
-	return len(s)
+	return textwidth.Width(s)
 }
 
 // postVisualRows is visualRowsBefore over a whole post chunk: the number
@@ -1521,7 +1517,7 @@ func (m *Model) renderMessagesPane(height, width int) string {
 	// the total back to `width`. The lower box keeps the original left+bottom
 	// border; Height(lowerH) includes that bottom rule.
 	lower := lipgloss.NewStyle().Border(border).UnsetBorderTop().UnsetBorderRight().
-		Width(width-1).Height(lowerH).BorderForeground(borderColor).
+		Width(width - 1).Height(lowerH).BorderForeground(borderColor).
 		Render(lipgloss.JoinVertical(lipgloss.Left, lowerParts...))
 
 	box := lower
@@ -1581,7 +1577,7 @@ func (m *Model) renderMsgsUpper(width, upperRows int, titleLine string, borderCo
 
 	content := lipgloss.JoinVertical(lipgloss.Left, titleLine, m.msgsView.View())
 	s := lipgloss.NewStyle().Border(border).UnsetBorderTop().UnsetBorderRight().UnsetBorderBottom().
-		Width(width-1).Height(upperRows).BorderForeground(borderColor).
+		Width(width - 1).Height(upperRows).BorderForeground(borderColor).
 		Render(content)
 	if c != nil {
 		*c = scrollbackCache{fp: fp, rendered: s, valid: true}

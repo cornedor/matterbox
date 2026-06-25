@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"matterbox/internal/languagetool"
+	"matterbox/internal/textwidth"
 )
 
 // Grammar/spell check for the composer. When enabled (config.language_tool),
@@ -389,7 +390,7 @@ func (m *Model) grammarOverlay(view string) string {
 	// Derive the content wrap width from the rendered first line (prompt +
 	// content padded to the inner width) rather than re-deriving the textarea's
 	// reserved-width arithmetic — this stays correct if that math changes.
-	contentWidth := ansi.StringWidth(lines[0]) - grammarPromptWidth
+	contentWidth := textwidth.Width(lines[0]) - grammarPromptWidth
 	if contentWidth < 1 {
 		return view
 	}
@@ -486,7 +487,7 @@ func computeUnderlineRanges(value string, width, promptWidth int, matches []lang
 			}
 			for k := a; k < b && k < len(li.pos); k++ {
 				cp := li.pos[k]
-				w := ansi.StringWidth(string(li.runes[k]))
+				w := textwidth.Width(string(li.runes[k]))
 				switch {
 				case curSub == -1:
 					curSub, segStart, c0, c1 = cp.sub, k, cp.col, cp.col+w
@@ -524,7 +525,7 @@ func applyUnderlineOverlay(lines []string, ranges []underlineRange, base lipglos
 	for ln, rs := range byLine {
 		sort.Slice(rs, func(i, j int) bool { return rs[i].c0 < rs[j].c0 })
 		orig := lines[ln]
-		full := ansi.StringWidth(orig) + 8
+		full := textwidth.Width(orig) + 8
 		var b strings.Builder
 		prev := 0
 		for _, r := range rs {
@@ -559,7 +560,7 @@ func wrapCellPositions(runes []rune, width int) ([]cellPos, int) {
 		col := 0
 		for k := 0; k < n && src < len(runes); k++ {
 			pos[src] = cellPos{sub: s, col: col}
-			col += ansi.StringWidth(string(sub[k]))
+			col += textwidth.Width(string(sub[k]))
 			src++
 		}
 	}
@@ -578,8 +579,8 @@ func taWrap(runes []rune, width int) [][]rune {
 	if width <= 0 {
 		return [][]rune{append([]rune(nil), runes...)}
 	}
-	w := func(rs []rune) int { return ansi.StringWidth(string(rs)) }
-	rwid := func(r rune) int { return ansi.StringWidth(string(r)) }
+	w := func(rs []rune) int { return textwidth.Width(string(rs)) }
+	rwid := func(r rune) int { return textwidth.Width(string(r)) }
 	var (
 		lines  = [][]rune{{}}
 		word   []rune

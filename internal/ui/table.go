@@ -6,6 +6,8 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/charmbracelet/x/ansi"
+
+	"matterbox/internal/textwidth"
 )
 
 // GFM pipe tables are parsed (width-independently) in renderMarkdown and laid
@@ -151,7 +153,7 @@ func renderTableBox(t *mdTable, width int) []string {
 	for _, row := range t.rows {
 		for c := 0; c < n; c++ {
 			if c < len(row) {
-				if w := ansi.StringWidth(row[c]); w > natural[c] {
+				if w := textwidth.Width(row[c]); w > natural[c] {
 					natural[c] = w
 				}
 			}
@@ -256,10 +258,10 @@ func wrapCell(cell string, width int) []string {
 // padCell pads (or, defensively, truncates) a single wrapped cell line to
 // exactly width cells according to its column alignment.
 func padCell(s string, width int, a tableAlign) string {
-	sw := ansi.StringWidth(s)
+	sw := textwidth.Width(s)
 	if sw > width {
 		s = ansi.Truncate(s, width, "…")
-		sw = ansi.StringWidth(s)
+		sw = textwidth.Width(s)
 	}
 	pad := width - sw
 	if pad <= 0 {

@@ -5,8 +5,9 @@ import (
 	"strconv"
 	"testing"
 
-	"charm.land/bubbles/v2/viewport"
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/viewport"
 )
 
 // benchPosts builds n realistic-ish posts with varied bodies (some

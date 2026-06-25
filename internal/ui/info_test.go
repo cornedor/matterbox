@@ -5,9 +5,10 @@ import (
 	"testing"
 
 	"charm.land/bubbles/v2/textarea"
-	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/viewport"
 )
 
 // infoTestModel builds a Model with the viewports + keymap the channel-info

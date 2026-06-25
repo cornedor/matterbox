@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"testing"
 
-	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"github.com/mattermost/mattermost/server/public/model"
 
 	"matterbox/internal/store"
+	"matterbox/internal/viewport"
 )
 
 // feedTop / searchTop are the screen rows where each pane's bubble viewport

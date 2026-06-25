@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"charm.land/bubbles/v2/viewport"
 	"github.com/mattermost/mattermost/server/public/model"
 
 	"matterbox/internal/store"
+	"matterbox/internal/viewport"
 )
 
 // postedEvent builds a `posted` WS event carrying p, mirroring the JSON-string
@@ -30,8 +30,8 @@ func TestLivePostWhileOnFeedStaysUnread(t *testing.T) {
 	m := Model{
 		me:            &model.User{Id: "me"},
 		userNames:     map[string]string{"me": "me", "u2": "u2"},
-		openChannelID: "dm",   // the DM is still the lingering open channel
-		viewSettled:   true,   // its dwell already completed while it was open
+		openChannelID: "dm", // the DM is still the lingering open channel
+		viewSettled:   true, // its dwell already completed while it was open
 		unread:        map[string]int{},
 		mentions:      map[string]int{},
 		// No DMs/SQL tabs → tab 0 is the Feed tab.
