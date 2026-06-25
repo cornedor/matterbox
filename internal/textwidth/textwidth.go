@@ -25,53 +25,77 @@ import (
 func Width(s string) int {
 	w := 0
 	i := 0
-	for i < len(s) {
+	n := len(s)
+	for i < n {
 		b := s[i]
-		if b < utf8.RuneSelf {
-			switch {
-			case b == 0x1b:
-				// A plain CSI sequence — ESC '[' then only parameter bytes
-				// (0x30–0x3f) then one final byte (0x40–0x7e) — is SGR colours
-				// and the like: zero width, skip it inline. This is the exact
-				// shape lipgloss emits. Anything else (an intermediate byte, an
-				// embedded control, a non-CSI escape, a truncation) has fiddly
-				// VT-parser semantics, so defer the remainder to the exact path.
-				if i+1 < len(s) && s[i+1] == '[' {
-					j := i + 2
-					for j < len(s) && s[j] >= 0x30 && s[j] <= 0x3f {
-						j++
-					}
-					if j < len(s) && s[j] >= 0x40 && s[j] <= 0x7e {
-						i = j + 1
-						continue
-					}
+		switch {
+		case b >= 0x20 && b <= 0x7e:
+			// Printable ASCII — the overwhelmingly common byte. Every
+			// printable-ASCII byte followed by another ASCII byte is a
+			// grapheme boundary, so consume the whole run with no per-byte
+			// lookahead and resolve only the final byte's boundary once.
+			start := i
+			i++
+			for i < n {
+				c := s[i]
+				if c < 0x20 || c > 0x7e {
+					break
 				}
-				return w + ansi.StringWidth(s[i:])
-			case b >= 0x20 && b != 0x7f:
-				// Printable ASCII is width 1 — unless a combining mark or
-				// variation selector follows and merges into one cluster with
-				// it, in which case defer so the cluster is measured whole.
-				if !boundaryAfter(s, i+1) {
-					return w + ansi.StringWidth(s[i:])
-				}
-				w++
-				i++
-			default:
-				// C0 control / DEL: zero width.
 				i++
 			}
-			continue
-		}
-		// Non-ASCII. Box Drawing + Block Elements (U+2500–U+259F) — the bulk of
-		// every rendered table — are all width 1 and never combine. Recognise
-		// them straight from the bytes (no rune decode) and fast-path.
-		if isBoxAt(s, i) && boundaryAfter(s, i+3) {
-			w++
+			if boundaryAfter(s, i) {
+				w += i - start
+				continue
+			}
+			// The last printable byte may merge with a following combining
+			// mark or variation selector into one cluster; defer from it so
+			// the cluster is measured whole.
+			w += i - start - 1
+			return w + ansi.StringWidth(s[i-1:])
+		case b == 0x1b:
+			// A plain CSI sequence — ESC '[' then only parameter bytes
+			// (0x30–0x3f) then one final byte (0x40–0x7e) — is SGR colours
+			// and the like: zero width, skip it inline. This is the exact
+			// shape lipgloss emits. Anything else (an intermediate byte, an
+			// embedded control, a non-CSI escape, a truncation) has fiddly
+			// VT-parser semantics, so defer the remainder to the exact path.
+			if i+1 < n && s[i+1] == '[' {
+				j := i + 2
+				for j < n && s[j] >= 0x30 && s[j] <= 0x3f {
+					j++
+				}
+				if j < n && s[j] >= 0x40 && s[j] <= 0x7e {
+					i = j + 1
+					continue
+				}
+			}
+			return w + ansi.StringWidth(s[i:])
+		case b < utf8.RuneSelf:
+			// C0 control / DEL: zero width.
+			i++
+		case isBoxAt(s, i):
+			// Box Drawing + Block Elements (U+2500–U+259F) — the bulk of every
+			// rendered table — are all width 1 and never combine. Consume a
+			// whole run straight from the bytes (no rune decode), resolving the
+			// final boundary once; each is three bytes.
+			start := i
 			i += 3
-			continue
+			for isBoxAt(s, i) {
+				i += 3
+			}
+			if boundaryAfter(s, i) {
+				w += (i - start) / 3
+				continue
+			}
+			// The last box rune may be a base for a following combining mark;
+			// defer from it so the cluster is measured whole.
+			w += (i-start)/3 - 1
+			return w + ansi.StringWidth(s[i-3:])
+		default:
+			// Wide / combining / emoji territory: exact for the rest of the
+			// string.
+			return w + ansi.StringWidth(s[i:])
 		}
-		// Wide / combining / emoji territory: exact for the rest of the string.
-		return w + ansi.StringWidth(s[i:])
 	}
 	return w
 }
