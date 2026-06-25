@@ -24,11 +24,12 @@ import (
 //
 // Each cache turns that work into a cheap key/fingerprint comparison.
 type viewCache struct {
-	msgs    scrollGeom
-	thread  scrollGeom
-	ref     scrollGeom
-	info    scrollGeom
-	sidebar sidebarCache
+	msgs      scrollGeom
+	thread    scrollGeom
+	ref       scrollGeom
+	info      scrollGeom
+	sidebar   sidebarCache
+	msgsUpper scrollbackCache
 	// view memoizes the entire rendered screen (viewContent's output). bubbletea
 	// rebuilds View() after EVERY msg, and a full render is dominated by lipgloss
 	// re-measuring grapheme widths of unchanged content (~75% of it is
@@ -154,6 +155,22 @@ func (m *Model) infoScrollGeom() (int, float64) {
 // fingerprint over every input the row loop reads (see channelsFingerprint);
 // a hit returns the rendered string without re-styling a single row.
 type sidebarCache struct {
+	fp       string
+	rendered string
+	valid    bool
+}
+
+// scrollbackCache memoizes renderMessagesPane's upper box: the channel title
+// plus the message viewport, framed with the left border only (the lower box —
+// the popup/attachment/compose half — carries the bottom border). That upper
+// box is invariant while you type in the composer below it, yet styling it
+// re-measures the display width of every visible message row — which a pprof of
+// composer typing showed dominating CPU (~half of it in ansi.stringWidth). fp
+// is a fingerprint over every input those bytes depend on (see renderMsgsUpper);
+// a hit returns the rendered string without re-styling — i.e. without lipgloss
+// re-measuring a single row. Same shape as sidebarCache, distinct type for
+// clarity at the use sites.
+type scrollbackCache struct {
 	fp       string
 	rendered string
 	valid    bool
