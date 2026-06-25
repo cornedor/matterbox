@@ -307,6 +307,17 @@ func renderMarkdown(msg string, ei *emojiImages, mr mrInlineFn, self string) str
 			continue
 		}
 
+		// GFM pipe table: a header row, a delimiter row (| --- | :-: |), then
+		// zero or more body rows. Detected here (after the code-block forms, so a
+		// fenced block's pipes aren't mistaken for a table) and emitted as one
+		// encoded line that the wrap stage lays out to the pane width.
+		if enc, next, ok := parseTable(lines, i, ei, mr, self); ok {
+			out = append(out, enc)
+			i = next - 1
+			prevBlank = false
+			continue
+		}
+
 		if strings.HasPrefix(raw, ">") {
 			content := strings.TrimPrefix(strings.TrimPrefix(raw, ">"), " ")
 			out = append(out, "  "+mdQuoteBarStyle.Render("┃")+" "+renderInline(content, ei, mr, self))
@@ -446,6 +457,122 @@ func renderInline(s string, ei *emojiImages, mr mrInlineFn, self string) string 
 		s = strings.Replace(s, b.sentinel, b.badge, 1)
 	}
 	return s
+}
+
+// parseTable detects a GFM pipe table starting at lines[i] (a header row
+// followed by a delimiter row) and, when one is present, returns the encoded
+// table body line (see table.go), the index just past the table, and ok=true.
+// Each cell is inline-styled here so the width-independent markdown cache holds
+// the styled content; the wrap stage only lays it out. ok is false when the two
+// lines don't form a table, so the caller falls back to normal line handling.
+func parseTable(lines []string, i int, ei *emojiImages, mr mrInlineFn, self string) (encoded string, next int, ok bool) {
+	if i+1 >= len(lines) {
+		return "", 0, false
+	}
+	if !strings.Contains(lines[i], "|") {
+		return "", 0, false
+	}
+	aligns, ok := parseTableDelimiter(lines[i+1])
+	if !ok {
+		return "", 0, false
+	}
+	n := len(aligns)
+
+	styleRow := func(raw string) []string {
+		cells := splitTableCells(raw)
+		row := make([]string, n)
+		for c := 0; c < n; c++ {
+			if c < len(cells) {
+				row[c] = renderInline(strings.TrimSpace(cells[c]), ei, mr, self)
+			}
+		}
+		return row
+	}
+
+	rows := [][]string{styleRow(lines[i])}
+	j := i + 2
+	for j < len(lines) {
+		ln := lines[j]
+		// A blank line ends the table; so does a line with no pipe (a real GFM
+		// table row always carries at least one), which keeps a following
+		// paragraph from being swallowed into the table.
+		if strings.TrimSpace(ln) == "" || !strings.Contains(ln, "|") {
+			break
+		}
+		rows = append(rows, styleRow(ln))
+		j++
+	}
+	return encodeTable(aligns, rows), j, true
+}
+
+// parseTableDelimiter parses a GFM table's delimiter row, returning one
+// alignment per column. ok is false unless every cell is a run of dashes with
+// optional leading/trailing colons (`---`, `:--`, `--:`, `:-:`) — a test strict
+// enough that ordinary prose never reads as a table.
+func parseTableDelimiter(s string) ([]tableAlign, bool) {
+	cells := splitTableCells(s)
+	if len(cells) == 0 {
+		return nil, false
+	}
+	aligns := make([]tableAlign, len(cells))
+	for i, c := range cells {
+		c = strings.TrimSpace(c)
+		left := strings.HasPrefix(c, ":")
+		right := strings.HasSuffix(c, ":")
+		mid := c
+		if left {
+			mid = mid[1:]
+		}
+		if right && len(mid) > 0 {
+			mid = mid[:len(mid)-1]
+		}
+		if mid == "" {
+			return nil, false
+		}
+		for k := 0; k < len(mid); k++ {
+			if mid[k] != '-' {
+				return nil, false
+			}
+		}
+		switch {
+		case left && right:
+			aligns[i] = alignCenter
+		case right:
+			aligns[i] = alignRight
+		default:
+			aligns[i] = alignLeft
+		}
+	}
+	return aligns, true
+}
+
+// splitTableCells splits a table row on its unescaped pipes, unescaping `\|`
+// into a literal pipe and dropping the empty cells that surrounding pipes
+// create (so `| a | b |` yields two cells, not four).
+func splitTableCells(s string) []string {
+	s = strings.TrimSpace(s)
+	var cells []string
+	var cur strings.Builder
+	for i := 0; i < len(s); i++ {
+		switch {
+		case s[i] == '\\' && i+1 < len(s) && s[i+1] == '|':
+			cur.WriteByte('|')
+			i++
+		case s[i] == '|':
+			cells = append(cells, cur.String())
+			cur.Reset()
+		default:
+			cur.WriteByte(s[i])
+		}
+	}
+	cells = append(cells, cur.String())
+	if len(cells) > 0 && strings.TrimSpace(cells[0]) == "" {
+		cells = cells[1:]
+	}
+	if len(cells) > 0 && strings.TrimSpace(cells[len(cells)-1]) == "" {
+		cells = cells[:len(cells)-1]
+	}
+	return cells
 }
 
 // parseMRURL parses a raw URL and returns its GitLab project path and MR iid

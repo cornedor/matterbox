@@ -233,11 +233,11 @@ func (m *Model) renderInfo() {
 
 	if strings.TrimSpace(c.Purpose) != "" {
 		section("Purpose")
-		addMarkdown(renderMarkdown(c.Purpose, m.emojiImg, nil, self))
+		addMarkdown(expandTables(renderMarkdown(c.Purpose, m.emojiImg, nil, self), width))
 	}
 	if strings.TrimSpace(c.Header) != "" {
 		section("Header")
-		addMarkdown(renderMarkdown(c.Header, m.emojiImg, nil, self))
+		addMarkdown(expandTables(renderMarkdown(c.Header, m.emojiImg, nil, self), width))
 	}
 
 	// Members — each is a focusable target that opens a DM with that person.

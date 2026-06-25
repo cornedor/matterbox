@@ -339,9 +339,9 @@ func (m *Model) renderRef() {
 		}
 		m.refView.SetContent(refDimStyle.Render("loading " + label + "…"))
 	case r.kind == refJira && m.jiraIssue != nil:
-		m.refView.SetContent(m.refHover(m.renderJiraIssue(m.jiraIssue, m.refView.Width())))
+		m.refView.SetContent(m.refHover(expandTables(m.renderJiraIssue(m.jiraIssue, m.refView.Width()), m.refView.Width())))
 	case r.kind == refGitLab && m.glMR != nil:
-		m.refView.SetContent(m.refHover(m.renderGitLabMR(m.glMR, m.refView.Width())))
+		m.refView.SetContent(m.refHover(expandTables(m.renderGitLabMR(m.glMR, m.refView.Width()), m.refView.Width())))
 	default:
 		m.refView.SetContent(refDimStyle.Render("loading…"))
 	}
