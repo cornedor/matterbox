@@ -623,6 +623,20 @@ func (m *Model) renderThread() {
 // preserving its two-space left gutter on wrapped continuation rows.
 // ANSI escape codes are preserved across the wrap. Lines without the
 // gutter (headers) or that already fit are returned as a single element.
+// appendBodyLines appends a styled markdown body to dst, soft-wrapping ordinary
+// lines via wrapBodyLine and laying out any encoded table line (see table.go) to
+// fit width. Used by the transcript panes that wrap line-by-line themselves.
+func appendBodyLines(dst []string, body string, width int) []string {
+	for _, l := range strings.Split(body, "\n") {
+		if tl, ok := tableLines(l, width); ok {
+			dst = append(dst, tl...)
+			continue
+		}
+		dst = append(dst, wrapBodyLine(l, width)...)
+	}
+	return dst
+}
+
 func wrapBodyLine(line string, width int) []string {
 	if width < 4 || lipgloss.Width(line) <= width {
 		return []string{line}
@@ -847,9 +861,7 @@ func (m *Model) renderThreadPostLines(p *model.Post, isRoot, grouped bool) ([]st
 			lines = append(lines, header)
 		}
 		if body := m.markdownBody(p); body != "" {
-			for _, l := range strings.Split(body, "\n") {
-				lines = append(lines, wrapBodyLine(l, width)...)
-			}
+			lines = appendBodyLines(lines, body, width)
 		}
 		if poll {
 			selected := m.focus == focusThread && m.threadIdx >= 0 && m.threadIdx < len(m.threadPosts) && m.threadPosts[m.threadIdx] == p
@@ -960,9 +972,7 @@ func (m *Model) renderPostLines(p *model.Post, grouped bool) ([]string, int) {
 			lines = append(lines, header)
 		}
 		if body := m.markdownBody(p); body != "" {
-			for _, l := range strings.Split(body, "\n") {
-				lines = append(lines, wrapBodyLine(l, width)...)
-			}
+			lines = appendBodyLines(lines, body, width)
 		}
 		if poll {
 			selected := m.focus == focusMessages && m.postIdx >= 0 && m.postIdx < len(m.posts) && m.posts[m.postIdx] == p
