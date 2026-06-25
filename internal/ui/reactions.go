@@ -186,22 +186,74 @@ func (m *Model) closeReactionPicker() {
 }
 
 // reactionPickerNames returns the emoji names currently shown in the picker,
-// in display order. With the search box empty that's the configured quick
-// list (reactionEmojis); once the user types it's the live matches for the
-// query against the full unicode + custom set, ranked by emojiMatches. Both
-// the renderer and the apply path index this by reactionPickerIdx so they
-// always agree on what the cursor points at.
+// in display order. While the user types it's the live matches for the query
+// against the full unicode + custom set, ranked by emojiMatches. With the
+// search box empty it's the post's existing reactions (in first-seen order)
+// followed by the configured quick list with those already-present emoji
+// removed — so any reaction on the post, the user's own or someone else's, is
+// one keystroke away to toggle off or join, even when it isn't in the quick
+// list. Both the renderer and the apply path index this by reactionPickerIdx
+// so they always agree on what the cursor points at.
 func (m Model) reactionPickerNames() []string {
 	q := strings.ToLower(strings.TrimSpace(m.reactionSearch.Value()))
-	if q == "" {
-		return m.reactionEmojis
+	if q != "" {
+		items := m.emojiMatches(q)
+		names := make([]string, len(items))
+		for i, it := range items {
+			names[i] = it.name
+		}
+		return names
 	}
-	items := m.emojiMatches(q)
-	names := make([]string, len(items))
-	for i, it := range items {
-		names[i] = it.name
+	existing := m.postReactionEmojiOrder(m.findPostByID(m.reactionPickerPostID))
+	seen := make(map[string]struct{}, len(existing))
+	names := make([]string, 0, len(existing)+len(m.reactionEmojis))
+	for _, n := range existing {
+		seen[n] = struct{}{}
+		names = append(names, n)
+	}
+	for _, n := range m.reactionEmojis {
+		if _, dup := seen[n]; dup {
+			continue
+		}
+		seen[n] = struct{}{}
+		names = append(names, n)
 	}
 	return names
+}
+
+// postReactionEmojiOrder returns the distinct emoji names already placed on the
+// post, in first-seen order. Returns nil when the post carries no reactions.
+func (m *Model) postReactionEmojiOrder(p *model.Post) []string {
+	if p == nil || p.Metadata == nil {
+		return nil
+	}
+	var order []string
+	seen := map[string]struct{}{}
+	for _, r := range p.Metadata.Reactions {
+		if r == nil {
+			continue
+		}
+		if _, ok := seen[r.EmojiName]; ok {
+			continue
+		}
+		seen[r.EmojiName] = struct{}{}
+		order = append(order, r.EmojiName)
+	}
+	return order
+}
+
+// reactionCount returns how many people reacted to p with emojiName.
+func reactionCount(p *model.Post, emojiName string) int {
+	if p == nil || p.Metadata == nil {
+		return 0
+	}
+	n := 0
+	for _, r := range p.Metadata.Reactions {
+		if r != nil && r.EmojiName == emojiName {
+			n++
+		}
+	}
+	return n
 }
 
 // findPostByID returns the post with the given Id from either the main
@@ -452,7 +504,7 @@ func (m *Model) renderReactionPicker() string {
 		Align(lipgloss.Center).
 		Foreground(dimColor).
 		Italic(true).
-		Render("type to search · ↑/↓ move · ↵ react · esc cancel")
+		Render("type to search · ↑/↓ move · ↵ add/remove · esc cancel")
 
 	// While the search box is empty the configured quick list is shown with
 	// digit accelerators; once typing, the rows are the live matches and the
@@ -473,6 +525,12 @@ func (m *Model) renderReactionPicker() string {
 	}
 	for i, name := range names {
 		glyph := m.renderEmojiGlyph(name)
+		// Reactions already on the post carry a count after the glyph (like the
+		// chip strip under the message) so the user can tell at a glance which
+		// rows toggle an existing reaction off / join it versus add a fresh one.
+		if n := reactionCount(p, name); n > 0 {
+			glyph = fmt.Sprintf("%s %d", glyph, n)
+		}
 		marker := " "
 		if m.userHasReacted(p, name) {
 			marker = "✓"
