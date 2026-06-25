@@ -15,6 +15,11 @@ func newMarkReadModel(delay time.Duration) Model {
 		markReadDelay: delay,
 		unread:        map[string]int{"chan1": 3},
 		mentions:      map[string]int{"chan1": 1},
+		// hasDMs puts tab 0 on the (channel-viewing) DMs tab rather than the
+		// synthetic Feed tab, so the dwell reducer treats the channel as on
+		// screen. Without this, tabAt(0) is the Feed tab and the mark-read guard
+		// would (correctly) skip — see the markViewedMsg handler.
+		hasDMs: true,
 	}
 }
 

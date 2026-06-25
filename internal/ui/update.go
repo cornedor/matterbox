@@ -538,6 +538,15 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.gen != m.viewGen || msg.channelID != m.openChannelID {
 			return m, nil
 		}
+		// The Feed/Search/SQL tabs show their own pane without opening a channel,
+		// so they leave openChannelID (and viewGen) pointed at the conversation
+		// you came from. A dwell armed for that conversation must not complete
+		// while it's off screen — otherwise jumping from a DM straight to the
+		// Feed marks the DM read even though you never read it. Reopening the
+		// channel re-arms a fresh dwell.
+		if m.onFeedTab() || m.onSearchTab() || m.onSQLTab() {
+			return m, nil
+		}
 		delete(m.unread, msg.channelID)
 		delete(m.mentions, msg.channelID)
 		m.viewSettled = true
