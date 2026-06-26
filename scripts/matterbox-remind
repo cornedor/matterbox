@@ -1,0 +1,387 @@
+#!/usr/bin/env python3
+"""matterbox-remind — scheduled reminders for `matterbox listen`, driven by a rule.
+
+This is an external helper that a `matterbox listen` *exec rule* calls when you
+post a `!remind` command in Mattermost. The rules engine only reacts to incoming
+messages, so the "fire it later" half lives here, in a tiny SQLite table plus a
+once-a-minute systemd timer. Two entry points:
+
+  • As the exec-rule command (no flags): it reads the MATTERBOX_* variables the
+    `exec` action exports (and falls back to the JSON envelope on stdin) and acts
+    on the message body:
+
+        !remind me in <duration> <text>      schedule a reminder
+        !reminders   (or  !remind list)      list this channel's pending reminders
+        !remind cancel <id>                  cancel one
+
+    <duration> is flexible — weeks/days/hours/minutes/seconds, spelled out or
+    abbreviated and combinable: "2 hours", "2 days", "30m", "1h30m",
+    "1 day 6 hours", "90 minutes", "2 weeks". A leading "in "/"after " and a
+    connector ("… to call dad", "… that the build is done") are ignored.
+
+  • As `matterbox-remind --tick`: deliver every reminder that is now due. Run it
+    once a minute from a systemd --user timer (scripts/matterbox-remind.timer).
+
+Reminders live in ~/.config/matterbox/reminders.db (SQLite), so they survive a
+daemon — or host — restart; the timer re-scans the table every tick. All posting
+back to Mattermost goes through `matterbox reply <post_id>`, so the confirmation,
+the listing, and the delivered reminder all thread under the original message. No
+Mattermost credentials are handled here — the matterbox CLI holds the saved token.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import sqlite3
+import subprocess
+import sys
+import time
+from datetime import datetime
+
+# --- configuration ---------------------------------------------------------
+
+HOME = os.path.expanduser("~")
+CONFIG_DIR = os.environ.get(
+    "MATTERBOX_CONFIG_DIR", os.path.join(HOME, ".config", "matterbox")
+)
+DB_PATH = os.environ.get(
+    "MATTERBOX_REMINDERS_DB", os.path.join(CONFIG_DIR, "reminders.db")
+)
+
+
+def _matterbox_bin() -> str:
+    """The matterbox CLI to post replies with. systemd --user has a minimal PATH,
+    so prefer an absolute path; honour an explicit override."""
+    override = os.environ.get("MATTERBOX_BIN")
+    if override:
+        return override
+    local = os.path.join(HOME, ".local", "bin", "matterbox")
+    return local if os.path.exists(local) else "matterbox"
+
+
+MATTERBOX_BIN = _matterbox_bin()
+
+# Stop retrying a reminder whose delivery keeps failing (e.g. its original
+# message was deleted) after this many ticks, so a 1-minute timer doesn't retry
+# forever. At one tick a minute that is ~1 hour of transient-failure tolerance.
+MAX_DELIVER_ATTEMPTS = 60
+
+USAGE = (
+    "⏰ Usage: `!remind me in <when> <message>` — e.g. "
+    "`!remind me in 2 hours buy milk`, `!remind me in 1h30m ping the team`, "
+    "`!remind me in 2 days standup notes`.\n"
+    "`!reminders` lists this channel's pending reminders · "
+    "`!remind cancel <id>` removes one."
+)
+
+# --- duration parsing ------------------------------------------------------
+
+# Seconds per unit, keyed by the unit's first letter. week/day/hour/minute/second
+# each start with a distinct letter, so the first letter is an unambiguous key.
+_UNIT_SECONDS = {"w": 604800, "d": 86400, "h": 3600, "m": 60, "s": 1}
+
+# One "<number><unit>" token, e.g. "2h", "30 minutes", "1 day". The trailing
+# (?![a-z]) keeps "2h30m" splitting into 2h + 30m (a \b would not, since h→3 is
+# not a word boundary) while still stopping a bare "m" from eating the "m" in
+# "meeting". Leading \s* lets one regex skip the gap between tokens.
+_TOKEN = re.compile(
+    r"\s*(\d+)\s*"
+    r"(weeks?|wks?|w|days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)"
+    r"(?![a-z])",
+    re.IGNORECASE,
+)
+
+# A connector word sitting between the duration and the reminder text:
+# "in 2h TO call dad", "in 1h THAT the build is done", "in 5m: ship it".
+_CONNECTOR = re.compile(r"^(?:(?:to|that|about)\b|[:,\-])\s*", re.IGNORECASE)
+
+
+def parse_duration(rest: str):
+    """Split "<duration> <text>" into (seconds, text).
+
+    Returns (None, rest) when no leading duration is found. A leading "in "/
+    "after " is dropped first, and a connector word before the text is stripped.
+    """
+    rest = re.sub(r"^(?:in|after)\s+", "", rest.strip(), flags=re.IGNORECASE)
+    total = 0
+    pos = 0
+    matched = False
+    while True:
+        m = _TOKEN.match(rest, pos)
+        if m is None:
+            break
+        total += int(m.group(1)) * _UNIT_SECONDS[m.group(2)[0].lower()]
+        pos = m.end()
+        matched = True
+    if not matched or total <= 0:
+        return None, rest
+    text = _CONNECTOR.sub("", rest[pos:].strip())
+    return total, text.strip()
+
+
+def humanize(seconds: int) -> str:
+    """A compact relative duration: 7200 -> "2h", 9000 -> "2h 30m",
+    108000 -> "1d 6h", 45 -> "45s". At most the two largest non-zero units."""
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s"
+    out = []
+    for name, size in (("w", 604800), ("d", 86400), ("h", 3600), ("m", 60)):
+        if seconds >= size:
+            n, seconds = divmod(seconds, size)
+            out.append(f"{n}{name}")
+        if len(out) == 2:
+            break
+    return " ".join(out)
+
+
+# --- storage ---------------------------------------------------------------
+
+
+def db() -> sqlite3.Connection:
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    con = sqlite3.connect(DB_PATH, timeout=10)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.execute(
+        """
+        CREATE TABLE IF NOT EXISTS reminders (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel_id TEXT    NOT NULL,
+            post_id    TEXT    NOT NULL,   -- the !remind message, for threading
+            author     TEXT    NOT NULL,
+            text       TEXT    NOT NULL,
+            due_at     INTEGER NOT NULL,   -- unix seconds
+            created_at INTEGER NOT NULL,
+            delivered  INTEGER NOT NULL DEFAULT 0,  -- 0 pending, 1 sent, 2 gave up
+            attempts   INTEGER NOT NULL DEFAULT 0
+        )
+        """
+    )
+    con.execute(
+        "CREATE INDEX IF NOT EXISTS reminders_pending ON reminders(delivered, due_at)"
+    )
+    return con
+
+
+# --- posting back ----------------------------------------------------------
+
+
+def reply(post_id: str, text: str) -> bool:
+    """Post text as a threaded reply under post_id via the matterbox CLI."""
+    if not post_id:
+        sys.stderr.write("matterbox-remind: no post id to reply to\n")
+        return False
+    try:
+        r = subprocess.run(
+            [MATTERBOX_BIN, "reply", post_id, text],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=25,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        sys.stderr.write(f"matterbox-remind: reply failed: {e}\n")
+        return False
+    if r.returncode != 0:
+        out = r.stdout.decode(errors="replace").strip()
+        sys.stderr.write(f"matterbox-remind: reply exit {r.returncode}: {out}\n")
+        return False
+    return True
+
+
+# --- commands (exec-rule entry point) --------------------------------------
+
+
+def cmd_set(channel_id: str, post_id: str, author: str, rest: str) -> None:
+    rest = rest.strip()
+    if not rest:
+        reply(post_id, USAGE)
+        return
+    seconds, text = parse_duration(rest)
+    if seconds is None:
+        reply(post_id, "⏰ I couldn't read a delay in that.\n" + USAGE)
+        return
+    text = text.strip() or "(reminder)"
+    now = int(time.time())
+    due = now + seconds
+    con = db()
+    with con:
+        cur = con.execute(
+            "INSERT INTO reminders(channel_id, post_id, author, text, due_at, created_at)"
+            " VALUES(?, ?, ?, ?, ?, ?)",
+            (channel_id, post_id, author, text, due, now),
+        )
+        rid = cur.lastrowid
+    con.close()
+    when = datetime.fromtimestamp(due).astimezone()
+    reply(
+        post_id,
+        f"⏰ Reminder #{rid} set for {when:%a %d %b %H:%M} "
+        f"(in {humanize(seconds)}) — {text}",
+    )
+
+
+def cmd_list(channel_id: str, post_id: str) -> None:
+    con = db()
+    rows = con.execute(
+        "SELECT id, text, due_at FROM reminders"
+        " WHERE channel_id = ? AND delivered = 0 ORDER BY due_at",
+        (channel_id,),
+    ).fetchall()
+    con.close()
+    if not rows:
+        reply(post_id, "📋 No pending reminders in this channel.")
+        return
+    now = int(time.time())
+    lines = [f"📋 {len(rows)} pending reminder(s) in this channel:"]
+    for rid, text, due in rows:
+        when = datetime.fromtimestamp(due).astimezone()
+        lines.append(
+            f"  • #{rid} — {when:%a %d %b %H:%M} (in {humanize(due - now)}) — {text}"
+        )
+    lines.append("_cancel with_ `!remind cancel <id>`")
+    reply(post_id, "\n".join(lines))
+
+
+def cmd_cancel(channel_id: str, post_id: str, rid: int) -> None:
+    con = db()
+    with con:
+        # Only a pending reminder in THIS channel, so a stray id from elsewhere
+        # can't be removed by mistake.
+        cur = con.execute(
+            "DELETE FROM reminders WHERE id = ? AND channel_id = ? AND delivered = 0",
+            (rid, channel_id),
+        )
+        n = cur.rowcount
+    con.close()
+    if n:
+        reply(post_id, f"🗑️ Reminder #{rid} cancelled.")
+    else:
+        reply(post_id, f"⏰ No pending reminder #{rid} in this channel.")
+
+
+def handle_message() -> None:
+    """Dispatch a !remind command from the exec-rule environment."""
+    msg = os.environ.get("MATTERBOX_MESSAGE", "")
+    channel_id = os.environ.get("MATTERBOX_CHANNEL_ID", "")
+    post_id = os.environ.get("MATTERBOX_POST_ID", "")
+    author = os.environ.get("MATTERBOX_AUTHOR", "")
+    # Fall back to the stdin JSON envelope (e.g. a manual test piping the
+    # payload instead of exporting the env vars).
+    if not msg and not sys.stdin.isatty():
+        try:
+            env = json.load(sys.stdin)
+            msg = env.get("message", "")
+            channel_id = channel_id or env.get("channel_id", "")
+            post_id = post_id or env.get("post_id", "")
+            author = author or env.get("author", "")
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    text = msg.strip()
+    # list:  !reminders   |   !remind[er] list/ls
+    if re.match(r"(?i)^!reminders\b", text) or re.match(
+        r"(?i)^!remind(?:er)?\s+(?:list|ls)\b", text
+    ):
+        cmd_list(channel_id, post_id)
+        return
+    # cancel:  !remind[er] cancel|rm|del|delete|forget <id>
+    m = re.match(
+        r"(?i)^!remind(?:er)?\s+(?:cancel|rm|del|delete|forget)\s+#?(\d+)", text
+    )
+    if m:
+        cmd_cancel(channel_id, post_id, int(m.group(1)))
+        return
+    # set:  !remind[er] [me] <duration> <text>
+    m = re.match(r"(?i)^!remind(?:er)?\s*(.*)$", text, re.DOTALL)
+    rest = m.group(1) if m else ""
+    rest = re.sub(r"(?i)^(?:me|myself)\b\s*", "", rest.strip())
+    cmd_set(channel_id, post_id, author, rest)
+
+
+# --- delivery (timer entry point) ------------------------------------------
+
+
+def tick() -> None:
+    """Deliver every reminder that is now due. Idempotent and safe to run often."""
+    con = db()
+    now = int(time.time())
+    rows = con.execute(
+        "SELECT id, post_id, text FROM reminders"
+        " WHERE delivered = 0 AND due_at <= ? AND attempts < ? ORDER BY due_at",
+        (now, MAX_DELIVER_ATTEMPTS),
+    ).fetchall()
+    for rid, post_id, text in rows:
+        ok = reply(post_id, f"⏰ Reminder: {text}")
+        with con:
+            if ok:
+                con.execute("UPDATE reminders SET delivered = 1 WHERE id = ?", (rid,))
+            else:
+                # Count the failed attempt; give up permanently at the cap so a
+                # deleted trigger message can't make us retry forever.
+                con.execute(
+                    "UPDATE reminders SET attempts = attempts + 1,"
+                    " delivered = CASE WHEN attempts + 1 >= ? THEN 2 ELSE 0 END"
+                    " WHERE id = ?",
+                    (MAX_DELIVER_ATTEMPTS, rid),
+                )
+    con.close()
+
+
+# --- self-test (no network) ------------------------------------------------
+
+
+def selftest() -> None:
+    cases = {
+        "in 2 hours buy milk": (7200, "buy milk"),
+        "2 hours buy milk": (7200, "buy milk"),
+        "2h30m do the thing": (9000, "do the thing"),
+        "1 day 6 hours meeting prep": (108000, "meeting prep"),
+        "30m": (1800, ""),
+        "90 minutes water the plants": (5400, "water the plants"),
+        "2 days": (172800, ""),
+        "1 week standup": (604800, "standup"),
+        "in 15 min to call dad": (900, "call dad"),
+        "5m: ship it": (300, "ship it"),
+        "2h tomatoes for dinner": (7200, "tomatoes for dinner"),
+        "1h30m ping the team": (5400, "ping the team"),
+        "tomorrow": (None, "tomorrow"),
+        "buy milk": (None, "buy milk"),
+    }
+    ok = True
+    for inp, want in cases.items():
+        got = parse_duration(inp)
+        status = "ok " if got == want else "FAIL"
+        if got != want:
+            ok = False
+        print(f"[{status}] parse {inp!r} -> {got!r}" + ("" if got == want else f"  want {want!r}"))
+    for sec, want in [
+        (7200, "2h"),
+        (9000, "2h 30m"),
+        (108000, "1d 6h"),
+        (1800, "30m"),
+        (45, "45s"),
+        (604800, "1w"),
+    ]:
+        got = humanize(sec)
+        status = "ok " if got == want else "FAIL"
+        if got != want:
+            ok = False
+        print(f"[{status}] humanize({sec}) -> {got!r}" + ("" if got == want else f"  want {want!r}"))
+    sys.exit(0 if ok else 1)
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    if args and args[0] in ("--tick", "tick"):
+        tick()
+    elif args and args[0] in ("--selftest", "selftest"):
+        selftest()
+    else:
+        handle_message()
+
+
+if __name__ == "__main__":
+    main()
