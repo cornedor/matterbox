@@ -1092,7 +1092,7 @@ func (m Model) FullHelp() [][]key.Binding {
 	k := m.keys
 	return [][]key.Binding{
 		{k.Tab, k.ShiftTab, k.NavTeam, k.NavDM, k.NavFeed, k.Switcher, k.Search, k.SearchHere, k.Help, k.Quit},
-		{k.Up, k.Down, k.Home, k.End, k.Left, k.Right, k.PageDown, k.PageUp, k.NextHit, k.PrevHit},
+		{k.Up, k.Down, k.Home, k.End, k.Left, k.Right, k.PageDown, k.PageUp, k.NextHit, k.PrevHit, k.PrevOwnMsg},
 		{k.NavChanPrev, k.NavChanNext, k.NavTeamPrev, k.NavTeamNext},
 		{k.Filter, k.ClearFilter, k.OpenChannel, k.OpenThread, k.ReplyInThread, k.OpenRef, k.ChannelInfo, k.CloseThread},
 		{k.OpenAttach, k.Download, k.CopyMD, k.CopyCode, k.EditPost, k.DeletePost, k.React, k.ShowHistory, k.Compose, k.Send, k.NewLine, k.LeaveInput},

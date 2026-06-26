@@ -61,6 +61,9 @@ type keyMap struct {
 	NextHit key.Binding
 	PrevHit key.Binding
 
+	// Jump to the previous message authored by the logged-in user (messages pane)
+	PrevOwnMsg key.Binding
+
 	// Message paging
 	PageDown key.Binding
 	PageUp   key.Binding
@@ -185,6 +188,8 @@ var actionDefs = []actionDef{
 
 	{id: "next_match", field: func(k *keyMap) *key.Binding { return &k.NextHit }, keys: []string{"n"}, desc: "next match"},
 	{id: "prev_match", field: func(k *keyMap) *key.Binding { return &k.PrevHit }, keys: []string{"N"}, desc: "prev match"},
+
+	{id: "prev_own_message", field: func(k *keyMap) *key.Binding { return &k.PrevOwnMsg }, keys: []string{"M"}, desc: "prev own message"},
 
 	{id: "page_down", field: func(k *keyMap) *key.Binding { return &k.PageDown }, keys: []string{"pgdown", "ctrl+d"}, desc: "page down"},
 	{id: "page_up", field: func(k *keyMap) *key.Binding { return &k.PageUp }, keys: []string{"pgup", "ctrl+u"}, desc: "page up"},
