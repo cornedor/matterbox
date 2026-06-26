@@ -1,0 +1,21 @@
+# systemd --user service: deliver any due matterbox reminders.
+#
+# Oneshot, fired once a minute by matterbox-remind.timer. It scans
+# ~/.config/matterbox/reminders.db (written by the `!remind` exec rule, see
+# docs/rules.md "Reminders") and replies to each reminder that has come due.
+#
+# Install (alongside the timer):
+#   cp scripts/matterbox-remind         ~/.config/matterbox/
+#   cp scripts/matterbox-remind.service ~/.config/systemd/user/
+#   cp scripts/matterbox-remind.timer   ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now matterbox-remind.timer
+
+[Unit]
+Description=matterbox reminder delivery (deliver any due reminders)
+
+[Service]
+Type=oneshot
+# systemd --user has a minimal PATH; the script resolves the matterbox CLI by
+# absolute path (~/.local/bin/matterbox) so delivery works without one.
+ExecStart=%h/.config/matterbox/matterbox-remind --tick

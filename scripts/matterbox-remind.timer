@@ -1,0 +1,15 @@
+# systemd --user timer: run the reminder delivery check once a minute.
+#
+# Persistent=true so a run missed while the machine was off fires on the next
+# boot — reminders still go out (a little late) rather than being lost.
+
+[Unit]
+Description=run matterbox reminder delivery every minute
+
+[Timer]
+OnCalendar=minutely
+Persistent=true
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

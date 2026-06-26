@@ -754,6 +754,58 @@ from `{{ today }}` instead of a cooldown:
     stop: true
 ```
 
+### Reminders: "!remind me in 2 hours …"
+
+A rule reacts to messages, so it can't fire on its own *later* — but paired with
+a small helper and a once-a-minute timer it makes a `!remind me in …` command.
+The rule just hands every `!remind` message you post to
+[`scripts/matterbox-remind`](../scripts/matterbox-remind), which parses the
+delay, stores the reminder in `~/.config/matterbox/reminders.db`, and replies a
+confirmation; a systemd `--user` timer
+([`scripts/matterbox-remind.timer`](../scripts/matterbox-remind.timer)) runs the
+same helper with `--tick` each minute to deliver the ones that have come due.
+Everything posts back with `matterbox reply`, so the confirmation and the
+delivered reminder thread under your original message.
+
+```yaml
+rules:
+  - name: reminders
+    match:
+      from_me: true            # only your own commands schedule reminders
+      message: "(?i)^\\s*!remind"
+    actions:
+      - type: exec
+        command: ["/home/me/.config/matterbox/matterbox-remind"]
+```
+
+What you can type (the helper dispatches on the message):
+
+| Command | Effect |
+|---|---|
+| `!remind me in <when> <text>` | schedule a reminder and confirm |
+| `!reminders` (or `!remind list`) | list this channel's pending reminders |
+| `!remind cancel <id>` | cancel a pending reminder |
+
+`<when>` is flexible: `2 hours`, `2 days`, `30m`, `1h30m`, `1 day 6 hours`,
+`90 minutes`, `2 weeks` — weeks/days/hours/minutes/seconds, spelled out or
+abbreviated and combinable. A leading `in`/`after` and a connector (`… to call
+dad`, `… that the build is done`) are ignored.
+
+Install the helper and timer (see the headers in the two unit files):
+
+```sh
+cp scripts/matterbox-remind         ~/.config/matterbox/
+cp scripts/matterbox-remind.service ~/.config/systemd/user/
+cp scripts/matterbox-remind.timer   ~/.config/systemd/user/
+chmod +x ~/.config/matterbox/matterbox-remind
+systemctl --user daemon-reload
+systemctl --user enable --now matterbox-remind.timer
+```
+
+The reminders persist in SQLite, so they survive a daemon — or host — restart;
+`Persistent=true` on the timer means one missed while the box was off still goes
+out (a little late) rather than being lost.
+
 ## Safety
 
 `exec` runs commands from your own config, as you, on your own machine — same
