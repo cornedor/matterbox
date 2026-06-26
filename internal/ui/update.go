@@ -3151,6 +3151,45 @@ func (m *Model) selectLastMessage() {
 	m.anchorMsgSelBottom = true
 }
 
+// gotoPrevOwnMessage moves the selection to the nearest message authored by the
+// logged-in user strictly above the current selection, so repeated presses walk
+// back through the user's own messages. It scans the loaded window first and,
+// when no earlier own message is loaded, pages older cached posts in (the same
+// way ↑-at-top does) and keeps scanning until one is found or the store is
+// exhausted. Tombstones are skipped — there's nothing to revisit on a deleted
+// message. Reports whether the selection moved; the caller renders.
+func (m *Model) gotoPrevOwnMessage() bool {
+	if m.me == nil || m.me.Id == "" || len(m.posts) == 0 {
+		return false
+	}
+	start := m.postIdx
+	if start > len(m.posts) {
+		start = len(m.posts)
+	}
+	for {
+		for i := start - 1; i >= 0; i-- {
+			p := m.posts[i]
+			if p.DeleteAt == 0 && p.UserId == m.me.Id {
+				m.postIdx = i
+				m.anchorSelOnLand(-1)
+				return true
+			}
+		}
+		// Nothing above in the loaded window — page in the next older cached
+		// chunk and resume scanning from where it was prepended. The trim caps
+		// the window, so a channel the user never posted in costs a bounded
+		// store walk, not unbounded growth.
+		older := m.loadOlderFromStore(m.posts[0].ChannelId, m.posts[0].CreateAt)
+		if len(older) == 0 {
+			return false
+		}
+		m.posts = append(older, m.posts...)
+		m.postIdx += len(older)
+		start = len(older)
+		m.trimPostWindowTail()
+	}
+}
+
 func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Poll accelerators (digits / a / E / X) act on a poll post under
 	// the cursor, before the regular messages-pane handler picks them
@@ -3299,6 +3338,13 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.gotoSearchHit(1)
 	case key.Matches(msg, m.keys.PrevHit):
 		return m.gotoSearchHit(-1)
+	case key.Matches(msg, m.keys.PrevOwnMsg):
+		if !m.gotoPrevOwnMessage() {
+			m.status = "no earlier message from you"
+			return m, nil
+		}
+		m.renderMessages()
+		return m, m.bumpMRFetch()
 	case key.Matches(msg, m.keys.OpenThread), key.Matches(msg, m.keys.ReplyInThread):
 		if m.postIdx < 0 || m.postIdx >= len(m.posts) {
 			return m, nil
