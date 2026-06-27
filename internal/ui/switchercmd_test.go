@@ -13,7 +13,7 @@ import (
 func commandModeModel(filter string) Model {
 	ti := textinput.New()
 	ti.SetValue(">" + filter)
-	return Model{switcher: ti, width: 80}
+	return Model{switcher: &ti, width: 80}
 }
 
 // TestSwitcherCommandsTwoLine checks each command renders its name and its
@@ -58,7 +58,7 @@ func TestSwitcherCommandsFitsHeight(t *testing.T) {
 // mode with ">" pre-filled, so the catalogue renders without the user typing.
 func TestOpenCommandPicker(t *testing.T) {
 	ti := textinput.New()
-	m := Model{switcher: ti, width: 80}
+	m := Model{switcher: &ti, width: 80}
 
 	updated, _ := m.openCommandPicker()
 	mm := updated.(Model)

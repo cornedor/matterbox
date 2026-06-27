@@ -51,7 +51,7 @@ func benchSwitcherModel(n int) Model {
 		})
 	}
 	return Model{
-		switcher:  sw,
+		switcher:  &sw,
 		channels:  lists,
 		mentions:  map[string]int{},
 		unread:    map[string]int{},

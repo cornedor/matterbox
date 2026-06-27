@@ -1590,7 +1590,7 @@ func (m Model) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 	if m.switcherMode {
 		old := m.switcher.Value()
 		var cmd tea.Cmd
-		m.switcher, cmd = m.switcher.Update(msg)
+		*m.switcher, cmd = m.switcher.Update(msg)
 		if m.switcher.Value() != old {
 			m.switcherIdx = 0
 		}

@@ -622,7 +622,7 @@ func (m Model) handleReactionPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 	// the cursor to the top on any change keeps it in bounds as matches shrink.
 	prev := m.reactionSearch.Value()
 	var cmd tea.Cmd
-	m.reactionSearch, cmd = m.reactionSearch.Update(msg)
+	*m.reactionSearch, cmd = m.reactionSearch.Update(msg)
 	if m.reactionSearch.Value() != prev {
 		m.reactionPickerIdx = 0
 	}

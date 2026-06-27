@@ -19,7 +19,7 @@ func sheetModel(km keyMap) Model {
 		focus:         focusMessages,
 		width:         100,
 		height:        44,
-		keysSheetView: vp,
+		keysSheetView: &vp,
 	}
 	return m
 }

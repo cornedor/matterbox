@@ -157,7 +157,7 @@ func (m Model) handleSwitcherKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	old := m.switcher.Value()
 	var cmd tea.Cmd
-	m.switcher, cmd = m.switcher.Update(msg)
+	*m.switcher, cmd = m.switcher.Update(msg)
 	if m.switcher.Value() != old {
 		m.switcherIdx = 0
 	}

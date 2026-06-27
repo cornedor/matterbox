@@ -209,7 +209,7 @@ func TestComposerEscWithDraftFlashes(t *testing.T) {
 // again toggles it closed (it used to be a dead list-up arm / ctrl+k).
 func TestSwitcherCtrlPTogglesClosed(t *testing.T) {
 	m := navModel()
-	m.switcher = textinput.New()
+	m.switcher = ptrTo(textinput.New())
 
 	out, _ := m.openSwitcher()
 	m = out.(Model)

@@ -13,7 +13,7 @@ import (
 func reactionPickerModel() Model {
 	m := navModel()
 	m.reactionEmojis = []string{"+1", "-1", "heart", "tada", "eyes"}
-	m.reactionSearch = textinput.New()
+	m.reactionSearch = ptrTo(textinput.New())
 	m.me = &model.User{Id: "u1"}
 	m.posts = []*model.Post{{Id: "p1"}}
 	m.openReactionPicker("p1")

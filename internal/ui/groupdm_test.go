@@ -20,7 +20,7 @@ func groupDMTestModel() Model {
 		me:       &model.User{Id: "me123", Username: "me"},
 		channels: map[string][]*model.Channel{},
 		filter:   textinput.New(),
-		switcher: textinput.New(),
+		switcher: ptrTo(textinput.New()),
 		input:    editor.New(),
 		msgsView: viewport.New(),
 		width:    80,

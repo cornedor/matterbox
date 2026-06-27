@@ -263,7 +263,7 @@ func (m Model) handleKeysSheetKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	var cmd tea.Cmd
-	m.keysSheetView, cmd = m.keysSheetView.Update(msg)
+	*m.keysSheetView, cmd = m.keysSheetView.Update(msg)
 	return m, cmd
 }
 

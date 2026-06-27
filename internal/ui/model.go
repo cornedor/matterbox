@@ -298,7 +298,7 @@ type Model struct {
 	// place of the main body. switcherCmdPending is non-nil while the
 	// switcher is in "> command" arg-prompt mode, waiting for the user
 	// to enter the captive argument for a previously-selected command.
-	switcher           textinput.Model
+	switcher           *textinput.Model
 	switcherMode       bool
 	switcherIdx        int
 	switcherCmdPending *switcherCommand
@@ -531,14 +531,14 @@ type Model struct {
 	historyMode      bool
 	historyPost      *model.Post
 	historyRevisions []*model.Post
-	historyView      viewport.Model
+	historyView      *viewport.Model
 
 	// Keyboard cheatsheet popup (switcher "> Keys"). A scrollable viewport
 	// listing every action grouped by context, showing the user's effective
 	// bindings. While keysSheetMode is true the popup owns every keystroke
 	// (esc/q close, arrows/pgup-pgdn scroll). See cheatsheet.go.
 	keysSheetMode bool
-	keysSheetView viewport.Model
+	keysSheetView *viewport.Model
 	// helpSheet reuses the cheatsheet popup to list the "/" slash commands
 	// instead of key bindings (raised by /help). Only meaningful while
 	// keysSheetMode is true. See openHelpSheet in cheatsheet.go.
@@ -636,7 +636,7 @@ type Model struct {
 	// accelerators (the quick path); once the user types it filters the full
 	// unicode + custom emoji set via emojiMatches — the same matcher the
 	// `:`-autocomplete uses — so any emoji can be sent as a reaction.
-	reactionSearch textinput.Model
+	reactionSearch *textinput.Model
 
 	// Open-target picker modal. When a post has more than one openable
 	// target (attachments + links), `o` raises this list instead of
@@ -994,12 +994,12 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		jiraProjects:        jiraProjects,
 		glClient:            gitlabClient,
 		mrStatus:            newMRStatusManager(gitlabCfg.BaseURL),
-		historyView:         historyView,
-		keysSheetView:       keysSheetView,
+		historyView:         &historyView,
+		keysSheetView:       &keysSheetView,
 		vcache:              &viewCache{},
 		filter:              ti,
-		switcher:            sw,
-		reactionSearch:      rs,
+		switcher:            &sw,
+		reactionSearch:      &rs,
 		openStats:           stats,
 		emojiUsage:          emojiUsage,
 		mentionUsage:        mentionUsage,

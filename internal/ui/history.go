@@ -172,7 +172,7 @@ func (m Model) handleHistoryKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	var cmd tea.Cmd
-	m.historyView, cmd = m.historyView.Update(msg)
+	*m.historyView, cmd = m.historyView.Update(msg)
 	return m, cmd
 }
 
