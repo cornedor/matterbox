@@ -75,6 +75,41 @@ func (m *Model) markdownClasses() []mdClass {
 	return cl
 }
 
+// InCodeBlock reports whether the caret currently sits inside a fenced (``` /
+// ~~~) or indented code block. Callers use it to suppress markup-aware paste
+// handling (e.g. auto-formatting a pasted table) so raw text dropped into code
+// is kept verbatim. It mirrors the block tracking in markdownClasses, but stops
+// at the caret's row and reports the state the row is entered in.
+func (m *Model) InCodeBlock() bool {
+	var fenceChar rune
+	var fenceLen int
+	inIndent := false
+	prevBlank := true // buffer start is a block boundary
+	for i, line := range m.lines {
+		if i == m.row {
+			return fenceChar != 0 || ((inIndent || prevBlank) && indentColumns(line) >= 4)
+		}
+		ch, n, restBlank := fenceInfo(line)
+		switch {
+		case fenceChar != 0:
+			if ch == fenceChar && n >= fenceLen && restBlank {
+				fenceChar, fenceLen = 0, 0
+			}
+			prevBlank = false
+		case ch != 0 && indentColumns(line) < 4:
+			fenceChar, fenceLen = ch, n
+			inIndent, prevBlank = false, false
+		case isBlankLine(line):
+			inIndent, prevBlank = false, true
+		case indentColumns(line) >= 4 && (inIndent || prevBlank):
+			inIndent, prevBlank = true, false
+		default:
+			inIndent, prevBlank = false, false
+		}
+	}
+	return fenceChar != 0
+}
+
 // fenceInfo inspects a line as a possible code fence: after up to its leading
 // whitespace, a run of three or more backticks or tildes. It returns the fence
 // rune (0 if the line isn't a fence), the run length, and whether everything

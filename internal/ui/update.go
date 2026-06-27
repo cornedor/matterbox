@@ -1616,6 +1616,13 @@ func (m Model) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 			if m.giphyAPIKey != "" {
 				giphyCmd = giphyLookup(m.ctx, m.giphyAPIKey, id, m.giphyRendition, md)
 			}
+		} else if !m.input.InCodeBlock() {
+			// A pasted box-drawing / ASCII table becomes a Markdown pipe table,
+			// unless the caret sits inside a code block (keep the drawing as-is).
+			if md, ok := convertPastedBoxTables(msg.Content); ok {
+				msg.Content = md
+				m.status = "converted pasted table to Markdown"
+			}
 		}
 		before := m.input.Value()
 		var cmd tea.Cmd
