@@ -94,6 +94,12 @@ type Model struct {
 	cmdStart, cmdEnd int
 	cmdPhase         float64
 
+	// ghost is dim virtual text drawn after the caret when it sits at the end of
+	// its visual row — a slash command's argument hint ("[message]"). It is not
+	// part of Value and never affects wrapping, the cursor, or the buffer; the
+	// owner decides when it applies (see SetGhost).
+	ghost string
+
 	// selActive marks a live text selection. Its range is [min, max) of the
 	// anchor and the cursor in rune-offset space (the CursorOffset coordinate
 	// space): selAnchor is the fixed end set when the drag began, the cursor is
@@ -182,6 +188,7 @@ func (m *Model) Reset() {
 	m.decorations = nil
 	m.ClearSelection()
 	m.ClearCommandSpan()
+	m.ClearGhost()
 	m.recalc()
 }
 

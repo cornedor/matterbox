@@ -68,6 +68,93 @@ func TestUpdateCommandHighlight(t *testing.T) {
 	}
 }
 
+func TestCommandHintGhost(t *testing.T) {
+	cases := []struct {
+		text string
+		want string // ghost set on the editor after updateCommandHighlight
+	}{
+		{"/shrug", "[message]"},             // recognised, no args yet → show the hint
+		{"/shrug ", "[message]"},            // trailing space (post-accept) still shows
+		{"/shrug hello", ""},                // the only arg is being typed → hint gone
+		{"/dm", "@user[,@user…] [message]"}, // a multi-arg hint, untouched
+		{"/dm @bob", "[message]"},           // first arg supplied → only the rest trails
+		{"/dm @bob ", "[message]"},          // …with or without a trailing space
+		{"/dm @bob hi", ""},                 // last arg being typed → nothing left
+		{"/help", ""},                       // recognised but advertises no args hint
+		{"/zzznope", ""},                    // unrecognised → no hint
+		{"/", ""},                           // bare slash
+		{"/shrug\n", ""},                    // wrapped to a second line → committed
+	}
+	for _, tc := range cases {
+		m := newSlashTestModel(tc.text)
+		m.updateCommandHighlight()
+		if _, _, ok := m.input.CommandSpan(); !ok {
+			// No command span means no ghost should be set either.
+			if tc.want != "" {
+				t.Errorf("%q: no command span, want hint %q", tc.text, tc.want)
+			}
+			continue
+		}
+		got := m.commandHintAfter(spanEnd(m))
+		if got != tc.want {
+			t.Errorf("commandHintAfter(%q) = %q, want %q", tc.text, got, tc.want)
+		}
+	}
+}
+
+// spanEnd returns the editor's current command-span end offset.
+func spanEnd(m *Model) int {
+	_, e, _ := m.input.CommandSpan()
+	return e
+}
+
+// TestRemainingHint exercises the progressive trimming directly, including the
+// quote-aware tokenising and the repeating final slot that /poll relies on.
+func TestRemainingHint(t *testing.T) {
+	const poll = `"[Question]" "[Answer 1]" "[Answer 2]"...`
+	cases := []struct{ hint, typed, want string }{
+		{poll, ``, `"[Question]" "[Answer 1]" "[Answer 2]"...`},      // nothing typed → full template
+		{poll, ` "Wh`, `"[Answer 1]" "[Answer 2]"...`},               // mid-question → answers next
+		{poll, ` "What for lunch?"`, `"[Answer 1]" "[Answer 2]"...`}, // a quoted, spaced question is one slot
+		{poll, ` "What" `, `"[Answer 1]" "[Answer 2]"...`},           // question done
+		{poll, ` "What" "Pizza"`, `"[Answer 2]"...`},                 // one answer in
+		{poll, ` "What" "Pizza" "Sushi"`, `"[Answer 2]"...`},         // repeating slot keeps offering itself
+		{`[message]`, ``, `[message]`},
+		{`[message]`, ` hi`, ``}, // the lone free-text slot vanishes as it's typed
+		{`@user[,@user…] [message]`, ` @bob`, `[message]`},
+		{`@user[,@user…] [message]`, ` @bob hi`, ``},
+		{``, ` x`, ``}, // no hint → nothing to trail
+	}
+	for _, tc := range cases {
+		if got := remainingHint(tc.hint, tc.typed); got != tc.want {
+			t.Errorf("remainingHint(%q, %q) = %q, want %q", tc.hint, tc.typed, got, tc.want)
+		}
+	}
+}
+
+// TestCommandHintGhostServerPoll checks the progressive hint end-to-end for a
+// server-advertised command (poll), the case the user cares about.
+func TestCommandHintGhostServerPoll(t *testing.T) {
+	const pollHint = `"[Question]" "[Answer 1]" "[Answer 2]"...`
+	cases := []struct{ text, want string }{
+		{`/poll`, pollHint},
+		{`/poll "What for lunch?"`, `"[Answer 1]" "[Answer 2]"...`},
+		{`/poll "What for lunch?" "Pizza"`, `"[Answer 2]"...`},
+	}
+	for _, tc := range cases {
+		m := newSlashTestModel(tc.text)
+		// commandTeamID resolves to "" for the bare test model, so cache poll there.
+		m.serverCmds[""] = []serverCommand{{trigger: "poll", desc: "create a poll", hint: pollHint}}
+		m.updateCommandHighlight()
+		if _, _, ok := m.input.CommandSpan(); !ok {
+			t.Fatalf("%q: poll should be recognised", tc.text)
+		}
+		if got := m.commandHintAfter(spanEnd(m)); got != tc.want {
+			t.Errorf("%q: ghost = %q, want %q", tc.text, got, tc.want)
+		}
+	}
+}
+
 func TestApplyCmdShimmerTickStops(t *testing.T) {
 	m := newSlashTestModel("/me")
 	m.focus = focusInput

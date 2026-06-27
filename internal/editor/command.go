@@ -47,6 +47,15 @@ func (m *Model) commandSpanAt(off int) (posInSpan int, ok bool) {
 	return off - m.cmdStart, true
 }
 
+// SetGhost sets the dim trailing hint drawn after the caret when it rests at the
+// end of its row — a recognised slash command's argument usage ("[message]").
+// It is virtual: not part of Value, never wrapped, never under the cursor. The
+// empty string clears it.
+func (m *Model) SetGhost(s string) { m.ghost = s }
+
+// ClearGhost removes the trailing hint.
+func (m *Model) ClearGhost() { m.ghost = "" }
+
 // shimmer gradient endpoints: a resting deep orange and a bright warm highlight
 // that the moving band lifts the text to. Truecolor terminals get a smooth
 // fade; lipgloss degrades the interpolated colours to the 256-palette

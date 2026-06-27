@@ -68,6 +68,58 @@ func TestCommandSpanRendersBold(t *testing.T) {
 	}
 }
 
+// TestGhostRendersAfterCaret checks the trailing hint draws after the caret when
+// it rests at the line's end, is dimmed (placeholder style), and is not part of
+// Value; and that it disappears once the caret leaves the end or the hint clears.
+func TestGhostRendersAfterCaret(t *testing.T) {
+	m := New()
+	m.SetWidth(40)
+	m.SetValue("/shrug")
+	m.Focus()
+
+	if strings.Contains(ansi.Strip(m.View()), "[message]") {
+		t.Fatal("no ghost set, but hint text appeared")
+	}
+
+	m.SetGhost("[message]")
+	got := m.View()
+	if !strings.Contains(ansi.Strip(got), "/shrug") {
+		t.Errorf("buffer text missing: %q", ansi.Strip(got))
+	}
+	if !strings.Contains(ansi.Strip(got), "[message]") {
+		t.Errorf("ghost hint not rendered: %q", ansi.Strip(got))
+	}
+	if m.Value() != "/shrug" {
+		t.Errorf("ghost leaked into Value = %q, want %q", m.Value(), "/shrug")
+	}
+
+	// Move the caret off the end of the row: the ghost only trails the caret at
+	// the line's end, so it should vanish.
+	m.SetCursorOffset(3)
+	if strings.Contains(ansi.Strip(m.View()), "[message]") {
+		t.Error("ghost should not draw when the caret is not at the line's end")
+	}
+
+	m.CursorEnd()
+	m.ClearGhost()
+	if strings.Contains(ansi.Strip(m.View()), "[message]") {
+		t.Error("ClearGhost should remove the hint")
+	}
+}
+
+// TestResetClearsGhost confirms a reset composer drops a lingering hint.
+func TestResetClearsGhost(t *testing.T) {
+	m := New()
+	m.SetWidth(40)
+	m.SetValue("/shrug")
+	m.Focus()
+	m.SetGhost("[message]")
+	m.Reset()
+	if m.ghost != "" {
+		t.Errorf("Reset should clear the ghost, got %q", m.ghost)
+	}
+}
+
 // TestShimmerColorLoopSeam verifies the gradient is continuous across the phase
 // wrap (the band has fully exited at both 0 and ~1) and that it actually
 // brightens somewhere in the middle of a sweep.

@@ -198,6 +198,16 @@ func (m *Model) renderRow(vr visRow, isCursorRow bool, cw int, base lipgloss.Sty
 	if m.focus && isCursorRow && m.col == vr.b {
 		b.WriteString(m.Styles.Cursor.Inline(true).Render(" "))
 		used++
+		// A slash command's argument hint trails the caret as dim ghost text
+		// (not in the buffer). Only here — caret at the line's end — so it reads
+		// as a prompt for what to type next; the caret itself is its separator.
+		if m.ghost != "" && used < cw {
+			g := truncateToWidth([]rune(m.ghost), cw-used)
+			if len(g) > 0 {
+				b.WriteString(m.Styles.Placeholder.Inline(true).Render(string(g)))
+				used += textwidth.Width(string(g))
+			}
+		}
 	}
 
 	if used < cw {

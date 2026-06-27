@@ -50,11 +50,104 @@ func (m *Model) updateCommandHighlight() tea.Cmd {
 		// avoids stacking a second loop when a command is cleared and re-typed
 		// before the pending tick fires.
 		m.input.ClearCommandSpan()
+		m.input.ClearGhost()
 		return nil
 	}
 	m.input.SetCommandSpan(start, end)
 	m.input.SetCommandPhase(m.cmdShimmer.phase)
+	m.input.SetGhost(m.commandHintAfter(end))
 	return m.maybeStartCmdShimmer()
+}
+
+// commandHintAfter returns the argument-usage hint to trail as dim ghost text
+// after a recognised command whose trigger token is [0, end) (rune offsets), or
+// "" when none should show. The hint advances as the user fills arguments — for
+// `/poll "[Question]" "[Answer 1]" "[Answer 2]"...` it shows the full template
+// at first, then drops the placeholders already typed, so once the question is
+// entered only the answer placeholders trail. It returns "" when the composer
+// spans more than the command line, the command advertises no hint, or every
+// placeholder is filled. The editor only draws it while the caret rests at the
+// line's end (see editor.SetGhost), so it reads as a prompt for what's next.
+func (m *Model) commandHintAfter(end int) string {
+	val := m.input.Value()
+	if strings.ContainsRune(val, '\n') {
+		return "" // past the first line; the command word is committed
+	}
+	runes := []rune(val)
+	hint := m.commandHint(strings.ToLower(string(runes[1:end])))
+	if hint == "" {
+		return ""
+	}
+	return remainingHint(hint, string(runes[end:]))
+}
+
+// remainingHint trims the leading placeholders of a command's usage hint that
+// the user has already supplied. It tokenises both the hint and the typed
+// arguments quote-aware (so `"[Answer 1]"` and a typed `"two words"` each count
+// as one slot), then drops as many hint slots as there are typed tokens. A
+// trailing "…"/"..." slot repeats, so it keeps trailing once every listed slot
+// is filled (e.g. /poll's answers). Returns "" when nothing remains.
+func remainingHint(hint, typed string) string {
+	slots := argTokens(hint)
+	if len(slots) == 0 {
+		return ""
+	}
+	start := len(argTokens(typed))
+	if start < len(slots) {
+		return strings.Join(slots[start:], " ")
+	}
+	if last := slots[len(slots)-1]; strings.HasSuffix(last, "...") || strings.HasSuffix(last, "…") {
+		return last // a repeating final slot keeps offering itself
+	}
+	return ""
+}
+
+// argTokens splits s into whitespace-separated tokens, keeping a double-quoted
+// run (spaces and all) as a single token, so `"[Answer 1]"` is one token and a
+// typed `"two words"` counts as one argument. An unclosed quote runs to the end
+// (the user is mid-typing it). Leading/trailing whitespace is ignored.
+func argTokens(s string) []string {
+	var tokens []string
+	var cur strings.Builder
+	inQuote, hasTok := false, false
+	for _, r := range s {
+		switch {
+		case r == '"':
+			inQuote = !inQuote
+			hasTok = true
+			cur.WriteRune(r)
+		case !inQuote && unicode.IsSpace(r):
+			if hasTok {
+				tokens = append(tokens, cur.String())
+				cur.Reset()
+				hasTok = false
+			}
+		default:
+			hasTok = true
+			cur.WriteRune(r)
+		}
+	}
+	if hasTok {
+		tokens = append(tokens, cur.String())
+	}
+	return tokens
+}
+
+// commandHint returns the argument-usage hint for a known command name (no
+// leading "/", already lower-cased) — the built-in's args field or the active
+// team's cached server hint — or "" when the command advertises none. Mirrors
+// the union isKnownCommand checks.
+func (m *Model) commandHint(name string) string {
+	if c, ok := lookupSlash(name); ok {
+		return c.args
+	}
+	ch, _ := m.composerTarget()
+	for _, s := range m.serverCmds[m.commandTeamID(ch)] {
+		if s.trigger == name {
+			return s.hint
+		}
+	}
+	return ""
 }
 
 // recognisedCommandSpan returns the rune span [start,end) of the leading
