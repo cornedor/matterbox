@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strconv"
 	"testing"
 
@@ -49,5 +50,32 @@ func BenchmarkChannelsFingerprint(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = m.channelsFingerprint(vis, 0, listH, innerH, "header")
+	}
+}
+
+// BenchmarkRenderChannelsPane measures the sidebar repaint on a cache miss — the
+// full per-row re-style (truncate + lipgloss render + presence/custom-status
+// dots) that runs whenever anything the fingerprint covers changes: an unread
+// count ticks, a partner's presence flips, the selection moves. The cache hit is
+// the trivial string return measured indirectly by BenchmarkChannelsFingerprint;
+// this is the work that hit avoids. Render is windowed to listH rows, so the
+// channel-count sweep mostly grows the fingerprint scan and visibleChannels
+// filter on top of a fixed render floor — i.e. it's the cost of one sidebar
+// repaint as the DM list grows.
+func BenchmarkRenderChannelsPane(b *testing.B) {
+	for _, n := range []int{40, 200, 800} {
+		m, vis := benchSidebarModel(n)
+		m.hasDMs = true
+		m.teamIdx = 0 // tabAt(0) → the DMs tab, so visibleChannels returns vis
+		m.channels = map[string][]*model.Channel{dmTeamID: vis}
+		m.vcache = &viewCache{}
+		b.Run(fmt.Sprintf("dms=%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				m.vcache.sidebar.valid = false // force the miss path every iteration
+				_ = m.renderChannelsPane(40)
+			}
+		})
 	}
 }
