@@ -35,6 +35,33 @@ func TestAISearchTimeoutParse(t *testing.T) {
 	}
 }
 
+// TestCodeThemeDefault: an absent code_theme defaults to monokai so a fresh
+// config still highlights code blocks.
+func TestCodeThemeDefault(t *testing.T) {
+	c := &Config{}
+	c.fillDefaults()
+	if c.CodeTheme != defaultCodeTheme {
+		t.Errorf("default code_theme = %q; want %q", c.CodeTheme, defaultCodeTheme)
+	}
+}
+
+// TestCodeThemeParse pins the yaml key and confirms an explicit theme survives
+// fillDefaults rather than being reset to the default.
+func TestCodeThemeParse(t *testing.T) {
+	const y = "code_theme: everforest-dark\n"
+	var c Config
+	if err := yaml.Unmarshal([]byte(y), &c); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if c.CodeTheme != "everforest-dark" {
+		t.Fatalf("parsed code_theme = %q; want everforest-dark", c.CodeTheme)
+	}
+	c.fillDefaults()
+	if c.CodeTheme != "everforest-dark" {
+		t.Errorf("fillDefaults clobbered explicit code_theme: got %q", c.CodeTheme)
+	}
+}
+
 // TestNavModifierDefault: an absent keybindings section defaults the arrow-nav
 // modifier to ctrl, so existing users keep the ctrl+arrow aliases.
 func TestNavModifierDefault(t *testing.T) {

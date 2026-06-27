@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/alecthomas/chroma/v2/styles"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -115,6 +116,60 @@ func TestHighlightCodeLinesEndReset(t *testing.T) {
 	for _, ln := range highlightCode([]string{"const x = 42"}, "go") {
 		if ln != "" && !strings.HasSuffix(ln, "\x1b[0m") {
 			t.Errorf("highlighted line not reset-terminated: %q", ln)
+		}
+	}
+}
+
+// The bundled everforest-dark style must be registered with chroma so it can be
+// selected by `code_theme: everforest-dark` like any built-in.
+func TestEverforestRegistered(t *testing.T) {
+	if _, ok := styles.Registry["everforest-dark"]; !ok {
+		t.Fatal("everforest-dark not registered with chroma")
+	}
+}
+
+// setCodeTheme switches the active palette: an everforest theme recolours tokens
+// with everforest accents (and not monokai's), proving config actually drives
+// the highlighter. Restores the default theme so other tests are unaffected.
+func TestSetCodeThemeSwitchesPalette(t *testing.T) {
+	if !codeColorEnabled {
+		t.Skip("colour disabled (NO_COLOR)")
+	}
+	defer setCodeTheme(fallbackCodeTheme)
+
+	setCodeTheme("everforest-dark")
+	out := strings.Join(highlightCode([]string{`const s = "hi"`}, "go"), "\n")
+	const everforestGreen = "\x1b[38;2;167;192;128m" // #a7c080 — everforest string
+	const monokaiYellow = "\x1b[38;2;230;219;116m"   // #e6db74 — monokai string
+	if !strings.Contains(out, everforestGreen) {
+		t.Errorf("everforest string colour not applied: %q", out)
+	}
+	if strings.Contains(out, monokaiYellow) {
+		t.Errorf("monokai colour leaked after switching to everforest: %q", out)
+	}
+}
+
+// An unknown code_theme name falls back to the default rather than chroma's
+// near-colourless swapoff Fallback, so a typo can't silently kill highlighting.
+func TestSetCodeThemeUnknownFallsBackToDefault(t *testing.T) {
+	defer setCodeTheme(fallbackCodeTheme)
+	setCodeTheme("no-such-theme-zzz")
+	if got := codeHLStyle().Name; got != fallbackCodeTheme {
+		t.Errorf("unknown theme resolved to %q; want %q", got, fallbackCodeTheme)
+	}
+}
+
+// Background-stripping holds for the bundled style too: everforest highlighting
+// is foreground-only, never a shaded block.
+func TestEverforestEmitsNoBackground(t *testing.T) {
+	if !codeColorEnabled {
+		t.Skip("colour disabled (NO_COLOR)")
+	}
+	defer setCodeTheme(fallbackCodeTheme)
+	setCodeTheme("everforest-dark")
+	for _, ln := range highlightCode([]string{`x := "s"`, "\x07"}, "go") {
+		if strings.Contains(ln, "\x1b[48") {
+			t.Errorf("everforest line carries a background SGR: %q", ln)
 		}
 	}
 }

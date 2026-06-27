@@ -3,7 +3,7 @@ package ui
 import (
 	"os"
 	"strings"
-	"sync"
+	"sync/atomic"
 
 	"github.com/alecthomas/chroma/v2"
 	"github.com/alecthomas/chroma/v2/formatters"
@@ -17,14 +17,48 @@ import (
 // rather than chroma's raw escapes (chroma bypasses lipgloss' colour profile).
 var codeColorEnabled = os.Getenv("NO_COLOR") == ""
 
-// codeHLStyle is the chroma style used for terminal syntax highlighting, with
-// every background and border stripped so highlighted code sits on the normal
-// pane background (foreground-only) instead of as a shaded block. Built once on
-// first use; the Background token's stripping removes the block-level shade.
-var codeHLStyle = sync.OnceValue(func() *chroma.Style {
-	base := styles.Get("monokai")
-	if base == nil {
-		base = styles.Fallback
+// fallbackCodeTheme is the chroma style used when no theme is configured or the
+// configured name is unknown. Mirrors config.defaultCodeTheme; monokai is always
+// registered, so buildCodeStyle can rely on it as a last resort.
+const fallbackCodeTheme = "monokai"
+
+// codeHLStyleStore holds the active, background-stripped highlight style. It is
+// set once at startup from config (setCodeTheme, called by ui.New) and read on
+// every highlighted block; an atomic pointer keeps those reads race-free against
+// that single write. nil until first use, when codeHLStyle lazily installs the
+// fallback theme so tests and any pre-config render still get colour.
+var codeHLStyleStore atomic.Pointer[chroma.Style]
+
+// codeHLStyle returns the active highlight style, installing the fallback theme
+// on first use if setCodeTheme hasn't run yet.
+func codeHLStyle() *chroma.Style {
+	if s := codeHLStyleStore.Load(); s != nil {
+		return s
+	}
+	s := buildCodeStyle(fallbackCodeTheme)
+	if codeHLStyleStore.CompareAndSwap(nil, s) {
+		return s
+	}
+	return codeHLStyleStore.Load()
+}
+
+// setCodeTheme installs name as the highlighter's colour scheme. Called once at
+// startup with the configured code_theme. Safe to call with an empty or unknown
+// name — buildCodeStyle falls back to fallbackCodeTheme — so a typo degrades to
+// the default rather than disabling highlighting.
+func setCodeTheme(name string) {
+	codeHLStyleStore.Store(buildCodeStyle(name))
+}
+
+// buildCodeStyle resolves a chroma style by name and strips every background and
+// border so highlighted code sits on the normal pane background (foreground-only)
+// instead of as a shaded block — chroma's own clearBackground only clears the
+// block-level token, not per-token ones like Error. An unknown name (styles.Get
+// would mask it as the swapoff Fallback) resolves to fallbackCodeTheme instead.
+func buildCodeStyle(name string) *chroma.Style {
+	base, ok := styles.Registry[name]
+	if !ok {
+		base = styles.Get(fallbackCodeTheme) // monokai is always registered
 	}
 	s, err := base.Builder().Transform(func(e chroma.StyleEntry) chroma.StyleEntry {
 		e.Background = 0
@@ -35,7 +69,7 @@ var codeHLStyle = sync.OnceValue(func() *chroma.Style {
 		return base
 	}
 	return s
-})
+}
 
 // highlightCode syntax-highlights a fenced block's body lines for the terminal,
 // returning exactly one rendered line per input line. lang is the fence info

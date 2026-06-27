@@ -91,6 +91,13 @@ type Config struct {
 	// everywhere. Unicode emoji are unaffected — they always render as font
 	// glyphs. See internal/ui.
 	EmojiImages string `yaml:"emoji_images"`
+	// CodeTheme is the colour scheme used to syntax-highlight fenced code
+	// blocks in messages: any chroma style name (e.g. monokai, dracula,
+	// github-dark, gruvbox, nord, catppuccin-mocha, tokyonight-night) plus the
+	// bundled "everforest-dark". An unknown name falls back to the default so a
+	// typo can't disable highlighting; NO_COLOR disables colour entirely.
+	// Defaults to defaultCodeTheme (monokai). See internal/ui/highlight.go.
+	CodeTheme string `yaml:"code_theme"`
 	// Animations groups the optional motion effects so a user who finds
 	// movement distracting can switch them off individually. An object rather
 	// than a flat flag because more toggles are planned (e.g. animating GIFs in
@@ -670,6 +677,12 @@ const (
 // unread, short enough not to feel laggy when you actually read it.
 const defaultMarkReadDelaySeconds = 5
 
+// defaultCodeTheme is the chroma style used to highlight fenced code blocks
+// when code_theme is unset: monokai, a high-contrast dark scheme that suits the
+// app's dark-terminal assumption. Any chroma style name (or the bundled
+// everforest-dark) overrides it. See internal/ui/highlight.go.
+const defaultCodeTheme = "monokai"
+
 // defaultDownloadDir is where attachments are saved when no download_dir is
 // configured. A leading "~" is expanded to the user's home directory in
 // internal/ui when the directory is resolved.
@@ -762,7 +775,7 @@ func Load() (*Config, error) {
 	// and rewrite the file once so the discovered model + prompt show up as
 	// editable defaults. Best-effort: a failed rewrite only means the file
 	// keeps working off in-memory defaults.
-	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.DownloadDir == "" || cfg.SQLTab == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.TwoWay == nil || cfg.Listen.NotifyDMs == nil || cfg.Listen.NotifyDelaySeconds == nil
+	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.DownloadDir == "" || cfg.SQLTab == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.CodeTheme == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.TwoWay == nil || cfg.Listen.NotifyDMs == nil || cfg.Listen.NotifyDelaySeconds == nil
 	cfg.fillDefaults()
 	if addDefaults {
 		if werr := writeConfig(p, cfg); werr != nil {
@@ -862,6 +875,9 @@ func (c *Config) fillDefaults() {
 	c.Keybindings.CtrlArrowNav = nil
 	if c.EmojiImages == "" {
 		c.EmojiImages = "auto"
+	}
+	if c.CodeTheme == "" {
+		c.CodeTheme = defaultCodeTheme
 	}
 	if c.Animations.CustomEmoji == nil {
 		t := true
@@ -989,6 +1005,12 @@ func writeConfig(p string, cfg *Config) error {
 		"#             Kitty graphics protocol. auto (default) enables them on a\n" +
 		"#             Kitty/Ghostty truecolor terminal outside tmux; off keeps\n" +
 		"#             literal :name: text. Unicode emoji are unaffected.\n" +
+		"# code_theme: colour scheme for syntax-highlighting fenced code blocks in\n" +
+		"#             messages. Any chroma style name — monokai (default), dracula,\n" +
+		"#             github-dark, gruvbox, nord, onedark, catppuccin-mocha,\n" +
+		"#             tokyonight-night, … — plus the bundled everforest-dark. An\n" +
+		"#             unknown name falls back to the default; NO_COLOR disables\n" +
+		"#             code colour entirely.\n" +
 		"# animations: optional motion effects, off-able if distracting.\n" +
 		"#             custom_emoji (default true) animates GIF custom emoji in\n" +
 		"#             place; image_preview (default true) animates GIFs in the\n" +

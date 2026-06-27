@@ -888,6 +888,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		if cfg.EmojiImages != "" {
 			emojiMode = cfg.EmojiImages
 		}
+		if cfg.CodeTheme != "" {
+			setCodeTheme(cfg.CodeTheme)
+		}
 		if cfg.Animations.CustomEmoji != nil {
 			animateEmoji = *cfg.Animations.CustomEmoji
 		}
