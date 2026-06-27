@@ -142,7 +142,7 @@ func (m *Model) applyComposerSnapshot(v string) tea.Cmd {
 	// SetValue would leave it). Computed before SetValue clobbers the value.
 	cursor := changeEndOffset(m.input.Value(), v)
 	m.input.SetValue(v)
-	m.setInputCursorOffset(cursor)
+	m.input.SetCursorOffset(cursor)
 	m.syncInputHeight()
 	mentionCmd := m.updateMention()
 	m.updateEmoji()

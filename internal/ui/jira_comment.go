@@ -5,10 +5,10 @@ import (
 	"strings"
 
 	"charm.land/bubbles/v2/key"
-	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"matterbox/internal/editor"
 	"matterbox/internal/jira"
 )
 
@@ -30,22 +30,17 @@ const commentQuoteMaxLines = 8
 // newCommentTextarea builds the modal's textarea, configured like the message
 // composer (dynamic height, Enter posts, alt/shift+enter newline, static
 // cursor).
-func newCommentTextarea() textarea.Model {
-	ta := textarea.New()
+func newCommentTextarea() editor.Model {
+	ta := editor.New()
 	ta.Placeholder = "comment…"
 	ta.CharLimit = 32767
-	ta.ShowLineNumbers = false
 	ta.DynamicHeight = true
 	ta.MinHeight = 3
 	ta.MaxHeight = maxInputHeight
 	ta.MaxContentHeight = 10000
 	ta.SetHeight(3)
 	ta.SetPromptFunc(2, inputPromptFunc("┃ "))
-	st := ta.Styles()
-	st.Focused.CursorLine = lipgloss.NewStyle()
-	st.Blurred.CursorLine = lipgloss.NewStyle()
-	st.Cursor.Blink = false
-	ta.SetStyles(st)
+	ta.Styles.Placeholder = lipgloss.NewStyle().Foreground(dimColor)
 	ta.KeyMap.InsertNewline = key.NewBinding(
 		key.WithKeys("alt+enter", "shift+enter"),
 		key.WithHelp("alt+↵/shift+↵", "newline"),
@@ -109,7 +104,7 @@ func (m *Model) closeJiraComment() {
 	m.jiraCommentKey = ""
 	m.jiraCommentMention = nil
 	m.jiraCommentReplyTo = ""
-	m.jiraCommentInput = textarea.Model{}
+	m.jiraCommentInput = editor.Model{}
 }
 
 // handleJiraCommentKey owns every keystroke while the composer is open: esc

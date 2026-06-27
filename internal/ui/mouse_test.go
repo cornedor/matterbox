@@ -5,10 +5,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"github.com/mattermost/mattermost/server/public/model"
 
+	"matterbox/internal/editor"
 	"matterbox/internal/store"
 )
 
@@ -57,7 +57,7 @@ func mouseModel(posts []*model.Post) Model {
 	m.teamIdx = m.firstTeamTabIdx() // land on the channel tab, not a synthetic one
 	m.channelIdx = 0
 	m.openChannelID = "c"
-	ta := textarea.New()
+	ta := editor.New()
 	ta.SetWidth(40)
 	m.input = ta
 	m.renderTeamTabs()

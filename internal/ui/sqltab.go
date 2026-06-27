@@ -8,11 +8,11 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/key"
-	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/mattermost/mattermost/server/public/model"
 
+	"matterbox/internal/editor"
 	"matterbox/internal/viewport"
 )
 
@@ -56,7 +56,7 @@ type sqlState struct {
 	// panics on SetWidth, so sizing short-circuits until it's built.
 	built bool
 
-	input textarea.Model
+	input editor.Model
 	view  viewport.Model
 
 	query     string // last query we actually ran
@@ -79,21 +79,16 @@ type sqlState struct {
 // newSQLState constructs the textarea / viewport used by the SQL tab. Called
 // once at startup from New().
 func newSQLState(storeAvailable bool) sqlState {
-	ta := textarea.New()
+	ta := editor.New()
 	ta.Placeholder = "SELECT * FROM posts ORDER BY create_at DESC LIMIT 50    (enter runs · alt+↵ newline)"
 	ta.CharLimit = 8000
-	ta.ShowLineNumbers = false
 	ta.DynamicHeight = true
 	ta.MinHeight = 3
 	ta.MaxHeight = 10
 	ta.MaxContentHeight = 10000
 	ta.SetHeight(3)
 	ta.SetPromptFunc(2, inputPromptFunc("❯ "))
-	taStyles := ta.Styles()
-	taStyles.Focused.CursorLine = lipgloss.NewStyle()
-	taStyles.Blurred.CursorLine = lipgloss.NewStyle()
-	taStyles.Cursor.Blink = false
-	ta.SetStyles(taStyles)
+	ta.Styles.Placeholder = lipgloss.NewStyle().Foreground(dimColor)
 	// Enter runs the query (handled in handleSQLKey); alt+enter / shift+enter
 	// insert a newline so multi-line SQL is still possible. Mirrors the composer.
 	ta.KeyMap.InsertNewline = key.NewBinding(

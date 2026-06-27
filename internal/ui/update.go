@@ -2437,7 +2437,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.ShiftTab):
 		return m.cycleFocus(-1)
 	case msg.String() == "up" && m.editingPostID == "" &&
-		m.input.Line() == 0 && m.input.LineInfo().RowOffset == 0:
+		m.input.CursorVisualRow() == 0:
 		// ↑ on the first visual row of the composer selects the absolute last
 		// message — the inverse of ↓-on-the-last-message dropping into the
 		// composer. The @-mention / :emoji popups consume ↑ above while open,

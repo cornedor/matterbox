@@ -1593,14 +1593,14 @@ func (m *Model) renderInputBox(width int) string {
 	if m.focus == focusInput {
 		inputBorder = focusedColor
 	}
-	// Underline grammar/spell findings directly on the textarea's rendered
-	// output before framing it. A no-op unless the checker is on and the
-	// findings still match the live draft.
+	// Grammar/spell findings are drawn by the editor itself (pushed as inline
+	// decorations in syncGrammarDecorations), so they always track the wrap and
+	// scroll — no post-processing of the rendered output here.
 	box := lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder(), true, false, false, false).
 		BorderForeground(inputBorder).
 		Width(width).
-		Render(m.grammarOverlay(m.input.View()))
+		Render(m.input.View())
 
 	// When someone is typing in the open channel, lay the animated dots
 	// over the top rule (the separator) so the cue rides the line it

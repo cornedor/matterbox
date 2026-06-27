@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"charm.land/bubbles/v2/textarea"
+	"matterbox/internal/editor"
 )
 
 func TestEmojiMatches(t *testing.T) {
@@ -107,7 +107,7 @@ func TestUpdateEmojiTrigger(t *testing.T) {
 	}
 	for _, tc := range cases {
 		var m Model
-		m.input = textarea.New()
+		m.input = editor.New()
 		m.input.SetWidth(40)
 		m.input.SetValue(tc.text)
 		m.updateEmoji()

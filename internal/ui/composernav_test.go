@@ -3,10 +3,10 @@ package ui
 import (
 	"testing"
 
-	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"github.com/mattermost/mattermost/server/public/model"
 
+	"matterbox/internal/editor"
 	"matterbox/internal/viewport"
 )
 
@@ -26,7 +26,7 @@ func composerModel(posts []*model.Post, postIdx int) Model {
 	m.teams = []*model.Team{{Id: "t1", Name: "eng", DisplayName: "Engineering"}}
 	m.channels = map[string][]*model.Channel{"t1": {{Id: "c", TeamId: "t1", Type: model.ChannelTypeOpen}}}
 	m.teamIdx = m.firstTeamTabIdx() // land on the channel tab, not a synthetic tab
-	ta := textarea.New()
+	ta := editor.New()
 	ta.SetWidth(40)
 	m.input = ta
 	return m
@@ -75,7 +75,7 @@ func TestComposerUpMultiRowStaysInInput(t *testing.T) {
 	m := composerModel([]*model.Post{p("a", 100), p("b", 200)}, 1)
 	m.focus = focusInput
 	m.input.SetValue("line one\nline two") // cursor lands on the last row
-	if m.input.Line() == 0 {
+	if r, _ := m.input.CursorRowCol(); r == 0 {
 		t.Fatalf("precondition: cursor expected below row 0, got row 0")
 	}
 

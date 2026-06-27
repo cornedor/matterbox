@@ -38,9 +38,7 @@ type mentionState struct {
 // processed a key. Returns a Tick cmd that fires the debounced fetch
 // when the query changed, or nil otherwise.
 func (m *Model) updateMention() tea.Cmd {
-	row := m.input.Line()
-	li := m.input.LineInfo()
-	col := li.StartColumn + li.ColumnOffset
+	row, col := m.input.CursorRowCol()
 
 	lines := strings.Split(m.input.Value(), "\n")
 	if row < 0 || row >= len(lines) {
@@ -188,8 +186,7 @@ func (m *Model) acceptMention() (tea.Cmd, bool) {
 		return nil, false
 	}
 	runes := []rune(lines[m.mention.line])
-	li := m.input.LineInfo()
-	col := li.StartColumn + li.ColumnOffset
+	_, col := m.input.CursorRowCol()
 	if col > len(runes) {
 		col = len(runes)
 	}
