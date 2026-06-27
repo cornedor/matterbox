@@ -11,7 +11,6 @@ import (
 
 	"charm.land/bubbles/v2/help"
 	"charm.land/bubbles/v2/key"
-	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -19,6 +18,7 @@ import (
 	"github.com/mattermost/mattermost/server/public/model"
 
 	"matterbox/internal/config"
+	"matterbox/internal/editor"
 	"matterbox/internal/embed"
 	"matterbox/internal/gitlab"
 	"matterbox/internal/jira"
@@ -30,14 +30,14 @@ import (
 	"matterbox/internal/viewport"
 )
 
-// inputPromptFunc returns a PromptFunc for the input textarea that only
+// inputPromptFunc returns a PromptFunc for the input editor that only
 // renders the given prompt string on the first visual line and pads
 // continuation lines with two spaces, keeping multi-line content
 // visually aligned. promptWidth (passed to SetPromptFunc) must equal
 // the rune width of the prompt — currently always "> " or "↳ ", both 2.
-func inputPromptFunc(prompt string) func(textarea.PromptInfo) string {
-	return func(info textarea.PromptInfo) string {
-		if info.LineNumber == 0 {
+func inputPromptFunc(prompt string) func(visualLine int, focused bool) string {
+	return func(visualLine int, _ bool) string {
+		if visualLine == 0 {
 			return prompt
 		}
 		return "  "
@@ -364,7 +364,7 @@ type Model struct {
 	cellPxW, cellPxH int
 	msgsView         viewport.Model
 
-	input textarea.Model
+	input editor.Model
 	// lastInputHeight is the input height the messages pane was last
 	// reflowed for. syncInputHeight compares against it to reflow only
 	// when the textarea's DynamicHeight actually changed.
@@ -443,7 +443,7 @@ type Model struct {
 	// name for the modal's "replying to" line. See jira_comment.go.
 	jiraCommentActive  bool
 	jiraCommentKey     string
-	jiraCommentInput   textarea.Model
+	jiraCommentInput   editor.Model
 	jiraCommentMention *jira.Mention
 	jiraCommentReplyTo string
 
@@ -740,39 +740,24 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	rs.Placeholder = "any emoji…"
 	rs.CharLimit = 64
 
-	ta := textarea.New()
+	ta := editor.New()
 	ta.Placeholder = "message…"
 	ta.CharLimit = 4000
-	ta.ShowLineNumbers = false
-	// v2's built-in DynamicHeight grows the textarea between MinHeight
-	// and MaxHeight rows as content is added/removed (counting wrapped
-	// visual rows), so the textarea owns its own height — syncInputHeight
-	// only reflows the messages pane when that height changes.
+	// DynamicHeight grows the editor between MinHeight and MaxHeight rows as
+	// content is added/removed (counting wrapped visual rows), so it owns its
+	// own height — syncInputHeight only reflows the messages pane when that
+	// height changes. It scrolls internally past MaxHeight.
 	ta.DynamicHeight = true
 	ta.MinHeight = 1
 	ta.MaxHeight = maxInputHeight
 	ta.MaxContentHeight = 10000
 	ta.SetHeight(1)
-	// PromptFunc only renders "> " on the first wrapped row of the input
+	ta.Styles.Placeholder = lipgloss.NewStyle().Foreground(dimColor)
+	// PromptFunc only renders "> " on the first visual row of the input
 	// and pads continuation lines with two spaces so multi-line content
-	// reads cleanly. (The plain .Prompt field would prefix every visual
-	// row, which looks like multiple separate prompts when the textarea
-	// grows.) The default prompt is updated when a thread is opened
+	// reads cleanly. The default prompt is updated when a thread is opened
 	// (`m.input.SetPromptFunc(...)` in openThreadForPost).
 	ta.SetPromptFunc(2, inputPromptFunc("> "))
-	// Drop the default cursor-line highlight — it underlines/inverts the
-	// whole row the cursor is on, which renders as a stray horizontal
-	// bar above the typed content inside our bordered input box.
-	taStyles := ta.Styles()
-	taStyles.Focused.CursorLine = lipgloss.NewStyle()
-	taStyles.Blurred.CursorLine = lipgloss.NewStyle()
-	// Static (non-blinking) cursor. In blink mode the textarea fires a
-	// cursor.blinkCanceled Msg on every keystroke, and bubbletea renders a full
-	// View per Msg — so a blinking cursor costs a second full render per keypress
-	// while typing (pprof 2026-06-16). The cursor already shows solid, so this
-	// drops the redundant render with no visible change.
-	taStyles.Cursor.Blink = false
-	ta.SetStyles(taStyles)
 	// Enter sends; alt+enter / shift+enter insert a newline. ctrl+j is
 	// deliberately NOT bound here — it's the global "next channel" nav, and a
 	// single key meaning "newline" or "switch channel" depending on focus is a

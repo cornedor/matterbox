@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
-	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/textinput"
 	"github.com/mattermost/mattermost/server/public/model"
 
+	"matterbox/internal/editor"
 	"matterbox/internal/viewport"
 )
 
@@ -21,7 +21,7 @@ func groupDMTestModel() Model {
 		channels: map[string][]*model.Channel{},
 		filter:   textinput.New(),
 		switcher: textinput.New(),
-		input:    textarea.New(),
+		input:    editor.New(),
 		msgsView: viewport.New(),
 		width:    80,
 	}

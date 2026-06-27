@@ -108,9 +108,7 @@ func emojiIndex() []string {
 // key. Unlike mentions it never needs a fetch, so it returns nothing — the
 // caller just discards the result.
 func (m *Model) updateEmoji() {
-	row := m.input.Line()
-	li := m.input.LineInfo()
-	col := li.StartColumn + li.ColumnOffset
+	row, col := m.input.CursorRowCol()
 
 	lines := strings.Split(m.input.Value(), "\n")
 	if row < 0 || row >= len(lines) {
@@ -284,8 +282,7 @@ func (m *Model) acceptEmoji() (tea.Cmd, bool) {
 		return nil, false
 	}
 	runes := []rune(lines[m.emoji.line])
-	li := m.input.LineInfo()
-	col := li.StartColumn + li.ColumnOffset
+	_, col := m.input.CursorRowCol()
 	if col > len(runes) {
 		col = len(runes)
 	}
