@@ -249,9 +249,14 @@ func (s *Store) searchFTS(fts string, f searchFilter, limit, offset, contextN in
 	}
 
 	var b strings.Builder
-	b.WriteString("\nSELECT p.raw_json")
 	if byRank {
-		b.WriteString(", bm25(posts_fts)")
+		// Rank on metadata only — create_at (recency decay) and bm25 — plus the
+		// channel_id the context window needs. The full body is loaded later for
+		// just the paged winners, so a broad query no longer unmarshals the whole
+		// ~rankPoolSize candidate pool only to discard all but `limit` of it.
+		b.WriteString("\nSELECT p.id, p.channel_id, p.create_at, bm25(posts_fts)")
+	} else {
+		b.WriteString("\nSELECT p.raw_json")
 	}
 	b.WriteString(`
 FROM posts_fts
@@ -280,20 +285,26 @@ WHERE posts_fts MATCH ?
 	defer rows.Close()
 	var pool []scoredPost
 	for rows.Next() {
-		var raw []byte
-		var rank float64
 		if byRank {
-			if err := rows.Scan(&raw, &rank); err != nil {
+			// Lightweight stub: enough to rank, page, and locate the context
+			// window; the body is filled in below for the winners only.
+			var stub model.Post
+			var rank float64
+			if err := rows.Scan(&stub.Id, &stub.ChannelId, &stub.CreateAt, &rank); err != nil {
 				return nil, 0, fmt.Errorf("scan search: %w", err)
 			}
-		} else if err := rows.Scan(&raw); err != nil {
+			pool = append(pool, scoredPost{post: &stub, bm25: rank})
+			continue
+		}
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
 			return nil, 0, fmt.Errorf("scan search: %w", err)
 		}
 		var p model.Post
 		if err := json.Unmarshal(raw, &p); err != nil {
 			continue
 		}
-		pool = append(pool, scoredPost{post: &p, bm25: rank})
+		pool = append(pool, scoredPost{post: &p})
 	}
 	if err := rows.Err(); err != nil {
 		return nil, 0, fmt.Errorf("rows: %w", err)
@@ -301,7 +312,22 @@ WHERE posts_fts MATCH ?
 
 	var matches []*model.Post
 	if byRank {
-		matches = page(rankByRelevanceAndAge(pool, time.Now().UnixMilli(), s.recencyHalfLife), offset, limit)
+		// Rank + page the stubs, then load full bodies for only the page shown.
+		ranked := page(rankByRelevanceAndAge(pool, time.Now().UnixMilli(), s.recencyHalfLife), offset, limit)
+		ids := make([]string, len(ranked))
+		for i, p := range ranked {
+			ids[i] = p.Id
+		}
+		full, err := s.postsByIDs(ids)
+		if err != nil {
+			return nil, 0, err
+		}
+		matches = make([]*model.Post, 0, len(ranked))
+		for _, stub := range ranked {
+			if p := full[stub.Id]; p != nil { // absent only if deleted since the pool scan
+				matches = append(matches, p)
+			}
+		}
 	} else {
 		matches = make([]*model.Post, len(pool))
 		for i, sp := range pool {
@@ -394,8 +420,13 @@ func rankByRelevanceAndAge(pool []scoredPost, now int64, halfLife time.Duration)
 		}
 		return math.Exp2(-float64(ageMs) / float64(hlMs))
 	}
-	score := func(i int) float64 {
-		return decay(pool[i].post.CreateAt) / (relevanceDamp + float64(i))
+	// Precompute each candidate's blended score once. The comparator below runs
+	// O(n log n) times, and evaluating math.Exp2 inside it (the decay) dominated
+	// the sort; a candidate's index is its bm25 rank (pool is best-first), so its
+	// relevance weight is the fixed 1/(relevanceDamp+rank).
+	scores := make([]float64, len(pool))
+	for i := range pool {
+		scores[i] = decay(pool[i].post.CreateAt) / (relevanceDamp + float64(i))
 	}
 	order := make([]int, len(pool))
 	for i := range order {
@@ -403,8 +434,8 @@ func rankByRelevanceAndAge(pool []scoredPost, now int64, halfLife time.Duration)
 	}
 	sort.SliceStable(order, func(a, b int) bool {
 		ia, ib := order[a], order[b]
-		if sa, sb := score(ia), score(ib); sa != sb {
-			return sa > sb
+		if scores[ia] != scores[ib] {
+			return scores[ia] > scores[ib]
 		}
 		return pool[ia].post.CreateAt > pool[ib].post.CreateAt
 	})
