@@ -67,11 +67,57 @@ func TestMarkdownClassesInline(t *testing.T) {
 }
 
 func TestMarkdownClassesFencedBlock(t *testing.T) {
-	const src = "text\n```go\ncode line\n```\ndone"
-	// text + nl, ```go fence, nl, code content, nl, ``` fence, nl, done.
-	const want = ".....mmmmm.CCCCCCCCC.mmm....."
-	if got := classString(src); got != want {
-		t.Fatalf("fenced classes = %q, want %q", got, want)
+	cases := []struct {
+		name, in, want string
+	}{
+		{
+			// text + nl, ```go fence, nl, code content, nl, ``` fence, nl, done.
+			"backtick", "text\n```go\ncode line\n```\ndone",
+			".....mmmmm.CCCCCCCCC.mmm.....",
+		},
+		{
+			// ~~~ fences behave like ``` fences.
+			"tilde", "~~~\ncode\n~~~",
+			"mmm.CCCC.mmm",
+		},
+		{
+			// A ~~~ line inside a ``` block is content, not a close (mismatched char).
+			"mismatched fence stays content", "```\n~~~\n```",
+			"mmm.CCC.mmm",
+		},
+	}
+	for _, c := range cases {
+		if got := classString(c.in); got != c.want {
+			t.Errorf("%s: classString(%q) = %q, want %q", c.name, c.in, got, c.want)
+		}
+	}
+}
+
+func TestMarkdownClassesIndentedBlock(t *testing.T) {
+	cases := []struct {
+		name, in, want string
+	}{
+		{
+			// Four-space indent after a blank line is a code block.
+			"after blank", "text\n\n    code\nmore",
+			"......CCCCCCCC.....",
+		},
+		{
+			// Indent without a preceding blank is a lazy paragraph continuation,
+			// not code — so it stays plain.
+			"paragraph continuation", "text\n    indented",
+			".................",
+		},
+		{
+			// Indented code at the very start of the buffer.
+			"at buffer start", "    code",
+			"CCCCCCCC",
+		},
+	}
+	for _, c := range cases {
+		if got := classString(c.in); got != c.want {
+			t.Errorf("%s: classString(%q) = %q, want %q", c.name, c.in, got, c.want)
+		}
 	}
 }
 

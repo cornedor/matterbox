@@ -14,63 +14,142 @@ const (
 	mdItalic                   // *x* / _x_ content
 	mdStrike                   // ~~x~~ content
 	mdCode                     // `x` inline-code content
-	mdCodeBlock                // content inside a ```-fenced block
+	mdCodeBlock                // content inside a fenced (``` / ~~~) or indented block
 )
 
 // markdownClasses scans the whole buffer and returns one mdClass per rune of
 // Value() (newline slots stay mdNone). It is the parser behind MarkdownHighlight:
 // a single left-to-right pass per logical line that mirrors the subset of
 // Mattermost markdown the message pane renders — bold/italic/strikethrough,
-// inline code, and fenced code blocks — keeping every marker visible. Fenced
-// blocks are tracked across lines; inside them no inline markup is recognised
-// (matching real markdown, where code suppresses emphasis). Returns nil for an
-// empty buffer.
+// inline code, and code blocks — keeping every marker visible.
+//
+// Code blocks come in two forms, both tracked across lines (inside them no
+// inline markup is recognised, matching real markdown where code suppresses
+// emphasis):
+//   - Fenced: a ``` or ~~~ run of three or more, indented less than four spaces.
+//     A block closes only on a matching fence (same char, at least as long, with
+//     nothing but spaces after) — so a ~~~ inside a ``` block stays content.
+//   - Indented: a run of lines indented four or more columns. Per CommonMark it
+//     can't interrupt a paragraph, so the first such line must follow a blank
+//     line (or the buffer start); otherwise it's a lazy paragraph continuation.
+//
+// Returns nil for an empty buffer.
 func (m *Model) markdownClasses() []mdClass {
 	total := m.length()
 	if total == 0 {
 		return nil
 	}
 	cl := make([]mdClass, total)
-	inFence := false
+	var fenceChar rune // 0 when not inside a fenced block
+	var fenceLen int
+	inIndent := false // inside an indented code block
+	prevBlank := true // buffer start is a block boundary (lets indented code begin)
 	off := 0
 	for _, line := range m.lines {
+		ch, n, restBlank := fenceInfo(line)
 		switch {
-		case isFenceLine(line):
-			markFenceLine(cl, off, line)
-			inFence = !inFence
-		case inFence:
-			for j := range line {
-				cl[off+j] = mdCodeBlock
+		case fenceChar != 0:
+			// Inside a fenced block: only a matching closing fence ends it.
+			if ch == fenceChar && n >= fenceLen && restBlank {
+				markFenceLine(cl, off, line)
+				fenceChar, fenceLen = 0, 0
+			} else {
+				fillCodeBlock(cl, off, line)
 			}
+			prevBlank = false
+		case ch != 0 && indentColumns(line) < 4:
+			markFenceLine(cl, off, line)
+			fenceChar, fenceLen = ch, n
+			inIndent, prevBlank = false, false
+		case isBlankLine(line):
+			inIndent, prevBlank = false, true
+		case indentColumns(line) >= 4 && (inIndent || prevBlank):
+			fillCodeBlock(cl, off, line)
+			inIndent, prevBlank = true, false
 		default:
 			markInline(cl, off, line)
+			inIndent, prevBlank = false, false
 		}
 		off += len(line) + 1 // +1 for the newline separator (harmless past the end)
 	}
 	return cl
 }
 
-// isFenceLine reports whether a logical line opens or closes a fenced code block:
-// optional leading spaces followed by at least three backticks (a language tag
-// may follow, e.g. "```go").
-func isFenceLine(line []rune) bool {
+// fenceInfo inspects a line as a possible code fence: after up to its leading
+// whitespace, a run of three or more backticks or tildes. It returns the fence
+// rune (0 if the line isn't a fence), the run length, and whether everything
+// after the run is blank (an info string disqualifies a closing fence).
+func fenceInfo(line []rune) (ch rune, length int, restBlank bool) {
 	i := 0
-	for i < len(line) && line[i] == ' ' {
+	for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
 		i++
 	}
-	return len(line)-i >= 3 && line[i] == '`' && line[i+1] == '`' && line[i+2] == '`'
+	if i >= len(line) || (line[i] != '`' && line[i] != '~') {
+		return 0, 0, false
+	}
+	c := line[i]
+	n := 0
+	for i < len(line) && line[i] == c {
+		i++
+		n++
+	}
+	if n < 3 {
+		return 0, 0, false
+	}
+	for ; i < len(line); i++ {
+		if line[i] != ' ' && line[i] != '\t' {
+			return c, n, false
+		}
+	}
+	return c, n, true
 }
 
-// markFenceLine dims the whole fence line (the backticks and any language tag)
+// markFenceLine dims the whole fence line (the delimiters and any language tag)
 // as a marker, leaving leading indentation untouched.
 func markFenceLine(cl []mdClass, start int, line []rune) {
 	i := 0
-	for i < len(line) && line[i] == ' ' {
+	for i < len(line) && (line[i] == ' ' || line[i] == '\t') {
 		i++
 	}
 	for ; i < len(line); i++ {
 		cl[start+i] = mdMarker
 	}
+}
+
+// fillCodeBlock classifies an entire line as code-block content.
+func fillCodeBlock(cl []mdClass, start int, line []rune) {
+	for j := range line {
+		cl[start+j] = mdCodeBlock
+	}
+}
+
+// indentColumns counts the leading-whitespace columns of a line, with a tab
+// advancing to the next multiple of four (input typed into the editor is
+// tab-expanded, but SetValue can carry tabs through). Stops at the first
+// non-whitespace rune; an all-whitespace line returns its full width.
+func indentColumns(line []rune) int {
+	col := 0
+	for _, r := range line {
+		switch r {
+		case ' ':
+			col++
+		case '\t':
+			col += 4 - col%4
+		default:
+			return col
+		}
+	}
+	return col
+}
+
+// isBlankLine reports whether a line is empty or only whitespace.
+func isBlankLine(line []rune) bool {
+	for _, r := range line {
+		if r != ' ' && r != '\t' {
+			return false
+		}
+	}
+	return true
 }
 
 // markInline classifies one logical line's runes in place. start is the absolute
