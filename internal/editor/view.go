@@ -30,11 +30,24 @@ func (m *Model) View() string {
 		decorStyles[i] = d.Style.Inherit(base).Inline(true)
 	}
 
+	// Inline markdown: a per-rune class map plus the per-class styles merged over
+	// the text style once. Both stay nil/empty when the toggle is off, so the
+	// render path is unchanged for non-markdown fields (SQL editor, etc.).
+	var classes []mdClass
+	var mdStyles []lipgloss.Style
+	if m.MarkdownHighlight {
+		classes = m.markdownClasses()
+		mdStyles = make([]lipgloss.Style, mdCodeBlock+1)
+		for c := mdMarker; c <= mdCodeBlock; c++ {
+			mdStyles[c] = m.Styles.Markdown.attr(c).Inherit(base).Inline(true)
+		}
+	}
+
 	lines := make([]string, 0, h)
 	for i := m.yOffset; i < m.yOffset+h; i++ {
 		prompt := m.renderPrompt(i)
 		if i < len(rows) {
-			lines = append(lines, prompt+m.renderRow(rows[i], i == ci, cw, base, decorStyles))
+			lines = append(lines, prompt+m.renderRow(rows[i], i == ci, cw, base, decorStyles, classes, mdStyles))
 		} else {
 			lines = append(lines, prompt+base.Render(strings.Repeat(" ", cw)))
 		}
@@ -104,8 +117,11 @@ func (m *Model) renderPrompt(visualLine int) string {
 }
 
 // renderRow renders one visual row's content (no prompt) padded to cw, drawing
-// decorations and, on the cursor row, the caret.
-func (m *Model) renderRow(vr visRow, isCursorRow bool, cw int, base lipgloss.Style, decorStyles []lipgloss.Style) string {
+// markdown spans and decorations and, on the cursor row, the caret. A run is
+// flushed whenever the markdown class or decoration index changes, so each run
+// carries a single composed style: markdown attributes over the text style, with
+// any decoration's underline layered on top (decorations and markdown compose).
+func (m *Model) renderRow(vr visRow, isCursorRow bool, cw int, base lipgloss.Style, decorStyles []lipgloss.Style, classes []mdClass, mdStyles []lipgloss.Style) string {
 	rs := m.lines[vr.line][vr.a:vr.b]
 	lineStart := m.lineStartOffset(vr.line)
 
@@ -114,29 +130,34 @@ func (m *Model) renderRow(vr visRow, isCursorRow bool, cw int, base lipgloss.Sty
 	var run []rune
 	var runStyle lipgloss.Style
 	curDecor := -2 // sentinel distinct from -1 (no decoration)
+	curClass := mdClass(255)
 	flush := func() {
 		if len(run) > 0 {
 			b.WriteString(runStyle.Render(string(run)))
 			run = run[:0]
 		}
 	}
+	classAt := func(off int) mdClass {
+		if off >= 0 && off < len(classes) {
+			return classes[off]
+		}
+		return mdNone
+	}
 	for k := range rs {
 		if m.focus && isCursorRow && vr.a+k == m.col {
 			flush()
-			curDecor = -2
+			curDecor, curClass = -2, mdClass(255)
 			b.WriteString(m.Styles.Cursor.Inline(true).Render(string(rs[k])))
 			used += textwidth.Width(string(rs[k]))
 			continue
 		}
-		di := m.decorIndexAt(lineStart + vr.a + k)
-		if di != curDecor {
+		off := lineStart + vr.a + k
+		di := m.decorIndexAt(off)
+		mc := classAt(off)
+		if di != curDecor || mc != curClass {
 			flush()
-			curDecor = di
-			if di >= 0 {
-				runStyle = decorStyles[di]
-			} else {
-				runStyle = base
-			}
+			curDecor, curClass = di, mc
+			runStyle = m.composeStyle(base, decorStyles, mdStyles, di, mc)
 		}
 		run = append(run, rs[k])
 		used += textwidth.Width(string(rs[k]))
@@ -154,6 +175,24 @@ func (m *Model) renderRow(vr visRow, isCursorRow bool, cw int, base lipgloss.Sty
 		b.WriteString(base.Render(strings.Repeat(" ", cw-used)))
 	}
 	return b.String()
+}
+
+// composeStyle returns the style for a run with markdown class mc and decoration
+// index di. The precomputed slices cover the common single-layer cases; only a
+// run that is both styled markdown and decorated pays for an extra merge, and
+// there the decoration's underline layers over the markdown style (Inherit fills
+// only unset fields, so it never clobbers the markdown attributes).
+func (m *Model) composeStyle(base lipgloss.Style, decorStyles, mdStyles []lipgloss.Style, di int, mc mdClass) lipgloss.Style {
+	switch {
+	case mc == mdNone && di < 0:
+		return base
+	case mc == mdNone:
+		return decorStyles[di]
+	case di < 0:
+		return mdStyles[mc]
+	default:
+		return m.decorations[di].Style.Inherit(mdStyles[mc]).Inline(true)
+	}
 }
 
 // lineStartOffset is the rune offset of the start of logical line idx within

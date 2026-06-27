@@ -12,6 +12,24 @@ type Styles struct {
 	Placeholder lipgloss.Style
 	Prompt      lipgloss.Style
 	Cursor      lipgloss.Style
+	// Markdown styles the inline markdown spans drawn when Model.MarkdownHighlight
+	// is on. It is themeable but only consulted while that toggle is set.
+	Markdown MarkdownStyles
+}
+
+// MarkdownStyles paints the inline markdown spans (see Model.MarkdownHighlight).
+// Marker styles the syntax tokens themselves (`*`, `_`, `~`, backticks, fence
+// lines) — they stay on screen, dimmed, so the user can see what's changing —
+// while the remaining fields style the content the markers enclose. Each is
+// merged over the active text style, so leaving a field at its zero value just
+// inherits the surrounding text.
+type MarkdownStyles struct {
+	Marker    lipgloss.Style
+	Bold      lipgloss.Style
+	Italic    lipgloss.Style
+	Strike    lipgloss.Style
+	Code      lipgloss.Style
+	CodeBlock lipgloss.Style
 }
 
 // DefaultStyles returns plain styles: a reverse-video block cursor and a dim
@@ -23,6 +41,42 @@ func DefaultStyles() Styles {
 		Placeholder: lipgloss.NewStyle().Foreground(lipgloss.Color("240")),
 		Prompt:      lipgloss.NewStyle(),
 		Cursor:      lipgloss.NewStyle().Reverse(true),
+		Markdown:    DefaultMarkdownStyles(),
+	}
+}
+
+// DefaultMarkdownStyles dims the markers and renders bold/italic/strikethrough
+// with the matching SGR attribute; inline code and fenced blocks pick up a cyan
+// foreground, mirroring the message-pane renderer.
+func DefaultMarkdownStyles() MarkdownStyles {
+	return MarkdownStyles{
+		Marker:    lipgloss.NewStyle().Faint(true),
+		Bold:      lipgloss.NewStyle().Bold(true),
+		Italic:    lipgloss.NewStyle().Italic(true),
+		Strike:    lipgloss.NewStyle().Strikethrough(true),
+		Code:      lipgloss.NewStyle().Foreground(lipgloss.Color("14")),
+		CodeBlock: lipgloss.NewStyle().Foreground(lipgloss.Color("14")),
+	}
+}
+
+// attr returns the raw attribute style for a markdown class (before it is merged
+// over the text style). mdNone yields the zero style.
+func (s MarkdownStyles) attr(c mdClass) lipgloss.Style {
+	switch c {
+	case mdMarker:
+		return s.Marker
+	case mdBold:
+		return s.Bold
+	case mdItalic:
+		return s.Italic
+	case mdStrike:
+		return s.Strike
+	case mdCode:
+		return s.Code
+	case mdCodeBlock:
+		return s.CodeBlock
+	default:
+		return lipgloss.Style{}
 	}
 }
 

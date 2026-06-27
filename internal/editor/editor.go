@@ -73,6 +73,12 @@ type Model struct {
 	// KeyMap binds editing actions to keys.
 	KeyMap KeyMap
 
+	// MarkdownHighlight, when set, styles inline markdown (bold/italic/
+	// strikethrough/code spans and fenced code blocks) live as the user types,
+	// keeping the markers visible. Off by default — callers that edit markdown
+	// (the composer, jira comments) opt in. See markdown.go and Styles.Markdown.
+	MarkdownHighlight bool
+
 	// decorations are inline styled spans (e.g. grammar underlines), addressed
 	// by rune offset into Value(). Drawn during View, clipped to the scroll
 	// window automatically.

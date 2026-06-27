@@ -753,6 +753,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	ta.MaxContentHeight = 10000
 	ta.SetHeight(1)
 	ta.Styles.Placeholder = lipgloss.NewStyle().Foreground(dimColor)
+	// Live-highlight inline markdown (bold/italic/strike/code) as the user types,
+	// keeping the markers visible so they can see what each will change.
+	ta.MarkdownHighlight = true
 	// PromptFunc only renders "> " on the first visual row of the input
 	// and pads continuation lines with two spaces so multi-line content
 	// reads cleanly. The default prompt is updated when a thread is opened
