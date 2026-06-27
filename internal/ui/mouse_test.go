@@ -30,6 +30,10 @@ func click(btn tea.MouseButton, x, y int) tea.MouseClickMsg {
 	return tea.MouseClickMsg(tea.Mouse{Button: btn, X: x, Y: y})
 }
 
+func shiftClick(btn tea.MouseButton, x, y int) tea.MouseClickMsg {
+	return tea.MouseClickMsg(tea.Mouse{Button: btn, X: x, Y: y, Mod: tea.ModShift})
+}
+
 func release(btn tea.MouseButton, x, y int) tea.MouseReleaseMsg {
 	return tea.MouseReleaseMsg(tea.Mouse{Button: btn, X: x, Y: y})
 }
@@ -138,6 +142,45 @@ func TestClickSelectsMessage(t *testing.T) {
 	}
 	if m.input.Focused() {
 		t.Fatal("click left the composer focused; its cursor would keep rendering")
+	}
+}
+
+// TestNextClickCount: presses at (about) the same cell bump the count to 2 then
+// 3, a 4th restarts the cycle, and a press a cell or more away resets to 1.
+func TestNextClickCount(t *testing.T) {
+	var m Model
+	for i, c := range []struct {
+		x, y, want int
+	}{
+		{5, 5, 1},   // first press
+		{5, 5, 2},   // double
+		{6, 5, 3},   // within one cell → triple
+		{5, 5, 1},   // fourth restarts the cycle
+		{50, 50, 1}, // far away → reset
+	} {
+		if got := m.nextClickCount(c.x, c.y); got != c.want {
+			t.Fatalf("step %d: nextClickCount(%d,%d)=%d want %d", i, c.x, c.y, got, c.want)
+		}
+	}
+}
+
+// TestMessageDoubleClickSelectsWord: a double-click on a message body selects the
+// word under the pointer (and leaves it live, so it copies on release). The body
+// of shortPosts is "line"; clicking on it selects "line", not the gutter.
+func TestMessageDoubleClickSelectsWord(t *testing.T) {
+	m := mouseModel(shortPosts(4))
+	// Post 0's body is the second screen row of the post (row 5); content begins
+	// at column channelsWidth+1, past the two-space gutter — so +3 lands on "line".
+	x, y := channelsWidth+1+3, 5
+	out, _ := m.handleMouseClick(click(tea.MouseLeft, x, y))
+	m = out.(Model)
+	out, _ = m.handleMouseClick(click(tea.MouseLeft, x, y))
+	m = out.(Model)
+	if !m.textSel.active {
+		t.Fatal("double-click did not activate a selection")
+	}
+	if got := m.selectedText(); got != "line" {
+		t.Fatalf("message double-click = %q, want %q", got, "line")
 	}
 }
 

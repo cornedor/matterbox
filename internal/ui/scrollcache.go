@@ -48,6 +48,11 @@ type viewCache struct {
 	// recomputing that layout. Persists across the value-receiver View path
 	// because viewCache lives behind a pointer (see hitTest).
 	tabZones []tabZone
+	// bodyH is the body height the last render used (terminal height minus the
+	// tab strip and the rendered footer). composerGeom reads it to anchor the
+	// compose box from the bottom without re-rendering the footer — which would
+	// allocate on the per-motion hover path (see composerGeom / hitTest).
+	bodyH int
 }
 
 // scrollGeom caches one viewport's total wrapped-row count. That total depends

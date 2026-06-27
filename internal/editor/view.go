@@ -24,6 +24,15 @@ func (m *Model) View() string {
 	rows := m.layout(true)
 	ci, _ := m.cursorVis(rows)
 
+	// Selection bounds in rune-offset space, drawn only while focused (Blur drops
+	// the selection anyway; this also guards a stale highlight). -1/-1 means none.
+	selStart, selEnd := -1, -1
+	if m.focus {
+		if s, e, ok := m.SelectionRange(); ok {
+			selStart, selEnd = s, e
+		}
+	}
+
 	// Pre-merge each decoration's style with the text style once per render.
 	decorStyles := make([]lipgloss.Style, len(m.decorations))
 	for i, d := range m.decorations {
@@ -47,7 +56,7 @@ func (m *Model) View() string {
 	for i := m.yOffset; i < m.yOffset+h; i++ {
 		prompt := m.renderPrompt(i)
 		if i < len(rows) {
-			lines = append(lines, prompt+m.renderRow(rows[i], i == ci, cw, base, decorStyles, classes, mdStyles))
+			lines = append(lines, prompt+m.renderRow(rows[i], i == ci, cw, base, decorStyles, classes, mdStyles, selStart, selEnd))
 		} else {
 			lines = append(lines, prompt+base.Render(strings.Repeat(" ", cw)))
 		}
@@ -121,7 +130,7 @@ func (m *Model) renderPrompt(visualLine int) string {
 // flushed whenever the markdown class or decoration index changes, so each run
 // carries a single composed style: markdown attributes over the text style, with
 // any decoration's underline layered on top (decorations and markdown compose).
-func (m *Model) renderRow(vr visRow, isCursorRow bool, cw int, base lipgloss.Style, decorStyles []lipgloss.Style, classes []mdClass, mdStyles []lipgloss.Style) string {
+func (m *Model) renderRow(vr visRow, isCursorRow bool, cw int, base lipgloss.Style, decorStyles []lipgloss.Style, classes []mdClass, mdStyles []lipgloss.Style, selStart, selEnd int) string {
 	rs := m.lines[vr.line][vr.a:vr.b]
 	lineStart := m.lineStartOffset(vr.line)
 
@@ -131,6 +140,7 @@ func (m *Model) renderRow(vr visRow, isCursorRow bool, cw int, base lipgloss.Sty
 	var runStyle lipgloss.Style
 	curDecor := -2 // sentinel distinct from -1 (no decoration)
 	curClass := mdClass(255)
+	curSel := false
 	flush := func() {
 		if len(run) > 0 {
 			b.WriteString(runStyle.Render(string(run)))
@@ -146,7 +156,7 @@ func (m *Model) renderRow(vr visRow, isCursorRow bool, cw int, base lipgloss.Sty
 	for k := range rs {
 		if m.focus && isCursorRow && vr.a+k == m.col {
 			flush()
-			curDecor, curClass = -2, mdClass(255)
+			curDecor, curClass, curSel = -2, mdClass(255), false
 			b.WriteString(m.Styles.Cursor.Inline(true).Render(string(rs[k])))
 			used += textwidth.Width(string(rs[k]))
 			continue
@@ -157,7 +167,7 @@ func (m *Model) renderRow(vr visRow, isCursorRow bool, cw int, base lipgloss.Sty
 		// decorations within the span.
 		if pos, ok := m.commandSpanAt(off); ok {
 			flush()
-			curDecor, curClass = -2, mdClass(255)
+			curDecor, curClass, curSel = -2, mdClass(255), false
 			st := lipgloss.NewStyle().Bold(true).
 				Foreground(shimmerColor(pos, m.cmdEnd-m.cmdStart, m.cmdPhase)).
 				Inherit(base).Inline(true)
@@ -167,10 +177,16 @@ func (m *Model) renderRow(vr visRow, isCursorRow bool, cw int, base lipgloss.Sty
 		}
 		di := m.decorIndexAt(off)
 		mc := classAt(off)
-		if di != curDecor || mc != curClass {
+		sel := off >= selStart && off < selEnd
+		if di != curDecor || mc != curClass || sel != curSel {
 			flush()
-			curDecor, curClass = di, mc
+			curDecor, curClass, curSel = di, mc, sel
 			runStyle = m.composeStyle(base, decorStyles, mdStyles, di, mc)
+			if sel {
+				// Layer the selection attributes (reverse video) over the run's own
+				// style so the highlight reads the same over plain and styled text.
+				runStyle = m.Styles.Selection.Inherit(runStyle).Inline(true)
+			}
 		}
 		run = append(run, rs[k])
 		used += textwidth.Width(string(rs[k]))

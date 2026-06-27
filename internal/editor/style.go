@@ -12,6 +12,10 @@ type Styles struct {
 	Placeholder lipgloss.Style
 	Prompt      lipgloss.Style
 	Cursor      lipgloss.Style
+	// Selection paints the drag-selected range. Its attributes (reverse video by
+	// default) are layered over whatever text/markdown/decoration style the cells
+	// already carry, so a selection reads the same over plain and styled text.
+	Selection lipgloss.Style
 	// Markdown styles the inline markdown spans drawn when Model.MarkdownHighlight
 	// is on. It is themeable but only consulted while that toggle is set.
 	Markdown MarkdownStyles
@@ -41,6 +45,7 @@ func DefaultStyles() Styles {
 		Placeholder: lipgloss.NewStyle().Foreground(lipgloss.Color("240")),
 		Prompt:      lipgloss.NewStyle(),
 		Cursor:      lipgloss.NewStyle().Reverse(true),
+		Selection:   lipgloss.NewStyle().Reverse(true),
 		Markdown:    DefaultMarkdownStyles(),
 	}
 }

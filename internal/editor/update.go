@@ -20,6 +20,32 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 func (m *Model) handleKey(msg tea.KeyPressMsg) {
 	k := m.KeyMap
+	// A live selection turns the next key into a selection action: a delete key
+	// removes it; left/right collapse to the matching edge; any other navigation
+	// drops it and proceeds. Self-inserting keys (and newline) fall through to
+	// the switch below, where insert() replaces the selection.
+	if m.HasSelection() {
+		switch {
+		case key.Matches(msg, k.DeleteCharacterBackward, k.DeleteCharacterForward,
+			k.DeleteWordBackward, k.DeleteWordForward, k.DeleteAfterCursor, k.DeleteBeforeCursor):
+			m.DeleteSelection()
+			return
+		case key.Matches(msg, k.CharacterBackward):
+			s, _, _ := m.SelectionRange()
+			m.ClearSelection()
+			m.SetCursorOffset(s)
+			return
+		case key.Matches(msg, k.CharacterForward):
+			_, e, _ := m.SelectionRange()
+			m.ClearSelection()
+			m.SetCursorOffset(e)
+			return
+		case key.Matches(msg, k.LineNext, k.LinePrevious, k.WordForward, k.WordBackward,
+			k.LineStart, k.LineEnd, k.InputBegin, k.InputEnd):
+			m.ClearSelection()
+			// fall through to perform the move from the caret
+		}
+	}
 	switch {
 	case key.Matches(msg, k.DeleteAfterCursor):
 		m.deleteAfterCursor()

@@ -145,7 +145,18 @@ type Model struct {
 	// three live in mouse.go.
 	hover   hoverState
 	textSel textSel
-	wrapIdx wrapCache
+	// composerDrag is true while a left-button drag that began in the compose
+	// box is in flight; the editor owns the selection itself (see editor.Model),
+	// this only routes motion/release back to it. Lives in mouse.go.
+	composerDrag bool
+	wrapIdx      wrapCache
+	// clickCount / lastClick* synthesise double- and triple-clicks: the terminal
+	// only reports individual presses, so handleMouseClick counts presses landing
+	// at (about) the same cell within multiClickInterval. 2 selects a word, 3 a
+	// line; a 4th press restarts the cycle. Lives in mouse.go.
+	clickCount             int
+	lastClickAt            time.Time
+	lastClickX, lastClickY int
 	// hoverLink is the link the pointer is currently over (empty url = none). The
 	// post owning it re-renders with that link background-highlighted (markdownBody
 	// + the hover bit in postLineFingerprint) and the footer shows its target. See

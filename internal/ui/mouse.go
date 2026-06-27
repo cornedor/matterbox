@@ -3,6 +3,8 @@ package ui
 import (
 	"sort"
 	"strings"
+	"time"
+	"unicode"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -33,6 +35,7 @@ const (
 	hitRef
 	hitInfo
 	hitSQL
+	hitComposer
 )
 
 // hit is the result of hitTest. idx's meaning depends on zone: a tab index
@@ -62,15 +65,32 @@ type hoverState struct {
 	idx  int
 }
 
+// selGran is the unit a transcript text selection snaps to, mirroring the
+// editor's: char for a plain drag, word for a double-click, line for a triple.
+type selGran int
+
+const (
+	granChar selGran = iota
+	granWord
+	granLine
+)
+
 // textSel is a click-drag text selection in the message or thread pane. anchor
 // is where the drag began, head where it currently ends, both in (logical line,
 // display column) content coordinates. dragging is true while the button is
 // held; active turns true once the drag spans a non-empty range, so a bare
 // click (mousedown+up with no movement) doesn't paint a zero-width highlight.
+//
+// gran records whether the selection was started by a double- or triple-click;
+// anchorLo/anchorHi then hold the display-column bounds of the word/line the
+// click landed on (the fixed anchor unit, both == anchorCol for char
+// granularity), so a drag grows the moving end a whole word/line at a time.
 type textSel struct {
 	pane                  focus
 	anchorLine, anchorCol int
 	headLine, headCol     int
+	gran                  selGran
+	anchorLo, anchorHi    int
 	dragging              bool
 	active                bool
 }
@@ -117,6 +137,37 @@ func (m *Model) mouseBlocked() bool {
 		m.glConfirm.active || m.linkConfirm.active
 }
 
+// multiClickInterval is the window within which successive presses at (about)
+// the same cell are treated as a double / triple click.
+const multiClickInterval = 500 * time.Millisecond
+
+// nextClickCount folds a fresh left-press into the running click count: a press
+// landing within multiClickInterval and a cell of the previous one bumps the
+// count (2 = double, 3 = triple), a 4th restarts the cycle at 1, and anything
+// slower or further away resets to 1. The terminal reports only individual
+// presses, so this is how double/triple-clicks are synthesised.
+func (m *Model) nextClickCount(x, y int) int {
+	now := time.Now()
+	if m.clickCount > 0 && now.Sub(m.lastClickAt) <= multiClickInterval &&
+		absDiff(x, m.lastClickX) <= 1 && absDiff(y, m.lastClickY) <= 1 {
+		m.clickCount++
+		if m.clickCount > 3 {
+			m.clickCount = 1
+		}
+	} else {
+		m.clickCount = 1
+	}
+	m.lastClickAt, m.lastClickX, m.lastClickY = now, x, y
+	return m.clickCount
+}
+
+func absDiff(a, b int) int {
+	if a < b {
+		return b - a
+	}
+	return a - b
+}
+
 // handleMouseClick routes a left-button press: switch team / open channel for
 // the navigation panes, or select the clicked message and arm a text-drag for
 // the message / thread panes. Non-left buttons and clicks over nothing
@@ -125,6 +176,8 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 	if msg.Button != tea.MouseLeft || m.mouseBlocked() {
 		return m, nil
 	}
+	count := m.nextClickCount(msg.X, msg.Y)
+	shift := msg.Mod&tea.ModShift != 0
 	h := m.hitTest(msg.X, msg.Y)
 	switch h.zone {
 	case hitTab:
@@ -135,14 +188,16 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		return m.openVisibleChannel(h.idx)
 	case hitMessage:
 		m.selectPostAt(h.idx)
-		m.armTextSel(focusMessages, h.line, h.col)
+		m.armTextSelMulti(focusMessages, h.line, h.col, count, shift)
 		m.renderMessages()
 		return m, nil
 	case hitThread:
 		m.selectThreadPostAt(h.idx)
-		m.armTextSel(focusThread, h.line, h.col)
+		m.armTextSelMulti(focusThread, h.line, h.col, count, shift)
 		m.renderThread()
 		return m, nil
+	case hitComposer:
+		return m.clickComposer(h.line, h.col, count, shift)
 	case hitFeed:
 		return m.clickFeedEntry(h.idx)
 	case hitSearch:
@@ -250,7 +305,17 @@ func (m Model) clickSearchHit(idx int) (tea.Model, tea.Cmd) {
 // (the terminal would do this itself via OSC 8, but mouse capture intercepts the
 // click while mouseEnabled — see linkclick.go).
 func (m Model) handleMouseRelease(msg tea.MouseReleaseMsg) (tea.Model, tea.Cmd) {
-	if msg.Button != tea.MouseLeft || !m.textSel.dragging {
+	if msg.Button != tea.MouseLeft {
+		return m, nil
+	}
+	if m.composerDrag {
+		// Leave the selection live so backspace/delete removes it and typing
+		// replaces it — the point of selecting in an editable field. No clipboard
+		// copy here, unlike the read-only transcript panes below.
+		m.composerDrag = false
+		return m, nil
+	}
+	if !m.textSel.dragging {
 		return m, nil
 	}
 	m.textSel.dragging = false
@@ -281,6 +346,9 @@ func (m Model) handleMouseMotion(msg tea.MouseMotionMsg) (tea.Model, tea.Cmd) {
 		m.setHoverLink(hoverLink{})
 		m.setInfoHover(-1)
 		return m, nil
+	}
+	if m.composerDrag && msg.Button == tea.MouseLeft {
+		return m.dragComposerSel(msg.X, msg.Y)
 	}
 	if m.textSel.dragging && msg.Button == tea.MouseLeft {
 		return m.dragTextSel(msg.X, msg.Y)
@@ -323,16 +391,16 @@ func (m *Model) hoverAt(x, y int) hoverState {
 	return hoverState{}
 }
 
-// dragTextSel updates the selection head to the dragged-to cell (clamped into
-// the pane) and re-renders so the highlight tracks the pointer.
+// dragTextSel extends the selection to the dragged-to cell (clamped into the
+// pane), snapping to its granularity, and re-renders so the highlight tracks
+// the pointer.
 func (m Model) dragTextSel(x, y int) (tea.Model, tea.Cmd) {
 	pane := m.textSel.pane
 	line, col, ok := m.cellToContent(pane, x, y)
 	if !ok {
 		return m, nil
 	}
-	m.textSel.headLine, m.textSel.headCol = line, col
-	m.textSel.active = line != m.textSel.anchorLine || col != m.textSel.anchorCol
+	m.extendTextSelTo(line, col)
 	if pane == focusThread {
 		m.renderThread()
 	} else {
@@ -345,14 +413,172 @@ func (m Model) dragTextSel(x, y int) (tea.Model, tea.Cmd) {
 // keypress (see handleKey) and when a click lands on a navigation target.
 func (m *Model) clearTextSel() { m.textSel = textSel{} }
 
-// armTextSel begins a potential text selection at the clicked cell. It stays
-// inactive (no highlight) until a drag moves the head off the anchor.
+// armTextSelMulti arms a transcript selection by click count: a single click
+// starts a character drag, a double-click selects the word under the cell, a
+// triple-click the whole line. A shift-click instead extends the existing
+// selection (keeping its granularity) to the cell.
+func (m *Model) armTextSelMulti(pane focus, line, col, count int, shift bool) {
+	if shift && m.textSel.active && m.textSel.pane == pane {
+		m.textSel.dragging = true
+		m.extendTextSelTo(line, col)
+		return
+	}
+	switch {
+	case count >= 3:
+		m.armLineSel(pane, line)
+	case count == 2:
+		m.armWordSel(pane, line, col)
+	default:
+		m.armTextSel(pane, line, col)
+	}
+}
+
+// armTextSel begins a potential character-granular text selection at the clicked
+// cell. It stays inactive (no highlight) until a drag moves the head off the
+// anchor.
 func (m *Model) armTextSel(pane focus, line, col int) {
 	m.textSel = textSel{
 		pane:       pane,
 		anchorLine: line, anchorCol: col,
+		anchorLo: col, anchorHi: col,
 		headLine: line, headCol: col,
 		dragging: true,
+	}
+}
+
+// armWordSel selects the word under the clicked cell (double-click) and arms a
+// word-granular drag.
+func (m *Model) armWordSel(pane focus, line, col int) {
+	lo, hi := m.wordColBounds(pane, line, col)
+	m.textSel = textSel{
+		pane:       pane,
+		gran:       granWord,
+		anchorLine: line, anchorCol: lo,
+		anchorLo: lo, anchorHi: hi,
+		headLine: line, headCol: hi,
+		dragging: true,
+		active:   hi > lo,
+	}
+}
+
+// armLineSel selects the whole logical line under the clicked cell
+// (triple-click) and arms a line-granular drag.
+func (m *Model) armLineSel(pane focus, line int) {
+	lo, hi := m.lineColBounds(pane, line)
+	m.textSel = textSel{
+		pane:       pane,
+		gran:       granLine,
+		anchorLine: line, anchorCol: lo,
+		anchorLo: lo, anchorHi: hi,
+		headLine: line, headCol: hi,
+		dragging: true,
+		active:   hi > lo,
+	}
+}
+
+// extendTextSelTo moves the selection's moving end (head) to content cell
+// (line, col), snapping to the selection's granularity. The anchor unit — on
+// anchorLine, columns [anchorLo, anchorHi) — stays covered: dragging past it
+// pins the fixed end to its start and grows the head to the dragged word/line's
+// far edge; dragging before it pins the fixed end to its end.
+func (m *Model) extendTextSelTo(line, col int) {
+	s := &m.textSel
+	lo, hi := col, col
+	switch s.gran {
+	case granWord:
+		lo, hi = m.wordColBounds(s.pane, line, col)
+	case granLine:
+		lo, hi = m.lineColBounds(s.pane, line)
+	}
+	switch {
+	case line > s.anchorLine || (line == s.anchorLine && lo >= s.anchorHi):
+		s.anchorCol = s.anchorLo
+		s.headLine, s.headCol = line, hi
+	case line < s.anchorLine || (line == s.anchorLine && hi <= s.anchorLo):
+		s.anchorCol = s.anchorHi
+		s.headLine, s.headCol = line, lo
+	default: // overlapping the anchor unit (same line, same word/line)
+		s.anchorCol = min(lo, s.anchorLo)
+		s.headLine, s.headCol = line, max(hi, s.anchorHi)
+	}
+	s.active = s.anchorLine != s.headLine || s.anchorCol != s.headCol
+}
+
+// wordColBounds returns the [start, end) display-column range of the word — the
+// run of one rune class (see runeClass) — at display column col on logical line
+// `line` of the pane. The left edge is pulled in to the line's content start so
+// a word selection never reaches into the two-space gutter. An empty range is
+// returned for a click past the line's content.
+func (m *Model) wordColBounds(pane focus, line, col int) (int, int) {
+	lines := m.paneLines(pane)
+	if line < 0 || line >= len(lines) {
+		return col, col
+	}
+	plain := []rune(ansi.Strip(lines[line]))
+	starts := make([]int, len(plain)+1)
+	w := 0
+	for i, r := range plain {
+		starts[i] = w
+		w += lipgloss.Width(string(r))
+	}
+	starts[len(plain)] = w
+	idx := -1
+	for i := range plain {
+		if col >= starts[i] && col < starts[i+1] {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return col, col
+	}
+	cls := runeClass(plain[idx])
+	a, b := idx, idx+1
+	for a > 0 && runeClass(plain[a-1]) == cls {
+		a--
+	}
+	for b < len(plain) && runeClass(plain[b]) == cls {
+		b++
+	}
+	lo, hi := starts[a], starts[b]
+	if cl := contentLeft(lines[line]); lo < cl {
+		lo = cl
+	}
+	return lo, hi
+}
+
+// lineColBounds returns the [start, end) display-column range of one logical
+// line's content (past the gutter, up to its rendered width).
+func (m *Model) lineColBounds(pane focus, line int) (int, int) {
+	lines := m.paneLines(pane)
+	if line < 0 || line >= len(lines) {
+		return 0, 0
+	}
+	return contentLeft(lines[line]), lipgloss.Width(lines[line])
+}
+
+// paneLines returns the pane's logical lines at its current width (the same
+// cached split selectedText and contentCoord read).
+func (m *Model) paneLines(pane focus) []string {
+	width := m.msgsView.Width()
+	if pane == focusThread {
+		width = m.threadView.Width()
+	}
+	lines, _ := m.ensureWrapIndex(pane, width)
+	return lines
+}
+
+// runeClass buckets a rune for word selection: whitespace, word (letters,
+// digits, underscore) and "other" (punctuation/symbols) each form their own
+// contiguous run, mirroring the editor's classification.
+func runeClass(r rune) int {
+	switch {
+	case unicode.IsSpace(r):
+		return 1
+	case r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r):
+		return 2
+	default:
+		return 3
 	}
 }
 
@@ -424,6 +650,13 @@ func (m *Model) hitTest(x, y int) hit {
 	}
 	if m.onSQLTab() {
 		return m.hitSQLRow(x, y)
+	}
+	// The compose box sits at the bottom of the messages / thread pane on a
+	// normal channel view (the Feed / Search / SQL tabs returned above). A click
+	// in it focuses the editor and seeds a drag-select.
+	if m.inComposer(x, y) {
+		vrow, vcol := m.composerCell(x, y)
+		return hit{zone: hitComposer, line: vrow, col: vcol}
 	}
 	if x < channelsWidth {
 		return m.hitChannel(y)
@@ -881,6 +1114,106 @@ func (m *Model) applyTextSelHighlight(pane focus, lines []string) {
 // the viewport one below; the content begins one column past the left border.
 func (m *Model) messagesGeom() (x0, top, width, height, yoff int) {
 	return channelsWidth + 1, tabsHeight + 1, m.msgsView.Width(), m.msgsView.Height(), m.msgsView.YOffset()
+}
+
+// composerGeom returns the compose editor's on-screen geometry: x0 is its left
+// edge (where the prompt gutter begins), top its first visible visual row, width
+// the editor's total inner width (prompt + content), height its visible rows,
+// and yoff its scroll offset. The composer sits at the bottom of whichever pane
+// is accepting replies — the thread pane when one is open, else the messages
+// pane — so it's anchored from the bottom of the body: the pane's bottom border
+// is the body's last row, and the editor's rows sit just above it. Anchoring from
+// the bottom keeps this correct no matter how tall the attachment chip strip or a
+// mention / emoji / slash popup grows, since those stack above the box.
+//
+// The body height comes from the cache the last render wrote (see renderViewContent),
+// not a fresh footer render: this runs on the per-motion hover path (via hitTest),
+// which must not allocate. Before the first render there's no geometry, so width
+// is 0 and inComposer reports false.
+func (m *Model) composerGeom() (x0, top, width, height, yoff int) {
+	bodyH := 0
+	if m.vcache != nil {
+		bodyH = m.vcache.bodyH
+	}
+	if bodyH <= 0 {
+		return 0, 0, 0, 0, 0
+	}
+	height = m.input.Height()
+	top = tabsHeight + bodyH - 1 - height
+	if m.threadOpen {
+		rightW := m.width - channelsWidth
+		if rightW < 10 {
+			rightW = 10
+		}
+		msgsW := rightW - splitRightPane(rightW)
+		x0 = channelsWidth + msgsW + 1
+	} else {
+		x0 = channelsWidth + 1
+	}
+	return x0, top, m.input.Width(), height, m.input.ScrollYOffset()
+}
+
+// inComposer reports whether a screen cell lands within the compose editor's
+// rows. Strict bounds (no clamping); used to route a click to the editor.
+func (m *Model) inComposer(x, y int) bool {
+	x0, top, width, height, _ := m.composerGeom()
+	return height > 0 && width > 0 && y >= top && y < top+height && x >= x0 && x < x0+width
+}
+
+// composerCell maps a screen cell to an editor (visual row, visual column),
+// clamping out-of-box cells to the nearest edge so a drag that leaves the box
+// still extends the selection to it. The column is measured from the content
+// start, past the prompt gutter — the coordinate space the editor's selection
+// API expects.
+func (m *Model) composerCell(x, y int) (vrow, vcol int) {
+	x0, top, width, height, yoff := m.composerGeom()
+	row := y - top
+	if row < 0 {
+		row = 0
+	}
+	if row >= height {
+		row = height - 1
+	}
+	vrow = yoff + row
+	pw := m.input.PromptWidth()
+	vcol = x - x0 - pw
+	if vcol < 0 {
+		vcol = 0
+	}
+	if cw := width - pw; cw >= 1 && vcol > cw {
+		vcol = cw
+	}
+	return vrow, vcol
+}
+
+// clickComposer focuses the compose editor and arms a drag-select at the
+// clicked cell: a single click places the caret, a double-click selects the
+// word, a triple-click the line, and a shift-click extends the selection from
+// the caret. Mirrors the keyboard paths that move focus into the composer;
+// clearing any transcript selection matches a nav click.
+func (m Model) clickComposer(vrow, vcol, count int, shift bool) (tea.Model, tea.Cmd) {
+	m.clearTextSel()
+	m.focus = focusInput
+	cmd := m.input.Focus()
+	switch {
+	case shift:
+		m.input.ExtendSelectionFromCaret(vrow, vcol)
+	case count >= 3:
+		m.input.SelectLineAtVisual(vrow, vcol)
+	case count == 2:
+		m.input.SelectWordAtVisual(vrow, vcol)
+	default:
+		m.input.BeginSelection(vrow, vcol)
+	}
+	m.composerDrag = true
+	return m, cmd
+}
+
+// dragComposerSel extends the in-flight compose selection to the dragged-to cell.
+func (m Model) dragComposerSel(x, y int) (tea.Model, tea.Cmd) {
+	vrow, vcol := m.composerCell(x, y)
+	m.input.ExtendSelectionToVisual(vrow, vcol)
+	return m, nil
 }
 
 // threadGeom mirrors messagesGeom for the thread pane, which sits to the right

@@ -93,6 +93,21 @@ type Model struct {
 	cmdActive        bool
 	cmdStart, cmdEnd int
 	cmdPhase         float64
+
+	// selActive marks a live text selection. Its range is [min, max) of the
+	// anchor and the cursor in rune-offset space (the CursorOffset coordinate
+	// space): selAnchor is the fixed end set when the drag began, the cursor is
+	// the moving end. Mouse-driven (see selection.go); a self-inserting key or
+	// paste replaces it, backspace/delete removes it, and a movement key
+	// collapses or clears it. A few scalars, so the value-copied Model stays cheap.
+	selActive bool
+	selAnchor int
+	// selGran is the unit a drag snaps to: character (plain click), word
+	// (double-click) or line (triple-click). selAnchorLo/Hi bound the fixed-end
+	// unit — the word/line the drag began on — equal to selAnchor for character
+	// granularity; a drag then grows the moving end a whole unit at a time.
+	selGran                  selGran
+	selAnchorLo, selAnchorHi int
 }
 
 // New returns a ready-to-use single-row input with default keys and styles.
@@ -141,6 +156,7 @@ func (m *Model) Value() string {
 // textarea behaviour callers rely on; they reposition afterwards when needed).
 func (m *Model) SetValue(s string) {
 	m.setLines(splitLines(s))
+	m.ClearSelection()
 	m.CursorEnd()
 	m.recalc()
 }
@@ -164,6 +180,7 @@ func (m *Model) Reset() {
 	m.row, m.col, m.desiredVCol = 0, 0, 0
 	m.yOffset = 0
 	m.decorations = nil
+	m.ClearSelection()
 	m.ClearCommandSpan()
 	m.recalc()
 }
@@ -175,8 +192,13 @@ func (m *Model) Focus() tea.Cmd {
 	return nil
 }
 
-// Blur removes focus.
-func (m *Model) Blur() { m.focus = false }
+// Blur removes focus. It also drops any selection so a drag-selected range
+// can't survive a focus change and silently get replaced by the next keystroke
+// once the field is refocused.
+func (m *Model) Blur() {
+	m.focus = false
+	m.ClearSelection()
+}
 
 // Focused reports whether the field has focus.
 func (m *Model) Focused() bool { return m.focus }

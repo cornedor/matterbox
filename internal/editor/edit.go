@@ -15,6 +15,9 @@ func (m *Model) insert(rs []rune) {
 	if len(rs) == 0 {
 		return
 	}
+	// Typing (or pasting) over a selection replaces it: drop the range first,
+	// then insert at the collapsed caret. No-op when nothing is selected.
+	m.DeleteSelection()
 	if m.CharLimit > 0 {
 		avail := m.CharLimit - m.length()
 		if avail <= 0 {

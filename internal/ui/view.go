@@ -1152,6 +1152,12 @@ func (m *Model) renderViewContent() string {
 	if bodyH < 5 {
 		bodyH = 5
 	}
+	// Record the body height for the mouse layer: composerGeom anchors the
+	// compose box from the bottom of the body and must do so without re-rendering
+	// the footer (the hover path is alloc-free). Persists via the vcache pointer.
+	if m.vcache != nil {
+		m.vcache.bodyH = bodyH
+	}
 
 	var body string
 	if m.onSearchTab() {
