@@ -11,7 +11,15 @@ was 123KB; it's now ~102KB after boxing the cold modal overlays (see
 
 ---
 
-## 1. The 4 post-dispatch `Model` copies in `Update` (cheap, isolated win)
+## 1. The post-dispatch `Model` copies in `Update` — ✅ DONE
+**Result:** flipping `resolveUnknownSenders`/`fetchPendingEmoji`/`fetchPendingMRStatus`
+to pointer receivers (`maybeStartEmojiAnim` already was) removed **−99.98% time
+and −100% allocs** on `BenchmarkUpdatePostDispatch` (112µs → 19ns, **208 KiB → 0,
+2 → 0 allocs** per event). `resolveUnknownSenders`'s inner `want` closure had been
+forcing the whole value-receiver `Model` to escape to the heap on every event.
+Safe because value-based dispatch means each event's `nm` is a frozen snapshot,
+and the methods only mutate shared-pointer state, not value fields. Original note
+kept below for context.
 `update.go` `Update()` runs four value-receiver methods on `nm` after every
 event:
 ```go

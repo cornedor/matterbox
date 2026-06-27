@@ -1691,7 +1691,7 @@ func (m Model) fetchPosts(channelID string) tea.Cmd {
 // nil (cheaply) once everything visible is named. Deduplication is the
 // client's job — UsernamesByIDs coalesces repeated lookups for the same
 // set via singleflight, so firing this on every event is fine.
-func (m Model) resolveUnknownSenders() tea.Cmd {
+func (m *Model) resolveUnknownSenders() tea.Cmd {
 	var ids []string
 	seen := map[string]struct{}{}
 	want := func(uid string) {

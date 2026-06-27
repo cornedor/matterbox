@@ -692,7 +692,7 @@ func (m Model) fetchCustomEmojiList() tea.Cmd {
 // from Update after each event, returns nil cheaply once nothing is pending or
 // the feature is inactive. takePending gates on probe+profile, so View-time
 // sightings recorded before activation drain on the first Update afterwards.
-func (m Model) fetchPendingEmoji() tea.Cmd {
+func (m *Model) fetchPendingEmoji() tea.Cmd {
 	if m.emojiImg == nil {
 		return nil
 	}

@@ -274,7 +274,7 @@ func mrStateStyle(e *mrStatusEntry) (string, lipgloss.Style) {
 // fetch goroutines for them, capped at mrFetchConcurrencyMax. Returns nil when
 // GitLab is not configured, nothing is pending, or the scroll debounce is still
 // active (mrFetchGen != mrFetchSettledGen).
-func (m Model) fetchPendingMRStatus() tea.Cmd {
+func (m *Model) fetchPendingMRStatus() tea.Cmd {
 	if m.mrStatus == nil || !m.glClient.Enabled() {
 		return nil
 	}
