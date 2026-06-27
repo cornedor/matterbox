@@ -3,7 +3,7 @@ package ui
 import (
 	"testing"
 
-	"charm.land/bubbles/v2/textarea"
+	"matterbox/internal/editor"
 )
 
 // typeRunes feeds text into the history one rune at a time, the way the
@@ -132,33 +132,10 @@ func TestChangeEndOffset(t *testing.T) {
 	}
 }
 
-func TestOffsetToRowCol(t *testing.T) {
-	const v = "one\ntwo\nthree"
-	tests := []struct {
-		off      int
-		row, col int
-	}{
-		{0, 0, 0},   // start
-		{3, 0, 3},   // end of first line
-		{4, 1, 0},   // start of second line (just past the newline)
-		{7, 1, 3},   // end of second line
-		{8, 2, 0},   // start of third line
-		{13, 2, 5},  // end of draft
-		{999, 2, 5}, // past the end clamps to the last line
-		{-5, 0, 0},  // negative clamps to the start
-	}
-	for _, tt := range tests {
-		row, col := offsetToRowCol(v, tt.off)
-		if row != tt.row || col != tt.col {
-			t.Fatalf("offsetToRowCol(%d) = (%d, %d), want (%d, %d)", tt.off, row, col, tt.row, tt.col)
-		}
-	}
-}
-
 // inputModel builds a Model with a usable textarea for cursor-placement tests.
 func inputModel() Model {
 	m := Model{keys: newKeyMap("ctrl")}
-	ta := textarea.New()
+	ta := editor.New()
 	ta.SetWidth(80)
 	ta.Focus()
 	m.input = ta
@@ -172,7 +149,7 @@ func TestApplyComposerSnapshotCursorAtEdit(t *testing.T) {
 	m.input.SetValue("hello world")
 	// Undo back to "hello " — the caret should sit just after "hello ".
 	m.applyComposerSnapshot("hello ")
-	if got := m.inputCursorOffset(); got != 6 {
+	if got := m.input.CursorOffset(); got != 6 {
 		t.Fatalf("cursor offset after undo = %d, want 6", got)
 	}
 	if got := m.input.Value(); got != "hello " {
@@ -185,11 +162,11 @@ func TestApplyComposerSnapshotCursorAtEdit(t *testing.T) {
 func TestSetInputCursorOffsetMultiline(t *testing.T) {
 	m := inputModel()
 	m.input.SetValue("one\ntwo\nthree")
-	m.setInputCursorOffset(5) // row 1 ("two"), col 1 → offset 5
-	if row := m.input.Line(); row != 1 {
+	m.input.SetCursorOffset(5) // row 1 ("two"), col 1 → offset 5
+	if row, _ := m.input.CursorRowCol(); row != 1 {
 		t.Fatalf("cursor row = %d, want 1", row)
 	}
-	if got := m.inputCursorOffset(); got != 5 {
+	if got := m.input.CursorOffset(); got != 5 {
 		t.Fatalf("cursor offset = %d, want 5", got)
 	}
 }

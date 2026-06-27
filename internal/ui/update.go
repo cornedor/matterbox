@@ -177,6 +177,22 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case serverCommandsMsg:
+		if msg.err == nil {
+			m.serverCmds[msg.teamID] = msg.cmds
+			// If the "/" popup is open for this team, fold the freshly-cached
+			// commands in without waiting for the next keystroke.
+			if m.slash.active {
+				if ch, _ := m.composerTarget(); m.commandTeamID(ch) == msg.teamID {
+					m.slash.items = m.slashMatches(m.slash.query, msg.teamID)
+					if m.slash.idx >= len(m.slash.items) {
+						m.slash.idx = 0
+					}
+				}
+			}
+		}
+		return m, nil
+
 	case emojiImagesFetchedMsg:
 		return m.handleEmojiImagesFetched(msg)
 
@@ -245,6 +261,22 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case groupDMResolvedMsg:
 		return m.applyGroupDMResolved(msg)
+
+	case slashExecMsg:
+		if msg.err != nil {
+			m.status = "command failed: " + msg.err.Error()
+			return m, nil
+		}
+		// An in-channel command (e.g. /me) posts server-side and arrives over
+		// the WebSocket; just clear the "sending…" status. An ephemeral reply
+		// (e.g. /away → "You are now away") is shown in the footer.
+		if msg.resp != nil && msg.resp.ResponseType != model.CommandResponseTypeInChannel {
+			if t := firstLine(msg.resp.Text); t != "" {
+				return m, m.flashStatus(t)
+			}
+		}
+		m.status = ""
+		return m, nil
 
 	case statusesLoadedMsg:
 		for id, st := range msg.statuses {
@@ -920,6 +952,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ballTickMsg:
 		return m, m.applyBallTick(msg)
 
+	case cmdShimmerTickMsg:
+		return m, m.applyCmdShimmerTick()
+
 	case summaryGatheredMsg:
 		return m, m.applySummaryGathered(msg)
 
@@ -1590,8 +1625,11 @@ func (m Model) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 			m.history.checkpoint(m.composerContextKey(), before)
 		}
 		mentionCmd := m.updateMention()
+		m.updateEmoji()
+		slashCmd := m.updateSlash()
+		cmdHlCmd := m.updateCommandHighlight()
 		m.syncInputHeight()
-		return m, tea.Batch(cmd, mentionCmd, giphyCmd)
+		return m, tea.Batch(cmd, mentionCmd, slashCmd, cmdHlCmd, giphyCmd)
 	}
 	if m.focus == focusSearch {
 		// A finished AI run with the answer box selected pastes into the in-box
@@ -1721,7 +1759,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// sidebar navigation below, so the switcher moved to ctrl+p.) The
 	// @-mention / :emoji popups bind ctrl+p to "move selection up", so don't
 	// steal it while one of those is open in the composer.
-	popupOpen := m.focus == focusInput && (m.mention.active || m.emoji.active)
+	popupOpen := m.focus == focusInput && (m.mention.active || m.emoji.active || m.slash.active)
 	if key.Matches(msg, m.keys.Switcher) && msg.String() != "ctrl+c" && !popupOpen {
 		return m.openSwitcher()
 	}
@@ -2388,13 +2426,40 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// The "/" command picker owns the same navigation/accept/dismiss keys when
+	// it's open, mirroring the @-mention / :emoji popups above. (It can't be
+	// active at the same time as those two — it only fires on a "/" at line
+	// start with no whitespace before the cursor, where neither '@' nor ':'
+	// can have opened a picker.)
+	if m.slash.active && len(m.slash.items) > 0 {
+		switch {
+		case key.Matches(msg, m.keys.InputUp):
+			if m.slash.idx > 0 {
+				m.slash.idx--
+			}
+			return m, nil
+		case key.Matches(msg, m.keys.InputDown):
+			if m.slash.idx < len(m.slash.items)-1 {
+				m.slash.idx++
+			}
+			return m, nil
+		case key.Matches(msg, m.keys.Tab), key.Matches(msg, m.keys.Send):
+			if cmd, ok := m.acceptSlash(); ok {
+				return m, cmd
+			}
+		case msg.String() == "esc": // hardwired popup dismiss
+			m.closeSlash()
+			return m, nil
+		}
+	}
+
 	// Grammar/spell suggestions: alt+g opens the popup on the mistake at the
 	// cursor (or cycles to the next while open). When the popup is up it owns
 	// the digit accelerators, tab navigation and esc; any other key dismisses
 	// it and is handled normally below. (Keys hardwired, like the popups above,
 	// rather than going through the configurable keymap.) Suppressed while an
 	// @-mention / :emoji popup owns the slot so the two never fight over it.
-	if m.grammarEnabled() && !m.mention.active && !m.emoji.active {
+	if m.grammarEnabled() && !m.mention.active && !m.emoji.active && !m.slash.active {
 		if msg.String() == "alt+g" && len(m.grammar.matches) > 0 {
 			m.openOrCycleGrammarPopup()
 			return m, nil
@@ -2437,7 +2502,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.ShiftTab):
 		return m.cycleFocus(-1)
 	case msg.String() == "up" && m.editingPostID == "" &&
-		m.input.Line() == 0 && m.input.LineInfo().RowOffset == 0:
+		m.input.CursorVisualRow() == 0:
 		// ↑ on the first visual row of the composer selects the absolute last
 		// message — the inverse of ↓-on-the-last-message dropping into the
 		// composer. The @-mention / :emoji popups consume ↑ above while open,
@@ -2491,6 +2556,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.syncInputHeight()
 		m.closeMention()
 		m.closeEmoji()
+		m.closeSlash()
 		m.clearGrammar()
 		m.status = "draft cleared"
 		// Wiping a channel draft also drops its server copy. Editing / thread
@@ -2520,6 +2586,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.closeMention()
 		m.closeEmoji()
+		m.closeSlash()
 		m.clearGrammar()
 		if editing {
 			m.cancelEdit()
@@ -2554,10 +2621,16 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.syncInputHeight()
 			m.closeMention()
 			m.closeEmoji()
+			m.closeSlash()
 			m.clearGrammar()
 			m.restoreInputPrompt()
 			m.status = "saving edit…"
 			return m, m.editPost(id, text)
+		}
+		// A leading "/" + letter is a slash command, not a message: handle it
+		// (or forward it to the server) instead of posting the raw text.
+		if name, args, ok := parseSlash(text); ok {
+			return m.runSlashCommand(name, args)
 		}
 		if text == "" && len(m.attachments) == 0 {
 			return m, nil
@@ -2589,6 +2662,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.syncInputHeight()
 		m.closeMention()
 		m.closeEmoji()
+		m.closeSlash()
 		m.clearGrammar()
 		m.appendOptimistic(channelID, rootID, text, fileIDs)
 		m.clearAttachments()
@@ -2632,8 +2706,10 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// shift+enter (or alt+enter / ctrl+j) make the input grow.
 	mentionCmd := m.updateMention()
 	m.updateEmoji()
+	slashCmd := m.updateSlash()
+	cmdHlCmd := m.updateCommandHighlight()
 	m.syncInputHeight()
-	return m, tea.Batch(cmd, mentionCmd, typingCmd, grammarCmd, draftCmd)
+	return m, tea.Batch(cmd, mentionCmd, slashCmd, cmdHlCmd, typingCmd, grammarCmd, draftCmd)
 }
 
 // handleFilterKey owns keystrokes while the channel filter is open (f). The

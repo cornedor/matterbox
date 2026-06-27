@@ -166,11 +166,14 @@ func runShowKeys(m *Model, _ string) tea.Cmd {
 	return nil
 }
 
-// groupDMResolvedMsg carries the result of resolving the "Start group DM"
-// command's user list into a channel (ch is nil when err is set).
+// groupDMResolvedMsg carries the result of resolving a user list into a DM /
+// group-DM channel (ch is nil when err is set). message, when non-empty, is sent
+// to the channel after it's opened — used by the /dm slash command's trailing
+// text; the ">" palette and info-panel callers leave it empty.
 type groupDMResolvedMsg struct {
-	ch  *model.Channel
-	err error
+	ch      *model.Channel
+	err     error
+	message string
 }
 
 // runStartGroupDM resolves the comma-separated @usernames the user typed into
@@ -216,7 +219,13 @@ func (m Model) applyGroupDMResolved(msg groupDMResolvedMsg) (tea.Model, tea.Cmd)
 	m.filter.SetValue("")
 	m.focus = focusInput
 	m.status = ""
-	return m, tea.Batch(m.input.Focus(), m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id))
+	// openChannelLoadCmd sets m.openChannelID synchronously, so a trailing /dm
+	// message targets the freshly-opened channel.
+	cmds := []tea.Cmd{m.input.Focus(), m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id)}
+	if msg.message != "" {
+		cmds = append(cmds, m.sendMessage(ch.Id, "", msg.message, nil))
+	}
+	return m, tea.Batch(cmds...)
 }
 
 func runIndexChannel(m *Model, arg string) tea.Cmd {

@@ -85,6 +85,18 @@ func (m *Model) previewSheetRows() []keysSheetRow {
 // overlap. Content is rebuilt here and on resize.
 func (m *Model) openKeysSheet() {
 	m.keysSheetMode = true
+	m.helpSheet = false
+	m.sizeKeysSheetView()
+	m.renderKeysSheet()
+	m.keysSheetView.GotoTop()
+}
+
+// openHelpSheet raises the same scrollable popup but listing the "/" slash
+// commands (the /help command). It shares all the cheatsheet's sizing, key
+// handling and view wiring; only the content and title differ.
+func (m *Model) openHelpSheet() {
+	m.keysSheetMode = true
+	m.helpSheet = true
 	m.sizeKeysSheetView()
 	m.renderKeysSheet()
 	m.keysSheetView.GotoTop()
@@ -92,6 +104,7 @@ func (m *Model) openKeysSheet() {
 
 func (m *Model) closeKeysSheet() {
 	m.keysSheetMode = false
+	m.helpSheet = false
 }
 
 // keysSheetDims returns the popup's outer width and content (inner) height,
@@ -194,6 +207,9 @@ func (m *Model) keysSheetGroups() []keysSheetGroup {
 // label (capped at half the popup) so descriptions line up.
 func (m *Model) renderKeysSheet() {
 	groups := m.keysSheetGroups()
+	if m.helpSheet {
+		groups = []keysSheetGroup{{title: "Slash commands", rows: slashHelpRows()}}
+	}
 	w, _ := m.keysSheetDims()
 	inner := w - 4
 	if inner < 10 {
@@ -262,7 +278,11 @@ func (m *Model) renderKeysSheetPopup() string {
 	if inner < 1 {
 		inner = 1
 	}
-	title := titleStyle.Render("Keyboard shortcuts") + "  " +
+	heading := "Keyboard shortcuts"
+	if m.helpSheet {
+		heading = "Slash commands"
+	}
+	title := titleStyle.Render(heading) + "  " +
 		lipgloss.NewStyle().Foreground(dimColor).Render("esc/q close · ↑/↓ scroll")
 	dim := lipgloss.NewStyle().Foreground(dimColor)
 	rule := dim.Render(strings.Repeat("─", inner))

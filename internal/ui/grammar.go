@@ -3,24 +3,22 @@ package ui
 import (
 	"context"
 	"image/color"
-	"sort"
 	"strings"
 	"time"
-	"unicode"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/x/ansi"
 
+	"matterbox/internal/editor"
 	"matterbox/internal/languagetool"
-	"matterbox/internal/textwidth"
 )
 
 // Grammar/spell check for the composer. When enabled (config.language_tool),
 // the draft is sent to a LanguageTool server a short beat after typing stops;
-// findings are underlined in place (computed from the textarea's own rendered
-// output, see grammarOverlay) and alt+g opens a popup of suggestions for the
-// mistake under the cursor.
+// findings are underlined in place — pushed to the input as inline curly
+// underlines (see syncGrammarDecorations), which the editor draws during its
+// own wrap+scroll pass so they always line up — and alt+g opens a popup of
+// suggestions for the mistake under the cursor.
 
 const (
 	// grammarDebounce is the quiet period after the last keystroke before a
@@ -29,10 +27,6 @@ const (
 	// grammarTimeout bounds a single check; a slow/down server just leaves the
 	// previous underlines in place.
 	grammarTimeout = 5 * time.Second
-	// grammarPromptWidth is the composer prompt width ("> " / "↳ " / "✎ "), the
-	// column offset of the text within each rendered line. Matches the
-	// SetPromptFunc(2, …) in Model.New.
-	grammarPromptWidth = 2
 	// grammarCacheCap bounds the per-draft result cache.
 	grammarCacheCap = 64
 )
@@ -89,6 +83,10 @@ func (m *Model) scheduleGrammarCheck() tea.Cmd {
 		m.setGrammarMatches(text, cached)
 		return nil
 	}
+	// Draft changed and no result is ready yet: drop the now-stale underlines
+	// until the pending check returns (mirrors the old overlay, which only drew
+	// while checkedText == the live value).
+	m.input.ClearDecorations()
 	m.grammar.seq++
 	seq := m.grammar.seq
 	return tea.Tick(grammarDebounce, func(time.Time) tea.Msg {
@@ -151,6 +149,7 @@ func (m *Model) setGrammarMatches(text string, matches []languagetool.Match) {
 	if len(matches) == 0 {
 		m.grammar.popup = false
 	}
+	m.syncGrammarDecorations()
 }
 
 func (m *Model) cacheGrammar(text string, matches []languagetool.Match) {
@@ -174,64 +173,10 @@ func (m *Model) clearGrammar() {
 	m.grammar.matches = nil
 	m.grammar.popup = false
 	m.grammar.popupIdx = 0
+	m.input.ClearDecorations()
 }
 
 // ---- cursor → match -------------------------------------------------------
-
-// inputCursorOffset returns the cursor's rune offset within the whole draft,
-// counting each newline as one rune (matching LanguageTool's offsets).
-func (m *Model) inputCursorOffset() int {
-	row := m.input.Line()
-	li := m.input.LineInfo()
-	col := li.StartColumn + li.ColumnOffset
-	lines := strings.Split(m.input.Value(), "\n")
-	off := 0
-	for i := 0; i < row && i < len(lines); i++ {
-		off += len([]rune(lines[i])) + 1
-	}
-	return off + col
-}
-
-// setInputCursorOffset moves the textarea cursor to the given rune offset within
-// the whole draft, counting each newline as one rune — the inverse of
-// inputCursorOffset. It exists because SetValue always parks the cursor at the
-// end, so any programmatic edit that wants to preserve a sensible caret position
-// (undo/redo, grammar fix) has to put it back afterwards.
-func (m *Model) setInputCursorOffset(off int) {
-	row, col := offsetToRowCol(m.input.Value(), off)
-	// Walk down to the target logical row, then set the column. CursorDown
-	// steps one visual (wrapped) sub-line at a time, so Line() only advances
-	// when it crosses into the next logical row; the break guards termination
-	// at the end of the buffer.
-	m.input.MoveToBegin()
-	for m.input.Line() < row {
-		prev := m.input.Line()
-		m.input.CursorDown()
-		if m.input.Line() == prev {
-			break
-		}
-	}
-	m.input.SetCursorColumn(col)
-}
-
-// offsetToRowCol converts a whole-draft rune offset (newline = one rune) into
-// the textarea's (logical row, rune column) coordinates. It is the inverse of
-// inputCursorOffset and clamps an out-of-range offset to the end of the draft.
-func offsetToRowCol(value string, off int) (int, int) {
-	if off < 0 {
-		off = 0
-	}
-	lines := strings.Split(value, "\n")
-	for i, l := range lines {
-		n := len([]rune(l))
-		if off <= n {
-			return i, off
-		}
-		off -= n + 1 // +1 for the newline
-	}
-	last := len(lines) - 1
-	return last, len([]rune(lines[last]))
-}
 
 // matchAtCursor returns the index of the match the cursor sits in (or just
 // past the end of), or -1. Findings are tied to checkedText, so it only reports
@@ -240,7 +185,7 @@ func (m *Model) matchAtCursor() int {
 	if len(m.grammar.matches) == 0 || m.grammar.checkedText != m.input.Value() {
 		return -1
 	}
-	off := m.inputCursorOffset()
+	off := m.input.CursorOffset()
 	for i, mt := range m.grammar.matches {
 		if off >= mt.Offset && off <= mt.Offset+mt.Length {
 			return i
@@ -308,7 +253,7 @@ func (m *Model) applyGrammarSuggestion(i int) tea.Cmd {
 	// Land the cursor just after the inserted correction rather than at the end
 	// of the draft (where SetValue would leave it), so fixing a word mid-message
 	// doesn't fling the caret away from where the user was working.
-	m.setInputCursorOffset(mt.Offset + len([]rune(mt.Replacements[i])))
+	m.input.SetCursorOffset(mt.Offset + len([]rune(mt.Replacements[i])))
 	m.syncInputHeight()
 	m.closeGrammarPopup()
 	m.clearGrammar()
@@ -359,271 +304,38 @@ func grammarLabel(mt languagetool.Match) string {
 	return "Issue"
 }
 
-// grammarTextStyle is the textarea's own text style (bg/fg), which the
-// underline overlay inherits so a restyled word keeps the composer's colours.
-func (m *Model) grammarTextStyle() lipgloss.Style {
-	st := m.input.Styles()
-	state := st.Blurred
-	if m.input.Focused() {
-		state = st.Focused
-	}
-	return state.Text.Inherit(state.Base).Inline(true)
-}
+// ---- underline decorations ------------------------------------------------
 
-// ---- underline overlay ----------------------------------------------------
-
-// grammarOverlay paints curly underlines onto the textarea's rendered output.
-// It only acts when the findings still match the live draft, so offsets always
-// line up with what's on screen.
-func (m *Model) grammarOverlay(view string) string {
-	if !m.grammarEnabled() || len(m.grammar.matches) == 0 {
-		return view
+// syncGrammarDecorations pushes the current findings to the input as inline
+// curly-underline decorations, or clears them when they no longer apply. The
+// editor draws decorations during its own wrap+scroll pass, so offsets always
+// line up with what's on screen — even when the composer has scrolled. This
+// must be called whenever the findings or the draft change.
+func (m *Model) syncGrammarDecorations() {
+	if !m.grammarEnabled() {
+		return
 	}
-	value := m.input.Value()
-	if value == "" || m.grammar.checkedText != value {
-		return view
+	// Findings are addressed by rune offset into the checked draft; only paint
+	// while that still equals the live value, so a half-typed change never
+	// shows stale squiggles at the wrong place.
+	if len(m.grammar.matches) == 0 || m.grammar.checkedText != m.input.Value() {
+		m.input.ClearDecorations()
+		return
 	}
-	lines := strings.Split(view, "\n")
-	if len(lines) == 0 {
-		return view
-	}
-	// Derive the content wrap width from the rendered first line (prompt +
-	// content padded to the inner width) rather than re-deriving the textarea's
-	// reserved-width arithmetic — this stays correct if that math changes.
-	contentWidth := textwidth.Width(lines[0]) - grammarPromptWidth
-	if contentWidth < 1 {
-		return view
-	}
-	// Skip underlining the word the cursor sits inside: we substitute flagged
-	// cells, which would otherwise paint over the (inline) cursor block. The
-	// squiggle returns the moment the cursor leaves the word.
-	matches := m.grammar.matches
-	if m.input.Focused() {
-		off := m.inputCursorOffset()
-		kept := make([]languagetool.Match, 0, len(matches))
-		for _, mt := range matches {
-			if off >= mt.Offset && off < mt.Offset+mt.Length {
-				continue
-			}
-			kept = append(kept, mt)
-		}
-		matches = kept
-	}
-	ranges := computeUnderlineRanges(value, contentWidth, grammarPromptWidth, matches)
-	if len(ranges) == 0 {
-		return view
-	}
-	return applyUnderlineOverlay(lines, ranges, m.grammarTextStyle())
-}
-
-// cellPos is a source rune's position once its logical line is soft-wrapped:
-// which visual sub-line it lands on and the visible column where it starts.
-type cellPos struct{ sub, col int }
-
-// underlineRange is one contiguous span to underline on a single rendered line.
-type underlineRange struct {
-	line      int    // index into the rendered visual lines
-	c0, c1    int    // visible column range, prompt offset already included
-	plain     string // the source text of the span (re-styled cleanly)
-	issueType string
-}
-
-// computeUnderlineRanges maps LanguageTool match offsets (rune offsets into the
-// draft) to visible-column spans on the textarea's wrapped, prompt-prefixed
-// visual lines.
-func computeUnderlineRanges(value string, width, promptWidth int, matches []languagetool.Match) []underlineRange {
-	if len(matches) == 0 || width <= 0 {
-		return nil
-	}
-	logical := strings.Split(value, "\n")
-	type lineInfo struct {
-		startOff int
-		runes    []rune
-		pos      []cellPos
-		baseVis  int
-	}
-	infos := make([]lineInfo, len(logical))
-	off, vis := 0, 0
-	for i, l := range logical {
-		rs := []rune(l)
-		pos, subs := wrapCellPositions(rs, width)
-		infos[i] = lineInfo{startOff: off, runes: rs, pos: pos, baseVis: vis}
-		off += len(rs) + 1 // +1 for the newline
-		vis += subs
-	}
-
-	var out []underlineRange
-	for _, mt := range matches {
+	decos := make([]editor.Decoration, 0, len(m.grammar.matches))
+	for _, mt := range m.grammar.matches {
 		if mt.Length <= 0 {
 			continue
 		}
-		start, end := mt.Offset, mt.Offset+mt.Length
-		for i := range infos {
-			li := &infos[i]
-			lineStart := li.startOff
-			lineEnd := li.startOff + len(li.runes) // exclusive of the newline
-			if start < lineStart || start > lineEnd {
-				continue
-			}
-			a := start - lineStart
-			b := end - lineStart
-			if b > len(li.runes) {
-				b = len(li.runes) // clamp a match that spills past this line
-			}
-			if a < 0 || a >= b || a >= len(li.pos) {
-				break
-			}
-			// Walk the covered runes, emitting one range per visual sub-line.
-			curSub, segStart := -1, a
-			var c0, c1 int
-			emit := func(end int) {
-				out = append(out, underlineRange{
-					line:      li.baseVis + curSub,
-					c0:        c0 + promptWidth,
-					c1:        c1 + promptWidth,
-					plain:     string(li.runes[segStart:end]),
-					issueType: mt.IssueType,
-				})
-			}
-			for k := a; k < b && k < len(li.pos); k++ {
-				cp := li.pos[k]
-				w := textwidth.Width(string(li.runes[k]))
-				switch {
-				case curSub == -1:
-					curSub, segStart, c0, c1 = cp.sub, k, cp.col, cp.col+w
-				case cp.sub != curSub:
-					emit(k)
-					curSub, segStart, c0, c1 = cp.sub, k, cp.col, cp.col+w
-				default:
-					c1 = cp.col + w
-				}
-			}
-			if curSub != -1 {
-				emit(b)
-			}
-			break
-		}
-	}
-	return out
-}
-
-// applyUnderlineOverlay rewrites the given visual lines, replacing each flagged
-// span with the same plain text re-styled with a coloured curly underline. Each
-// span is substituted (not bracketed) so no stray reset inside the original
-// styled run can cancel the underline. The line is rebuilt in one left-to-right
-// pass, cutting the gaps between spans from the *original* line via ansi.Cut
-// (which re-asserts the pen state at each cut), so the escape volume stays
-// O(spans) — important on this per-keystroke render path.
-func applyUnderlineOverlay(lines []string, ranges []underlineRange, base lipgloss.Style) string {
-	byLine := map[int][]underlineRange{}
-	for _, r := range ranges {
-		if r.line < 0 || r.line >= len(lines) || r.c1 <= r.c0 {
-			continue
-		}
-		byLine[r.line] = append(byLine[r.line], r)
-	}
-	for ln, rs := range byLine {
-		sort.Slice(rs, func(i, j int) bool { return rs[i].c0 < rs[j].c0 })
-		orig := lines[ln]
-		full := textwidth.Width(orig) + 8
-		var b strings.Builder
-		prev := 0
-		for _, r := range rs {
-			if r.c0 < prev {
-				continue // overlapping span (rare); skip to avoid corruption
-			}
-			b.WriteString(ansi.Cut(orig, prev, r.c0))
-			b.WriteString(base.
+		decos = append(decos, editor.Decoration{
+			Start: mt.Offset,
+			End:   mt.Offset + mt.Length,
+			Style: lipgloss.NewStyle().
 				UnderlineStyle(lipgloss.UnderlineCurly).
-				UnderlineColor(grammarColor(r.issueType)).
-				Render(r.plain))
-			prev = r.c1
-		}
-		b.WriteString(ansi.Cut(orig, prev, full))
-		lines[ln] = b.String()
+				UnderlineColor(grammarColor(mt.IssueType)),
+		})
 	}
-	return strings.Join(lines, "\n")
-}
-
-// wrapCellPositions soft-wraps a logical line the way charm's textarea does and
-// returns, for each source rune, the (sub-line, column) it renders at, plus the
-// number of sub-lines. Mirrors textarea.wrap so our columns match the screen.
-func wrapCellPositions(runes []rune, width int) ([]cellPos, int) {
-	sublines := taWrap(runes, width)
-	pos := make([]cellPos, len(runes))
-	src := 0
-	for s, sub := range sublines {
-		n := len(sub)
-		if s == len(sublines)-1 {
-			n-- // the last sub-line carries one synthetic trailing space
-		}
-		col := 0
-		for k := 0; k < n && src < len(runes); k++ {
-			pos[src] = cellPos{sub: s, col: col}
-			col += textwidth.Width(string(sub[k]))
-			src++
-		}
-	}
-	for src < len(runes) { // defensive: shouldn't trigger
-		pos[src] = cellPos{sub: len(sublines) - 1}
-		src++
-	}
-	return pos, len(sublines)
-}
-
-// taWrap is a faithful port of charm.land/bubbles/v2 textarea's unexported
-// wrap(): a greedy word-wrap that appends a synthetic trailing space to the
-// final row. Kept in lock-step via grammar_test.go's comparison against a real
-// textarea's rendered breaks.
-func taWrap(runes []rune, width int) [][]rune {
-	if width <= 0 {
-		return [][]rune{append([]rune(nil), runes...)}
-	}
-	w := func(rs []rune) int { return textwidth.Width(string(rs)) }
-	rwid := func(r rune) int { return textwidth.Width(string(r)) }
-	var (
-		lines  = [][]rune{{}}
-		word   []rune
-		row    int
-		spaces int
-	)
-	for _, r := range runes {
-		if unicode.IsSpace(r) {
-			spaces++
-		} else {
-			word = append(word, r)
-		}
-		if spaces > 0 {
-			if w(lines[row])+w(word)+spaces > width {
-				row++
-				lines = append(lines, []rune{})
-			}
-			lines[row] = append(lines[row], word...)
-			lines[row] = append(lines[row], []rune(strings.Repeat(" ", spaces))...)
-			spaces = 0
-			word = nil
-		} else if len(word) > 0 {
-			if w(word)+rwid(word[len(word)-1]) > width {
-				if len(lines[row]) > 0 {
-					row++
-					lines = append(lines, []rune{})
-				}
-				lines[row] = append(lines[row], word...)
-				word = nil
-			}
-		}
-	}
-	if w(lines[row])+w(word)+spaces >= width {
-		lines = append(lines, []rune{})
-		lines[row+1] = append(lines[row+1], word...)
-		spaces++
-		lines[row+1] = append(lines[row+1], []rune(strings.Repeat(" ", spaces))...)
-	} else {
-		lines[row] = append(lines[row], word...)
-		spaces++
-		lines[row] = append(lines[row], []rune(strings.Repeat(" ", spaces))...)
-	}
-	return lines
+	m.input.SetDecorations(decos)
 }
 
 // ---- footer hint + popup --------------------------------------------------

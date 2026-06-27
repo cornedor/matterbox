@@ -4,11 +4,11 @@ import (
 	"testing"
 
 	"charm.land/bubbles/v2/key"
-	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"github.com/mattermost/mattermost/server/public/model"
 
+	"matterbox/internal/editor"
 	"matterbox/internal/viewport"
 )
 
@@ -26,7 +26,7 @@ func navModel() Model {
 	vp.SoftWrap = true
 	vp.SetWidth(80)
 	vp.SetHeight(40)
-	ta := textarea.New()
+	ta := editor.New()
 	ta.SetWidth(40)
 	fi := textinput.New()
 
@@ -259,10 +259,10 @@ func TestComposerCtrlLeftWordJumpWhenNavOff(t *testing.T) {
 	m.input.Focus()
 	m.input.SetValue("one two three")
 
-	before := m.input.LineInfo().ColumnOffset
+	before := m.input.CursorOffset()
 	out, _ := m.handleKey(ctrlKey(tea.KeyLeft))
 	got := out.(Model)
-	after := got.input.LineInfo().ColumnOffset
+	after := got.input.CursorOffset()
 	if before == 0 {
 		t.Fatalf("precondition: cursor expected at end of value, got column 0")
 	}

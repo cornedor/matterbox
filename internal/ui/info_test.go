@@ -4,10 +4,10 @@ import (
 	"strings"
 	"testing"
 
-	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"github.com/mattermost/mattermost/server/public/model"
 
+	"matterbox/internal/editor"
 	"matterbox/internal/viewport"
 )
 
@@ -30,7 +30,7 @@ func infoTestModel() Model {
 		Purpose: "see [docs](https://ex.com/d) for more",
 		Header:  "ping @ops",
 	}
-	ta := textarea.New()
+	ta := editor.New()
 	ta.SetWidth(40)
 	m := Model{
 		keys:          newKeyMap("ctrl"),

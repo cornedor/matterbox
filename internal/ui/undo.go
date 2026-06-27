@@ -142,12 +142,14 @@ func (m *Model) applyComposerSnapshot(v string) tea.Cmd {
 	// SetValue would leave it). Computed before SetValue clobbers the value.
 	cursor := changeEndOffset(m.input.Value(), v)
 	m.input.SetValue(v)
-	m.setInputCursorOffset(cursor)
+	m.input.SetCursorOffset(cursor)
 	m.syncInputHeight()
 	mentionCmd := m.updateMention()
 	m.updateEmoji()
+	slashCmd := m.updateSlash()
+	cmdHlCmd := m.updateCommandHighlight()
 	m.clearGrammar()
-	return tea.Batch(mentionCmd, m.scheduleGrammarCheck())
+	return tea.Batch(mentionCmd, slashCmd, cmdHlCmd, m.scheduleGrammarCheck())
 }
 
 // changeEndOffset returns the rune offset, within after, at the end of the
