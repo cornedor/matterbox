@@ -281,15 +281,26 @@ func renderMarkdown(msg string, ei *emojiImages, mr mrInlineFn, self string) str
 
 		// Fenced code block: ``` or ~~~ (CommonMark allows either fence
 		// character; the closer must use the same character and be at least as
-		// long, so a ``` inside a ~~~ block stays content).
+		// long, so a ``` inside a ~~~ block stays content). The body is
+		// syntax-highlighted (highlight.go) when the fence names a language
+		// chroma recognises; otherwise it stays the flat code colour.
 		if ch, runLen, ok := fenceMarker(raw); ok {
 			out = append(out, "  "+mdFenceStyle.Render(strings.TrimSpace(raw)))
+			lang := fenceLang(raw, runLen)
+			var body []string
+			var closeLine string
 			for i++; i < len(lines); i++ {
 				if isClosingFence(lines[i], ch, runLen) {
-					out = append(out, "  "+mdFenceStyle.Render(strings.TrimSpace(lines[i])))
+					closeLine = strings.TrimSpace(lines[i])
 					break
 				}
-				out = append(out, "  "+mdCodeBlockStyle.Render(lines[i]))
+				body = append(body, lines[i])
+			}
+			for _, hl := range highlightCode(body, lang) {
+				out = append(out, "  "+hl)
+			}
+			if i < len(lines) { // a closing fence was found (not end-of-message)
+				out = append(out, "  "+mdFenceStyle.Render(closeLine))
 			}
 			prevBlank = false
 			continue

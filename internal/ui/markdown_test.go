@@ -123,13 +123,16 @@ func TestRenderInlineUnderscoreAdjacentSpans(t *testing.T) {
 
 // All three CommonMark code-block forms — ``` fences, ~~~ fences, and
 // four-space indented blocks — must render with the code-block style.
+// Code blocks with no language tag fall back to the flat code colour across all
+// three CommonMark forms (the syntax highlighter only fires for a known fence
+// language — see TestRenderMarkdownCodeBlockHighlighted).
 func TestRenderMarkdownCodeBlockForms(t *testing.T) {
 	wantLine := "  " + mdCodeBlockStyle.Render("code here")
 	tests := []struct {
 		name string
 		msg  string
 	}{
-		{"backtick fence", "```js\ncode here\n```"},
+		{"plain backtick fence", "```\ncode here\n```"},
 		{"tilde fence", "~~~\ncode here\n~~~"},
 		{"indented block", "intro\n\n    code here"},
 	}
@@ -140,6 +143,26 @@ func TestRenderMarkdownCodeBlockForms(t *testing.T) {
 				t.Errorf("renderMarkdown(%q) = %q, want a line %q", tt.msg, got, wantLine)
 			}
 		})
+	}
+}
+
+// A fence that names a language chroma knows gets syntax-highlighted: the body
+// keeps its text but is recoloured token-by-token rather than rendered as one
+// flat-coloured line.
+func TestRenderMarkdownCodeBlockHighlighted(t *testing.T) {
+	if !codeColorEnabled {
+		t.Skip("colour disabled (NO_COLOR); highlighting falls back to flat")
+	}
+	got := renderMarkdown("```go\nfunc main() {}\n```", nil, nil, "")
+	if flat := "  " + mdCodeBlockStyle.Render("func main() {}"); strings.Contains(got, flat) {
+		t.Errorf("known-language fence not highlighted, still flat: %q", got)
+	}
+	// The keyword "func" should carry its own SGR colour distinct from the rest.
+	if !strings.Contains(got, "func") || !strings.Contains(got, "main") {
+		t.Errorf("highlighted body lost its text: %q", got)
+	}
+	if !strings.Contains(got, "\x1b[38;2;") { // a truecolor foreground was emitted
+		t.Errorf("expected truecolor SGR in highlighted block, got %q", got)
 	}
 }
 
