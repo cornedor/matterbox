@@ -63,7 +63,7 @@ func (m *Model) inModal() bool {
 // :emoji autocomplete owns ctrl+p/ctrl+n while open, so the global switcher
 // chord stands down.
 func (m *Model) popupOpenInComposer() bool {
-	return m.focus == focusInput && (m.mention.active || m.emoji.active)
+	return m.focus == focusInput && (m.mention.active || m.emoji.active || m.slash.active)
 }
 
 // keyContexts is the precedence ladder, highest first. Order mirrors

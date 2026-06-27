@@ -146,8 +146,10 @@ func (m *Model) applyComposerSnapshot(v string) tea.Cmd {
 	m.syncInputHeight()
 	mentionCmd := m.updateMention()
 	m.updateEmoji()
+	slashCmd := m.updateSlash()
+	cmdHlCmd := m.updateCommandHighlight()
 	m.clearGrammar()
-	return tea.Batch(mentionCmd, m.scheduleGrammarCheck())
+	return tea.Batch(mentionCmd, slashCmd, cmdHlCmd, m.scheduleGrammarCheck())
 }
 
 // changeEndOffset returns the rune offset, within after, at the end of the

@@ -384,6 +384,17 @@ type Model struct {
 
 	mention mentionState
 	emoji   emojiState
+	slash   slashState
+
+	// cmdShimmer drives the animated orange gradient drawn over a recognised
+	// "/command" at the start of the composer (see updateCommandHighlight).
+	cmdShimmer cmdShimmerState
+
+	// serverCmds caches each team's autocomplete-enabled slash commands
+	// (built-in + plugin), keyed by team id, for the composer's "/" popup.
+	// serverCmdsReq guards the fetch so each team is loaded at most once.
+	serverCmds    map[string][]serverCommand
+	serverCmdsReq map[string]bool
 
 	// Pending file attachments composed for the next outgoing post. Each
 	// chip carries its own spinner and upload context so uploads run
@@ -517,6 +528,10 @@ type Model struct {
 	// (esc/q close, arrows/pgup-pgdn scroll). See cheatsheet.go.
 	keysSheetMode bool
 	keysSheetView viewport.Model
+	// helpSheet reuses the cheatsheet popup to list the "/" slash commands
+	// instead of key bindings (raised by /help). Only meaningful while
+	// keysSheetMode is true. See openHelpSheet in cheatsheet.go.
+	helpSheet bool
 
 	// Key inspector popup (switcher "> Debug: key inspector"). While
 	// keyDebugMode is true the popup owns every keystroke, decoding each into
@@ -951,6 +966,8 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		channels:            map[string][]*model.Channel{},
 		drafts:              map[string]string{},
 		userNames:           map[string]string{},
+		serverCmds:          map[string][]serverCommand{},
+		serverCmdsReq:       map[string]bool{},
 		statuses:            map[string]string{},
 		customStatuses:      map[string]model.CustomStatus{},
 		showCustomStatus:    showCustomStatus,

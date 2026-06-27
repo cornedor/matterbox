@@ -43,6 +43,8 @@ var (
 	titleStyle    = lipgloss.NewStyle().Bold(true)
 	userStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("4")).Bold(true)
 	timeStyle     = lipgloss.NewStyle().Foreground(dimColor)
+	// meMarkerStyle paints the leading "*" of a /me emote line ("* alice waves").
+	meMarkerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("5")).Bold(true)
 	selectedRow   = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("8"))
 	unselectedRow = lipgloss.NewStyle()
 	// Tab styling adapted from charmbracelet/lipgloss tabs example.
@@ -954,6 +956,13 @@ func (m *Model) renderPostLines(p *model.Post, grouped bool) ([]string, int) {
 	switch {
 	case deleted:
 		lines = m.deletedPostLines(p, false)
+	case p.Type == model.PostTypeMe:
+		// IRC-style emote: "* alice waves" on one line (the author is part of the
+		// content, so it ignores grouping). Reactions still render below it.
+		lines = append(lines, m.meEmoteLine(p))
+		if rx := m.renderReactions(p); rx != "" {
+			lines = append(lines, wrapBodyLine(rx, width)...)
+		}
 	default:
 		if !grouped {
 			name := m.postAuthorName(p)
@@ -998,6 +1007,26 @@ func (m *Model) renderPostLines(p *model.Post, grouped bool) ([]string, int) {
 		m.putPostLines(p.Id, fp, lines, rows)
 	}
 	return lines, rows
+}
+
+// meEmoteLine renders a /me post as an IRC-style emote: a magenta "*" marker,
+// the author, then the action and the timestamp ("* alice waves   10:30"). The
+// action reuses markdownBody (cached, with emoji/mentions and the server's
+// italic asterisks already applied) with its body indent stripped so it sits
+// inline after the name. Like a normal header line it isn't soft-wrapped — emotes
+// are short.
+func (m *Model) meEmoteLine(p *model.Post) string {
+	name := m.postAuthorName(p)
+	action := strings.TrimRight(m.markdownBody(p), "\n")
+	// markdownBody indents every line by two spaces; drop the first line's indent
+	// and flatten any continuation lines so the whole emote reads on one line.
+	action = strings.TrimPrefix(action, "  ")
+	action = strings.ReplaceAll(action, "\n  ", " ")
+	line := meMarkerStyle.Render("*") + " " + userStyle.Render(name)
+	if action != "" {
+		line += " " + action
+	}
+	return line + "  " + timeStyle.Render(formatPostTime(p.CreateAt))
 }
 
 // normalizeFilename strips zero-width hint characters that some terminals
@@ -1440,6 +1469,9 @@ func (m *Model) renderMessagesPane(height, width int) string {
 	popup := m.renderMentionPopup()
 	if popup == "" {
 		popup = m.renderEmojiPopup()
+	}
+	if popup == "" {
+		popup = m.renderSlashPopup(width)
 	}
 	if popup == "" {
 		popup = m.renderGrammarPopup()

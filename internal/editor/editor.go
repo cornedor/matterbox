@@ -83,6 +83,16 @@ type Model struct {
 	// by rune offset into Value(). Drawn during View, clipped to the scroll
 	// window automatically.
 	decorations []Decoration
+
+	// cmdActive marks the leading slash-command token [cmdStart, cmdEnd) (rune
+	// offsets into Value) as a recognised command: it is drawn bold with an
+	// animated orange gradient (a skeleton-loader shimmer) over the text. The
+	// owner advances cmdPhase, in [0,1), once per animation frame to slide the
+	// band. The editor is content-agnostic — what counts as "a command" is the
+	// caller's call (see SetCommandSpan).
+	cmdActive        bool
+	cmdStart, cmdEnd int
+	cmdPhase         float64
 }
 
 // New returns a ready-to-use single-row input with default keys and styles.
@@ -154,6 +164,7 @@ func (m *Model) Reset() {
 	m.row, m.col, m.desiredVCol = 0, 0, 0
 	m.yOffset = 0
 	m.decorations = nil
+	m.ClearCommandSpan()
 	m.recalc()
 }
 

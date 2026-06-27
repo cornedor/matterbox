@@ -152,6 +152,19 @@ func (m *Model) renderRow(vr visRow, isCursorRow bool, cw int, base lipgloss.Sty
 			continue
 		}
 		off := lineStart + vr.a + k
+		// A recognised slash command paints bold with the moving orange shimmer,
+		// per cell (each gets its own gradient colour), overriding markdown and
+		// decorations within the span.
+		if pos, ok := m.commandSpanAt(off); ok {
+			flush()
+			curDecor, curClass = -2, mdClass(255)
+			st := lipgloss.NewStyle().Bold(true).
+				Foreground(shimmerColor(pos, m.cmdEnd-m.cmdStart, m.cmdPhase)).
+				Inherit(base).Inline(true)
+			b.WriteString(st.Render(string(rs[k])))
+			used += textwidth.Width(string(rs[k]))
+			continue
+		}
 		di := m.decorIndexAt(off)
 		mc := classAt(off)
 		if di != curDecor || mc != curClass {

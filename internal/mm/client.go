@@ -220,6 +220,30 @@ func (c *Client) Send(ctx context.Context, channelID, rootID, message string, fi
 	return p, nil
 }
 
+// ExecuteCommand runs a server-side slash command (e.g. "/me waves") in the
+// given channel and returns the server's response. teamID is required: the
+// server can't infer it for a DM / group-DM, so callers pass the team the
+// command should run under (a real team id, even for a DM). Commands typed in
+// a regular channel may pass that channel's team id.
+func (c *Client) ExecuteCommand(ctx context.Context, channelID, teamID, command string) (*model.CommandResponse, error) {
+	resp, _, err := c.c.ExecuteCommandWithTeam(ctx, channelID, teamID, command)
+	if err != nil {
+		return nil, fmt.Errorf("execute command: %w", err)
+	}
+	return resp, nil
+}
+
+// AutocompleteCommands returns the team's autocomplete-enabled slash commands
+// (built-in plus plugin/custom). The list is small and changes rarely, so the
+// UI caches it per team and feeds it to the composer's "/" autocomplete popup.
+func (c *Client) AutocompleteCommands(ctx context.Context, teamID string) ([]*model.Command, error) {
+	cmds, _, err := c.c.ListAutocompleteCommands(ctx, teamID)
+	if err != nil {
+		return nil, fmt.Errorf("list autocomplete commands: %w", err)
+	}
+	return cmds, nil
+}
+
 // Drafts ---------------------------------------------------------------
 
 // GetDrafts returns the user's saved message drafts for the given team.
