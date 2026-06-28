@@ -174,6 +174,56 @@ func TestEverforestEmitsNoBackground(t *testing.T) {
 	}
 }
 
+// A coloured span that wraps must stay coloured on every visual row. ansi.Wrap
+// leaves the opening SGR only on the row that physically contains it; carryStyle
+// (via wrapBodyLine) re-opens it on each continuation row. Regression for "a long
+// comment loses its colour once it wraps".
+func TestHighlightedSpanSurvivesWrap(t *testing.T) {
+	if !codeColorEnabled {
+		t.Skip("colour disabled (NO_COLOR)")
+	}
+	const fg = "\x1b[38;2;117;113;94m" // monokai comment colour
+	body := []string{"// this is a long comment that will definitely wrap across the pane width here"}
+	hl := highlightCode(body, "go")
+	if len(hl) != 1 {
+		t.Fatalf("expected one highlighted line, got %d", len(hl))
+	}
+	rows := wrapBodyLine("  "+hl[0], 30)
+	if len(rows) < 2 {
+		t.Fatalf("expected the comment to wrap, got %d row(s)", len(rows))
+	}
+	for i, row := range rows {
+		if !strings.Contains(row, fg) {
+			t.Errorf("row %d dropped the comment colour: %q", i, row)
+		}
+		if !strings.HasSuffix(row, "\x1b[0m") {
+			t.Errorf("row %d not reset-terminated (colour bleeds into the gutter below): %q", i, row)
+		}
+	}
+}
+
+func TestSGRState(t *testing.T) {
+	const fg = "\x1b[38;2;1;2;3m"
+	tests := []struct {
+		name, in, want string
+	}{
+		{"plain text", "hello", ""},
+		{"open colour, no reset", fg + "hi", fg},
+		{"colour then reset", fg + "hi\x1b[0m", ""},
+		{"bold accumulates with colour", "\x1b[1m" + fg + "hi", "\x1b[1m" + fg},
+		{"reset clears prior bold", "\x1b[1m\x1b[0m" + fg + "x", fg},
+		{"compound reset-prefixed seq is kept whole", "\x1b[0;1mhi", "\x1b[0;1m"},
+		{"non-SGR escape ignored", "\x1b[2Khi", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := sgrState(tt.in); got != tt.want {
+				t.Errorf("sgrState(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEnsureLineReset(t *testing.T) {
 	tests := []struct {
 		name, in, want string
