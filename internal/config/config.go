@@ -919,6 +919,18 @@ func (c *Config) fillDefaults() {
 	}
 }
 
+// Save writes cfg to config.yaml, replacing the file (with the documented
+// header). Used by the setup wizard (`matterbox welcome`) to persist settings
+// chosen interactively. Callers that only want to change one setting should
+// Load, mutate, then Save so unrelated keys survive.
+func Save(cfg *Config) error {
+	p, err := Path()
+	if err != nil {
+		return err
+	}
+	return writeConfig(p, cfg)
+}
+
 // SaveTeamOrder persists the given left-to-right team-tab ordering to
 // config.yaml, leaving every other setting as it is on disk. Best-effort
 // from the caller's perspective: the UI fires this after each reorder and
