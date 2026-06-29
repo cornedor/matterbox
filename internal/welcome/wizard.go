@@ -23,10 +23,12 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case phaseIntro:
 		// Any key skips the fly-in. Rewind the clock so the scene snaps to its
 		// settled end-state (sun risen, title parked) instead of freezing it
-		// mid-flight. Guard against a key arriving before the first frame set m.now.
+		// mid-flight. introEnd accounts for the demo's delayed keyframes. Guard
+		// against a key arriving before the first frame set m.now.
 		if !m.now.IsZero() {
-			m.start = m.now.Add(-time.Duration(introSecs * float64(time.Second)))
-			m.t = introSecs
+			end := m.introEnd()
+			m.start = m.now.Add(-time.Duration(end * float64(time.Second)))
+			m.t = end
 		}
 		m.phase = phaseWizard
 		return m, nil

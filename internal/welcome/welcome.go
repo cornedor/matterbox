@@ -36,6 +36,16 @@ const (
 // (which keeps drifting, since the animation holds its final keyframes).
 const introSecs = 6.0
 
+// Demo mode stretches the intro. The choreographed animation (sun rise + title
+// fly-in) is shifted demoIntroDelaySecs later — its keyframes are pushed back in
+// New, while the terrain keeps drifting from t=0 underneath it — and the wizard
+// waits until demoWizardDelaySecs past introSecs before replacing the scene, so
+// the show plays longer before the form interrupts it.
+const (
+	demoIntroDelaySecs  = 3.0
+	demoWizardDelaySecs = 8.0
+)
+
 type phase int
 
 const (
@@ -78,6 +88,8 @@ type Model struct {
 	t     float64   // animation seconds (now - start)
 
 	width, height int
+
+	demo bool // `--demo`: animate the title (per-letter bob + flips) and hold full fps
 
 	phase phase
 	step  int
@@ -133,10 +145,17 @@ const advFieldCount = 5
 // whatever is already configured so re-running `welcome` edits rather than
 // resets. The scene parameters reproduce the reference vaporascii invocation
 // (glyph renderer, slow drive, low warm-coloured mountains, the "Matterbox"
-// title flying in via intro.json).
-func New(cfg *config.Config) *Model {
+// title flying in via intro.json). When demo is set, each letter of the title
+// bobs up and down on a sine wave (the `--demo` flag).
+func New(cfg *config.Config, demo bool) *Model {
 	stops, _ := vapor.ParseHexStops("#ffd21e,#ff9b2f,#ff3d7f,#ec1e63")
 	anim, _ := vapor.LoadAnimationJSON(introJSON)
+	if demo && anim != nil {
+		// Hold the choreography back so the scene drifts solo first (see the
+		// demoIntroDelaySecs comment). The terrain isn't affected — only the sun
+		// rise and title fly-in start later.
+		anim.DelayBy(demoIntroDelaySecs)
+	}
 	rend := vapor.New(vapor.Options{
 		Mode:         "glyph",
 		Coverage:     "octant",
@@ -148,12 +167,12 @@ func New(cfg *config.Config) *Model {
 		SunStops:     stops,
 		Text: &vapor.TextOpts{
 			Text: "Matterbox", X: 0, Y: 4, Z: 22,
-			Scale: 1.5, Depth: 1, RotX: 25,
+			Scale: 1.5, Depth: 1, RotX: 25, Demo: demo,
 		},
 		Anim: anim,
 	})
 
-	m := &Model{rend: rend, cfg: cfg, phase: phaseIntro, step: stepServer}
+	m := &Model{rend: rend, cfg: cfg, phase: phaseIntro, step: stepServer, demo: demo}
 	if cfg.ServerURL != "" && cfg.ServerURL != config.PlaceholderServerURL {
 		m.server.setValue(cfg.ServerURL)
 	}
@@ -177,12 +196,33 @@ func tickAt(fps int) tea.Cmd {
 }
 
 // frameRate is the animation tick rate for the current phase: smooth during the
-// intro fly-in, low once the wizard/done panel is up over a slowly drifting scene.
+// intro fly-in, low once the wizard/done panel is up over a slowly drifting
+// scene. Demo mode keeps the full rate throughout — its per-letter bob and flips
+// run during the wizard too, so they'd stutter at the low rate.
 func (m *Model) frameRate() int {
-	if m.phase == phaseIntro {
+	if m.phase == phaseIntro || m.demo {
 		return introFrameRate
 	}
 	return wizardFrameRate
+}
+
+// introEnd is the animation time at which the intro has fully settled (sun risen,
+// title parked). Demo pushes it back by demoIntroDelaySecs to match the keyframes
+// shifted in New, so skipping the intro still snaps to the settled pose.
+func (m *Model) introEnd() float64 {
+	if m.demo {
+		return introSecs + demoIntroDelaySecs
+	}
+	return introSecs
+}
+
+// wizardAt is the animation time at which the wizard replaces the intro. Demo
+// holds the settled scene longer, appearing demoWizardDelaySecs past introSecs.
+func (m *Model) wizardAt() float64 {
+	if m.demo {
+		return introSecs + demoWizardDelaySecs
+	}
+	return introSecs
 }
 
 // authResultMsg reports the outcome of validating a token against the server.
@@ -241,7 +281,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.now = now
 		m.t = now.Sub(m.start).Seconds()
-		if m.phase == phaseIntro && m.t >= introSecs {
+		if m.phase == phaseIntro && m.t >= m.wizardAt() {
 			m.phase = phaseWizard
 		}
 		// frameRate() reflects the just-updated phase, so the tick rate drops as

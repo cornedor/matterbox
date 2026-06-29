@@ -1,6 +1,7 @@
 package vapor
 
 import (
+	"math"
 	"strings"
 	"testing"
 )
@@ -65,6 +66,55 @@ func TestRenderWithAnimationDoesNotPanic(t *testing.T) {
 	for _, tt := range []float64{0, 1.5, 3, 6, 9} {
 		if r.Frame(tt) == "" {
 			t.Fatalf("empty frame at t=%v", tt)
+		}
+	}
+}
+
+func TestDemoBobsLetters(t *testing.T) {
+	mk := func(demo bool) *Renderer {
+		stops, _ := ParseHexStops("#ffd21e,#ff9b2f,#ff3d7f,#ec1e63")
+		r := New(Options{
+			Mode: "glyph", Coverage: "octant",
+			Speed: 0.5, Height: 0.7, Valley: 1, ValleyHeight: 0.3, SunY: 1,
+			SunStops: stops,
+			Text:     &TextOpts{Text: "Matterbox", X: 0, Y: 4, Z: 22, Scale: 1.5, Depth: 1, RotX: 25, Demo: demo},
+		})
+		r.Resize(100, 30)
+		return r
+	}
+	// At a fixed time the two renderers share an identical scene (same drive,
+	// stars, sun), so the only thing that can differ is the per-letter bob.
+	const tt = 1.0
+	if mk(true).Frame(tt) == mk(false).Frame(tt) {
+		t.Fatal("demo frame identical to static; letter bob has no effect")
+	}
+}
+
+func TestDemoFlipWaveAndRest(t *testing.T) {
+	const letters = 9 // "Matterbox"
+	// Nothing flips during the initial settle delay.
+	for ci := 0; ci < letters; ci++ {
+		if _, ok := demoFlipAngle(demoFlipStartDelay-0.1, ci); ok {
+			t.Fatalf("letter %d flipping before the start delay", ci)
+		}
+	}
+	// The flip ripples across letters: just after the first wave starts letter 0
+	// is turning but a later letter has not begun.
+	if _, ok := demoFlipAngle(demoFlipStartDelay+0.1, 0); !ok {
+		t.Fatal("letter 0 should be flipping just after the first wave starts")
+	}
+	if _, ok := demoFlipAngle(demoFlipStartDelay+0.1, 3); ok {
+		t.Fatal("letter 3 should still be idle while the wave reaches it")
+	}
+	// Mid-window, a letter is partway through a single full turn.
+	a, ok := demoFlipAngle(demoFlipStartDelay+demoFlipDuration/2, 0)
+	if !ok || a <= 0 || a >= 2*math.Pi {
+		t.Fatalf("mid-flip angle = %v ok=%v, want within (0, 2π)", a, ok)
+	}
+	// By the tail of a cycle every letter has finished — the rest period.
+	for ci := 0; ci < letters; ci++ {
+		if _, ok := demoFlipAngle(demoFlipStartDelay+demoFlipCycle-0.1, ci); ok {
+			t.Fatalf("letter %d still flipping during the rest period", ci)
 		}
 	}
 }

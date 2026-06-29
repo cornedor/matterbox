@@ -15,6 +15,7 @@ type textOpts struct {
 	rotX, rotY, rotZ    float64 // base rotation about each axis, in degrees (pitch, yaw, roll)
 	spinX, spinY, spinZ float64 // rotation speed about each axis, in degrees/second
 	stops               []RGB   // vertical colour gradient, top row to bottom row
+	demo                bool    // bob each letter up and down on a per-letter sine wave
 }
 
 // Font cell metrics. Glyphs are 5×7 with one column of spacing between them.
@@ -25,6 +26,47 @@ const (
 	textCell    = 0.35 // world units per font pixel at scale 1
 	deg2rad     = math.Pi / 180
 )
+
+// Demo-mode per-letter bob: each glyph slides up and down its local y axis on a
+// sine wave. The amplitude is in font cells, the speed is angular (rad/s), and
+// the per-letter phase shift makes the wave travel across the word.
+const (
+	demoBobCells        = 2.0
+	demoBobSpeed        = 3.0
+	demoBobPhasePerChar = 0.6
+)
+
+// Demo-mode per-letter flip: after an initial settle delay, once per cycle a
+// full-turn rotation about the x-axis ripples across the letters one after
+// another, then the rest of the cycle is a pause before the next wave.
+const (
+	demoFlipStartDelay = 5.0  // seconds of stillness before the first flip wave
+	demoFlipCycle      = 4.0  // seconds between flip waves (active ripple + rest)
+	demoFlipStagger    = 0.18 // delay between adjacent letters starting their flip
+	demoFlipDuration   = 1.4  // seconds for one letter to complete a full turn
+)
+
+// demoFlipAngle returns letter ci's rotation (radians) about its own x-axis at
+// time now. Nothing flips for the first demoFlipStartDelay seconds; thereafter,
+// within each demoFlipCycle the flip wave starts at letter 0 and each later
+// letter begins demoFlipStagger later, so the turns ripple across the word. A
+// letter takes demoFlipDuration to complete one revolution, eased on a cosine
+// (sine-shaped, slow-fast-slow) so it accelerates and settles. Outside its
+// window a letter sits upright (ok is false), and after the last letter finishes
+// the remainder of the cycle is a pause.
+func demoFlipAngle(now float64, ci int) (float64, bool) {
+	now -= demoFlipStartDelay
+	if now < 0 {
+		return 0, false
+	}
+	lt := math.Mod(now, demoFlipCycle)
+	s := (lt - float64(ci)*demoFlipStagger) / demoFlipDuration
+	if s <= 0 || s >= 1 {
+		return 0, false
+	}
+	eased := 0.5 - 0.5*math.Cos(math.Pi*s) // 0→1 over the window, sine-shaped
+	return 2 * math.Pi * eased, true       // one full revolution
+}
 
 // SetText installs (or clears) the floating 3D text, filling in defaults for an
 // unset scale and an empty gradient. Pass nil or empty text to disable.
@@ -120,23 +162,42 @@ func (s *Scene) renderText(now float64) {
 		for ci, r := range t.runes {
 			g := glyph5x7(r)
 			baseLX := localStartX + float64(ci*fontAdvance)*cell
+			// Demo mode: each letter rides its own point on a travelling sine
+			// wave (bob), and once per cycle flips a full turn about its own
+			// x-axis as the flip wave ripples past it. Both are constant across
+			// the glyph's rows and depth slices, so the whole letter moves
+			// rigidly. proj applies the flip about the letter's centre — pivoting
+			// on the bob-shifted y, with z centred on the extrusion (z=0) — before
+			// the shared projection; with neither active it is the identity.
+			bobLY := 0.0
+			flipCos, flipSin := 1.0, 0.0
+			if t.demo {
+				bobLY = demoBobCells * cell * math.Sin(demoBobSpeed*now-float64(ci)*demoBobPhasePerChar)
+				if a, ok := demoFlipAngle(now, ci); ok {
+					flipCos, flipSin = math.Cos(a), math.Sin(a)
+				}
+			}
+			proj := func(plx, ply, plz float64) (float64, float64, float64, bool) {
+				dy := ply - bobLY
+				return project(plx, bobLY+dy*flipCos-plz*flipSin, dy*flipSin+plz*flipCos)
+			}
 			for gy := 0; gy < fontH; gy++ {
 				bitsRow := g[gy]
 				if bitsRow == 0 {
 					continue
 				}
 				// Row 0 is the top; local y runs up, so higher rows get larger y.
-				ly := (float64(fontH-1)*0.5 - float64(gy)) * cell
+				ly := (float64(fontH-1)*0.5-float64(gy))*cell + bobLY
 				col := scale(gradientAt(t.stops, float64(gy)/float64(fontH-1)), shade)
 				for gx := 0; gx < fontW; gx++ {
 					if bitsRow&(1<<(fontW-1-gx)) == 0 {
 						continue
 					}
 					lx := baseLX + float64(gx)*cell
-					p0x, p0y, d0, o0 := project(lx-half, ly-half, lz)
-					p1x, p1y, d1, o1 := project(lx+half, ly-half, lz)
-					p2x, p2y, d2, o2 := project(lx+half, ly+half, lz)
-					p3x, p3y, d3, o3 := project(lx-half, ly+half, lz)
+					p0x, p0y, d0, o0 := proj(lx-half, ly-half, lz)
+					p1x, p1y, d1, o1 := proj(lx+half, ly-half, lz)
+					p2x, p2y, d2, o2 := proj(lx+half, ly+half, lz)
+					p3x, p3y, d3, o3 := proj(lx-half, ly+half, lz)
 					if !(o0 && o1 && o2 && o3) {
 						continue
 					}

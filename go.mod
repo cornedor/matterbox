@@ -12,6 +12,8 @@ require (
 	github.com/charmbracelet/glamour v1.0.0
 	github.com/charmbracelet/ultraviolet v0.0.0-20260416155717-489999b90468
 	github.com/charmbracelet/x/ansi v0.11.7
+	github.com/gotracker/playback v1.5.0
+	github.com/jfreymuth/pulse v0.1.1
 	github.com/kyokomi/emoji/v2 v2.2.13
 	github.com/mattermost/mattermost/server/public v0.4.0
 	github.com/rivo/uniseg v0.4.7
@@ -47,11 +49,15 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/css v1.0.1 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
+	github.com/gotracker/goaudiofile v1.0.16 // indirect
+	github.com/gotracker/opl2 v1.0.2 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-hclog v1.6.3 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/hashicorp/go-plugin v1.7.0 // indirect
 	github.com/hashicorp/yamux v0.1.2 // indirect
+	github.com/heucuva/comparison v1.0.0 // indirect
+	github.com/heucuva/optional v0.0.1 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
 	github.com/mattermost/go-i18n v1.11.1-0.20211013152124-5c415071e404 // indirect
@@ -83,6 +89,7 @@ require (
 	github.com/yuin/goldmark v1.7.13 // indirect
 	github.com/yuin/goldmark-emoji v1.0.6 // indirect
 	golang.org/x/crypto v0.49.0 // indirect
+	golang.org/x/exp v0.0.0-20251209150349-8475f28825e9 // indirect
 	golang.org/x/mod v0.36.0 // indirect
 	golang.org/x/net v0.52.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect

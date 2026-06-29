@@ -18,7 +18,7 @@ var welcomeSizes = []struct {
 // benchWizard builds a wizard-phase model sized to cols×rows with the scene
 // cache primed at t=3 (mid-intro, the heaviest steady frame).
 func benchWizard(cols, rows int) *Model {
-	m := New(&config.Config{})
+	m := New(&config.Config{}, false)
 	m.width, m.height = cols, rows
 	m.rend.Resize(cols, rows)
 	m.phase, m.step = phaseWizard, stepAdvanced

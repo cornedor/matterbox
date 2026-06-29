@@ -82,6 +82,23 @@ func (a *Animation) eachTrack(fn func(name string, tr *track)) {
 	fn("text.rot.z", &a.f.Text.Rot.Z)
 }
 
+// DelayBy shifts every keyframe later by d seconds (a no-op for d <= 0). The
+// scene's constant drift is unaffected: a track's value before its first
+// keyframe is held flat, so pushing keyframes later only delays a *change* — the
+// terrain keeps drifting from t=0 (the speed track's first value) while the
+// choreographed sun rise and title fly-in begin d seconds in. A uniform shift
+// preserves keyframe order, so no re-sort is needed.
+func (a *Animation) DelayBy(d float64) {
+	if d <= 0 {
+		return
+	}
+	a.eachTrack(func(_ string, tr *track) {
+		for i := range *tr {
+			(*tr)[i].T += d
+		}
+	})
+}
+
 // validate sorts each track by time and rejects nonsensical input.
 func (a *Animation) validate() error {
 	if a.f.Duration < 0 {

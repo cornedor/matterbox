@@ -53,7 +53,7 @@ func newRootCmd() *cobra.Command {
 		// error out of the box.
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if !auth.HasToken() {
-				if err := runWelcome(); err != nil {
+				if err := runWelcome(false); err != nil {
 					return err
 				}
 				// The user can quit the wizard before signing in (no token

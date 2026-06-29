@@ -19,6 +19,7 @@ type TextOpts struct {
 	RotX, RotY, RotZ    float64
 	SpinX, SpinY, SpinZ float64
 	Stops               []RGB // vertical colour gradient, top row to bottom (empty = built-in cyan→pink)
+	Demo                bool  // bob each letter up and down on a per-letter sine wave
 }
 
 // Options configures a Renderer. Mode/Coverage default to "glyph"/"octant";
@@ -139,6 +140,7 @@ func (t *TextOpts) toInternal() *textOpts {
 		rotX: t.RotX, rotY: t.RotY, rotZ: t.RotZ,
 		spinX: t.SpinX, spinY: t.SpinY, spinZ: t.SpinZ,
 		stops: t.Stops,
+		demo:  t.Demo,
 	}
 }
 

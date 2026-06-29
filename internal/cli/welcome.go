@@ -14,7 +14,8 @@ import (
 // writing config.yaml and the saved token. Unlike the other verbs it does not
 // dial() — it runs before there is a token, since setting one up is the point.
 func newWelcomeCmd() *cobra.Command {
-	return &cobra.Command{
+	var demo bool
+	cmd := &cobra.Command{
 		Use:   "welcome",
 		Short: "Run the first-run setup wizard (animated)",
 		Long: "Run the interactive setup wizard: a vaporwave intro, then a short form to\n" +
@@ -23,17 +24,24 @@ func newWelcomeCmd() *cobra.Command {
 			"It writes ~/.config/matterbox/config.yaml and the saved login token.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runWelcome()
+			return runWelcome(demo)
 		},
 	}
+	cmd.Flags().BoolVar(&demo, "demo", false, "demoscene mode: bob the title on a sine wave and play a chiptune soundtrack")
+	return cmd
 }
 
-func runWelcome() error {
+func runWelcome(demo bool) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
-	if _, err := tea.NewProgram(welcome.New(cfg)).Run(); err != nil {
+	// In demo mode, play the embedded tracker soundtrack behind the intro. The
+	// lifecycle matches the program's: started here, stopped when Run() returns.
+	if demo {
+		defer welcome.StartDemoMusic()()
+	}
+	if _, err := tea.NewProgram(welcome.New(cfg, demo)).Run(); err != nil {
 		return err
 	}
 	return nil

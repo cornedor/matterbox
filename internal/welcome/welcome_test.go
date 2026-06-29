@@ -29,7 +29,7 @@ func newWizard(t *testing.T) *Model {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m := New(cfg)
+	m := New(cfg, false)
 	m.width, m.height = 100, 40
 	m.rend.Resize(100, 40)
 	m.phase, m.step = phaseWizard, stepServer
