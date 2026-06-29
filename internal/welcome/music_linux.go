@@ -8,7 +8,9 @@ import (
 	_ "embed"
 	"errors"
 	"io"
+	"math"
 	"sync"
+	"sync/atomic"
 
 	"github.com/gotracker/playback/format"
 	"github.com/gotracker/playback/mixing"
@@ -56,6 +58,40 @@ const (
 	demoLatency  = 0.25
 )
 
+// levelMeter is a thread-safe playback-level gauge. The audio goroutine stores
+// the most recent RMS amplitude (0..1) as it feeds PulseAudio; the render
+// goroutine reads it each frame to drive the audio-reactive mountains. The reader
+// only ever wants the latest value, so a single float64 carried through one
+// atomic word needs no lock.
+type levelMeter struct{ bits atomic.Uint64 }
+
+func (m *levelMeter) set(v float64) { m.bits.Store(math.Float64bits(v)) }
+func (m *levelMeter) get() float64  { return math.Float64frombits(m.bits.Load()) }
+
+// demoLevel is the live playback level of the demo soundtrack. It's package
+// state because there is only ever one wizard (so one player) at a time, and it
+// lets the renderer read the level without threading a handle through New.
+var demoLevel levelMeter
+
+// musicLevel returns the most recent demo playback level (0..1 RMS amplitude), or
+// 0 when nothing is playing. The non-Linux stub always returns 0.
+func musicLevel() float64 { return demoLevel.get() }
+
+// rms16 returns the RMS amplitude (0..1) of a buffer of signed 16-bit
+// little-endian samples. Channels are pooled together — fine for a loudness gauge.
+func rms16(b []byte) float64 {
+	n := len(b) / 2
+	if n == 0 {
+		return 0
+	}
+	var sum float64
+	for i := 0; i+1 < len(b); i += 2 {
+		s := float64(int16(uint16(b[i]) | uint16(b[i+1])<<8))
+		sum += s * s
+	}
+	return math.Sqrt(sum/float64(n)) / 32768.0
+}
+
 // StartDemoMusic decodes the embedded tracker module and plays it through
 // PulseAudio on a background goroutine, looping until the returned stop function
 // is called. It never blocks the caller and never disturbs the TUI: with no
@@ -80,6 +116,8 @@ func StartDemoMusic() func() {
 // playDemo runs the tracker machine and feeds its audio to PulseAudio until ctx
 // is cancelled. It returns when the context is done or the audio device fails.
 func playDemo(ctx context.Context) error {
+	defer demoLevel.set(0) // settle the reactive mountains when playback stops
+
 	// No SongLoop feature: the machine plays the module once and signals
 	// ErrStopSong at the end, where the loop below rebuilds it — so the demo
 	// repeats for as long as the wizard is open.
@@ -169,7 +207,7 @@ func (r *pcmReader) Read(p []byte) (int, error) {
 		select {
 		case <-r.ctx.Done():
 			if r.buf.Len() > 0 {
-				return r.buf.Read(p)
+				return r.served(p)
 			}
 			return 0, io.EOF
 		case data, ok := <-r.ch:
@@ -179,5 +217,17 @@ func (r *pcmReader) Read(p []byte) (int, error) {
 			r.buf.Write(data)
 		}
 	}
-	return r.buf.Read(p)
+	return r.served(p)
+}
+
+// served reads the next chunk to hand PulseAudio and publishes its level. This is
+// the playback tap: data read here is about to play (within demoLatency), so its
+// RMS tracks what's heard far better than the producer side, which renders
+// pcmLookahead chunks ahead.
+func (r *pcmReader) served(p []byte) (int, error) {
+	n, err := r.buf.Read(p)
+	if n > 0 {
+		demoLevel.set(rms16(p[:n]))
+	}
+	return n, err
 }

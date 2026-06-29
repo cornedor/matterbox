@@ -46,6 +46,21 @@ const (
 	demoWizardDelaySecs = 8.0
 )
 
+// Demo mountains pulse with the soundtrack: the playback level (musicLevel)
+// drives the terrain peak height. The range is skewed downward — quiet passages
+// collapse the peaks toward flat (demoMountainBase), while the loudest beats only
+// bring them back to about normal (demoMountainMax), so the motion reads as the
+// mountains dropping out rather than towering up. demoMountainGain sets how hard
+// the level lifts them; a frame-rate envelope rises fast and falls slowly so they
+// snap up on the beat and sink back down.
+const (
+	demoMountainBase = 0.2
+	demoMountainGain = 8
+	demoMountainMax  = 1.2
+	demoPulseAttack  = 0.45
+	demoPulseRelease = 0.12
+)
+
 type phase int
 
 const (
@@ -89,7 +104,8 @@ type Model struct {
 
 	width, height int
 
-	demo bool // `--demo`: animate the title (per-letter bob + flips) and hold full fps
+	demo  bool    // `--demo`: animate the title (per-letter bob + flips) and hold full fps
+	pulse float64 // demo: smoothed soundtrack level (0..1) driving the mountain height
 
 	phase phase
 	step  int
@@ -281,6 +297,17 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.now = now
 		m.t = now.Sub(m.start).Seconds()
+		if m.demo {
+			// Envelope-follow the playback level: rise fast toward a louder beat,
+			// fall slowly. Advanced per frame so the time constant is stable
+			// regardless of how often PulseAudio pulls audio.
+			lvl := musicLevel()
+			coef := demoPulseRelease
+			if lvl > m.pulse {
+				coef = demoPulseAttack
+			}
+			m.pulse += (lvl - m.pulse) * coef
+		}
 		if m.phase == phaseIntro && m.t >= m.wizardAt() {
 			m.phase = phaseWizard
 		}
@@ -345,12 +372,25 @@ func (m *Model) View() tea.View {
 // re-composites the wizard overlay onto the cached frame.
 func (m *Model) sceneFrame() [][]cell {
 	if !m.sceneValid || m.sceneT != m.t {
+		if m.demo {
+			m.rend.SetHeightScale(m.mountainScale())
+		}
 		m.scene = copyGrid(m.scene, m.rend.Render(m.t))
 		m.sceneT = m.t
 		m.sceneValid = true
 	}
 	m.frame = copyGrid(m.frame, m.scene)
 	return m.frame
+}
+
+// mountainScale maps the smoothed soundtrack level to a peak-height multiplier,
+// clamped so loud passages can't shoot the mountains off-screen.
+func (m *Model) mountainScale() float64 {
+	s := demoMountainBase + demoMountainGain*m.pulse
+	if s > demoMountainMax {
+		s = demoMountainMax
+	}
+	return s
 }
 
 // copyGrid copies src into dst, reshaping dst to match src's dimensions (so it

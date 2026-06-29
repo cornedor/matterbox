@@ -118,6 +118,15 @@ func (r *Renderer) Render(t float64) [][]Cell {
 	return r.grid
 }
 
+// SetHeightScale sets a per-frame multiplier on the mountain peak height for the
+// next Render (see Scene.SetHeightScale). Cheap and safe to call every frame; a
+// no-op before the first Resize, when there is no scene yet.
+func (r *Renderer) SetHeightScale(f float64) {
+	if r.scene != nil {
+		r.scene.SetHeightScale(f)
+	}
+}
+
 // Frame renders the scene at time t directly to a printable ANSI string.
 func (r *Renderer) Frame(t float64) string { return serialize(r.Render(t)) }
 

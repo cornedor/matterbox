@@ -48,6 +48,7 @@ type Scene struct {
 	maxH, vHalf, speed float64
 	speedMul           float64 // user multiplier applied to the base speed
 	heightMul          float64 // user multiplier applied to the peak height
+	heightScale        float64 // per-frame peak-height multiplier (audio-reactive), 1 = static
 	valleyMul          float64 // user multiplier applied to the valley width
 	bumpMul            float64 // user multiplier applied to the valley-floor undulation
 	fogStart, fogEnd   float64
@@ -77,7 +78,7 @@ type Scene struct {
 const baseSpeed = 8.0
 
 func NewScene(w, h int, aspectY, speedMul, heightMul, valleyMul, bumpMul float64, sunStops []RGB) *Scene {
-	s := &Scene{aspectY: aspectY, speedMul: speedMul, heightMul: heightMul, valleyMul: valleyMul, bumpMul: bumpMul, sunYMul: 1.0}
+	s := &Scene{aspectY: aspectY, speedMul: speedMul, heightMul: heightMul, valleyMul: valleyMul, bumpMul: bumpMul, sunYMul: 1.0, heightScale: 1.0}
 	if len(sunStops) == 0 {
 		// built-in magenta sun
 		s.sunStops = []RGB{sunTopC, sunBotC}
@@ -154,6 +155,17 @@ func (s *Scene) applySunY(mul float64) {
 // SetAnimation installs (or clears) the keyframe animation sampled each frame.
 func (s *Scene) SetAnimation(a *Animation) { s.anim = a }
 
+// SetHeightScale sets a per-frame multiplier on the mountain peak height, layered
+// on top of the static Height option. A caller drives it from external input —
+// the demo soundtrack's level — to make the terrain pulse with the music. 1
+// leaves peaks at their configured height; negative values are clamped to 0.
+func (s *Scene) SetHeightScale(f float64) {
+	if f < 0 {
+		f = 0
+	}
+	s.heightScale = f
+}
+
 // distanceAt is the camera's world-z this frame. With a speed track it is the
 // integral of speed over time (so a changing speed never teleports the terrain);
 // otherwise it is the constant-speed t·speed.
@@ -206,7 +218,7 @@ func (s *Scene) terrainHeight(wx, wz float64) float64 {
 	env := math.Pow(e, 1.5) * s.maxH
 	r := ridgedFbm2(wx*0.17+11.1, wz*0.15+3.3, 4242)
 	r = r * r // extra-sharp spiky peaks
-	peaks := env * (0.20 + 0.80*r)
+	peaks := env * (0.20 + 0.80*r) * s.heightScale
 	bumps := (fbm2(wx*0.22, wz*0.18, 99) - 0.5) * 1.5 * s.bumpMul // valley-floor undulation
 	return peaks + bumps
 }
