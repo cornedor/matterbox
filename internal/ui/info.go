@@ -539,6 +539,15 @@ func (m Model) jumpToChannelPost(channelID, postID string) (tea.Model, tea.Cmd) 
 	}
 	if m.store != nil {
 		if around, err := m.store.PostsAround(channelID, postID, 30, 30); err == nil && len(around) > 0 {
+			// This cache branch swaps the visible posts for channelID, which may
+			// differ from the currently-open channel. When it does, route the
+			// switch through enterChannel so openChannelID (and therefore replies)
+			// follows the posts instead of staying pinned to the previous channel.
+			// A same-channel jump needs none of that bookkeeping.
+			var draftCmd tea.Cmd
+			if channelID != m.openChannelID {
+				draftCmd = m.enterChannel(channelID)
+			}
 			m.posts = around
 			m.postIdx = len(around) - 1
 			for i, p := range around {
@@ -557,7 +566,7 @@ func (m Model) jumpToChannelPost(channelID, postID string) (tea.Model, tea.Cmd) 
 			if gapID, _ := m.store.LatestPostID(channelID); gapID != "" {
 				gapCmd = m.fetchPostsAfter(channelID, gapID)
 			}
-			return m, gapCmd
+			return m, tea.Batch(draftCmd, gapCmd)
 		}
 	}
 	// Fallback: reload the channel and let jumpToPendingPost position it if the

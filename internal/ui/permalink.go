@@ -101,17 +101,9 @@ func (m Model) openChannelAtPost(ch *model.Channel, postID string) (tea.Model, t
 	// loads the latest page; jumpToPendingPost can't reach further back).
 	if m.store != nil {
 		if around, err := m.store.PostsAround(ch.Id, postID, 30, 30); err == nil && len(around) > 0 {
-			// We bypass openChannelLoadCmd here, so replicate the channel-open
-			// bookkeeping it does: stash the outgoing draft / restore the incoming
-			// one, repoint openChannelID, drop the stale unread divider and start a
-			// fresh mark-read dwell.
-			draftCmd := m.swapChannelDraft(ch.Id)
-			m.openChannelID = ch.Id
-			m.unreadBoundary = 0
-			m.unreadDividerID = ""
-			m.unreadDividerResolved = false
-			m.viewGen++
-			m.viewSettled = false
+			// We bypass openChannelLoadCmd here; route the switch through
+			// enterChannel so the pane can't desync from openChannelID.
+			draftCmd := m.enterChannel(ch.Id)
 			m.posts = around
 			m.postIdx = len(around) - 1
 			for i, p := range around {

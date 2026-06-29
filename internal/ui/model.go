@@ -2132,25 +2132,47 @@ func (m Model) persistDelete(p *model.Post) tea.Cmd {
 // it clears m.posts, sets the loading status, and returns the standard
 // fetchPosts Cmd. Callers tea.Batch the returned Cmd with any unrelated
 // work (focus changes, stat bumps, etc.).
-func (m *Model) openChannelLoadCmd(channelID string) tea.Cmd {
-	// The channel-info panel describes a specific channel; close it when the
-	// open channel changes out from under it so it can't show stale info.
+// enterChannel performs the bookkeeping that EVERY "open/jump to a channel"
+// path must do atomically when the open conversation changes: stash the
+// outgoing composer draft / restore the incoming one, repoint openChannelID,
+// drop any unread divider carried over from the previous channel, and start a
+// fresh mark-read dwell. openChannelID is the routing source of truth — replies
+// (composerTarget), the title, live-update and gap-fill merges, and the
+// read-mark dwell are all keyed off it — so swapping the visible posts without
+// going through here lands replies in the previous channel (see the convroute
+// tests). Callers still own loading/placing posts and any focus/scroll changes.
+// Returns the draft-swap command to batch into the caller's result.
+func (m *Model) enterChannel(channelID string) tea.Cmd {
+	// Close a channel-info panel describing a different channel so it can't
+	// show stale info once the open channel changes out from under it.
 	if m.infoOpen && channelID != m.infoChannelID {
 		m.closeInfo()
 	}
-	// Stash the outgoing channel's composer draft and restore the incoming
-	// one before repointing openChannelID (swapChannelDraft reads the old id
-	// from it). nil for same-channel reopens or when an edit/thread owns the
-	// composer.
+	// Stash the outgoing channel's composer draft and restore the incoming one
+	// BEFORE repointing openChannelID (swapChannelDraft reads the old id from
+	// it). nil for same-channel reopens or when an edit/thread owns the composer.
 	draftCmd := m.swapChannelDraft(channelID)
 	m.openChannelID = channelID
-	// Freeze the read/unread boundary for this view, then let renderMessages
-	// resolve it to a concrete post. Only when the channel actually has unread
-	// messages — otherwise reopening an already-read channel would draw a stale
-	// divider at the old LastViewedAt.
+	// Drop any unread divider carried over from the previous channel; the paths
+	// that want one drawn on open re-arm the boundary after this returns.
 	m.unreadBoundary = 0
 	m.unreadDividerID = ""
 	m.unreadDividerResolved = false
+	// New focus session: start a fresh dwell. The badges are intentionally
+	// left intact until the dwell elapses (see scheduleMarkViewed), so a
+	// quick peek doesn't clear unread.
+	m.viewGen++
+	m.viewSettled = false
+	return draftCmd
+}
+
+func (m *Model) openChannelLoadCmd(channelID string) tea.Cmd {
+	draftCmd := m.enterChannel(channelID)
+	// Freeze the read/unread boundary for this view, then let renderMessages
+	// resolve it to a concrete post. Only when the channel actually has unread
+	// messages — otherwise reopening an already-read channel would draw a stale
+	// divider at the old LastViewedAt. This is the normal-open path; the jump
+	// paths land on a specific post and leave the boundary cleared.
 	if m.unread[channelID] > 0 {
 		for _, mb := range m.members {
 			if mb.ChannelId == channelID {
@@ -2159,11 +2181,6 @@ func (m *Model) openChannelLoadCmd(channelID string) tea.Cmd {
 			}
 		}
 	}
-	// New focus session: start a fresh dwell. The badges are intentionally
-	// left intact until the dwell elapses (see scheduleMarkViewed), so a
-	// quick peek doesn't clear unread.
-	m.viewGen++
-	m.viewSettled = false
 	if cached := m.loadFromStore(channelID); len(cached) > 0 {
 		m.posts = cached
 		m.postIdx = len(m.posts) - 1

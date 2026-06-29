@@ -142,14 +142,9 @@ func (m Model) handleSwitcherKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// action, so land focus in the composer. (Unlike enter on the sidebar,
 		// which stays in the channel list so navigation keys keep working.)
 		m.focus = focusInput
-		// Stash the open channel's draft and restore the target's before
-		// repointing openChannelID (this path bypasses openChannelLoadCmd).
-		draftCmd := m.swapChannelDraft(ch.Id)
-		m.openChannelID = ch.Id
-		// New focus session: start a fresh mark-read dwell (this path
-		// doesn't go through openChannelLoadCmd).
-		m.viewGen++
-		m.viewSettled = false
+		// This path bypasses openChannelLoadCmd; route the switch through
+		// enterChannel so openChannelID and the mark-read dwell stay in lock-step.
+		draftCmd := m.enterChannel(ch.Id)
 		m.posts = nil
 		m.status = "loading messages…"
 		m.renderMessages()
