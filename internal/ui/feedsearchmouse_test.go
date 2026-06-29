@@ -2,11 +2,13 @@ package ui
 
 import (
 	"fmt"
+	"path/filepath"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/mattermost/mattermost/server/public/model"
 
+	"matterbox/internal/editor"
 	"matterbox/internal/store"
 	"matterbox/internal/viewport"
 )
@@ -187,6 +189,39 @@ func TestClickSearchSelectsThenOpens(t *testing.T) {
 	}
 	if m.openChannelID != "c2" {
 		t.Fatalf("second click opened %q want c2", m.openChannelID)
+	}
+}
+
+// TestOpenHitChannelCacheSetsOpenChannel: opening a search hit via the cache
+// fast-path (store seeded so PostsAround succeeds) must repoint openChannelID,
+// not just swap the visible posts — otherwise replies, the title, the
+// scroll-to-live gap-fill and the read dwell all stay bound to the previous
+// channel. The fallback path covers this via openChannelLoadCmd; this guards the
+// fast path.
+func TestOpenHitChannelCacheSetsOpenChannel(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "hit.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	if err := st.UpsertMany([]*model.Post{
+		{Id: "c1p", ChannelId: "c1", UserId: "u", CreateAt: 500, UpdateAt: 500, Message: "match"},
+	}); err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+
+	m := searchMouseModel(2) // channels c0, c1, each with a hit
+	m.store = st
+	m.input = editor.New()
+	m.openChannelID = "c0" // a channel is already open
+
+	out, _ := m.openHitChannel(m.search.hits[1]) // hit's Match is in c1
+	mm := out.(Model)
+	if mm.openChannelID != "c1" {
+		t.Fatalf("openChannelID = %q, want c1 (cache fast-path left it stale)", mm.openChannelID)
+	}
+	if len(mm.posts) == 0 || mm.posts[mm.postIdx].Id != "c1p" {
+		t.Errorf("did not centre on the match; postIdx=%d posts=%v", mm.postIdx, mm.posts)
 	}
 }
 

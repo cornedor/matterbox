@@ -565,6 +565,23 @@ func (s *Store) PostsAround(channelID, pivotPostID string, beforeN, afterN int) 
 	return out, nil
 }
 
+// ChannelOfPost returns the channel id of the cached post with the given id.
+// ok is false when the post isn't cached. Used to resolve a permalink to its
+// channel without an API round-trip when the target post is already local.
+func (s *Store) ChannelOfPost(id string) (channelID string, ok bool, err error) {
+	if s == nil || id == "" {
+		return "", false, nil
+	}
+	err = s.db.QueryRow(`SELECT channel_id FROM posts WHERE id = ?`, id).Scan(&channelID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("channel of post: %w", err)
+	}
+	return channelID, true, nil
+}
+
 // lookupPost fetches a single post by Id. Returns (nil, nil) when the
 // id isn't in the cache.
 func (s *Store) lookupPost(id string) (*model.Post, error) {

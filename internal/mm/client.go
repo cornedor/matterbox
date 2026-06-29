@@ -91,6 +91,17 @@ func (c *Client) Posts(ctx context.Context, channelID string, perPage int) (*mod
 	return pl, nil
 }
 
+// Post fetches a single post by id. Used to resolve a permalink
+// (/<team>/pl/<postID>) to its channel when the target isn't cached, so a
+// clicked permalink can be opened in the app instead of the browser.
+func (c *Client) Post(ctx context.Context, postID string) (*model.Post, error) {
+	p, _, err := c.c.GetPost(ctx, postID, "")
+	if err != nil {
+		return nil, fmt.Errorf("get post: %w", err)
+	}
+	return p, nil
+}
+
 // PostsAfter returns posts in the channel that were created after the
 // given postID, oldest first as far as the page is concerned. Used to
 // fill the gap between the newest cached post and the live state when

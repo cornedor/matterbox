@@ -735,6 +735,21 @@ func (m Model) openHitChannel(hit store.SearchHit) (tea.Model, tea.Cmd) {
 	if m.store != nil {
 		around, err := m.store.PostsAround(ch.Id, hit.Match.Id, 30, 30)
 		if err == nil && len(around) > 0 {
+			// Opening a channel here bypasses openChannelLoadCmd, so replicate the
+			// bookkeeping it does or the pane desyncs from m.openChannelID: stash
+			// the outgoing draft / restore the incoming one, then repoint
+			// openChannelID. The repoint matters beyond routing — the gap-fill
+			// below (and any live update) only merges into the pane when its
+			// channel matches openChannelID, and the read dwell is armed off that
+			// same match — so leaving it stale drops them silently. Clear the
+			// stale unread divider and start a fresh mark-read dwell too.
+			draftCmd := m.swapChannelDraft(ch.Id)
+			m.openChannelID = ch.Id
+			m.unreadBoundary = 0
+			m.unreadDividerID = ""
+			m.unreadDividerResolved = false
+			m.viewGen++
+			m.viewSettled = false
 			m.posts = around
 			m.postIdx = len(around) - 1
 			for i, p := range around {
@@ -756,7 +771,7 @@ func (m Model) openHitChannel(hit store.SearchHit) (tea.Model, tea.Cmd) {
 			if gapID != "" {
 				gapCmd = m.fetchPostsAfter(ch.Id, gapID)
 			}
-			return m, tea.Batch(saveCmd, gapCmd)
+			return m, tea.Batch(saveCmd, draftCmd, gapCmd)
 		}
 	}
 

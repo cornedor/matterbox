@@ -35,19 +35,28 @@ func isWebURL(u string) bool {
 	return strings.HasPrefix(l, "http://") || strings.HasPrefix(l, "https://")
 }
 
-// activateLink opens a clicked link, gating a non-web scheme behind the warning
-// modal — the mouse-click entry point to openTarget.
+// activateLink opens a clicked link — the mouse-click entry point to openTarget,
+// which also decides whether the target is an in-app permalink.
 func (m Model) activateLink(url string) (tea.Model, tea.Cmd) {
 	return m, m.openTarget(openable{name: url, url: url})
 }
 
 // openTarget opens one openable, the single place link-scheme policy lives.
-// Attachments (a downloaded local file) and http(s) URLs open straight away via
-// the OS handler; any other URL scheme — mailto:/file:/tel:/a custom app scheme
-// — raises the warning modal first, since handing such a target to the launcher
-// can do more than open a browser tab. Used by both the mouse click (activateLink)
-// and the keyboard `o` / open-picker paths (openpicker.go).
+// A Mattermost message permalink on our own server is followed inside the app
+// (routed through followPermalinkMsg so every caller shares one navigation path)
+// instead of being handed to the browser. Otherwise: attachments (a downloaded
+// local file) and http(s) URLs open straight away via the OS handler; any other
+// URL scheme — mailto:/file:/tel:/a custom app scheme — raises the warning modal
+// first, since handing such a target to the launcher can do more than open a
+// browser tab. Used by both the mouse click (activateLink) and the keyboard `o`
+// / open-picker paths (openpicker.go).
 func (m *Model) openTarget(o openable) tea.Cmd {
+	if o.file == nil {
+		if postID, ok := m.parsePermalinkPostID(o.url); ok {
+			url := o.url
+			return func() tea.Msg { return followPermalinkMsg{postID: postID, url: url} }
+		}
+	}
 	if o.file == nil && !isWebURL(o.url) {
 		m.linkConfirm = linkConfirmState{active: true, url: o.url}
 		return nil

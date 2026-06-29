@@ -171,6 +171,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case openChannelRequestMsg:
 		return m.openChannelExternal(msg.channelID)
 
+	case followPermalinkMsg:
+		return m.followPermalink(msg.postID, msg.url)
+
+	case permalinkResolvedMsg:
+		return m.handlePermalinkResolved(msg)
+
 	case customEmojiListMsg:
 		if msg.err == nil {
 			m.customEmojiNames = msg.names

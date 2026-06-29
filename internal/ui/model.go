@@ -175,6 +175,12 @@ type Model struct {
 	// conversation is open never retargets the open panel.
 	openChannelID string
 
+	// serverURL is the Mattermost base URL (config server_url). Used to
+	// recognise a clicked link as an in-app permalink (/<team>/pl/<postID>)
+	// so it opens the message inside the app instead of the browser. Empty
+	// when unconfigured, which disables that interception. See permalink.go.
+	serverURL string
+
 	// drafts holds the unsent composer text per channel, keyed by channelID
 	// (channel drafts only — thread replies and in-progress edits aren't
 	// tracked here). It mirrors the server's per-channel drafts: it's seeded
@@ -854,7 +860,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	var jiraCfg jira.Config
 	var jiraProjects []string
 	var gitlabCfg gitlab.Config
+	var serverURL string
 	if cfg != nil {
+		serverURL = cfg.ServerURL
 		vimNav = parseVimNav(cfg.Keybindings.VimNav)
 		reactions = append([]string(nil), cfg.Reactions...)
 		teamOrder = append([]string(nil), cfg.TeamOrder...)
@@ -977,6 +985,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 
 	return Model{
 		client:              client,
+		serverURL:           serverURL,
 		ctx:                 context.Background(),
 		channels:            map[string][]*model.Channel{},
 		drafts:              map[string]string{},
