@@ -2231,6 +2231,26 @@ func (m *Model) currentTeamID() string {
 	return id
 }
 
+// fallbackTeamID returns a real team the user is a member of, preferring
+// the currently-focused tab's team. It exists to satisfy server checks
+// that demand a genuine team id even when the action originated in a DM /
+// group DM (whose channel has no team of its own). Synthetic tab ids
+// (DMs, feed, unread, …) are never returned — the current tab is only
+// honoured when it maps to an actual entry in m.teams. Empty only when
+// the user belongs to no teams at all.
+func (m *Model) fallbackTeamID() string {
+	cur := m.currentTeamID()
+	for _, t := range m.teams {
+		if t.Id == cur {
+			return cur
+		}
+	}
+	if len(m.teams) > 0 {
+		return m.teams[0].Id
+	}
+	return ""
+}
+
 // visibleChannels returns the channels in the current team, filtered.
 func (m *Model) visibleChannels() []*model.Channel {
 	all := m.channels[m.currentTeamID()]

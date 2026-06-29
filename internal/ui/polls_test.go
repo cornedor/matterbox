@@ -171,6 +171,67 @@ func TestRenderPollIncludesOptions(t *testing.T) {
 	}
 }
 
+// matterpoll's End Poll / Delete Poll buttons open an element-less
+// confirmation dialog (just a title + submit button, no input fields).
+// openPollDialog used to bail on zero elements, so the confirm modal
+// never showed and the poll could never be ended. It must open the modal.
+func TestOpenPollDialogConfirmationHasNoElements(t *testing.T) {
+	m := &Model{width: 80}
+	req := model.OpenDialogRequest{
+		URL: "/plugins/com.github.matterpoll.matterpoll/api/v1/polls/abc/end/submit",
+		Dialog: model.Dialog{
+			Title:       "Confirm Poll End",
+			SubmitLabel: "End",
+			CallbackId:  "postid123",
+			// no Elements — this is a pure confirmation dialog
+		},
+	}
+	if !m.openPollDialog(req) {
+		t.Fatal("element-less confirm dialog did not open")
+	}
+	if !m.pollDialog.open {
+		t.Fatal("pollDialog.open is false after opening confirm dialog")
+	}
+	if len(m.pollDialog.inputs) != 0 {
+		t.Fatalf("confirm dialog should have 0 inputs, got %d", len(m.pollDialog.inputs))
+	}
+	if m.pollDialog.callbackID != "postid123" {
+		t.Errorf("callbackID = %q, want postid123", m.pollDialog.callbackID)
+	}
+	out := m.renderPollDialog()
+	for _, want := range []string{"Confirm Poll End", "End", "esc cancel"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered confirm dialog missing %q:\n%s", want, out)
+		}
+	}
+}
+
+// A poll lives in a DM, whose channel has an empty TeamId. The server's
+// dialog-submit handler still demands a team the user can view, so the
+// confirm dialog must carry a real team id, not the DM channel's empty one.
+func TestOpenPollDialogDMFallsBackToRealTeam(t *testing.T) {
+	dm := &model.Channel{Id: "dmchan", Type: model.ChannelTypeDirect, TeamId: ""}
+	m := &Model{
+		width:         80,
+		openChannelID: "dmchan",
+		teams:         []*model.Team{{Id: "realteam"}},
+		channels:      map[string][]*model.Channel{dmTeamID: {dm}},
+	}
+	req := model.OpenDialogRequest{
+		URL:    "/plugins/com.github.matterpoll.matterpoll/api/v1/polls/abc/end/submit",
+		Dialog: model.Dialog{Title: "Confirm Poll End", SubmitLabel: "End", CallbackId: "p1"},
+	}
+	if !m.openPollDialog(req) {
+		t.Fatal("confirm dialog did not open")
+	}
+	if m.pollDialog.channelID != "dmchan" {
+		t.Errorf("channelID = %q, want dmchan", m.pollDialog.channelID)
+	}
+	if m.pollDialog.teamID != "realteam" {
+		t.Errorf("teamID = %q, want realteam (DM must not submit an empty team)", m.pollDialog.teamID)
+	}
+}
+
 func TestRenderPollEndedShowsResults(t *testing.T) {
 	m := Model{}
 	out := m.renderPoll(unmarshalPost(t, rawEndedPoll), 80, false)

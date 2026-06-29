@@ -351,18 +351,16 @@ type pollDialogState struct {
 }
 
 // openPollDialog inflates the modal from the data carried on the
-// open_dialog WS event. Returns true when at least one input element was
-// present and the modal is now open. The caller is responsible for the
-// (rare) error path when the WS data isn't shaped like an OpenDialogRequest.
+// open_dialog WS event. Returns true — the modal is now open.
+//
+// matterpoll uses two dialog shapes: an input dialog ("Add Option", one
+// text element) and an element-less *confirmation* dialog ("Confirm Poll
+// End" / "Confirm Poll Delete") that carries only a title and a submit
+// button. Both are real modals the user must act on; the confirm variant
+// simply has no inputs, so Enter submits an empty submission. Bailing out
+// on zero elements (as we used to) meant End/Delete Poll silently did
+// nothing — the dialog opened server-side but we never showed it.
 func (m *Model) openPollDialog(req model.OpenDialogRequest) bool {
-	if len(req.Dialog.Elements) == 0 {
-		// A dialog without text inputs is just a confirm — matterpoll
-		// doesn't currently emit one, but if a plugin did we'd auto-submit
-		// with an empty submission to keep the flow moving. We don't auto-
-		// submit blindly though; better to surface a status hint.
-		m.status = "dialog \"" + req.Dialog.Title + "\" has no inputs to fill"
-		return false
-	}
 	st := pollDialogState{
 		open:       true,
 		url:        req.URL,
@@ -389,7 +387,9 @@ func (m *Model) openPollDialog(req model.OpenDialogRequest) bool {
 		ti.SetWidth(46)
 		st.inputs = append(st.inputs, ti)
 	}
-	st.inputs[0].Focus()
+	if len(st.inputs) > 0 {
+		st.inputs[0].Focus()
+	}
 	// Channel + team are needed in the submission request. When a thread
 	// is open and a poll lives inside it, the thread's channel is what
 	// the user just acted on. Otherwise the poll targets the open channel,
@@ -400,6 +400,16 @@ func (m *Model) openPollDialog(req model.OpenDialogRequest) bool {
 	} else if ch := m.findChannel(m.openChannelID); ch != nil {
 		st.channelID = ch.Id
 		st.teamID = ch.TeamId
+	}
+	// DMs and group DMs carry an empty Channel.TeamId, but the server's
+	// dialog-submit handler still runs an unconditional PermissionViewTeam
+	// check against the request's TeamId — an empty (or our synthetic DM)
+	// team id fails it with "you do not have the appropriate permissions".
+	// The web client sends whatever team it's displaying the DM under; we
+	// have no such notion for the virtual DMs tab, so fall back to any real
+	// team the user belongs to.
+	if st.teamID == "" || st.teamID == dmTeamID {
+		st.teamID = m.fallbackTeamID()
 	}
 	m.pollDialog = st
 	return true
@@ -455,13 +465,29 @@ func (m *Model) renderPollDialog() string {
 		rows = append(rows, m.pollDialog.inputs[i].View())
 		rows = append(rows, "")
 	}
+	// Element-less confirmation dialog (End/Delete Poll): nothing to fill,
+	// so give the body a prompt instead of an empty gap.
+	if len(m.pollDialog.elements) == 0 && m.pollDialog.intro == "" {
+		rows = append(rows, lipgloss.NewStyle().Width(inner).Align(lipgloss.Center).Foreground(dimColor).Render("Press ↵ to confirm."))
+	}
 
+	// "tab next" only makes sense with more than one input. For the single-
+	// input add-option dialog and the element-less confirm dialogs, show the
+	// real submit label ("End" / "Delete" / "Add") instead.
+	footerText := "tab next · ↵ submit · esc cancel"
+	if len(m.pollDialog.inputs) <= 1 {
+		submit := m.pollDialog.submitLbl
+		if submit == "" {
+			submit = "submit"
+		}
+		footerText = "↵ " + submit + " · esc cancel"
+	}
 	footer := lipgloss.NewStyle().
 		Width(inner).
 		Align(lipgloss.Center).
 		Foreground(dimColor).
 		Italic(true).
-		Render("tab next · ↵ submit · esc cancel")
+		Render(footerText)
 
 	if m.pollDialog.errMsg != "" {
 		rows = append(rows, lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(m.pollDialog.errMsg))
@@ -588,8 +614,16 @@ func (m *Model) applyPollDialogResult(msg pollDialogSubmittedMsg) {
 			return
 		}
 	}
+	// Add-option dialogs carry input elements; the End/Delete confirm
+	// dialogs don't. For the latter the visible outcome is the follow-up
+	// post_edited / post_deleted event, so no status line is needed.
+	hadInputs := len(m.pollDialog.elements) > 0
 	m.closePollDialog()
-	m.status = "option added"
+	if hadInputs {
+		m.status = "option added"
+	} else {
+		m.status = ""
+	}
 }
 
 // applyOpenDialog parses an open_dialog WS event and opens the modal.
