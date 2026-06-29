@@ -12,16 +12,18 @@
 # Override the install location with PREFIX, e.g.  make install PREFIX=~/apps
 #
 # The `--demo` soundtrack (oto + a tracker synth) needs cgo and system audio
-# libs (pkg-config/ALSA on Linux), so it's gated behind the `demoaudio` build
-# tag and left out of the default build. Add it to any target with TAGS, e.g.
-# `make build TAGS=demoaudio`, or use the `demo` target which sets it for you.
+# libs (pkg-config/ALSA on Linux). The make targets compile it in by default
+# (TAGS=demoaudio); drop it with `make build TAGS=` to lose that dependency.
+# Raw `go build`/`go run` outside make stay tag-free, so they work without
+# pkg-config — the soundtrack just plays silently there.
 
 BINARY := matterbox
 PKG    := .
 GO     ?= go
 
-# Extra build tags. Empty by default; `demoaudio` compiles in the --demo audio.
-TAGS     ?=
+# Extra build tags. Defaults to `demoaudio` (compiles in the --demo audio);
+# clear it with `make build TAGS=` to drop the pkg-config/ALSA dependency.
+TAGS     ?= demoaudio
 TAGFLAGS := $(if $(TAGS),-tags $(TAGS),)
 
 # User-level install prefix. ~/.local/bin is already on this user's PATH.
