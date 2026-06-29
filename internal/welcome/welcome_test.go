@@ -119,6 +119,55 @@ func TestMarkReadDigitsAndAdjust(t *testing.T) {
 	}
 }
 
+func TestCodeThemeCyclesAndPersists(t *testing.T) {
+	m := newWizard(t)
+	m.step = stepAdvanced
+
+	// The cycler seeds from config (monokai by default) and the row sits last in
+	// the tab order, so a full focus cycle reaches it.
+	if got := m.currentThemeName(); got != "monokai" {
+		t.Fatalf("seeded theme = %q, want monokai", got)
+	}
+	m.adv.focus = 5
+
+	start := m.adv.codeThemeIdx
+	m.handleKey(key(tea.KeyRight))
+	if m.adv.codeThemeIdx == start {
+		t.Fatal("right should advance the theme index")
+	}
+	picked := m.currentThemeName()
+	m.handleKey(key(tea.KeyLeft))
+	if m.adv.codeThemeIdx != start {
+		t.Fatal("left should step back to the previous theme")
+	}
+
+	// Re-pick and finish: applyAdvanced writes the choice into the config.
+	m.handleKey(key(tea.KeyRight))
+	m.handleKey(key(tea.KeyEnter))
+	if m.cfg.CodeTheme != picked {
+		t.Fatalf("saved code_theme = %q, want %q", m.cfg.CodeTheme, picked)
+	}
+	reloaded, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.CodeTheme != picked {
+		t.Fatalf("reloaded code_theme = %q, want %q", reloaded.CodeTheme, picked)
+	}
+}
+
+func TestAdvancedRendersThemePreview(t *testing.T) {
+	m := newWizard(t)
+	m.t = 7 // settled scene
+	m.step = stepAdvanced
+	text := ansiSGR.ReplaceAllString(m.View().Content, "")
+	for _, want := range []string{"Code theme", "Preview", "func greet"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("advanced step missing %q in render", want)
+		}
+	}
+}
+
 func TestAuthFocusNavigation(t *testing.T) {
 	m := newWizard(t)
 	m.step = stepAuth

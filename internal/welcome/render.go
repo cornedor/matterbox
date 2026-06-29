@@ -154,8 +154,11 @@ func (m *Model) buildStep(p *panelBuilder) {
 		p.add(m.advRow("Mouse support", onoff(m.adv.mouse), chipColor(m.adv.mouse), 2))
 		p.add(m.advRow("Animations", onoff(m.adv.animations), chipColor(m.adv.animations), 3))
 		p.add(m.advRow("Ctrl+arrow navigation", onoff(m.adv.ctrlArrow), chipColor(m.adv.ctrlArrow), 4))
+		p.add(m.advRow("Code theme", m.currentThemeName(), accentCyan, 5))
 		p.blank()
 		p.wrap(m.advHint(), dimC)
+		p.blank()
+		m.addCodePreview(p)
 		p.blank()
 		p.text("↑↓ move   ←→/space change   enter  finish   esc  back", dimC)
 	}
@@ -193,8 +196,21 @@ func (m *Model) advHint() string {
 		return "Animate GIF custom emoji and image previews."
 	case 4:
 		return "Switch team/channel with ctrl+arrow keys (off frees them for word-jump)."
+	case 5:
+		return fmt.Sprintf("Syntax-highlight palette for code blocks — ←→ cycles %d themes.", len(m.themeNames))
 	}
 	return ""
+}
+
+// addCodePreview appends a label and the syntax-highlighted snippet for the
+// currently-selected code theme, so cycling themes shows their colours live.
+func (m *Model) addCodePreview(p *panelBuilder) {
+	bg, width, lines := buildCodePreview(m.currentThemeName())
+	p.text("Preview", dimC)
+	for _, segs := range lines {
+		segs := segs
+		p.add(func(grid [][]cell, x, y, w int) { drawCodeLine(grid, x, y, w, bg, segs, width) })
+	}
 }
 
 // drawPanel sizes, fills, frames, and renders a built panel, centred (and nudged

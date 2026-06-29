@@ -353,7 +353,21 @@ func (m *Model) adjustAdvanced(delta int) {
 		m.adv.animations = !m.adv.animations
 	case 4:
 		m.adv.ctrlArrow = !m.adv.ctrlArrow
+	case 5:
+		if n := len(m.themeNames); n > 0 {
+			m.adv.codeThemeIdx = (m.adv.codeThemeIdx + delta + n) % n
+		}
 	}
+}
+
+// currentThemeName is the code theme the cycler currently points at, or the
+// default when the registry came back empty (it never does in the real binary).
+func (m *Model) currentThemeName() string {
+	n := len(m.themeNames)
+	if n == 0 || m.adv.codeThemeIdx < 0 || m.adv.codeThemeIdx >= n {
+		return previewFallbackTheme
+	}
+	return m.themeNames[m.adv.codeThemeIdx]
 }
 
 // applyAdvanced copies the wizard's choices back into the config struct.
@@ -373,6 +387,7 @@ func (m *Model) applyAdvanced() {
 	} else {
 		m.cfg.Keybindings.NavModifier = "none"
 	}
+	m.cfg.CodeTheme = m.currentThemeName()
 	m.cfg.ServerURL = normalizeServer(m.server.value())
 }
 

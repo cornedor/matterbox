@@ -123,6 +123,11 @@ type Model struct {
 	mfa      textField
 	adv      advanced
 
+	// themeNames is the sorted list of chroma style names the code-theme cycler
+	// steps through (adv.codeThemeIdx indexes into it). Captured once in New so
+	// the every-keystroke View doesn't re-enumerate the registry.
+	themeNames []string
+
 	serverMsg    string // validation hint under the server field
 	authMsg      string // status/error under the auth controls
 	authErr      bool   // authMsg is an error (vs neutral status)
@@ -151,15 +156,16 @@ type Model struct {
 
 // advanced holds the one-screen advanced settings and the focused row.
 type advanced struct {
-	focus      int
-	markRead   int  // mark_read_delay_seconds
-	sqlTab     bool // sql_tab
-	mouse      bool // mouse
-	animations bool // animations.* (custom_emoji + image_preview)
-	ctrlArrow  bool // keybindings.nav_modifier == "ctrl" (vs "none")
+	focus        int
+	markRead     int  // mark_read_delay_seconds
+	sqlTab       bool // sql_tab
+	mouse        bool // mouse
+	animations   bool // animations.* (custom_emoji + image_preview)
+	ctrlArrow    bool // keybindings.nav_modifier == "ctrl" (vs "none")
+	codeThemeIdx int  // index into Model.themeNames → code_theme
 }
 
-const advFieldCount = 5
+const advFieldCount = 6
 
 // New builds the wizard over an already-loaded config, seeding the fields from
 // whatever is already configured so re-running `welcome` edits rather than
@@ -193,15 +199,17 @@ func New(cfg *config.Config, demo bool) *Model {
 	})
 
 	m := &Model{rend: rend, cfg: cfg, phase: phaseIntro, step: stepServer, demo: demo}
+	m.themeNames = allThemeNames()
 	if cfg.ServerURL != "" && cfg.ServerURL != config.PlaceholderServerURL {
 		m.server.setValue(cfg.ServerURL)
 	}
 	m.adv = advanced{
-		markRead:   derefInt(cfg.MarkReadDelaySeconds, 5),
-		sqlTab:     derefBool(cfg.SQLTab, false),
-		mouse:      derefBool(cfg.Mouse, true),
-		animations: derefBool(cfg.Animations.CustomEmoji, true),
-		ctrlArrow:  navModEnabled(cfg.Keybindings.NavModifier),
+		markRead:     derefInt(cfg.MarkReadDelaySeconds, 5),
+		sqlTab:       derefBool(cfg.SQLTab, false),
+		mouse:        derefBool(cfg.Mouse, true),
+		animations:   derefBool(cfg.Animations.CustomEmoji, true),
+		ctrlArrow:    navModEnabled(cfg.Keybindings.NavModifier),
+		codeThemeIdx: themeIndex(m.themeNames, cfg.CodeTheme),
 	}
 	return m
 }
