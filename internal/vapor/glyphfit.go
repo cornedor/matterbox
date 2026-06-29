@@ -48,11 +48,17 @@ func cellFit(sub *[glyphSub]RGB, totSum RGB, families []glyphFamily) glyphPick {
 			}
 		}
 
-		// Walk all patterns in Gray-code order so exactly one sub-cell flips
+		// Walk the patterns in Gray-code order so exactly one sub-cell flips
 		// between steps: fgSum/fgCells update in O(1) instead of rescanning bits.
+		// Only half the patterns are visited: a pattern and its bit-complement are
+		// the same two-colour split with fg/bg swapped — identical score, and an
+		// identical rendered cell, since the complement rune is the pixel-inverse
+		// drawn with fg/bg exchanged. Holding the top sub-cell bit clear and
+		// Gray-walking the remaining nCount-1 bits hits exactly one representative
+		// of each complement pair, halving both the bookkeeping and the scoring.
 		var fgSum RGB
 		fgCells, prev := 0, 0
-		for g := 0; g < (1 << nCount); g++ {
+		for g := 0; g < (1 << (nCount - 1)); g++ {
 			p := g ^ (g >> 1)
 			if d := p ^ prev; d != 0 {
 				k := bits.TrailingZeros(uint(d))
