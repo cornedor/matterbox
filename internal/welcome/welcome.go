@@ -14,6 +14,7 @@ import (
 
 	"matterbox/internal/config"
 	"matterbox/internal/mm"
+	"matterbox/internal/mmauth"
 	"matterbox/internal/vapor"
 )
 
@@ -50,6 +51,21 @@ const (
 	stepAdvanced
 )
 
+// Focusable controls on the auth step, in tab order. Username/password come
+// first — they're the primary path, so the username field is focused when the
+// step opens — with the GitLab SSO button and the token/mmauth:// paste field
+// as alternatives below. The two-factor field is last and stays unreachable
+// until the server asks for a code (authControls skips it), so it doesn't
+// clutter the tab order in the common case.
+const (
+	authFocusUser = iota
+	authFocusPassword
+	authFocusSSO
+	authFocusToken
+	authFocusMFA
+	authFieldCount
+)
+
 // Model is the welcome wizard. Pointer receivers throughout: the model is small
 // (two pointers plus a handful of fields) and mutating in place keeps the step
 // logic readable.
@@ -66,17 +82,30 @@ type Model struct {
 	phase phase
 	step  int
 
-	server textField
-	token  textField
-	adv    advanced
+	authFocus int // focused control on the auth step (authFocus* consts)
+
+	server   textField
+	user     textField
+	password textField
+	token    textField
+	mfa      textField
+	adv      advanced
 
 	serverMsg    string // validation hint under the server field
-	authMsg      string // status/error under the token field
+	authMsg      string // status/error under the auth controls
 	authErr      bool   // authMsg is an error (vs neutral status)
-	authOK       bool   // a token validated this session
-	authUser     string // username from the validated token
+	authOK       bool   // a sign-in succeeded this session
+	authUser     string // username from the successful sign-in
 	validating   bool   // an auth check is in flight
 	pendingToken string // token awaiting validation, saved on success
+	mfaRequired  bool   // the server demanded a two-factor code; reveal the MFA field
+
+	// Auto-capture of the mmauth:// SSO redirect (Linux). Started when the user
+	// opens the browser; cap.URL delivers the captured link so the token fills
+	// and validates itself, no copy-paste. capturing guards against starting it
+	// twice; closeCapture tears it down on success/quit.
+	cap       mmauth.Capture
+	capturing bool
 
 	// Background frame cache. scene holds the pristine rendered scene for sceneT;
 	// frame is a per-View copy the overlay draws onto. The scene is re-rendered
@@ -177,6 +206,30 @@ func validateCmd(server, token string) tea.Cmd {
 	}
 }
 
+// passwordResultMsg reports the outcome of a username/password sign-in. Exactly
+// one of success (token+user), mfaRequired, or err carries the result.
+type passwordResultMsg struct {
+	token       string
+	user        string
+	mfaRequired bool
+	err         error
+}
+
+// passwordLoginCmd signs in with a username/password (and an optional two-factor
+// code) in the background. A first attempt the server rejects asking for MFA
+// comes back as mfaRequired so the wizard can reveal the code field.
+func passwordLoginCmd(server, loginID, password, mfaToken string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		token, u, err := mm.New(server, "").LoginWithPassword(ctx, loginID, password, mfaToken)
+		if err != nil {
+			return passwordResultMsg{mfaRequired: mfaToken == "" && mm.MFARequired(err), err: err}
+		}
+		return passwordResultMsg{token: token, user: u.Username}
+	}
+}
+
 func (m *Model) Init() tea.Cmd { return tickAt(m.frameRate()) }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -212,8 +265,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 
+	case mmauthURLMsg:
+		return m.handleCapturedURL(msg)
+
 	case authResultMsg:
 		return m.handleAuthResult(msg)
+
+	case passwordResultMsg:
+		return m.handlePasswordResult(msg)
 	}
 	return m, nil
 }
@@ -269,8 +328,9 @@ func copyGrid(dst, src [][]cell) [][]cell {
 	return dst
 }
 
-// activeField returns the text field accepting input for the current step, or
-// nil when the step has no text entry (e.g. the advanced screen).
+// activeField returns the text field accepting input for the current step (and
+// focused control, on the auth step), or nil when there's no text entry under
+// the cursor (the SSO button, or the advanced screen).
 func (m *Model) activeField() *textField {
 	if m.phase != phaseWizard {
 		return nil
@@ -279,7 +339,16 @@ func (m *Model) activeField() *textField {
 	case stepServer:
 		return &m.server
 	case stepAuth:
-		return &m.token
+		switch m.authFocus {
+		case authFocusUser:
+			return &m.user
+		case authFocusPassword:
+			return &m.password
+		case authFocusToken:
+			return &m.token
+		case authFocusMFA:
+			return &m.mfa
+		}
 	}
 	return nil
 }

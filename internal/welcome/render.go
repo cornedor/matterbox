@@ -41,7 +41,23 @@ func (p *panelBuilder) heading(title, sub string) {
 
 // field adds a single-line input row for f.
 func (p *panelBuilder) field(f *textField, focused bool, placeholder string) {
-	p.add(func(grid [][]cell, x, y, w int) { drawInput(grid, x, y, w, f, focused, placeholder) })
+	p.add(func(grid [][]cell, x, y, w int) { drawInput(grid, x, y, w, f, focused, placeholder, false) })
+}
+
+// secret adds a single-line input row that masks its contents — for passwords.
+func (p *panelBuilder) secret(f *textField, focused bool, placeholder string) {
+	p.add(func(grid [][]cell, x, y, w int) { drawInput(grid, x, y, w, f, focused, placeholder, true) })
+}
+
+// button adds a focusable action button row (e.g. "Open GitLab SSO").
+func (p *panelBuilder) button(label string, focused bool) {
+	p.add(func(grid [][]cell, x, y, w int) { drawButton(grid, x, y, w, label, focused) })
+}
+
+// textU adds one clipped line in fg, underlining the first occurrence of the
+// word `u` — used to point at the copyable link in the SSO snippet.
+func (p *panelBuilder) textU(s, u string, fg vapor.RGB) {
+	p.add(func(grid [][]cell, x, y, w int) { drawTextUnderlined(grid, x, y, clip(s, w), u, fg) })
 }
 
 // drawWizard composites the current wizard step's panel onto the background.
@@ -98,10 +114,21 @@ func (m *Model) buildStep(p *panelBuilder) {
 	case stepAuth:
 		p.heading("✦ Sign in", "Step 2 of 3 · Authentication")
 		p.blank()
-		p.wrap("Open GitLab SSO, then paste the link from the success page (or a personal access token). Leave blank to skip and sign in later.", labelC)
+		p.text("Username or email", dimC)
+		p.field(&m.user, m.authFocus == authFocusUser && !m.validating, "you@example.com")
+		p.text("Password", dimC)
+		p.secret(&m.password, m.authFocus == authFocusPassword && !m.validating, "••••••••")
+		if m.mfaRequired {
+			p.text("Two-factor code", dimC)
+			p.field(&m.mfa, m.authFocus == authFocusMFA && !m.validating, "123456")
+		}
 		p.blank()
+		p.text("— or use single sign-on —", dimC)
+		p.button("Open GitLab SSO in your browser", m.authFocus == authFocusSSO)
+		p.wrap("On the success page, copy the link from the message:", labelC)
+		p.textU(`  "please click the link"`, "link", accentCyan)
 		p.text("Token or mmauth:// link", dimC)
-		p.field(&m.token, !m.validating, "paste here…")
+		p.field(&m.token, m.authFocus == authFocusToken && !m.validating, "paste here, or leave blank to skip…")
 		if m.authMsg != "" {
 			c := accentCyan
 			if m.authErr {
@@ -110,7 +137,7 @@ func (m *Model) buildStep(p *panelBuilder) {
 			p.wrap(m.authMsg, c)
 		}
 		p.blank()
-		p.text("ctrl+o  browser    enter  verify / skip    esc  back", dimC)
+		p.text("↑↓ move    enter  select    esc  back", dimC)
 
 	case stepAdvanced:
 		p.heading("✦ Preferences", "Step 3 of 3 · Advanced")
@@ -207,7 +234,9 @@ func (m *Model) drawIntroHint(grid [][]cell) {
 
 // drawInput renders f as a single-line input box with a block cursor and simple
 // horizontal scroll so the caret stays visible in a field narrower than the text.
-func drawInput(grid [][]cell, x, y, w int, f *textField, focused bool, placeholder string) {
+// When mask is set the typed runes draw as bullets (the placeholder still shows
+// in clear) so passwords don't appear on screen.
+func drawInput(grid [][]cell, x, y, w int, f *textField, focused bool, placeholder string, mask bool) {
 	if w <= 0 {
 		return
 	}
@@ -233,12 +262,58 @@ func drawInput(grid [][]cell, x, y, w int, f *textField, focused bool, placehold
 			r, fg = ph[i], dimC
 		case idx < len(runes):
 			r = runes[idx]
+			if mask {
+				r = '•'
+			}
 		}
 		cbg := bg
 		if focused && idx == cursor {
 			cbg, fg = cursorBg, cursorFg
 		}
 		setCell(grid, x+i, y, cell{R: r, Fg: fg, Bg: cbg, HasBg: true})
+	}
+}
+
+// drawButton renders a bracketed action button. Focused, it gets a filled
+// high-contrast bar (the cursor palette) and a "›" marker so it clearly reads as
+// the active control; otherwise it sits quietly as a dim chip. Both states keep
+// a 2-cell left prefix so the button doesn't shift when focus moves.
+func drawButton(grid [][]cell, x, y, w int, label string, focused bool) {
+	if w <= 0 {
+		return
+	}
+	marker := "  "
+	fg, bg := labelC, fieldBg
+	if focused {
+		marker = "› "
+		fg, bg = cursorFg, cursorBg
+	}
+	for i, r := range []rune(clip(marker+"[ "+label+" ]", w)) {
+		setCell(grid, x+i, y, cell{R: r, Fg: fg, Bg: bg, HasBg: true})
+	}
+}
+
+// drawTextUnderlined writes s in fg over the existing background, underlining the
+// first occurrence of sub. Used for the SSO success-page snippet so the word the
+// user must copy ("link") stands out.
+func drawTextUnderlined(grid [][]cell, x, y int, s, sub string, fg vapor.RGB) {
+	lo, hi := -1, -1
+	if sub != "" {
+		if idx := strings.Index(s, sub); idx >= 0 {
+			lo = len([]rune(s[:idx]))
+			hi = lo + len([]rune(sub))
+		}
+	}
+	for i, r := range []rune(s) {
+		cx := x + i
+		if !inBounds(grid, cx, y) {
+			continue
+		}
+		under := grid[y][cx]
+		under.R = r
+		under.Fg = fg
+		under.Underline = i >= lo && i < hi
+		grid[y][cx] = under
 	}
 }
 

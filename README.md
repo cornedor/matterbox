@@ -1,5 +1,7 @@
 # matterbox
 
+![Matterbox](./docs/banner.jpg)
+
 A fast terminal client for [Mattermost](https://mattermost.com) — a full TUI plus a
 scriptable CLI, with a local message cache and optional AI features powered by a
 local LLM.

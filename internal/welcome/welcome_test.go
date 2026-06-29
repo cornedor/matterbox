@@ -1,12 +1,20 @@
 package welcome
 
 import (
+	"errors"
+	"regexp"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 
+	"matterbox/internal/auth"
 	"matterbox/internal/config"
 )
+
+// ansiSGR matches SGR colour/style escapes so tests can compare rendered text
+// without the per-cell colour codes the translucent panel interleaves.
+var ansiSGR = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
 func key(code rune) tea.KeyPressMsg { return tea.KeyPressMsg{Code: code} }
 
@@ -41,8 +49,13 @@ func TestWizardHappyPathSavesConfig(t *testing.T) {
 		t.Fatalf("server URL = %q", m.cfg.ServerURL)
 	}
 
-	// Step 2: skip auth (empty token).
-	m.handleKey(key(tea.KeyEnter))
+	// Step 2: the username field is focused first. Skip sign-in for now by
+	// moving to the token paste field and pressing enter with it empty.
+	if m.authFocus != authFocusUser {
+		t.Fatalf("auth step opened with focus %d, want the username field", m.authFocus)
+	}
+	m.authFocus = authFocusToken
+	m.handleKey(key(tea.KeyEnter)) // empty token -> skip
 	if m.step != stepAdvanced {
 		t.Fatalf("after empty auth enter: step = %d, want stepAdvanced", m.step)
 	}
@@ -106,6 +119,174 @@ func TestMarkReadDigitsAndAdjust(t *testing.T) {
 	}
 }
 
+func TestAuthFocusNavigation(t *testing.T) {
+	m := newWizard(t)
+	m.step = stepAuth
+	m.authFocus = authFocusUser
+
+	// Tab order: user → password → SSO → token (the MFA field is hidden until
+	// the server asks for a code, so it's outside the cycle here).
+	m.handleKey(key(tea.KeyUp)) // wraps back to the last visible control
+	if m.authFocus != authFocusToken {
+		t.Fatalf("up from username: focus = %d, want token (wrap-around)", m.authFocus)
+	}
+	m.handleKey(key(tea.KeyDown)) // wraps forward to the first
+	if m.authFocus != authFocusUser {
+		t.Fatalf("down from token: focus = %d, want username (wrap-around)", m.authFocus)
+	}
+
+	// Without an MFA prompt, advancing past the token field skips the hidden
+	// MFA control and wraps to the username field.
+	m.authFocus = authFocusToken
+	m.handleKey(key(tea.KeyDown))
+	if m.authFocus != authFocusUser {
+		t.Fatalf("down from token (no MFA): focus = %d, want username, not the hidden MFA field", m.authFocus)
+	}
+
+	// Once the server requires MFA, the field joins the cycle as the last control.
+	m.mfaRequired = true
+	m.authFocus = authFocusToken
+	m.handleKey(key(tea.KeyDown))
+	if m.authFocus != authFocusMFA {
+		t.Fatalf("down from token (MFA required): focus = %d, want the MFA field", m.authFocus)
+	}
+}
+
+func TestPasswordSubmitRequiresBothFields(t *testing.T) {
+	m := newWizard(t)
+	m.step = stepAuth
+	m.authFocus = authFocusPassword
+
+	// Username present, password empty → error, nothing in flight.
+	m.user.setValue("alice")
+	if _, cmd := m.submitPassword(); cmd != nil {
+		t.Fatal("expected no login command with an empty password")
+	}
+	if !m.authErr || m.authMsg == "" {
+		t.Fatal("expected an error message for the empty password")
+	}
+	if m.validating {
+		t.Fatal("should not be validating with an empty password")
+	}
+
+	// Both present → a login kicks off.
+	m.password.setValue("hunter2")
+	_, cmd := m.submitPassword()
+	if cmd == nil {
+		t.Fatal("expected a login command once username + password are set")
+	}
+	if !m.validating {
+		t.Fatal("expected validating=true once the login is in flight")
+	}
+}
+
+func TestPasswordResultRevealsMFAThenSucceeds(t *testing.T) {
+	m := newWizard(t)
+	m.step = stepAuth
+	m.validating = true
+
+	// An MFA-required result reveals the two-factor field and focuses it.
+	m.handlePasswordResult(passwordResultMsg{mfaRequired: true, err: errors.New("mfa")})
+	if !m.mfaRequired {
+		t.Fatal("expected mfaRequired to be set")
+	}
+	if m.authFocus != authFocusMFA {
+		t.Fatalf("focus = %d, want the MFA field after an MFA-required result", m.authFocus)
+	}
+	if m.validating {
+		t.Fatal("validating should clear once a result lands")
+	}
+
+	// A success saves the token, clears the password, and advances.
+	m.validating = true
+	m.password.setValue("hunter2")
+	m.handlePasswordResult(passwordResultMsg{token: "tok-xyz", user: "alice"})
+	if m.step != stepAdvanced {
+		t.Fatalf("step = %d, want stepAdvanced after a successful sign-in", m.step)
+	}
+	if !m.authOK || m.authUser != "alice" {
+		t.Fatalf("authOK=%v authUser=%q, want true/alice", m.authOK, m.authUser)
+	}
+	if m.password.value() != "" {
+		t.Fatal("password should be cleared after a successful sign-in")
+	}
+	if !auth.HasToken() {
+		t.Fatal("expected a saved token after a successful sign-in")
+	}
+}
+
+func TestAuthStepRendersButtonAndUnderlinedLink(t *testing.T) {
+	m := newWizard(t)
+	m.t = 7 // settled scene
+	m.step = stepAuth
+	out := m.View().Content
+	// Strip SGR escapes for the text check: the translucent panel blends the
+	// animated scene per cell, so background escapes are interleaved between
+	// letters and the raw string isn't contiguous.
+	text := ansiSGR.ReplaceAllString(out, "")
+	if !strings.Contains(text, "Open GitLab SSO in your browser") {
+		t.Fatal("auth step missing the SSO browser button")
+	}
+	if !strings.Contains(text, "please click the link") {
+		t.Fatal("auth step missing the success-page snippet")
+	}
+	// The only underline in this step is the "link" word in the snippet.
+	if !strings.Contains(out, "\x1b[4m") {
+		t.Fatal("auth step did not underline the link word in the snippet")
+	}
+}
+
+func TestAuthAutoCaptureFillsAndValidates(t *testing.T) {
+	m := newWizard(t)
+	m.step = stepAuth
+
+	// A captured mmauth:// link behaves like a paste: the token fills and a
+	// validation kicks off (we don't run the returned network Cmd here).
+	_, cmd := m.handleCapturedURL("mmauth://callback?MMAUTHTOKEN=tok999&MMCSRF=z")
+	if m.pendingToken != "tok999" {
+		t.Fatalf("pendingToken = %q, want tok999", m.pendingToken)
+	}
+	if !m.validating {
+		t.Fatal("expected a validation to be in flight after capture")
+	}
+	if cmd == nil {
+		t.Fatal("expected a validate command from the captured link")
+	}
+
+	// A capture that arrives once we've left the auth step is ignored.
+	m2 := newWizard(t)
+	m2.step = stepAdvanced
+	if _, cmd := m2.handleCapturedURL("mmauth://callback?MMAUTHTOKEN=late"); cmd != nil {
+		t.Fatal("captured URL off the auth step should be ignored")
+	}
+	if m2.pendingToken != "" {
+		t.Fatalf("pendingToken = %q, want empty (ignored)", m2.pendingToken)
+	}
+}
+
+func TestAuthStepShowsCredentialsAndMasksPassword(t *testing.T) {
+	m := newWizard(t)
+	m.t = 7 // settled scene
+	m.step = stepAuth
+	m.user.setValue("alice")
+	m.password.setValue("hunter2")
+	// Strip the per-cell SGR escapes the translucent panel interleaves so the
+	// rendered glyphs read as a contiguous string.
+	text := ansiSGR.ReplaceAllString(m.View().Content, "")
+	if !strings.Contains(text, "Username or email") || !strings.Contains(text, "Password") {
+		t.Fatal("auth step missing the username/password field labels")
+	}
+	if !strings.Contains(text, "alice") {
+		t.Fatal("username should render in clear text")
+	}
+	if strings.Contains(text, "hunter2") {
+		t.Fatal("password must not render in clear text")
+	}
+	if !strings.Contains(text, "•") {
+		t.Fatal("masked password should render as bullets")
+	}
+}
+
 func TestViewRendersAcrossPhases(t *testing.T) {
 	m := newWizard(t)
 	m.t = 7 // settled scene
@@ -115,7 +296,7 @@ func TestViewRendersAcrossPhases(t *testing.T) {
 	}
 }
 
-func TestNormalizeAndExtract(t *testing.T) {
+func TestNormalizeServer(t *testing.T) {
 	cases := map[string]string{
 		"  https://mm.test/ ":   "https://mm.test",
 		"mm.test":               "https://mm.test",
@@ -127,13 +308,5 @@ func TestNormalizeAndExtract(t *testing.T) {
 			t.Errorf("normalizeServer(%q) = %q, want %q", in, got, want)
 		}
 	}
-	if got := extractToken("mmauth://callback?MMAUTHTOKEN=abc123"); got != "abc123" {
-		t.Errorf("extractToken(link) = %q, want abc123", got)
-	}
-	if got := extractToken("rawtoken123"); got != "rawtoken123" {
-		t.Errorf("extractToken(raw) = %q", got)
-	}
-	if got := extractToken("https://no/token/here"); got != "" {
-		t.Errorf("extractToken(non-token URL) = %q, want empty", got)
-	}
+	// Token extraction lives in internal/mmauth now (tested there).
 }

@@ -6,42 +6,43 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"os/signal"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"matterbox/internal/auth"
 	"matterbox/internal/config"
 	"matterbox/internal/mm"
+	"matterbox/internal/mmauth"
 	"matterbox/internal/opener"
 )
 
-// mmauthRedirect is the redirect_to handed to Mattermost's mobile-login
-// endpoint. "mmauth://" is in the server's default AppCustomURLSchemes, so
-// the endpoint accepts it with no server-side configuration. After SSO the
-// server bounces the browser to mmauth://callback?MMAUTHTOKEN=…, which we
-// capture either via the OS scheme handler (Linux) or by the user pasting
-// the link from the success page.
-const mmauthRedirect = "mmauth://callback"
-
 func newLoginCmd() *cobra.Command {
-	var show, clear, noBrowser bool
+	var show, clear, noBrowser, password bool
+	var user string
 	cmd := &cobra.Command{
 		Use:   "login",
-		Short: "Sign in via GitLab SSO and save the session token",
-		Long: "Sign in to Mattermost using GitLab SSO and save the session token to\n" +
+		Short: "Sign in and save the session token (GitLab SSO or username/password)",
+		Long: "Sign in to Mattermost and save the session token to\n" +
 			"~/.config/matterbox/mm_token.json (where every other command reads it).\n\n" +
-			"It opens your browser to the server's native-login endpoint; after you\n" +
-			"authorize, the server hands the token back via an mmauth:// link. On Linux\n" +
-			"matterbox registers itself as the mmauth:// handler so the token is captured\n" +
-			"automatically; otherwise right-click the link on the success page, choose\n" +
-			"\"Copy Link Address\", and paste it at the prompt (a raw token works too).\n\n" +
-			"  matterbox login            # sign in and save the token\n" +
-			"  matterbox login --show     # show the saved token's path and fingerprint\n" +
-			"  matterbox login --clear    # delete the saved token",
+			"By default it signs in with GitLab SSO: it opens your browser to the\n" +
+			"server's native-login endpoint; after you authorize, the server hands the\n" +
+			"token back via an mmauth:// link. On Linux matterbox registers itself as the\n" +
+			"mmauth:// handler so the token is captured automatically; otherwise right-click\n" +
+			"the link on the success page, choose \"Copy Link Address\", and paste it at the\n" +
+			"prompt (a raw token works too).\n\n" +
+			"With --user/--password it signs in with a username (or email) and password\n" +
+			"instead, prompting for whatever you don't pass; the password is read without\n" +
+			"echo and never taken as a flag. If the server requires a two-factor code\n" +
+			"you'll be prompted for it.\n\n" +
+			"  matterbox login              # GitLab SSO (default)\n" +
+			"  matterbox login --user me    # username/password (prompts for the password)\n" +
+			"  matterbox login --password   # username/password (prompts for both)\n" +
+			"  matterbox login --show       # show the saved token's path and fingerprint\n" +
+			"  matterbox login --clear      # delete the saved token",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			switch {
@@ -49,6 +50,8 @@ func newLoginCmd() *cobra.Command {
 				return runLoginShow(cmd.OutOrStdout())
 			case clear:
 				return runLoginClear(cmd.OutOrStdout())
+			case password || user != "":
+				return runPasswordLogin(cmd.Context(), cmd.OutOrStdout(), user)
 			default:
 				return runLogin(cmd.Context(), cmd.OutOrStdout(), noBrowser)
 			}
@@ -57,6 +60,8 @@ func newLoginCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&show, "show", false, "print the saved token's path and a fingerprint, then exit")
 	cmd.Flags().BoolVar(&clear, "clear", false, "delete the saved token, then exit")
 	cmd.Flags().BoolVar(&noBrowser, "no-browser", false, "don't open a browser; just print the login URL")
+	cmd.Flags().BoolVar(&password, "password", false, "sign in with username/password instead of GitLab SSO (prompts for both)")
+	cmd.Flags().StringVarP(&user, "user", "u", "", "username or email for password sign-in (implies --password; prompts if omitted)")
 	return cmd
 }
 
@@ -71,7 +76,10 @@ func newURLHandlerCmd() *cobra.Command {
 		Hidden: true,
 		Args:   cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runURLHandler(args)
+			if len(args) == 0 {
+				return nil
+			}
+			return mmauth.HandleURL(args[0])
 		},
 	}
 }
@@ -88,39 +96,40 @@ func newRegisterHandlerCmd() *cobra.Command {
 		Hidden: true,
 		Args:   cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return registerSchemeHandler(cmd.OutOrStdout())
+			p, err := mmauth.RegisterHandler()
+			if err != nil {
+				return err
+			}
+			if p == "" {
+				fmt.Fprintln(cmd.OutOrStdout(), "mmauth:// handler registration is only supported on Linux — skipping")
+				return nil
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "registered mmauth:// login handler → %s\n", p)
+			return nil
 		},
 	}
 }
 
 func runLogin(ctx context.Context, out io.Writer, noBrowser bool) error {
-	cfg, err := config.Load()
+	server, err := resolveServer()
 	if err != nil {
 		return err
 	}
-	server := strings.TrimRight(cfg.ServerURL, "/")
-	if server == "" || server == config.PlaceholderServerURL {
-		p, _ := config.Path()
-		return fmt.Errorf("server_url is not set — edit %s and set server_url to your "+
-			"Mattermost server, then re-run `matterbox login`", p)
-	}
 
-	loginURL := server + "/oauth/gitlab/mobile_login?redirect_to=" + url.QueryEscape(mmauthRedirect)
+	loginURL := mmauth.LoginURL(server)
 
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt)
 	defer stop()
 
-	// tokenCh receives the first of: a URL captured by the OS scheme
-	// handler (Linux), or a line pasted on stdin. Buffered so neither
-	// producer blocks if the other wins the race.
-	tokenCh := make(chan string, 2)
+	// Linux: register the mmauth:// handler and listen on a local socket so the
+	// token is captured automatically. No-op (enabled=false) elsewhere.
+	cap, autoCapture := mmauth.StartCapture(ctx)
+	defer cap.Close()
 
-	// Linux: register the mmauth:// handler and listen on a local socket so
-	// the token is captured automatically. No-op (enabled=false) elsewhere.
-	cleanup, autoCapture := startURLHandlerCapture(ctx, tokenCh)
-	defer cleanup()
-
-	go readPasteInto(ctx, os.Stdin, tokenCh)
+	// pasteCh receives a link/token pasted on stdin — the fallback (and the only
+	// path off Linux). Buffered so the reader never blocks once a URL is captured.
+	pasteCh := make(chan string, 1)
+	go readPasteInto(ctx, os.Stdin, pasteCh)
 
 	switch {
 	case noBrowser:
@@ -146,13 +155,14 @@ func runLogin(ctx context.Context, out io.Writer, noBrowser bool) error {
 
 	var raw string
 	select {
-	case raw = <-tokenCh:
+	case raw = <-cap.URL: // nil channel when capture is disabled — never fires
+	case raw = <-pasteCh:
 	case <-ctx.Done():
 		fmt.Fprintln(out)
 		return ctx.Err()
 	}
 
-	token := extractToken(raw)
+	token := mmauth.ExtractToken(raw)
 	if token == "" {
 		return errors.New("couldn't find a token in that — expected an mmauth:// link or a raw session token")
 	}
@@ -166,13 +176,116 @@ func saveAndVerify(ctx context.Context, out io.Writer, server, token string) err
 	if err != nil {
 		return fmt.Errorf("token didn't authenticate against %s: %w", server, err)
 	}
+	return saveToken(out, token, me.Username, me.Email)
+}
+
+// saveToken persists a session token and reports where it landed. Shared by the
+// SSO/paste flow (after verifying the token with Me) and the username/password
+// flow (which already holds the authenticated user from logging in).
+func saveToken(out io.Writer, token, username, email string) error {
 	if err := auth.SaveToken(token); err != nil {
 		return err
 	}
 	p, _ := auth.TokenPath()
-	fmt.Fprintf(out, "\n✓ Logged in as %s (%s)\n", me.Username, me.Email)
+	fmt.Fprintf(out, "\n✓ Logged in as %s (%s)\n", username, email)
 	fmt.Fprintf(out, "  Token saved to %s\n", p)
 	return nil
+}
+
+// resolveServer loads the configured server URL (scheme kept, trailing slash
+// trimmed), or returns a pointed error when it hasn't been set yet. Shared by
+// every login flow.
+func resolveServer() (string, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return "", err
+	}
+	server := strings.TrimRight(cfg.ServerURL, "/")
+	if server == "" || server == config.PlaceholderServerURL {
+		p, _ := config.Path()
+		return "", fmt.Errorf("server_url is not set — edit %s and set server_url to your "+
+			"Mattermost server, then re-run `matterbox login`", p)
+	}
+	return server, nil
+}
+
+// runPasswordLogin signs in with a username (or email) and password, prompting
+// for whatever wasn't passed on the flags. The password is read without echo
+// and is never accepted as a flag, so it can't leak into shell history. If the
+// server demands a two-factor code the first attempt surfaces that and we
+// prompt for the code and retry. On success the issued token is saved.
+func runPasswordLogin(ctx context.Context, out io.Writer, loginID string) error {
+	server, err := resolveServer()
+	if err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt)
+	defer stop()
+
+	in := bufio.NewReader(os.Stdin)
+	loginID = strings.TrimSpace(loginID)
+	if loginID == "" {
+		if loginID, err = promptLine(in, out, "Username or email: "); err != nil {
+			return err
+		}
+		if loginID == "" {
+			return errors.New("no username given")
+		}
+	}
+	pass, err := readSecret(in, out, "Password: ")
+	if err != nil {
+		return err
+	}
+	if pass == "" {
+		return errors.New("no password given")
+	}
+
+	client := mm.New(server, "")
+	token, user, err := client.LoginWithPassword(ctx, loginID, pass, "")
+	if mm.MFARequired(err) {
+		code, perr := promptLine(in, out, "Two-factor code: ")
+		if perr != nil {
+			return perr
+		}
+		if code == "" {
+			return errors.New("no two-factor code given")
+		}
+		token, user, err = client.LoginWithPassword(ctx, loginID, pass, code)
+	}
+	if err != nil {
+		return fmt.Errorf("sign-in failed: %w", err)
+	}
+	return saveToken(out, token, user.Username, user.Email)
+}
+
+// promptLine writes prompt to out and reads one trimmed line from in. A final
+// line without a trailing newline (EOF) still counts.
+func promptLine(in *bufio.Reader, out io.Writer, prompt string) (string, error) {
+	fmt.Fprint(out, prompt)
+	line, err := in.ReadString('\n')
+	line = strings.TrimSpace(line)
+	if err != nil && !(err == io.EOF && line != "") {
+		return "", err
+	}
+	return line, nil
+}
+
+// readSecret prompts and reads a line without echoing it, so a password never
+// shows on screen or in scrollback. When stdin isn't a terminal (piped input)
+// it falls back to a normal line read from the same buffered reader.
+func readSecret(in *bufio.Reader, out io.Writer, prompt string) (string, error) {
+	fmt.Fprint(out, prompt)
+	fd := int(os.Stdin.Fd())
+	if term.IsTerminal(fd) {
+		b, err := term.ReadPassword(fd)
+		fmt.Fprintln(out) // the un-echoed Enter left the cursor on the prompt line
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(b)), nil
+	}
+	return promptLine(in, out, "") // prompt already written above
 }
 
 func runLoginShow(out io.Writer) error {
@@ -225,25 +338,3 @@ func readPasteInto(ctx context.Context, r io.Reader, ch chan<- string) {
 	}
 }
 
-// extractToken pulls the session token out of whatever the user pasted: an
-// mmauth://callback?MMAUTHTOKEN=… link, or a bare token. A URL without the
-// MMAUTHTOKEN param (or any other multi-segment string) is rejected rather
-// than mistaken for a token.
-func extractToken(s string) string {
-	s = strings.TrimSpace(s)
-	s = strings.Trim(s, `"'`)
-	if s == "" {
-		return ""
-	}
-	if u, err := url.Parse(s); err == nil {
-		if t := strings.TrimSpace(u.Query().Get("MMAUTHTOKEN")); t != "" {
-			return t
-		}
-	}
-	// Not an mmauth:// link carrying the token → only accept it as a raw
-	// token if it looks like one (no URL/whitespace punctuation).
-	if strings.ContainsAny(s, " \t/?&#") {
-		return ""
-	}
-	return s
-}

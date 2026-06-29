@@ -39,15 +39,30 @@ func newRootCmd() *cobra.Command {
 		Use:   "matterbox",
 		Short: "A terminal client for Mattermost",
 		Long: "matterbox is a TUI Mattermost client.\n\n" +
-			"Run with no arguments to open the interactive UI, run `welcome` for the\n" +
-			"first-run setup wizard, or use a subcommand (login, send, reply, react,\n" +
-			"read, unread, mark-read, open, search, channels, digest, whoami, embed,\n" +
-			"listen, keys) to work with messages non-interactively for scripting or to\n" +
-			"run the background sync/notification daemon (listen).",
+			"Run with no arguments to open the interactive UI — on a first run (no saved\n" +
+			"login) it opens the `welcome` setup wizard first, so a fresh install is usable\n" +
+			"out of the box. Or use a subcommand (login, send, reply, react, read, unread,\n" +
+			"mark-read, open, search, channels, digest, whoami, embed, listen, keys) to work\n" +
+			"with messages non-interactively for scripting or to run the background\n" +
+			"sync/notification daemon (listen).",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		// No subcommand → open the interactive UI, exactly as before.
+		// No subcommand → open the interactive UI. On a first run (no saved
+		// token) run the setup wizard first, then continue into the TUI with
+		// the login it just created, so new users never hit a "run welcome"
+		// error out of the box.
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if !auth.HasToken() {
+				if err := runWelcome(); err != nil {
+					return err
+				}
+				// The user can quit the wizard before signing in (no token
+				// saved). Don't fall through into the TUI's "no token" error —
+				// exit cleanly; they can re-run when ready.
+				if !auth.HasToken() {
+					return nil
+				}
+			}
 			return runTUI()
 		},
 	}

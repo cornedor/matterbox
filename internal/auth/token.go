@@ -29,6 +29,14 @@ func TokenPath() (string, error) {
 	return tokenPath()
 }
 
+// HasToken reports whether a usable (non-empty) session token is saved,
+// without ReadToken's descriptive "run login first" error. The root command
+// uses it to detect a first run and drop the user into the setup wizard.
+func HasToken() bool {
+	tok, err := ReadToken()
+	return err == nil && tok != ""
+}
+
 // ReadToken loads the saved Mattermost session token written by `matterbox login`.
 func ReadToken() (string, error) {
 	p, err := tokenPath()

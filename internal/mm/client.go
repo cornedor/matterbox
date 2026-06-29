@@ -2,6 +2,7 @@ package mm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -63,6 +64,49 @@ func (c *Client) Me(ctx context.Context) (*model.User, error) {
 		return nil, fmt.Errorf("get me: %w", err)
 	}
 	return u, nil
+}
+
+// LoginWithPassword authenticates with a login id (username or email) and
+// password, returning the session token the server issues plus the
+// authenticated user. A non-empty mfaToken is submitted alongside for servers
+// that enforce two-factor (see MFARequired for detecting that a token is
+// needed). The returned token has the same shape as the SSO MMAUTHTOKEN, so
+// callers persist it identically; build the client with an empty token
+// (mm.New(server, "")) since there isn't one yet.
+func (c *Client) LoginWithPassword(ctx context.Context, loginID, password, mfaToken string) (string, *model.User, error) {
+	var (
+		u   *model.User
+		err error
+	)
+	if mfaToken != "" {
+		u, _, err = c.c.LoginWithMFA(ctx, loginID, password, mfaToken)
+	} else {
+		u, _, err = c.c.Login(ctx, loginID, password)
+	}
+	if err != nil {
+		return "", nil, fmt.Errorf("login: %w", err)
+	}
+	// Login stores the issued session token on the underlying Client4; keep our
+	// copy in sync so the same Client can immediately make authenticated calls.
+	c.token = c.c.AuthToken
+	return c.c.AuthToken, u, nil
+}
+
+// MFARequired reports whether err from LoginWithPassword means the server wants
+// a two-factor token, so the caller can prompt for one and retry. Mattermost
+// signals this with an AppError whose id (e.g. mfa.validate_token… /
+// api.context.mfa_required…) mentions MFA; we match that case-insensitively
+// rather than pinning one server error id that drifts between versions, and
+// fall back to scanning the error text.
+func MFARequired(err error) bool {
+	if err == nil {
+		return false
+	}
+	var appErr *model.AppError
+	if errors.As(err, &appErr) && strings.Contains(strings.ToLower(appErr.Id), "mfa") {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "mfa")
 }
 
 func (c *Client) Teams(ctx context.Context, userID string) ([]*model.Team, error) {

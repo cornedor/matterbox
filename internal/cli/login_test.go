@@ -1,32 +1,36 @@
 package cli
 
-import "testing"
+import (
+	"bufio"
+	"strings"
+	"testing"
+)
 
-func TestExtractToken(t *testing.T) {
-	const tok = "abc123def456ghi789jkl012mn" // 26-char-ish session token shape
+// Token extraction now lives in internal/mmauth (TestExtractToken there).
 
-	cases := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{"mmauth link", "mmauth://callback?MMAUTHTOKEN=" + tok + "&MMCSRF=xyz&srv=https://mm.example.com", tok},
-		{"mmauth link, token last", "mmauth://callback?srv=https://mm.example.com&MMAUTHTOKEN=" + tok, tok},
-		{"link with whitespace", "  mmauth://callback?MMAUTHTOKEN=" + tok + "  ", tok},
-		{"quoted link", `"mmauth://callback?MMAUTHTOKEN=` + tok + `"`, tok},
-		{"raw token", tok, tok},
-		{"raw token padded", "  " + tok + "\n", tok},
-		{"empty", "", ""},
-		{"whitespace only", "   ", ""},
-		{"link without token param", "mmauth://callback?MMCSRF=xyz", ""},
-		{"url-shaped garbage", "https://mm.example.com/login", ""},
+func TestPromptLine(t *testing.T) {
+	// A normal newline-terminated line is read and trimmed; the prompt is written.
+	in := bufio.NewReader(strings.NewReader("  alice  \n"))
+	var out strings.Builder
+	got, err := promptLine(in, &out, "user: ")
+	if err != nil {
+		t.Fatalf("promptLine: %v", err)
 	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := extractToken(c.in); got != c.want {
-				t.Errorf("extractToken(%q) = %q, want %q", c.in, got, c.want)
-			}
-		})
+	if got != "alice" {
+		t.Errorf("line = %q, want alice", got)
+	}
+	if !strings.Contains(out.String(), "user: ") {
+		t.Errorf("prompt not written, out = %q", out.String())
+	}
+
+	// A final line ending at EOF (no trailing newline) still counts.
+	in = bufio.NewReader(strings.NewReader("123456"))
+	got, err = promptLine(in, &out, "code: ")
+	if err != nil {
+		t.Fatalf("promptLine (EOF): %v", err)
+	}
+	if got != "123456" {
+		t.Errorf("EOF line = %q, want 123456", got)
 	}
 }
 

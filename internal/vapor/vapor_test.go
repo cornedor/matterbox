@@ -78,3 +78,23 @@ func TestResizeSameSizeIsStable(t *testing.T) {
 		t.Fatalf("grid = %dx%d after re-resize", len(g), len(g[0]))
 	}
 }
+
+func TestSerializeUnderline(t *testing.T) {
+	grid := [][]Cell{{
+		{R: 'a', Fg: RGB{R: 255}, HasBg: false},
+		{R: 'b', Fg: RGB{R: 255}, HasBg: false, Underline: true},
+		{R: 'c', Fg: RGB{R: 255}, HasBg: false},
+	}}
+	s := Serialize(grid)
+	if !strings.Contains(s, "\x1b[4m") {
+		t.Fatal("underlined cell missing the SGR underline-on escape")
+	}
+	if !strings.Contains(s, "\x1b[24m") {
+		t.Fatal("missing the SGR underline-off escape after the underlined run")
+	}
+	// A grid with no underline must not emit either escape.
+	plain := Serialize([][]Cell{{{R: 'x', Fg: RGB{R: 255}}}})
+	if strings.Contains(plain, "\x1b[4m") || strings.Contains(plain, "\x1b[24m") {
+		t.Fatal("plain text emitted an underline escape")
+	}
+}

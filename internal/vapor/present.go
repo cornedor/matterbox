@@ -35,6 +35,10 @@ type Cell struct {
 	Fg    RGB
 	Bg    RGB
 	HasBg bool
+	// Underline draws the rune with the SGR underline attribute. Defaults to
+	// false; the scene never sets it — only overlays (e.g. the welcome wizard,
+	// to mark a copyable link) do.
+	Underline bool
 }
 
 func packC(c RGB) int32 {
@@ -98,7 +102,16 @@ func serialize(grid [][]Cell) string {
 		}
 		lastFg, lastBg := int32(-1), int32(-1)
 		hadBg := true
+		underline := false
 		for _, c := range row {
+			if c.Underline != underline {
+				if c.Underline {
+					b.WriteString("\x1b[4m")
+				} else {
+					b.WriteString("\x1b[24m")
+				}
+				underline = c.Underline
+			}
 			if fg := packC(c.Fg); fg != lastFg {
 				writeSGR(b, fgPrefix, c.Fg)
 				lastFg = fg

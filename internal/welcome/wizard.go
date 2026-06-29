@@ -1,7 +1,7 @@
 package welcome
 
 import (
-	"net/url"
+	"context"
 	"strings"
 	"time"
 
@@ -9,12 +9,14 @@ import (
 
 	"matterbox/internal/auth"
 	"matterbox/internal/config"
+	"matterbox/internal/mmauth"
 	"matterbox/internal/opener"
 )
 
 // handleKey routes a keypress by phase. ctrl+c always quits.
 func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "ctrl+c" {
+		m.closeCapture()
 		return m, tea.Quit
 	}
 	switch m.phase {
@@ -29,6 +31,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.phase = phaseWizard
 		return m, nil
 	case phaseDone:
+		m.closeCapture()
 		return m, tea.Quit
 	case phaseWizard:
 		switch m.step {
@@ -46,6 +49,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m *Model) handleServerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
+		m.closeCapture()
 		return m, tea.Quit
 	case "enter":
 		s := normalizeServer(m.server.value())
@@ -57,6 +61,7 @@ func (m *Model) handleServerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.cfg.ServerURL = s
 		m.serverMsg = ""
 		m.authMsg = ""
+		m.authFocus = authFocusUser // open on the username field each time
 		m.step = stepAuth
 		return m, nil
 	}
@@ -70,36 +75,157 @@ func (m *Model) handleAuthKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.String() {
 	case "esc":
+		// Stop listening; a changed server would make a captured token stale, and
+		// re-entering the step restarts capture on the next browser-open.
+		m.closeCapture()
 		m.step = stepServer
 		return m, nil
-	case "ctrl+o":
-		_ = opener.Open(ssoURL(m.cfg.ServerURL))
-		m.authMsg = "Browser opened — approve sign-in, then paste the link or token below."
-		m.authErr = false
+	case "up", "shift+tab":
+		n := m.authControls()
+		m.authFocus = (m.authFocus - 1 + n) % n
+		return m, nil
+	case "down", "tab":
+		n := m.authControls()
+		m.authFocus = (m.authFocus + 1) % n
 		return m, nil
 	case "enter":
-		raw := strings.TrimSpace(m.token.value())
-		if raw == "" {
-			// Skip auth for now; the user can run `matterbox login` later.
-			m.authMsg = ""
-			m.authErr = false
-			m.step = stepAdvanced
+		switch m.authFocus {
+		case authFocusSSO:
+			return m, m.openSSO()
+		case authFocusToken:
+			return m.submitToken()
+		case authFocusUser:
+			// Move on to the password rather than submitting half-filled creds.
+			m.authFocus = authFocusPassword
 			return m, nil
+		default: // password or MFA field
+			return m.submitPassword()
 		}
-		tok := extractToken(raw)
-		if tok == "" {
-			m.authMsg = "That isn't a token or mmauth:// link — paste the link from the success page."
-			m.authErr = true
-			return m, nil
-		}
-		m.pendingToken = tok
-		m.validating = true
-		m.authErr = false
-		m.authMsg = "Checking your token…"
-		return m, validateCmd(m.cfg.ServerURL, tok)
 	}
-	editField(&m.token, msg)
+	// The focused text field takes typed input; the SSO button ignores it.
+	if f := m.activeField(); f != nil {
+		editField(f, msg)
+	}
 	return m, nil
+}
+
+// authControls is the number of focusable controls on the auth step. The MFA
+// field (the last control) only joins the tab order once the server has asked
+// for a two-factor code, so navigation skips it in the common case.
+func (m *Model) authControls() int {
+	if m.mfaRequired {
+		return authFieldCount
+	}
+	return authFieldCount - 1
+}
+
+// mmauthURLMsg carries the mmauth:// callback link captured by the OS scheme
+// handler after SSO, so the token can fill and validate itself.
+type mmauthURLMsg string
+
+// openSSO launches the GitLab SSO login in the browser and moves focus to the
+// paste field. On Linux it also starts the scheme-handler capture so an
+// approved sign-in flows straight back — no copy-paste — returning a Cmd that
+// waits for the captured link; the field stays as a fallback.
+func (m *Model) openSSO() tea.Cmd {
+	_ = opener.Open(mmauth.LoginURL(m.cfg.ServerURL))
+	m.authErr = false
+	m.authFocus = authFocusToken
+
+	if !m.capturing {
+		if c, ok := mmauth.StartCapture(context.Background()); ok {
+			m.cap = c
+			m.capturing = true
+			m.authMsg = "Browser opened — approve sign-in and you're in automatically (or paste the link below)."
+			return waitForURL(c)
+		}
+	}
+	m.authMsg = "Browser opened — approve sign-in, then paste the link below."
+	return nil
+}
+
+// waitForURL blocks on the capture channel and reports the link as a message.
+// The channel is closed by Capture.Close, so this never leaks once the wizard
+// stops listening (it returns nil on a closed channel).
+func waitForURL(c mmauth.Capture) tea.Cmd {
+	if c.URL == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		if u, ok := <-c.URL; ok {
+			return mmauthURLMsg(u)
+		}
+		return nil
+	}
+}
+
+// handleCapturedURL feeds an auto-captured mmauth:// link into the token field
+// and validates it, exactly as if the user had pasted it — unless we've moved
+// past the auth step or a check is already running.
+func (m *Model) handleCapturedURL(msg mmauthURLMsg) (tea.Model, tea.Cmd) {
+	if m.phase != phaseWizard || m.step != stepAuth || m.authOK || m.validating {
+		return m, nil
+	}
+	m.token.setValue(string(msg))
+	m.authFocus = authFocusToken
+	return m.submitToken()
+}
+
+// closeCapture tears down the scheme-handler capture if it's running. Idempotent
+// (Close is set to nil after), so it's safe on every exit path.
+func (m *Model) closeCapture() {
+	if m.cap.Close != nil {
+		m.cap.Close()
+		m.cap.Close = nil
+	}
+	m.capturing = false
+}
+
+// submitToken validates the pasted/captured token-link, or skips auth when it's
+// empty (the user can run `matterbox login` later). Mirrors the original flow.
+func (m *Model) submitToken() (tea.Model, tea.Cmd) {
+	raw := strings.TrimSpace(m.token.value())
+	if raw == "" {
+		m.authMsg = ""
+		m.authErr = false
+		m.step = stepAdvanced
+		return m, nil
+	}
+	tok := mmauth.ExtractToken(raw)
+	if tok == "" {
+		m.authMsg = "That isn't a token or mmauth:// link — paste the link from the success page."
+		m.authErr = true
+		return m, nil
+	}
+	m.pendingToken = tok
+	m.validating = true
+	m.authErr = false
+	m.authMsg = "Checking your token…"
+	return m, validateCmd(m.cfg.ServerURL, tok)
+}
+
+// submitPassword signs in with the typed username + password (plus the
+// two-factor code once the server has asked for one). It checks the fields are
+// filled, then kicks off the network login — mirroring submitToken's
+// validating/authErr dance.
+func (m *Model) submitPassword() (tea.Model, tea.Cmd) {
+	user := strings.TrimSpace(m.user.value())
+	pass := m.password.value()
+	if user == "" || pass == "" {
+		m.authMsg = "Enter your username and password — or use SSO below."
+		m.authErr = true
+		return m, nil
+	}
+	mfa := strings.TrimSpace(m.mfa.value())
+	if m.mfaRequired && mfa == "" {
+		m.authMsg = "Enter the two-factor code from your authenticator app."
+		m.authErr = true
+		return m, nil
+	}
+	m.validating = true
+	m.authErr = false
+	m.authMsg = "Signing in…"
+	return m, passwordLoginCmd(m.cfg.ServerURL, user, pass, mfa)
 }
 
 func (m *Model) handleAuthResult(msg authResultMsg) (tea.Model, tea.Cmd) {
@@ -117,11 +243,47 @@ func (m *Model) handleAuthResult(msg authResultMsg) (tea.Model, tea.Cmd) {
 	m.authOK = true
 	m.authUser = msg.user
 	m.authErr = false
+	m.closeCapture() // got the token — stop listening on the socket
 	// Persist the server URL now so the saved token is paired with it on disk
 	// even if the user quits before finishing the advanced screen.
 	_ = config.Save(m.cfg)
 	m.authMsg = ""
 	m.token.setValue("")
+	m.step = stepAdvanced
+	return m, nil
+}
+
+// handlePasswordResult applies the outcome of a username/password sign-in: an
+// MFA-required signal reveals the two-factor field and focuses it; success saves
+// the token (and server URL) and advances exactly like the token flow; an error
+// is shown for the user to retry.
+func (m *Model) handlePasswordResult(msg passwordResultMsg) (tea.Model, tea.Cmd) {
+	m.validating = false
+	if msg.mfaRequired {
+		m.mfaRequired = true
+		m.authFocus = authFocusMFA
+		m.authMsg = "Enter your two-factor code to finish signing in."
+		m.authErr = false
+		return m, nil
+	}
+	if msg.err != nil {
+		m.authMsg = "Sign-in failed: " + oneLine(msg.err.Error())
+		m.authErr = true
+		return m, nil
+	}
+	if err := auth.SaveToken(msg.token); err != nil {
+		m.authMsg = "Signed in, but couldn't save the token: " + oneLine(err.Error())
+		m.authErr = true
+		return m, nil
+	}
+	m.authOK = true
+	m.authUser = msg.user
+	m.authErr = false
+	m.closeCapture() // signed in — stop listening on the SSO socket
+	_ = config.Save(m.cfg)
+	m.authMsg = ""
+	m.password.setValue("")
+	m.mfa.setValue("")
 	m.step = stepAdvanced
 	return m, nil
 }
@@ -154,6 +316,7 @@ func (m *Model) handleAdvancedKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.authMsg = "Couldn't save config: " + oneLine(err.Error())
 			return m, nil
 		}
+		m.closeCapture() // setup's done; don't leave the socket listening
 		m.phase = phaseDone
 		return m, nil
 	}
@@ -234,31 +397,6 @@ func normalizeServer(s string) string {
 	}
 	if !strings.Contains(s, "://") {
 		s = "https://" + s
-	}
-	return s
-}
-
-// ssoURL builds the GitLab SSO mobile-login URL, mirroring `matterbox login`.
-func ssoURL(server string) string {
-	return strings.TrimRight(server, "/") +
-		"/oauth/gitlab/mobile_login?redirect_to=" + url.QueryEscape("mmauth://callback")
-}
-
-// extractToken pulls the session token out of an mmauth://callback?MMAUTHTOKEN=…
-// link or accepts a bare token, rejecting anything else (matches login.go).
-func extractToken(s string) string {
-	s = strings.TrimSpace(s)
-	s = strings.Trim(s, `"'`)
-	if s == "" {
-		return ""
-	}
-	if u, err := url.Parse(s); err == nil {
-		if t := strings.TrimSpace(u.Query().Get("MMAUTHTOKEN")); t != "" {
-			return t
-		}
-	}
-	if strings.ContainsAny(s, " \t/?&#") {
-		return ""
 	}
 	return s
 }
