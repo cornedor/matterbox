@@ -12,8 +12,8 @@ require (
 	github.com/charmbracelet/glamour v1.0.0
 	github.com/charmbracelet/ultraviolet v0.0.0-20260416155717-489999b90468
 	github.com/charmbracelet/x/ansi v0.11.7
+	github.com/ebitengine/oto/v3 v3.4.0
 	github.com/gotracker/playback v1.5.0
-	github.com/jfreymuth/pulse v0.1.1
 	github.com/kyokomi/emoji/v2 v2.2.13
 	github.com/mattermost/mattermost/server/public v0.4.0
 	github.com/rivo/uniseg v0.4.7
@@ -41,6 +41,7 @@ require (
 	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/dyatlov/go-opengraph/opengraph v0.0.0-20220524092352-606d7b1e5f8a // indirect
+	github.com/ebitengine/purego v0.9.0 // indirect
 	github.com/fatih/color v1.19.0 // indirect
 	github.com/francoispqt/gojay v1.2.13 // indirect
 	github.com/go-asn1-ber/asn1-ber v1.5.7 // indirect
