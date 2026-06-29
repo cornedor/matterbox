@@ -1634,6 +1634,7 @@ func (m Model) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 		mentionCmd := m.updateMention()
 		m.updateEmoji()
 		slashCmd := m.updateSlash()
+		m.updateLang()
 		cmdHlCmd := m.updateCommandHighlight()
 		m.syncInputHeight()
 		return m, tea.Batch(cmd, mentionCmd, slashCmd, cmdHlCmd, giphyCmd)
@@ -1766,7 +1767,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// sidebar navigation below, so the switcher moved to ctrl+p.) The
 	// @-mention / :emoji popups bind ctrl+p to "move selection up", so don't
 	// steal it while one of those is open in the composer.
-	popupOpen := m.focus == focusInput && (m.mention.active || m.emoji.active || m.slash.active)
+	popupOpen := m.focus == focusInput && (m.mention.active || m.emoji.active || m.slash.active || m.lang.active)
 	if key.Matches(msg, m.keys.Switcher) && msg.String() != "ctrl+c" && !popupOpen {
 		return m.openSwitcher()
 	}
@@ -2460,13 +2461,40 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// The ```-fence language picker owns the same navigation/accept/dismiss keys
+	// when it's open, mirroring the popups above. It only opens on an opening
+	// code fence's info string, where '@', ':' or a leading '/' can't have
+	// triggered, so it's mutually exclusive with the three above.
+	if m.lang.active && len(m.lang.items) > 0 {
+		switch {
+		case key.Matches(msg, m.keys.InputUp):
+			if m.lang.idx > 0 {
+				m.lang.idx--
+			}
+			return m, nil
+		case key.Matches(msg, m.keys.InputDown):
+			if m.lang.idx < len(m.lang.items)-1 {
+				m.lang.idx++
+			}
+			return m, nil
+		case key.Matches(msg, m.keys.Tab), key.Matches(msg, m.keys.Send):
+			if cmd, ok := m.acceptLang(); ok {
+				return m, cmd
+			}
+		case msg.String() == "esc": // hardwired popup dismiss
+			m.closeLang()
+			return m, nil
+		}
+	}
+
 	// Grammar/spell suggestions: alt+g opens the popup on the mistake at the
 	// cursor (or cycles to the next while open). When the popup is up it owns
 	// the digit accelerators, tab navigation and esc; any other key dismisses
 	// it and is handled normally below. (Keys hardwired, like the popups above,
 	// rather than going through the configurable keymap.) Suppressed while an
-	// @-mention / :emoji popup owns the slot so the two never fight over it.
-	if m.grammarEnabled() && !m.mention.active && !m.emoji.active && !m.slash.active {
+	// @-mention / :emoji / ```-language popup owns the slot so they never fight
+	// over it.
+	if m.grammarEnabled() && !m.mention.active && !m.emoji.active && !m.slash.active && !m.lang.active {
 		if msg.String() == "alt+g" && len(m.grammar.matches) > 0 {
 			m.openOrCycleGrammarPopup()
 			return m, nil
@@ -2564,6 +2592,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.closeMention()
 		m.closeEmoji()
 		m.closeSlash()
+		m.closeLang()
 		m.clearGrammar()
 		m.status = "draft cleared"
 		// Wiping a channel draft also drops its server copy. Editing / thread
@@ -2594,6 +2623,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.closeMention()
 		m.closeEmoji()
 		m.closeSlash()
+		m.closeLang()
 		m.clearGrammar()
 		if editing {
 			m.cancelEdit()
@@ -2629,6 +2659,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.closeMention()
 			m.closeEmoji()
 			m.closeSlash()
+			m.closeLang()
 			m.clearGrammar()
 			m.restoreInputPrompt()
 			m.status = "saving edit…"
@@ -2670,6 +2701,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.closeMention()
 		m.closeEmoji()
 		m.closeSlash()
+		m.closeLang()
 		m.clearGrammar()
 		m.appendOptimistic(channelID, rootID, text, fileIDs)
 		m.clearAttachments()
@@ -2714,6 +2746,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	mentionCmd := m.updateMention()
 	m.updateEmoji()
 	slashCmd := m.updateSlash()
+	m.updateLang()
 	cmdHlCmd := m.updateCommandHighlight()
 	m.syncInputHeight()
 	return m, tea.Batch(cmd, mentionCmd, slashCmd, cmdHlCmd, typingCmd, grammarCmd, draftCmd)

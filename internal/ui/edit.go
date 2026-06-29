@@ -25,6 +25,7 @@ func (m *Model) beginEditPost(p *model.Post) tea.Cmd {
 	}
 	m.closeMention()
 	m.closeSlash()
+	m.closeLang()
 	m.editingPostID = p.Id
 	m.input.Reset()
 	m.input.SetValue(p.Message)

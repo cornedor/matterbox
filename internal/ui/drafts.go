@@ -134,6 +134,7 @@ func (m *Model) setComposerDraft(text string) {
 	m.closeMention()
 	m.closeEmoji()
 	m.closeSlash()
+	m.closeLang()
 	// Drop any command shimmer from the previous channel's draft. SetValue
 	// keeps the span (so the /dm mention-accept path doesn't flicker), so a
 	// channel hop must clear it explicitly; it re-lights on the first keystroke

@@ -106,6 +106,7 @@ func (m *Model) consumeComposer() tea.Cmd {
 	m.closeMention()
 	m.closeEmoji()
 	m.closeSlash()
+	m.closeLang()
 	m.clearGrammar()
 	if !m.threadOpen && m.openChannelID != "" {
 		return m.clearDraft(m.openChannelID)

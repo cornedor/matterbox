@@ -396,6 +396,7 @@ type Model struct {
 	mention mentionState
 	emoji   emojiState
 	slash   slashState
+	lang    langState
 
 	// cmdShimmer drives the animated orange gradient drawn over a recognised
 	// "/command" at the start of the composer (see updateCommandHighlight).
