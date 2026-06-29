@@ -10,7 +10,8 @@ once-a-minute systemd timer. Two entry points:
     `exec` action exports (and falls back to the JSON envelope on stdin) and acts
     on the message body:
 
-        !remind me in <duration> <text>      schedule a reminder
+        !remind me in <duration> <text>      schedule for a relative delay
+        !remind me at <date> [time] <text>   schedule for a clock date/time
         !reminders   (or  !remind list)      list this channel's pending reminders
         !remind cancel <id>                  cancel one
 
@@ -18,6 +19,14 @@ once-a-minute systemd timer. Two entry points:
     abbreviated and combinable: "2 hours", "2 days", "30m", "1h30m",
     "1 day 6 hours", "90 minutes", "2 weeks". A leading "in "/"after " and a
     connector ("… to call dad", "… that the build is done") are ignored.
+
+    <date> [time] (after "at"/"on") is an absolute moment: "2026-07-01",
+    "1 July", "jul 1", "03/07" (day-first), a weekday ("friday"), or
+    "today"/"tomorrow", each optionally followed by a time ("14:30", "2:30pm",
+    "9am", "14h30", "noon"). A date with no time defaults to 09:00; a bare time
+    means today. A spec that has already passed but omits the year/date (a
+    weekday, a bare time, a no-year date) rolls forward to its next occurrence;
+    a fully-specified past moment is rejected.
 
   • As `matterbox-remind --tick`: deliver every reminder that is now due. Run it
     once a minute from a systemd --user timer (scripts/matterbox-remind.timer).
@@ -38,7 +47,8 @@ import sqlite3
 import subprocess
 import sys
 import time
-from datetime import datetime
+from datetime import date, datetime, timedelta
+from datetime import time as dtime
 
 # --- configuration ---------------------------------------------------------
 
@@ -69,12 +79,23 @@ MATTERBOX_BIN = _matterbox_bin()
 MAX_DELIVER_ATTEMPTS = 60
 
 USAGE = (
-    "⏰ Usage: `!remind me in <when> <message>` — e.g. "
-    "`!remind me in 2 hours buy milk`, `!remind me in 1h30m ping the team`, "
-    "`!remind me in 2 days standup notes`.\n"
+    "⏰ Usage:\n"
+    "• `!remind me in <when> <message>` — relative, e.g. "
+    "`in 2 hours buy milk`, `in 1h30m ping the team`, `in 2 days standup`.\n"
+    "• `!remind me at <date> [time] <message>` — clock time, e.g. "
+    "`at 2026-07-01 buy milk`, `at tomorrow 9am standup`, "
+    "`at friday 17:00 deploy`, `at 03/07 14:30 review`.\n"
     "`!reminders` lists this channel's pending reminders · "
     "`!remind cancel <id>` removes one."
 )
+
+# Hour-of-day used when an "at <date>" gives a date but no time.
+DEFAULT_HOUR = int(os.environ.get("MATTERBOX_REMIND_HOUR", "9"))
+
+
+class RemindError(Exception):
+    """A request we understood but can't schedule (e.g. a moment in the past).
+    Its message is shown to the user."""
 
 # --- duration parsing ------------------------------------------------------
 
@@ -135,6 +156,158 @@ def humanize(seconds: int) -> str:
         if len(out) == 2:
             break
     return " ".join(out)
+
+
+# --- absolute date/time parsing ("at <date> [time]") -----------------------
+
+# month/weekday names keyed by their first three letters, which are unambiguous
+# (january..december, monday..sunday all differ in the first three).
+_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+_WEEKDAYS = {
+    "mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6,
+}
+
+# Alternations that match a full or abbreviated month / weekday name; we only
+# read the first three letters of whatever matched to look the number up.
+_MONTH_RE = (
+    r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|"
+    r"aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?"
+)
+_WD_RE = (
+    r"mon(?:day)?|tue(?:s(?:day)?)?|wed(?:nesday)?|thu(?:r(?:s(?:day)?)?)?|"
+    r"fri(?:day)?|sat(?:urday)?|sun(?:day)?"
+)
+
+
+def _read_date(s: str, today: date):
+    """Read a leading date from s. Returns (date, roll, rest).
+
+    `roll` says how to push a past date into the future when it lacks the
+    information to be exact: 'year' (no-year calendar date), 'week' (weekday
+    name), or None (year given, or today/tomorrow — exact, never rolled)."""
+    m = re.match(r"(?i)^\s*(today|tonight|tomorrow)\b", s)
+    if m:
+        d = today if m.group(1).lower() != "tomorrow" else today + timedelta(days=1)
+        return d, None, s[m.end():]
+    m = re.match(r"(?i)^\s*(" + _WD_RE + r")\b", s)
+    if m:
+        wd = _WEEKDAYS[m.group(1)[:3].lower()]
+        return today + timedelta(days=(wd - today.weekday()) % 7), "week", s[m.end():]
+    m = re.match(r"(?i)^\s*(\d{4})[-/](\d{1,2})[-/](\d{1,2})\b", s)
+    if m:
+        y, mo, da = (int(g) for g in m.groups())
+        return _mkdate(y, mo, da), None, s[m.end():]
+    m = re.match(r"(?i)^\s*(\d{1,2})\s+(" + _MONTH_RE + r")(?:\s+(\d{4}))?\b", s)
+    if m:
+        da, mo, y = int(m.group(1)), _MONTHS[m.group(2)[:3].lower()], m.group(3)
+        return _mkdate(int(y) if y else today.year, mo, da), None if y else "year", s[m.end():]
+    m = re.match(r"(?i)^\s*(" + _MONTH_RE + r")\s+(\d{1,2})(?:\s*,?\s*(\d{4}))?\b", s)
+    if m:
+        mo, da, y = _MONTHS[m.group(1)[:3].lower()], int(m.group(2)), m.group(3)
+        return _mkdate(int(y) if y else today.year, mo, da), None if y else "year", s[m.end():]
+    m = re.match(r"(?i)^\s*(\d{1,2})[-/](\d{1,2})(?:[-/](\d{2,4}))?\b", s)
+    if m:  # day-first: 03/07 = 3 July, 03/07/2026, 03/07/26
+        da, mo, y = int(m.group(1)), int(m.group(2)), m.group(3)
+        if y:
+            yi = int(y)
+            return _mkdate(yi + 2000 if yi < 100 else yi, mo, da), None, s[m.end():]
+        return _mkdate(today.year, mo, da), "year", s[m.end():]
+    return None, None, s
+
+
+def _mkdate(y: int, mo: int, da: int) -> date:
+    try:
+        return date(y, mo, da)
+    except ValueError:
+        raise RemindError("that date doesn't exist.")
+
+
+def _to24(h: int, ap: str) -> int:
+    """Convert a 12-hour clock hour + 'a'/'p' into a 24-hour hour."""
+    ap = ap.lower()
+    if ap == "a":
+        return 0 if h == 12 else h
+    return 12 if h == 12 else h + 12
+
+
+def _read_time(s: str):
+    """Read a leading time from s. Returns ((hour, minute), rest) or (None, s)."""
+    m = re.match(r"(?i)^\s*(\d{1,2}):(\d{2})\s*([ap])\.?m\.?\b", s)
+    if m:
+        return (_to24(int(m.group(1)), m.group(3)), int(m.group(2))), s[m.end():]
+    m = re.match(r"(?i)^\s*(\d{1,2}):(\d{2})\b", s)
+    if m:
+        return (int(m.group(1)), int(m.group(2))), s[m.end():]
+    m = re.match(r"(?i)^\s*(\d{1,2})\s*([ap])\.?m\.?\b", s)
+    if m:
+        return (_to24(int(m.group(1)), m.group(2)), 0), s[m.end():]
+    m = re.match(r"(?i)^\s*(\d{1,2})h(\d{2})?(?![a-z0-9])", s)
+    if m:
+        return (int(m.group(1)), int(m.group(2) or 0)), s[m.end():]
+    m = re.match(r"(?i)^\s*noon\b", s)
+    if m:
+        return (12, 0), s[m.end():]
+    m = re.match(r"(?i)^\s*midnight\b", s)
+    if m:
+        return (0, 0), s[m.end():]
+    return None, s
+
+
+def parse_at(rest: str, now: int):
+    """Parse "<date> [time] <text>" into (due_epoch, text).
+
+    Returns (None, rest) when no date or time is found. Raises RemindError for a
+    moment we recognise but can't schedule (already past, or an impossible
+    date/time)."""
+    today = datetime.fromtimestamp(now).astimezone().date()
+    date_obj, roll, after = _read_date(rest.strip(), today)
+    rem = after if date_obj is not None else rest.strip()
+    # allow a connecting "at"/"@" before the time, e.g. "tomorrow at 3pm".
+    rem = re.sub(r"(?i)^\s*(?:at|@)\s+", " ", rem)
+    tm, after_time = _read_time(rem)
+    if date_obj is None and tm is None:
+        return None, rest
+    if tm is not None:
+        rem = after_time
+    if date_obj is None:  # a bare time means today, rolling to tomorrow if past.
+        date_obj, roll = today, "day"
+    hh, mm = tm if tm is not None else (DEFAULT_HOUR, 0)
+    if hh > 23 or mm > 59:
+        raise RemindError("that's not a valid time of day.")
+    target = datetime.combine(date_obj, dtime(hh, mm)).astimezone()
+    if target.timestamp() <= now:
+        if roll == "year":
+            try:
+                target = target.replace(year=target.year + 1)
+            except ValueError:  # 29 Feb -> non-leap year
+                target += timedelta(days=365)
+        elif roll == "week":
+            target += timedelta(days=7)
+        elif roll == "day":
+            target += timedelta(days=1)
+        else:
+            raise RemindError(f"that's in the past ({target:%a %d %b %H:%M}).")
+    text = _CONNECTOR.sub("", rem.strip()).strip()
+    return int(target.timestamp()), text
+
+
+def compute_due(rest: str, now: int):
+    """Resolve a reminder spec to (due_epoch, text). "at"/"on"/"@" forces an
+    absolute date/time; otherwise a relative duration is tried first, then a
+    bare absolute date as a fallback. Returns (None, rest) if nothing parses."""
+    m = re.match(r"(?i)^(?:at|on|@)\b\s*", rest)
+    if m:
+        due, text = parse_at(rest[m.end():], now)
+        if due is None:
+            raise RemindError("I couldn't read a date or time after that.")
+        return due, text
+    seconds, text = parse_duration(rest)
+    if seconds is not None:
+        return now + seconds, text
+    return parse_at(rest, now)  # e.g. "!remind me tomorrow 9am …" (no keyword)
 
 
 # --- storage ---------------------------------------------------------------
@@ -199,13 +372,17 @@ def cmd_set(channel_id: str, post_id: str, author: str, rest: str) -> None:
     if not rest:
         reply(post_id, USAGE)
         return
-    seconds, text = parse_duration(rest)
-    if seconds is None:
-        reply(post_id, "⏰ I couldn't read a delay in that.\n" + USAGE)
-        return
-    text = text.strip() or "(reminder)"
     now = int(time.time())
-    due = now + seconds
+    try:
+        due, text = compute_due(rest, now)
+    except RemindError as e:
+        reply(post_id, f"⏰ {e}\n" + USAGE)
+        return
+    if due is None:
+        reply(post_id, "⏰ I couldn't read a time in that.\n" + USAGE)
+        return
+    seconds = due - now
+    text = text.strip() or "(reminder)"
     con = db()
     with con:
         cur = con.execute(
@@ -370,6 +547,49 @@ def selftest() -> None:
         if got != want:
             ok = False
         print(f"[{status}] humanize({sec}) -> {got!r}" + ("" if got == want else f"  want {want!r}"))
+
+    # Absolute "at <date> [time]" parsing. Pin the timezone so the expected
+    # epochs are reproducible regardless of where the test runs.
+    os.environ["TZ"] = "Europe/Amsterdam"
+    time.tzset()
+    now = int(datetime(2026, 7, 1, 12, 0, 0).timestamp())  # Wed 1 Jul 2026, 12:00
+
+    def due(y, mo, da, h=9, mi=0):
+        return int(datetime(y, mo, da, h, mi).timestamp())
+
+    at_cases = [
+        ("2026-07-02 buy milk", (due(2026, 7, 2), "buy milk")),       # date only -> 09:00
+        ("2026-07-02 14:30 buy milk", (due(2026, 7, 2, 14, 30), "buy milk")),
+        ("tomorrow 9am standup", (due(2026, 7, 2, 9, 0), "standup")),
+        ("tomorrow water plants", (due(2026, 7, 2), "water plants")),
+        ("today 18:00 dinner", (due(2026, 7, 1, 18, 0), "dinner")),
+        ("15:00 call dad", (due(2026, 7, 1, 15, 0), "call dad")),     # today, still ahead
+        ("9am ship it", (due(2026, 7, 2, 9, 0), "ship it")),         # past today -> tomorrow
+        ("friday 17:00 deploy", (due(2026, 7, 3, 17, 0), "deploy")),  # Wed -> Fri
+        ("3 jul standup", (due(2026, 7, 3), "standup")),
+        ("jul 3 standup", (due(2026, 7, 3), "standup")),
+        ("3 jun reminder", (due(2027, 6, 3), "reminder")),           # passed -> next year
+        ("03/07 review", (due(2026, 7, 3), "review")),               # day-first dd/mm
+        ("2pm to call dad", (due(2026, 7, 1, 14, 0), "call dad")),   # connector stripped
+        ("tomorrow at 14h30 gym", (due(2026, 7, 2, 14, 30), "gym")),
+        ("noon lunch", (due(2026, 7, 2, 12, 0), "lunch")),           # 12:00 == now -> tomorrow
+        ("buy milk", (None, "buy milk")),                            # no date/time
+    ]
+    for inp, want in at_cases:
+        got = parse_at(inp, now)
+        status = "ok " if got == want else "FAIL"
+        if got != want:
+            ok = False
+        print(f"[{status}] parse_at {inp!r} -> {got!r}" + ("" if got == want else f"  want {want!r}"))
+
+    for inp in ("2020-01-01 09:00 past", "today 06:00 too early"):
+        try:
+            parse_at(inp, now)
+            ok = False
+            print(f"[FAIL] parse_at {inp!r} -> no error  want RemindError(past)")
+        except RemindError:
+            print(f"[ok ] parse_at {inp!r} -> RemindError (past)")
+
     sys.exit(0 if ok else 1)
 
 

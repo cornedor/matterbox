@@ -754,10 +754,10 @@ from `{{ today }}` instead of a cooldown:
     stop: true
 ```
 
-### Reminders: "!remind me in 2 hours …"
+### Reminders: "!remind me in 2 hours …" / "!remind me at friday 9am …"
 
 A rule reacts to messages, so it can't fire on its own *later* — but paired with
-a small helper and a once-a-minute timer it makes a `!remind me in …` command.
+a small helper and a once-a-minute timer it makes a `!remind me …` command.
 The rule just hands every `!remind` message you post to
 [`scripts/matterbox-remind`](../scripts/matterbox-remind), which parses the
 delay, stores the reminder in `~/.config/matterbox/reminders.db`, and replies a
@@ -782,14 +782,25 @@ What you can type (the helper dispatches on the message):
 
 | Command | Effect |
 |---|---|
-| `!remind me in <when> <text>` | schedule a reminder and confirm |
+| `!remind me in <when> <text>` | schedule for a relative delay and confirm |
+| `!remind me at <date> [time] <text>` | schedule for a clock date/time and confirm |
 | `!reminders` (or `!remind list`) | list this channel's pending reminders |
 | `!remind cancel <id>` | cancel a pending reminder |
 
-`<when>` is flexible: `2 hours`, `2 days`, `30m`, `1h30m`, `1 day 6 hours`,
+`in <when>` is flexible: `2 hours`, `2 days`, `30m`, `1h30m`, `1 day 6 hours`,
 `90 minutes`, `2 weeks` — weeks/days/hours/minutes/seconds, spelled out or
 abbreviated and combinable. A leading `in`/`after` and a connector (`… to call
 dad`, `… that the build is done`) are ignored.
+
+`at <date> [time]` schedules for an absolute moment. The date can be
+`2026-07-01`, `1 July`/`jul 1`, `03/07` (**day-first** — 3 July), a weekday
+(`friday`), or `today`/`tomorrow`; the optional time can be `14:30`, `2:30pm`,
+`9am`, `14h30`, or `noon`. A date with no time defaults to **09:00** (override
+with `MATTERBOX_REMIND_HOUR`), and a bare time (`!remind me at 18:00 …`) means
+today. A spec that's already passed but omits the year/date — a weekday, a bare
+time, a no-year date — rolls forward to its next occurrence; a fully-specified
+past moment is rejected. (`on` and `@` work as synonyms for `at`, and a bare
+absolute date with no keyword is accepted too.)
 
 Install the helper and timer (see the headers in the two unit files):
 
