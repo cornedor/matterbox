@@ -164,6 +164,20 @@ func TestUpdateSlashTrigger(t *testing.T) {
 	}
 }
 
+func TestUpdateSlashCursorAtLineStart(t *testing.T) {
+	// Cursor moved left of the leading "/" (e.g. Home/ctrl+a): col == 0 used
+	// to slice runes[1:0] and panic. The popup must just close.
+	m := newSlashTestModel("/me")
+	m.input.SetCursorOffset(0)
+	if row, col := m.input.CursorRowCol(); row != 0 || col != 0 {
+		t.Fatalf("setup: cursor = (%d,%d), want (0,0)", row, col)
+	}
+	m.updateSlash() // must not panic
+	if m.slash.active {
+		t.Error("updateSlash should stay closed with the cursor left of the slash")
+	}
+}
+
 func TestUpdateSlashSuppressedWhileEditing(t *testing.T) {
 	// A leading "/" in an edited post is literal text, not a command — the
 	// popup must stay closed.

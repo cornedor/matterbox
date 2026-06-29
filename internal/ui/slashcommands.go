@@ -383,6 +383,12 @@ func (m *Model) updateSlash() tea.Cmd {
 		m.closeSlash()
 		return nil
 	}
+	if col == 0 {
+		// Cursor sits left of the leading "/" (e.g. after Home/ctrl+a):
+		// nothing of the command word is typed up to the cursor.
+		m.closeSlash()
+		return nil
+	}
 	for _, r := range runes[1:col] {
 		if unicode.IsSpace(r) {
 			m.closeSlash()
