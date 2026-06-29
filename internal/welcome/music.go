@@ -1,3 +1,5 @@
+//go:build demoaudio
+
 package welcome
 
 import (

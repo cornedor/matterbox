@@ -6,13 +6,23 @@
 #                    register the mmauth:// login handler, and (on Linux) drop
 #                    the `matterbox listen` systemd --user unit (disabled)
 #   make uninstall  remove the binary, completion files, login handler, service
+#   make demo       run the `--demo` intro with its chiptune soundtrack
 #   make test/vet/fmt/clean/run  the usual dev helpers
 #
 # Override the install location with PREFIX, e.g.  make install PREFIX=~/apps
+#
+# The `--demo` soundtrack (oto + a tracker synth) needs cgo and system audio
+# libs (pkg-config/ALSA on Linux), so it's gated behind the `demoaudio` build
+# tag and left out of the default build. Add it to any target with TAGS, e.g.
+# `make build TAGS=demoaudio`, or use the `demo` target which sets it for you.
 
 BINARY := matterbox
 PKG    := .
 GO     ?= go
+
+# Extra build tags. Empty by default; `demoaudio` compiles in the --demo audio.
+TAGS     ?=
+TAGFLAGS := $(if $(TAGS),-tags $(TAGS),)
 
 # User-level install prefix. ~/.local/bin is already on this user's PATH.
 PREFIX ?= $(HOME)/.local
@@ -47,7 +57,7 @@ MACOS_LOG     := $(HOME)/Library/Logs/matterbox-listen.log
 
 .PHONY: build
 build: ## Build the matterbox binary into the repo root
-	$(GO) build -o $(BINARY) $(PKG)
+	$(GO) build $(TAGFLAGS) -o $(BINARY) $(PKG)
 
 .PHONY: install
 install: build install-completion install-service ## Install binary + completion (+ login handler & listen service on Linux)
@@ -164,7 +174,11 @@ fmt: ## Format all Go sources
 
 .PHONY: run
 run: ## Build and launch the TUI
-	$(GO) run $(PKG)
+	$(GO) run $(TAGFLAGS) $(PKG)
+
+.PHONY: demo
+demo: ## Run the --demo intro with its chiptune soundtrack (needs pkg-config/ALSA)
+	$(GO) run -tags demoaudio $(PKG) welcome --demo
 
 .PHONY: clean
 clean: ## Remove the built binary
