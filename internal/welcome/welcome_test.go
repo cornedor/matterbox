@@ -290,9 +290,45 @@ func TestAuthStepShowsCredentialsAndMasksPassword(t *testing.T) {
 func TestViewRendersAcrossPhases(t *testing.T) {
 	m := newWizard(t)
 	m.t = 7 // settled scene
-	for _, ph := range []phase{phaseIntro, phaseWizard, phaseDone} {
+	for _, ph := range []phase{phaseIntro, phaseWizard, phaseDone, phaseHidden} {
 		m.phase = ph
 		_ = m.View() // must not panic at any phase
+	}
+}
+
+func TestDemoDoneSpaceHidesWithoutQuitting(t *testing.T) {
+	m := newWizard(t)
+	m.demo = true
+	m.phase = phaseDone
+
+	// Space on the closing screen dismisses the panel but does NOT quit: the
+	// program keeps running so the demo animation/soundtrack plays on.
+	if _, cmd := m.handleKey(key(tea.KeySpace)); cmd != nil {
+		t.Fatalf("space on the done screen should not return a command (got %T), so the program keeps running", cmd)
+	}
+	if m.phase != phaseHidden {
+		t.Fatalf("phase = %d, want phaseHidden after space", m.phase)
+	}
+
+	// Once hidden, keys keep the demo running rather than closing it (only ctrl+c
+	// quits), and the bare scene still renders without panicking.
+	if _, cmd := m.handleKey(key(tea.KeyEnter)); cmd != nil {
+		t.Fatal("keys after hiding should keep the demo running, not quit")
+	}
+	m.t = 7
+	_ = m.View()
+}
+
+func TestDoneSpaceQuitsOutsideDemo(t *testing.T) {
+	m := newWizard(t)
+	m.phase = phaseDone // not demo mode
+
+	// Without --demo, space is just another exit key on the closing screen.
+	if _, cmd := m.handleKey(key(tea.KeySpace)); cmd == nil {
+		t.Fatal("space on the done screen should quit outside demo mode")
+	}
+	if m.phase != phaseDone {
+		t.Fatalf("phase changed to %d outside demo mode; want it to quit, not hide", m.phase)
 	}
 }
 

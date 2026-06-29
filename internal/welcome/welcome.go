@@ -67,6 +67,10 @@ const (
 	phaseIntro phase = iota
 	phaseWizard
 	phaseDone
+	// phaseHidden: demo only. The closing panel is dismissed (settings already
+	// saved) but the program keeps running so the animated scene + soundtrack
+	// play on — reached by pressing space on the done screen, exited with ctrl+c.
+	phaseHidden
 )
 
 // wizard steps, in order.

@@ -91,7 +91,14 @@ func (m *Model) drawDone(grid [][]cell) {
 	p.blank()
 	p.wrap("Settings saved. Launch Matterbox any time by running `matterbox`.", labelC)
 	p.blank()
-	p.text("enter  exit", dimC)
+
+	if m.demo {
+		p.text("                     ✦ Music by Dubmood ✦", labelC)
+		p.blank()
+		p.text("enter  exit        space  hide (keep the demo playing)", dimC)
+	} else {
+		p.text("enter  exit", dimC)
+	}
 	m.drawPanel(grid, p, panelW)
 }
 

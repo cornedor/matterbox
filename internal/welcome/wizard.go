@@ -33,8 +33,18 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.phase = phaseWizard
 		return m, nil
 	case phaseDone:
+		// In demo mode, space dismisses the panel but keeps the program running
+		// (settings are already saved) so the show plays on; any other key exits.
+		if m.demo && (msg.String() == "space" || msg.String() == " ") {
+			m.phase = phaseHidden
+			return m, nil
+		}
 		m.closeCapture()
 		return m, tea.Quit
+	case phaseHidden:
+		// Panel dismissed; keep the demo running and ignore keys (ctrl+c, handled
+		// above, still quits).
+		return m, nil
 	case phaseWizard:
 		switch m.step {
 		case stepServer:
