@@ -226,8 +226,9 @@ func (s *Scene) Render(buf []RGB, t float64) {
 		sky := s.skyColor(y)
 		row := y * W
 		starRow := float64(y) < s.horizonY*0.92
+		sr := s.sunRowAt(y, sky)
 		for x := 0; x < W; x++ {
-			c, openSky := s.sunAt(x, y, sky)
+			c, openSky := s.sunAt(x, sky, sr)
 			if openSky && starRow && hash2(x, y) > 0.9962 {
 				tw := 0.5 + 0.5*math.Sin(t*2.5+hash2(x*3+1, y*7+5)*6.2832)
 				c = lerp(c, starColor, clamp01(tw))
@@ -317,25 +318,45 @@ func (s *Scene) skyColor(y int) RGB {
 	return lerp(skyTop, skyHorizon, ty*ty)
 }
 
+// sunRow caches the parts of the sun lookup that depend only on the scanline y:
+// the vertical offset from the sun centre and the disk's fill colour for the row.
+// The CRT scanline gap and the vertical gradient are both functions of y alone, so
+// they are resolved once per row here rather than per pixel in sunAt.
+type sunRow struct {
+	dy   float64 // y - sunCY
+	fill RGB     // colour of any disk pixel on this row (dark-gap rows keep the sky colour)
+}
+
+// sunRowAt precomputes the row-constant sun state for scanline y over background
+// colour sky. A row outside the disk's vertical span keeps fill = sky (unused).
+func (s *Scene) sunRowAt(y int, sky RGB) sunRow {
+	dy := float64(y) - s.sunCY
+	sr := sunRow{dy: dy, fill: sky}
+	r := s.sunR
+	if dy >= -r && dy <= r {
+		sy := (float64(y) - (s.sunCY - r)) / (2 * r) // 0 top .. 1 bottom
+		period := math.Max(1.8, r*0.07)
+		gap := 0.34 + 0.22*sy                           // scanline gaps thicken toward the bottom
+		if math.Mod(float64(y), period)/period >= gap { // lit scanline (else keep sky = dark gap)
+			sr.fill = gradientAt(s.sunStops, sy)
+		}
+	}
+	return sr
+}
+
 // sunAt resolves the background colour at a pixel: the sun disk (with CRT-style
 // horizontal scanline gaps showing dark sky), its surrounding glow, or the plain
 // sky. The returned bool is true only on open sky — outside both the disk and the
 // glow — i.e. where a star may be drawn. dx is scaled by the sub-pixel aspect so
 // the disk stays round on screen (in glyph mode sub-pixels are wider than tall,
-// aspectY=3, so an unscaled circle in pixel space would render far too wide).
-func (s *Scene) sunAt(x, y int, sky RGB) (RGB, bool) {
+// aspectY=3, so an unscaled circle in pixel space would render far too wide). The
+// row-constant disk colour and scanline gap come in via sr (see sunRowAt).
+func (s *Scene) sunAt(x int, sky RGB, sr sunRow) (RGB, bool) {
 	dx := (float64(x) - s.sunCX) * s.aspectY
-	dy := float64(y) - s.sunCY
-	d2 := dx*dx + dy*dy
+	d2 := dx*dx + sr.dy*sr.dy
 	r := s.sunR
 	if d2 <= r*r {
-		sy := (float64(y) - (s.sunCY - r)) / (2 * r) // 0 top .. 1 bottom
-		period := math.Max(1.8, r*0.07)
-		gap := 0.34 + 0.22*sy // scanline gaps thicken toward the bottom
-		if math.Mod(float64(y), period)/period < gap {
-			return sky, false // gap: dark sky shows through (no star)
-		}
-		return gradientAt(s.sunStops, sy), false
+		return sr.fill, false // disk: lit scanline colour, or dark sky in a gap (no star)
 	}
 	if d := math.Sqrt(d2) - r; d < r*0.5 {
 		g := 1 - d/(r*0.5)

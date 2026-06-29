@@ -77,6 +77,15 @@ type Model struct {
 	authUser     string // username from the validated token
 	validating   bool   // an auth check is in flight
 	pendingToken string // token awaiting validation, saved on success
+
+	// Background frame cache. scene holds the pristine rendered scene for sceneT;
+	// frame is a per-View copy the overlay draws onto. The scene is re-rendered
+	// only when the animation time advances (see sceneFrame), so keystrokes — which
+	// also re-run View but don't move m.t — skip the expensive scene render.
+	scene      [][]cell
+	frame      [][]cell
+	sceneT     float64
+	sceneValid bool
 }
 
 // advanced holds the one-screen advanced settings and the focused row.
@@ -190,6 +199,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		if m.width > 0 && m.height > 0 {
 			m.rend.Resize(m.width, m.height)
+			m.sceneValid = false // re-render the scene at the new size
 		}
 		return m, nil
 
@@ -214,7 +224,7 @@ func (m *Model) View() tea.View {
 		v.AltScreen = true
 		return v
 	}
-	grid := m.rend.Render(m.t)
+	grid := m.sceneFrame()
 	switch m.phase {
 	case phaseIntro:
 		m.drawIntroHint(grid)
@@ -226,6 +236,37 @@ func (m *Model) View() tea.View {
 	v := tea.NewView(vapor.Serialize(grid))
 	v.AltScreen = true
 	return v
+}
+
+// sceneFrame returns a writable copy of the animated background for the current
+// frame time. The scene is rendered only when the animation has advanced since
+// the last frame: bubbletea re-runs View on every keystroke, but m.t moves only
+// on a frameMsg, so without this guard each keypress would recompute the whole
+// vaporwave scene — its single most expensive operation. Typing now just
+// re-composites the wizard overlay onto the cached frame.
+func (m *Model) sceneFrame() [][]cell {
+	if !m.sceneValid || m.sceneT != m.t {
+		m.scene = copyGrid(m.scene, m.rend.Render(m.t))
+		m.sceneT = m.t
+		m.sceneValid = true
+	}
+	m.frame = copyGrid(m.frame, m.scene)
+	return m.frame
+}
+
+// copyGrid copies src into dst, reshaping dst to match src's dimensions (so it
+// adapts across a resize), and returns the populated dst.
+func copyGrid(dst, src [][]cell) [][]cell {
+	if len(dst) != len(src) {
+		dst = make([][]cell, len(src))
+	}
+	for y := range src {
+		if len(dst[y]) != len(src[y]) {
+			dst[y] = make([]cell, len(src[y]))
+		}
+		copy(dst[y], src[y])
+	}
+	return dst
 }
 
 // activeField returns the text field accepting input for the current step, or

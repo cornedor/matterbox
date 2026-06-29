@@ -3,6 +3,27 @@ package vapor
 import (
 	"bytes"
 	"strconv"
+	"sync"
+)
+
+// u8dec is the decimal text of every byte value, so writeSGR emits colour
+// channels without strconv.Itoa allocating a string per channel per cell.
+var u8dec = func() [256]string {
+	var t [256]string
+	for i := range t {
+		t[i] = strconv.Itoa(i)
+	}
+	return t
+}()
+
+// serializeBufPool reuses the output buffer across frames: the animation
+// serializes a fresh grid ~12–30×/s, and a grown buffer kept its capacity, so
+// only the final String() copy allocates (down from thousands of allocs/frame).
+var serializeBufPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+
+const (
+	fgPrefix = "\x1b[38;2;" // 24-bit foreground SGR introducer
+	bgPrefix = "\x1b[48;2;" // 24-bit background SGR introducer
 )
 
 // Cell is one terminal character cell of a rendered frame: a rune drawn in a
@@ -21,17 +42,15 @@ func packC(c RGB) int32 {
 	return int32(r)<<16 | int32(g)<<8 | int32(b)
 }
 
-// writeSGR appends a 24-bit colour escape. code is 38 (fg) or 48 (bg).
-func writeSGR(o *bytes.Buffer, code int, c RGB) {
+// writeSGR appends a 24-bit colour escape; prefix is fgPrefix or bgPrefix.
+func writeSGR(o *bytes.Buffer, prefix string, c RGB) {
 	r, g, b := c.u8()
-	o.WriteString("\x1b[")
-	o.WriteString(strconv.Itoa(code))
-	o.WriteString(";2;")
-	o.WriteString(strconv.Itoa(int(r)))
+	o.WriteString(prefix)
+	o.WriteString(u8dec[r])
 	o.WriteByte(';')
-	o.WriteString(strconv.Itoa(int(g)))
+	o.WriteString(u8dec[g])
 	o.WriteByte(';')
-	o.WriteString(strconv.Itoa(int(b)))
+	o.WriteString(u8dec[b])
 	o.WriteByte('m')
 }
 
@@ -71,7 +90,8 @@ func presentAsciiCells(grid [][]Cell, buf []RGB, W, sceneRows int) {
 // SGR escapes. Colour state is tracked within a line (fewer escapes) and reset
 // at every line break so each line is self-contained for the terminal renderer.
 func serialize(grid [][]Cell) string {
-	var b bytes.Buffer
+	b := serializeBufPool.Get().(*bytes.Buffer)
+	b.Reset()
 	for y, row := range grid {
 		if y > 0 {
 			b.WriteByte('\n')
@@ -80,12 +100,12 @@ func serialize(grid [][]Cell) string {
 		hadBg := true
 		for _, c := range row {
 			if fg := packC(c.Fg); fg != lastFg {
-				writeSGR(&b, 38, c.Fg)
+				writeSGR(b, fgPrefix, c.Fg)
 				lastFg = fg
 			}
 			if c.HasBg {
 				if bg := packC(c.Bg); bg != lastBg || !hadBg {
-					writeSGR(&b, 48, c.Bg)
+					writeSGR(b, bgPrefix, c.Bg)
 					lastBg = bg
 					hadBg = true
 				}
@@ -97,5 +117,7 @@ func serialize(grid [][]Cell) string {
 		}
 		b.WriteString("\x1b[0m")
 	}
-	return b.String()
+	s := b.String()
+	serializeBufPool.Put(b)
+	return s
 }
