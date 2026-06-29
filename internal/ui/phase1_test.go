@@ -187,9 +187,10 @@ func TestAltJumpInertWhileComposing(t *testing.T) {
 	}
 }
 
-// TestComposerEscWithDraftFlashes: esc with a non-empty draft keeps focus in
-// the composer and explains why, rather than silently doing nothing.
-func TestComposerEscWithDraftFlashes(t *testing.T) {
+// TestComposerEscWithDraftLeavesAndKeeps: esc with a non-empty draft now leaves
+// the composer for the reading pane, keeping the half-typed text in the input
+// (it autosaves as a draft) rather than refusing to budge.
+func TestComposerEscWithDraftLeavesAndKeeps(t *testing.T) {
 	m := navModel()
 	m.focus = focusInput
 	m.input.Focus()
@@ -197,11 +198,11 @@ func TestComposerEscWithDraftFlashes(t *testing.T) {
 
 	out, _ := m.handleInputKey(keyStr("esc"))
 	got := out.(Model)
-	if got.focus != focusInput {
-		t.Fatalf("esc with a draft left the composer: focus = %v, want focusInput", got.focus)
+	if got.focus != focusMessages {
+		t.Fatalf("esc with a draft stayed in the composer: focus = %v, want focusMessages", got.focus)
 	}
-	if got.status == "" {
-		t.Fatalf("esc with a draft gave no feedback")
+	if got.input.Value() != "half-typed" {
+		t.Fatalf("esc with a draft lost the text: input = %q, want %q", got.input.Value(), "half-typed")
 	}
 }
 

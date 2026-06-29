@@ -182,16 +182,25 @@ type Model struct {
 	serverURL string
 
 	// drafts holds the unsent composer text per channel, keyed by channelID
-	// (channel drafts only — thread replies and in-progress edits aren't
-	// tracked here). It mirrors the server's per-channel drafts: it's seeded
-	// from the drafts API at startup (loadDrafts), restored into the composer
-	// when a channel is opened and re-captured from it when one is left (see
-	// swapChannelDraft), autosaved while typing (scheduleDraftSave), and
-	// cleared on send. An empty/whitespace-only draft is dropped rather than
-	// stored, so the map only ever holds channels with real pending text.
+	// (channel drafts only — in-progress edits aren't tracked here; thread
+	// replies live in threadDrafts). It mirrors the server's per-channel
+	// drafts: it's seeded from the drafts API at startup (loadDrafts), restored
+	// into the composer when a channel is opened and re-captured from it when
+	// one is left (see swapChannelDraft), autosaved while typing
+	// (scheduleDraftSave), and cleared on send. An empty/whitespace-only draft
+	// is dropped rather than stored, so the map only ever holds channels with
+	// real pending text.
 	drafts map[string]string
+	// threadDrafts holds the unsent reply text per thread, keyed by the thread
+	// root post id. It's the thread-reply analogue of drafts: a thread has its
+	// own draft, separate from its channel's, so opening a thread swaps the
+	// channel draft out of the composer and this thread's draft in (see
+	// swapToThreadDraft / closeThread). It mirrors the server's per-thread
+	// drafts (a Draft with RootId set) the same way drafts mirrors channel ones.
+	threadDrafts map[string]string
 	// draftSaveSeq sequences the debounced draft autosave so a stale tick
-	// (superseded by a newer keystroke) is ignored. See scheduleDraftSave.
+	// (superseded by a newer keystroke) is ignored. It's shared by channel and
+	// thread drafts — one composer, one pending autosave. See scheduleDraftSave.
 	draftSaveSeq int
 
 	// markReadDelay is how long the open channel must stay open before it's

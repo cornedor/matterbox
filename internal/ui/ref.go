@@ -110,8 +110,9 @@ func (m Model) openRefForPost(p *model.Post) (tea.Model, tea.Cmd) {
 	sort.SliceStable(refs, func(i, j int) bool { return refs[i].pos < refs[j].pos })
 
 	// The reference panel and the thread sidebar share the single right slot.
+	var threadCmd tea.Cmd
 	if m.threadOpen {
-		m.closeThread()
+		threadCmd = m.closeThread()
 	}
 	m.refOpen = true
 	m.refs = refs
@@ -120,7 +121,7 @@ func (m Model) openRefForPost(p *model.Post) (tea.Model, tea.Cmd) {
 	m.status = refStatusHint(refs[0], len(refs))
 	cmd := m.loadCurrentRef()
 	m.resizeMessagesViewport()
-	return m, cmd
+	return m, tea.Batch(threadCmd, cmd)
 }
 
 // currentRef returns the reference currently shown, or nil when the panel is

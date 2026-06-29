@@ -80,8 +80,9 @@ func (m Model) openChannelInfo() (tea.Model, tea.Cmd) {
 	}
 	// The info panel and the thread sidebar / reference panel share the single
 	// right slot.
+	var threadCmd tea.Cmd
 	if m.threadOpen {
-		m.closeThread()
+		threadCmd = m.closeThread()
 	}
 	if m.refOpen {
 		m.closeRef()
@@ -105,7 +106,7 @@ func (m Model) openChannelInfo() (tea.Model, tea.Cmd) {
 	m.resizeMessagesViewport()
 	m.renderMessages()
 	m.renderInfo()
-	return m, tea.Batch(m.fetchInfoMembers(c.Id), m.fetchInfoPinned(c.Id))
+	return m, tea.Batch(threadCmd, m.fetchInfoMembers(c.Id), m.fetchInfoPinned(c.Id))
 }
 
 // closeInfo tears the panel down and returns focus to the messages pane.

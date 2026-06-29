@@ -342,6 +342,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		changed, threadChanged := false, false
+		var threadCmd tea.Cmd
 		for _, d := range msg.deleted {
 			for _, ex := range m.posts {
 				if ex.Id == d.Id && ex.DeleteAt == 0 {
@@ -355,7 +356,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.threadOpen {
 				// A removed thread root leaves nothing to anchor the sidebar on.
 				if d.Id == m.threadRootID {
-					m.closeThread()
+					threadCmd = m.closeThread()
 					threadChanged = false // closeThread already tore the pane down
 					continue
 				}
@@ -375,7 +376,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if threadChanged {
 			m.renderThread()
 		}
-		return m, nil
+		return m, threadCmd
 
 	case postsGapFilledMsg:
 		// Always persist what we got — even if the user has since
@@ -1306,8 +1307,7 @@ func (m *Model) applyPostDeleted(ev *model.WebSocketEvent) tea.Cmd {
 		// If the root itself was deleted, drop the whole sidebar — there's
 		// nothing left to anchor it on.
 		if p.Id == m.threadRootID {
-			m.closeThread()
-			return persistCmd
+			return tea.Batch(persistCmd, m.closeThread())
 		}
 		for _, ex := range m.threadPosts {
 			if ex.Id == p.Id {
@@ -1903,8 +1903,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// visually dominant thing on screen, so esc dismisses it before touching
 		// the sidebar filter.
 		if m.threadOpen {
-			m.closeThread()
-			return m, nil
+			return m, m.closeThread()
 		}
 		if m.refOpen {
 			m.closeRef()
@@ -1991,8 +1990,7 @@ func (m Model) handleThreadKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	switch {
 	case key.Matches(msg, m.keys.CloseThread):
-		m.closeThread()
-		return m, nil
+		return m, m.closeThread()
 	case key.Matches(msg, m.keys.Up):
 		if m.threadIdx > 0 {
 			m.threadIdx--
@@ -2585,10 +2583,9 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Matches(msg, m.keys.ClearInput):
 		// Wipe the whole draft in one keystroke. The textarea's emacs keys
-		// only kill to the line start / end; this is the "start over" hatch
-		// that also lets esc leave (esc is disabled while text is present,
-		// see LeaveInput below). No-op on an empty input so a stray ctrl+g
-		// doesn't flash a misleading status.
+		// only kill to the line start / end; this is the "start over" hatch.
+		// No-op on an empty input so a stray ctrl+g doesn't flash a
+		// misleading status.
 		if m.input.Value() == "" {
 			return m, nil
 		}
@@ -2601,31 +2598,25 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.closeLang()
 		m.clearGrammar()
 		m.status = "draft cleared"
-		// Wiping a channel draft also drops its server copy. Editing / thread
-		// replies don't track a channel draft, so leave the server alone then.
+		// Wiping a draft also drops its server copy — for whichever target the
+		// composer is on (channel or thread). An in-progress edit isn't a draft,
+		// so leave the server alone then.
 		var clearCmd tea.Cmd
-		if m.editingPostID == "" && !m.threadOpen {
-			clearCmd = m.clearDraft(m.openChannelID)
+		if channelID, rootID, tracks := m.composerDraftTarget(); tracks {
+			if rootID == "" {
+				clearCmd = m.clearDraft(channelID)
+			} else {
+				clearCmd = m.clearThreadDraft(channelID, rootID)
+			}
 		}
 		return m, clearCmd
 	case key.Matches(msg, m.keys.LeaveInput):
-		// While composing a new message, esc only leaves the input when
-		// the textarea is empty — a stray esc shouldn't yank focus away
-		// from a half-typed draft. Edit mode is exempt: there esc cancels
-		// the in-progress edit (dropping the prefilled text) and leaves,
-		// which is the more useful escape hatch even with text present.
+		// esc leaves the composer, keeping any half-typed text as a draft:
+		// it stays in the input and autosaves to the server, so focus can
+		// jump back to the reading pane without losing work. Edit mode
+		// cancels the in-progress edit (dropping the prefilled text) on the
+		// way out.
 		editing := m.editingPostID != ""
-		if !editing && strings.TrimSpace(m.input.Value()) != "" {
-			// A stray esc shouldn't yank focus away from a half-typed draft
-			// (and turn the next keystrokes into nav commands — q quits);
-			// point at the clear shortcut instead of silently swallowing it.
-			clearKey := "ctrl+g"
-			if ks := m.keys.ClearInput.Keys(); len(ks) > 0 {
-				clearKey = prettyKey(ks[0])
-			}
-			m.status = "esc disabled while composing — " + clearKey + " to clear, then esc to leave"
-			return m, nil
-		}
 		m.closeMention()
 		m.closeEmoji()
 		m.closeSlash()
@@ -2718,11 +2709,13 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.renderMessages()
 		m.renderThread()
 		m.status = "sending…"
-		// A channel send consumes its draft; drop the saved copy locally and
-		// on the server. Thread replies (rootID set) aren't channel drafts.
+		// A send consumes its draft; drop the saved copy locally and on the
+		// server, for the channel or the thread depending on where it went.
 		var draftCmd tea.Cmd
 		if rootID == "" {
 			draftCmd = m.clearDraft(channelID)
+		} else {
+			draftCmd = m.clearThreadDraft(channelID, rootID)
 		}
 		return m, tea.Batch(m.sendMessage(channelID, rootID, text, fileIDs), draftCmd)
 	}
@@ -3646,6 +3639,15 @@ func (m Model) openThreadForPost(p *model.Post) (tea.Model, tea.Cmd) {
 		m.renderThread()
 		return m, cmd
 	}
+	// A thread has its own draft, separate from its channel's. Stash whatever
+	// the composer is currently drafting (the open channel, or a different
+	// thread) and load this thread's draft in its place — so the channel draft
+	// isn't carried into the reply. Skipped mid-edit: beginEditPost owns the
+	// composer then, and an edit isn't a draft.
+	var draftCmd tea.Cmd
+	if m.editingPostID == "" {
+		draftCmd = m.swapToThreadDraft(channelID, rootID)
+	}
 	m.threadOpen = true
 	m.threadRootID = rootID
 	m.threadChannelID = channelID
@@ -3664,13 +3666,24 @@ func (m Model) openThreadForPost(p *model.Post) (tea.Model, tea.Cmd) {
 	m.resizeInput()
 	m.renderMessages()
 	m.renderThread()
-	return m, tea.Batch(m.fetchThread(rootID), focusCmd)
+	return m, tea.Batch(m.fetchThread(rootID), focusCmd, draftCmd)
 }
 
 // closeThread tears down the sidebar and returns focus to the messages pane.
-func (m *Model) closeThread() {
+// It stashes the thread's reply text as that thread's draft and restores the
+// open channel's draft into the composer, the mirror of openThreadForPost's
+// swap. Returns the server-sync Cmd for the stashed draft (plus a grammar
+// recheck for the restored one), or nil.
+func (m *Model) closeThread() tea.Cmd {
 	if !m.threadOpen {
-		return
+		return nil
+	}
+	// Stash the thread's composer text under its own draft before the thread
+	// state is cleared (stashThreadDraft reads threadChannelID/threadRootID).
+	// Skipped mid-edit — an edit owns the composer and isn't a draft.
+	var stashCmd tea.Cmd
+	if m.editingPostID == "" {
+		stashCmd = m.stashThreadDraft(m.threadChannelID, m.threadRootID, m.input.Value())
 	}
 	m.threadOpen = false
 	m.threadRootID = ""
@@ -3681,14 +3694,18 @@ func (m *Model) closeThread() {
 	if m.focus == focusThread {
 		m.focus = focusMessages
 	}
-	// Same as openThreadForPost — leave the prompt alone if an edit is
-	// in progress so the user keeps the "✎ " mode indicator.
+	// Same as openThreadForPost — leave the composer alone if an edit is in
+	// progress so the user keeps the "✎ " mode indicator and prefilled text.
+	var grammarCmd tea.Cmd
 	if m.editingPostID == "" {
 		m.input.SetPromptFunc(2, inputPromptFunc("> "))
+		m.setComposerDraft(m.drafts[m.openChannelID])
+		grammarCmd = m.scheduleGrammarCheck()
 	}
 	m.resizeMessagesViewport()
 	m.resizeInput()
 	m.renderMessages()
+	return tea.Batch(stashCmd, grammarCmd)
 }
 
 func (m Model) handleTeamsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {

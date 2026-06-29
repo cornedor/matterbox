@@ -287,6 +287,127 @@ func TestClearDraftOnSend(t *testing.T) {
 	}
 }
 
+// TestOpenThreadDoesNotCarryChannelDraft: opening a thread stashes the channel
+// draft and starts the reply composer empty — the channel draft must not be
+// carried into the thread. This is the bug the thread-draft split fixes.
+func TestOpenThreadDoesNotCarryChannelDraft(t *testing.T) {
+	m := navModel() // on c1
+	m.focus = focusInput
+	m.input.SetValue("channel text")
+
+	out, _ := m.openThreadForPost(&model.Post{Id: "root1", ChannelId: "c1"})
+	got := out.(Model)
+
+	if v := got.input.Value(); v != "" {
+		t.Fatalf("thread composer carried the channel draft: %q", v)
+	}
+	if got.drafts["c1"] != "channel text" {
+		t.Fatalf("channel draft not stashed on thread open: %q", got.drafts["c1"])
+	}
+	if !got.threadOpen || got.threadRootID != "root1" {
+		t.Fatalf("thread not opened: open=%v root=%q", got.threadOpen, got.threadRootID)
+	}
+}
+
+// TestThreadDraftRoundTrip: a thread reply typed and left unsent is stashed as
+// that thread's own draft, and the channel draft is restored on close;
+// reopening the thread restores the reply — the two drafts never mix.
+func TestThreadDraftRoundTrip(t *testing.T) {
+	m := navModel()
+	m.focus = focusInput
+	m.input.SetValue("channel text")
+
+	out, _ := m.openThreadForPost(&model.Post{Id: "root1", ChannelId: "c1"})
+	m = out.(Model)
+
+	// Type a reply, then close the thread.
+	m.input.SetValue("my reply")
+	m.closeThread()
+
+	if v := m.input.Value(); v != "channel text" {
+		t.Fatalf("closing thread didn't restore channel draft: %q", v)
+	}
+	if m.threadDrafts["root1"] != "my reply" {
+		t.Fatalf("thread reply not stashed: %q", m.threadDrafts["root1"])
+	}
+
+	// Reopen the thread — the reply comes back, not the channel draft.
+	out, _ = m.openThreadForPost(&model.Post{Id: "root1", ChannelId: "c1"})
+	m = out.(Model)
+	if v := m.input.Value(); v != "my reply" {
+		t.Fatalf("reopening thread didn't restore the reply draft: %q", v)
+	}
+}
+
+// TestThreadDraftAutosaveSavesThreadDraft: while a thread is open the debounced
+// autosave writes the thread's draft (keyed by root id), never a channel draft.
+func TestThreadDraftAutosaveSavesThreadDraft(t *testing.T) {
+	m := navModel()
+	out, _ := m.openThreadForPost(&model.Post{Id: "root1", ChannelId: "c1"})
+	m = out.(Model)
+	m.input.SetValue("reply text")
+
+	cmd := m.scheduleDraftSave()
+	if cmd == nil {
+		t.Fatalf("no autosave armed for the thread draft")
+	}
+	m.applyDraftSaveDebounce(draftSaveDebounceMsg{seq: m.draftSaveSeq, channelID: "c1", rootID: "root1"})
+
+	if m.threadDrafts["root1"] != "reply text" {
+		t.Fatalf("thread autosave didn't stash the reply: %q", m.threadDrafts["root1"])
+	}
+	if _, ok := m.drafts["c1"]; ok {
+		t.Fatalf("thread autosave leaked into the channel draft map")
+	}
+}
+
+// TestApplyDraftWSThreadDrafts: a thread-draft broadcast for a background thread
+// lands in threadDrafts; the open thread's own broadcast is ignored so a live
+// echo can't clobber the reply being typed; a delete clears a background one.
+func TestApplyDraftWSThreadDrafts(t *testing.T) {
+	m := navModel()
+	out, _ := m.openThreadForPost(&model.Post{Id: "open-root", ChannelId: "c1"})
+	m = out.(Model)
+
+	m.applyDraftUpserted(draftEvent(model.WebsocketEventDraftUpdated,
+		&model.Draft{ChannelId: "c2", RootId: "bg-root", Message: "from phone"}))
+	if m.threadDrafts["bg-root"] != "from phone" {
+		t.Fatalf("background thread draft not synced: %q", m.threadDrafts["bg-root"])
+	}
+
+	m.input.SetValue("typing reply")
+	m.applyDraftUpserted(draftEvent(model.WebsocketEventDraftUpdated,
+		&model.Draft{ChannelId: "c1", RootId: "open-root", Message: "echo"}))
+	if v := m.input.Value(); v != "typing reply" {
+		t.Fatalf("open-thread draft event clobbered the composer: %q", v)
+	}
+	if _, ok := m.threadDrafts["open-root"]; ok {
+		t.Fatalf("open-thread draft event wrote to the map, want it skipped")
+	}
+
+	m.applyDraftDeleted(draftEvent(model.WebsocketEventDraftDeleted,
+		&model.Draft{ChannelId: "c2", RootId: "bg-root"}))
+	if _, ok := m.threadDrafts["bg-root"]; ok {
+		t.Fatalf("thread draft delete didn't clear it")
+	}
+}
+
+// TestDraftsLoadedSplitsChannelAndThread: a startup fetch routes channel drafts
+// to m.drafts and thread-reply drafts to m.threadDrafts by their RootId.
+func TestDraftsLoadedSplitsChannelAndThread(t *testing.T) {
+	m := navModel()
+	m.applyDraftsLoaded(draftsLoadedMsg{
+		drafts:       map[string]string{"c2": "channel draft"},
+		threadDrafts: map[string]string{"root9": "thread draft"},
+	})
+	if m.drafts["c2"] != "channel draft" {
+		t.Fatalf("channel draft not loaded: %q", m.drafts["c2"])
+	}
+	if m.threadDrafts["root9"] != "thread draft" {
+		t.Fatalf("thread draft not loaded: %q", m.threadDrafts["root9"])
+	}
+}
+
 // TestApplyDraftsLoadedSeedsOpenComposer: a freshly-fetched draft for the open
 // channel populates an empty composer, but never clobbers in-progress typing.
 func TestApplyDraftsLoadedSeedsOpenComposer(t *testing.T) {
