@@ -20,11 +20,15 @@ import (
 //go:embed intro.json
 var introJSON []byte
 
-// frameRate drives the background animation. 30fps keeps the full-screen glyph
-// re-render (the heaviest render mode) smooth without the cost of the 60fps the
-// standalone vaporascii binary runs at — the wizard is short-lived but should
-// stay light on a laptop.
-const frameRate = 30
+// Background animation rates. The intro fly-in wants to be smooth, but once the
+// form is up the scene only drifts slowly (terrain at speed 0.2, twinkling
+// stars), so the tick drops to a low rate to spare the CPU — typing stays
+// instant regardless, since bubbletea re-renders the View on every keypress, not
+// just on the animation tick.
+const (
+	introFrameRate  = 30
+	wizardFrameRate = 12
+)
 
 // introSecs matches the embedded intro.json duration: the title fly-in and the
 // sunrise both settle at t=6s, after which the wizard appears over the scene
@@ -128,10 +132,19 @@ func New(cfg *config.Config) *Model {
 // frameMsg carries the wall-clock time of an animation tick.
 type frameMsg time.Time
 
-func tick() tea.Cmd {
-	return tea.Tick(time.Second/time.Duration(frameRate), func(t time.Time) tea.Msg {
+func tickAt(fps int) tea.Cmd {
+	return tea.Tick(time.Second/time.Duration(fps), func(t time.Time) tea.Msg {
 		return frameMsg(t)
 	})
+}
+
+// frameRate is the animation tick rate for the current phase: smooth during the
+// intro fly-in, low once the wizard/done panel is up over a slowly drifting scene.
+func (m *Model) frameRate() int {
+	if m.phase == phaseIntro {
+		return introFrameRate
+	}
+	return wizardFrameRate
 }
 
 // authResultMsg reports the outcome of validating a token against the server.
@@ -155,7 +168,7 @@ func validateCmd(server, token string) tea.Cmd {
 	}
 }
 
-func (m *Model) Init() tea.Cmd { return tick() }
+func (m *Model) Init() tea.Cmd { return tickAt(m.frameRate()) }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -169,7 +182,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.phase == phaseIntro && m.t >= introSecs {
 			m.phase = phaseWizard
 		}
-		return m, tick()
+		// frameRate() reflects the just-updated phase, so the tick rate drops as
+		// soon as the wizard opens.
+		return m, tickAt(m.frameRate())
 
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
