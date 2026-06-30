@@ -1235,6 +1235,15 @@ func (m Model) View() tea.View {
 	if m.mouseEnabled {
 		v.MouseMode = tea.MouseModeAllMotion
 	}
+	// Place the real terminal cursor in the focused editing surface (composer,
+	// SQL editor, or jira-comment overlay), computed after viewContent so the
+	// geometry caches those helpers read are fresh. Leave Color nil so the
+	// cursor keeps the terminal's own colour; bubbletea always emits a shape, so
+	// we ask for the blinking block that matches the prior drawn caret and is the
+	// terminal's conventional default.
+	if cx, cy, ok := m.editorCursor(); ok {
+		v.Cursor = tea.NewCursor(cx, cy)
+	}
 	return v
 }
 
@@ -1618,10 +1627,11 @@ func (m *Model) renderMessagesPane(height, width int) string {
 	// wrap to a second row (which would offset the scrollbar's row math).
 	titleLine := ansi.Truncate(titleRendered, width-2, "…")
 
+	// The pane frame lights up only while the message list itself is the active
+	// reading target. Focusing the composer (or the attachment chips inside this
+	// box) deliberately dims the frame so the reading area visibly blurs — the
+	// composer's own top rule / the chip highlight carry the focus instead.
 	highlighted := m.focus == focusMessages
-	if !m.threadOpen && (m.focus == focusInput || m.focus == focusAttachments) {
-		highlighted = true
-	}
 	borderColor := dimColor
 	if highlighted {
 		borderColor = focusedColor
@@ -1808,8 +1818,11 @@ func (m *Model) renderThreadPane(height, width int) string {
 	parts = append(parts, m.renderInputBox(width-2))
 	content := lipgloss.JoinVertical(lipgloss.Left, parts...)
 
+	// As with the messages pane, the thread frame stays bright only while the
+	// thread transcript has focus; composing a reply (or touching its attachment
+	// chips) dims it so the reading area blurs and the composer rule stands out.
 	borderColor := dimColor
-	if m.focus == focusThread || m.focus == focusInput || m.focus == focusAttachments {
+	if m.focus == focusThread {
 		borderColor = focusedColor
 	}
 

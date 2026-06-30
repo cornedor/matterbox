@@ -792,6 +792,8 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	sw.Placeholder = "switch to channel or > for commands…"
 	sw.CharLimit = 64
 	sw.SetWidth(switcherWidth - 6)
+	// Place the real terminal cursor instead of the drawn block (see switcherCursor).
+	sw.SetVirtualCursor(false)
 
 	rs := textinput.New()
 	rs.Prompt = "search "
@@ -810,6 +812,10 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	ta.MaxHeight = maxInputHeight
 	ta.MaxContentHeight = 10000
 	ta.SetHeight(1)
+	// Place the real terminal cursor in the composer (see composerCursor) so its
+	// blink and colour follow the user's terminal rather than a static
+	// reverse-video block.
+	ta.NativeCursor = true
 	ta.Styles.Placeholder = lipgloss.NewStyle().Foreground(dimColor)
 	// Live-highlight inline markdown (bold/italic/strike/code) as the user types,
 	// keeping the markers visible so they can see what each will change.

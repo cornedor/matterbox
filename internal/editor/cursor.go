@@ -44,6 +44,25 @@ func (m *Model) CursorVisualRow() int {
 	return i
 }
 
+// CursorViewPos returns the cursor's position relative to the editor's own
+// top-left cell, for an owner that draws the real terminal cursor (see
+// NativeCursor): col counts the prompt gutter plus the content display column,
+// row is the visible row (0 == the topmost shown). ok is false when the field
+// is unfocused or the cursor has scrolled out of the visible window — in which
+// case the owner must not place a cursor.
+func (m *Model) CursorViewPos() (col, row int, ok bool) {
+	if !m.focus {
+		return 0, 0, false
+	}
+	rows := m.layout(true)
+	idx, vcol, _ := m.cursorVisRaw(rows)
+	r := idx - m.yOffset
+	if r < 0 || r >= max(m.height, 1) {
+		return 0, 0, false
+	}
+	return m.promptWidth + vcol, r, true
+}
+
 // CursorStart moves the cursor to the start of the current logical line.
 func (m *Model) CursorStart() {
 	m.col = 0

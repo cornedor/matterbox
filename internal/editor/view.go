@@ -78,7 +78,11 @@ func (m *Model) viewPlaceholder(cw, h int, base lipgloss.Style) string {
 
 	var first strings.Builder
 	used := 0
-	if m.focus {
+	// With NativeCursor the real terminal cursor is placed at the first cell
+	// (CursorViewPos reports col=promptWidth, row=0 for an empty buffer), so the
+	// placeholder is drawn plainly and the cursor lands on its first glyph —
+	// same as the unfocused path below.
+	if m.focus && !m.NativeCursor {
 		if len(ph) > 0 {
 			first.WriteString(m.Styles.Cursor.Inline(true).Render(string(ph[0])))
 			used += textwidth.Width(string(ph[0]))
@@ -154,7 +158,7 @@ func (m *Model) renderRow(vr visRow, isCursorRow bool, cw int, base lipgloss.Sty
 		return mdNone
 	}
 	for k := range rs {
-		if m.focus && isCursorRow && vr.a+k == m.col {
+		if m.focus && !m.NativeCursor && isCursorRow && vr.a+k == m.col {
 			flush()
 			curDecor, curClass, curSel = -2, mdClass(255), false
 			b.WriteString(m.Styles.Cursor.Inline(true).Render(string(rs[k])))
@@ -194,9 +198,15 @@ func (m *Model) renderRow(vr visRow, isCursorRow bool, cw int, base lipgloss.Sty
 	flush()
 
 	// Caret at the end of the row (or on a reserved trailing row): a
-	// reverse-video space.
+	// reverse-video space — unless the owner draws the real terminal cursor
+	// (NativeCursor), in which case the cell stays blank for the cursor to land
+	// on, and the ghost-hint logic below still positions itself past it.
 	if m.focus && isCursorRow && m.col == vr.b {
-		b.WriteString(m.Styles.Cursor.Inline(true).Render(" "))
+		if m.NativeCursor {
+			b.WriteString(base.Render(" "))
+		} else {
+			b.WriteString(m.Styles.Cursor.Inline(true).Render(" "))
+		}
 		used++
 		// A slash command's argument hint trails the caret as dim ghost text
 		// (not in the buffer). Only here — caret at the line's end — so it reads

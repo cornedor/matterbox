@@ -28,8 +28,8 @@ import (
 const commentQuoteMaxLines = 8
 
 // newCommentTextarea builds the modal's textarea, configured like the message
-// composer (dynamic height, Enter posts, alt/shift+enter newline, static
-// cursor).
+// composer (dynamic height, Enter posts, alt/shift+enter newline, native
+// terminal cursor).
 func newCommentTextarea() editor.Model {
 	ta := editor.New()
 	ta.Placeholder = "comment…"
@@ -40,6 +40,8 @@ func newCommentTextarea() editor.Model {
 	ta.MaxContentHeight = 10000
 	ta.SetHeight(3)
 	ta.SetPromptFunc(2, inputPromptFunc("┃ "))
+	// Place the real terminal cursor in the comment editor (see jiraCommentCursor).
+	ta.NativeCursor = true
 	ta.Styles.Placeholder = lipgloss.NewStyle().Foreground(dimColor)
 	ta.KeyMap.InsertNewline = key.NewBinding(
 		key.WithKeys("alt+enter", "shift+enter"),

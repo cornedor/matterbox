@@ -131,6 +131,8 @@ func newSearchState(storeAvailable bool) searchState {
 	ti.Prompt = "🔎 "
 	ti.Placeholder = "search… (~ semantic · ? ask AI · team:/in: to narrow)"
 	ti.CharLimit = 256
+	// Place the real terminal cursor instead of the drawn block (see searchCursor).
+	ti.SetVirtualCursor(false)
 
 	vp := viewport.New()
 	vp.SoftWrap = true

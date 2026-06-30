@@ -40,7 +40,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if anim := nm.maybeStartEmojiAnim(); anim != nil {
 		cmd = tea.Batch(cmd, anim)
 	}
+	// Reconcile the composer's cursor with m.focus *after* the handler ran, so no
+	// focus-changing path can leave the editor visibly focused (or dark) by
+	// forgetting to blur/focus it. Every event funnels through here, so this is
+	// the one place the invariant is guaranteed (see syncComposerFocus).
+	nm.syncComposerFocus()
 	return nm, cmd
+}
+
+// syncComposerFocus reconciles the composer's bubble-level focus with m.focus,
+// the single source of truth for which pane is active. The editor draws its
+// cursor from its own focus flag, so any path that moves focus off the composer
+// without blurring it — `matterbox open`, a permalink jump, switching to the
+// Feed/Search/SQL tab, the channel sidebar nav — would otherwise leave a stale
+// cursor that makes the composer look focused while you're reading; the reverse
+// leaves the composer dark when it should be accepting input. Enforcing
+// input.Focused() == (focus == focusInput) on every Update means new
+// focus-changing code can't desync the cursor. Focus()/Blur() are side-effect
+// only (no blink cmd), so this needs no command, and the guards make it a no-op
+// unless the state actually crossed the composer boundary (so Blur's
+// selection-drop only fires on a real focus-out). The Search/SQL inputs are left
+// out on purpose: the Search tab hands its cursor to an AI follow-up box
+// independently of m.focus, so they own their own focus state.
+func (m *Model) syncComposerFocus() {
+	switch {
+	case m.focus == focusInput && !m.input.Focused():
+		m.input.Focus()
+	case m.focus != focusInput && m.input.Focused():
+		m.input.Blur()
+	}
 }
 
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {

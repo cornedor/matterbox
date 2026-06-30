@@ -79,6 +79,13 @@ type Model struct {
 	// (the composer, jira comments) opt in. See markdown.go and Styles.Markdown.
 	MarkdownHighlight bool
 
+	// NativeCursor, when set, suppresses the drawn reverse-video caret in View:
+	// the owner reads CursorViewPos and places the real terminal cursor instead
+	// (so its blink, colour and shape follow the terminal). Off by default — an
+	// editor whose owner can't compute its absolute screen position keeps the
+	// drawn caret. See CursorViewPos.
+	NativeCursor bool
+
 	// decorations are inline styled spans (e.g. grammar underlines), addressed
 	// by rune offset into Value(). Drawn during View, clipped to the scroll
 	// window automatically.

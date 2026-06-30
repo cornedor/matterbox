@@ -88,6 +88,8 @@ func newSQLState(storeAvailable bool) sqlState {
 	ta.MaxContentHeight = 10000
 	ta.SetHeight(3)
 	ta.SetPromptFunc(2, inputPromptFunc("❯ "))
+	// Place the real terminal cursor in the query editor (see sqlCursor).
+	ta.NativeCursor = true
 	ta.Styles.Placeholder = lipgloss.NewStyle().Foreground(dimColor)
 	// Enter runs the query (handled in handleSQLKey); alt+enter / shift+enter
 	// insert a newline so multi-line SQL is still possible. Mirrors the composer.

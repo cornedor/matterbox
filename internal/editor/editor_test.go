@@ -60,6 +60,55 @@ func TestCursorOffsetRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCursorViewPos(t *testing.T) {
+	// Single line, no prompt: column is the content display column, row 0.
+	m := newTestModel(40)
+	m = typeString(m, "hello")
+	if col, row, ok := m.CursorViewPos(); !ok || col != 5 || row != 0 {
+		t.Fatalf("CursorViewPos after %q = (%d,%d,%v), want (5,0,true)", "hello", col, row, ok)
+	}
+
+	// The prompt gutter counts toward the column.
+	mp := New()
+	mp.SetWidth(40)
+	mp.SetPromptFunc(2, func(int, bool) string { return "> " })
+	mp.Focus()
+	mp = typeString(mp, "hi")
+	if col, _, ok := mp.CursorViewPos(); !ok || col != 4 {
+		t.Fatalf("CursorViewPos with prompt = col %d (ok=%v), want col 4", col, ok)
+	}
+
+	// A second logical line lands on visual row 1 (window tall enough not to
+	// scroll it to the top).
+	ml := newTestModel(40)
+	ml.SetHeight(5)
+	ml.SetValue("ab\ncd")
+	ml.CursorEnd()
+	if _, row, ok := ml.CursorViewPos(); !ok || row != 1 {
+		t.Fatalf("CursorViewPos on line 2 = row %d (ok=%v), want row 1", row, ok)
+	}
+
+	// Blurred: nothing to place.
+	ml.Blur()
+	if _, _, ok := ml.CursorViewPos(); ok {
+		t.Fatalf("CursorViewPos while blurred: ok=true, want false")
+	}
+}
+
+func TestNativeCursorOmitsDrawnCaret(t *testing.T) {
+	const reverse = "\x1b[7m" // SGR for the reverse-video caret cell
+	m := newTestModel(40)
+	m = typeString(m, "hi")
+	m.CursorStart() // caret on 'h', a mid-line cell
+	if !strings.Contains(m.View(), reverse) {
+		t.Fatalf("default editor View draws no reverse-video caret; want one")
+	}
+	m.NativeCursor = true
+	if strings.Contains(m.View(), reverse) {
+		t.Fatalf("NativeCursor View still draws the reverse-video caret")
+	}
+}
+
 func TestInsertMidline(t *testing.T) {
 	m := newTestModel(40)
 	m.SetValue("helo")

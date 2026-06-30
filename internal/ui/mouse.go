@@ -1153,6 +1153,162 @@ func (m *Model) composerGeom() (x0, top, width, height, yoff int) {
 	return x0, top, m.input.Width(), height, m.input.ScrollYOffset()
 }
 
+// editorCursor returns the absolute screen cell where the real terminal cursor
+// should sit for whichever text-input surface is currently focused and
+// on-screen, or ok == false when none is (so View leaves the cursor hidden).
+// Overlays that carry their own input win first (the channel switcher, then the
+// jira-comment overlay), since they render over any tab; any other body-covering
+// overlay suppresses the cursor; then the Search and SQL tabs, else the composer.
+func (m *Model) editorCursor() (col, row int, ok bool) {
+	switch {
+	case m.switcherMode:
+		return m.switcherCursor()
+	case m.jiraCommentActive:
+		return m.jiraCommentCursor()
+	case m.bodyOverlayActive():
+		return 0, 0, false
+	case m.onSearchTab():
+		return m.searchCursor()
+	case m.onSQLTab():
+		return m.sqlCursor()
+	default:
+		return m.composerCursor()
+	}
+}
+
+// bodyOverlayActive reports whether a centered overlay has replaced the body,
+// so the editing surface beneath it must not place a cursor. Excludes the
+// jira-comment overlay, which carries its own editor and places its own cursor
+// (see jiraCommentCursor) — editorCursor handles it ahead of this check.
+func (m *Model) bodyOverlayActive() bool {
+	return m.inModal() || m.jiraPointsActive || m.jiraPicker.active ||
+		m.glConfirm.active || m.linkConfirm.active
+}
+
+// composerCursor maps the compose editor's own (col,row) — past the prompt
+// gutter and scroll — onto composerGeom's on-screen origin. ok is false unless
+// the composer is focused with a rendered geometry. Mirrors composerGeom's
+// reliance on the cached body height.
+func (m *Model) composerCursor() (col, row int, ok bool) {
+	if m.focus != focusInput {
+		return 0, 0, false
+	}
+	cx, cy, okPos := m.input.CursorViewPos()
+	if !okPos {
+		return 0, 0, false
+	}
+	x0, top, width, _, _ := m.composerGeom()
+	if width <= 0 {
+		return 0, 0, false
+	}
+	return x0 + cx, top + cy, true
+}
+
+// sqlCursor maps the SQL query editor's own (col,row) onto its screen origin.
+// The SQL pane is the full-width body beneath the tab strip: its left border
+// sits at column 0 (content at 1), and the title row then the input box's top
+// border sit above the editor's first row (so it begins two rows into the body).
+// ok is false when the editor is unfocused or scrolled out (CursorViewPos).
+func (m *Model) sqlCursor() (col, row int, ok bool) {
+	cx, cy, okPos := m.sql.input.CursorViewPos()
+	if !okPos {
+		return 0, 0, false
+	}
+	return 1 + cx, tabsHeight + 2 + cy, true
+}
+
+// searchCursor maps the Search tab's text input onto its screen origin. The
+// pane mirrors the SQL pane exactly (full-width body, left border at column 0,
+// title row + input-box top border above the input), so the editor's first
+// cell is the same fixed offset. The bubbles input reports its own caret column
+// (prompt width included) via Cursor, or nil when it's blurred or scrolled out.
+func (m *Model) searchCursor() (col, row int, ok bool) {
+	c := m.search.input.Cursor()
+	if c == nil {
+		return 0, 0, false
+	}
+	return 1 + c.X, tabsHeight + 2 + c.Y, true
+}
+
+// switcherCursor maps the channel switcher's text input onto its screen origin
+// inside the centered popup. The popup's height varies with the result list and
+// sub-mode, so rather than recompute it we re-render the box and measure it,
+// then apply the same lipgloss.Place centering renderViewContent uses. The
+// input always sits at the same spot inside the box: one row below the title
+// (past the top border), two columns in (border + padding).
+func (m *Model) switcherCursor() (col, row int, ok bool) {
+	c := m.switcher.Cursor()
+	if c == nil {
+		return 0, 0, false
+	}
+	bodyH := 0
+	if m.vcache != nil {
+		bodyH = m.vcache.bodyH
+	}
+	if bodyH <= 0 {
+		return 0, 0, false
+	}
+	box := m.renderSwitcher(bodyH)
+	boxLeft := placeOffset(m.width, lipgloss.Width(box))
+	boxTop := tabsHeight + placeOffset(bodyH, lipgloss.Height(box))
+	return boxLeft + 2 + c.X, boxTop + 2 + c.Y, true
+}
+
+// jiraCommentCursor maps the jira-comment editor's own (col,row) onto its screen
+// origin inside the centered modal. It reconstructs the box geometry the way
+// renderJiraCommentInput builds it (the outerW clamp, a rounded border, 1×3
+// padding, a header+blank and an optional reply+blank above the editor) and the
+// lipgloss.Place centering renderViewContent applies, so the cell tracks the
+// editor even as the box grows or the reply line appears.
+func (m *Model) jiraCommentCursor() (col, row int, ok bool) {
+	cx, cy, okPos := m.jiraCommentInput.CursorViewPos()
+	if !okPos {
+		return 0, 0, false
+	}
+	bodyH := 0
+	if m.vcache != nil {
+		bodyH = m.vcache.bodyH
+	}
+	if bodyH <= 0 {
+		return 0, 0, false
+	}
+	// Box outer width — same clamp as renderJiraCommentInput.
+	outerW := confirmDialogMaxWidth
+	if outerW > m.width-4 {
+		outerW = m.width - 4
+	}
+	if outerW < 40 {
+		outerW = 40
+	}
+	// Lines stacked above the editor inside the box: header + blank, then an
+	// optional "replying to" line + blank.
+	aboveEditor := 2
+	if m.jiraCommentReplyTo != "" {
+		aboveEditor += 2
+	}
+	// Box outer height: rounded border (2) + padding (2 top/bottom) + content
+	// (the lines above the editor, the editor itself, then a blank + the hint).
+	boxH := 4 + aboveEditor + m.jiraCommentInput.Height() + 2
+
+	boxLeft := placeOffset(m.width, outerW)
+	boxTop := tabsHeight + placeOffset(bodyH, boxH)
+	// Editor origin within the box: left border (1) + left padding (3); top
+	// border (1) + top padding (1) + the lines above the editor.
+	return boxLeft + 4 + cx, boxTop + 2 + aboveEditor + cy, true
+}
+
+// placeOffset returns the leading pad lipgloss.Place puts before a box of size
+// box centered in total. lipgloss splits the gap as left = gap - round(gap/2),
+// which for a non-negative gap is exactly gap/2 (integer). No padding when the
+// box meets or exceeds the available space.
+func placeOffset(total, box int) int {
+	gap := total - box
+	if gap <= 0 {
+		return 0
+	}
+	return gap / 2
+}
+
 // inComposer reports whether a screen cell lands within the compose editor's
 // rows. Strict bounds (no clamping); used to route a click to the editor.
 func (m *Model) inComposer(x, y int) bool {
