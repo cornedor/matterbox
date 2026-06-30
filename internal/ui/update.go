@@ -2103,6 +2103,8 @@ func (m Model) handleThreadKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.openReactionPicker(p.Id)
+	case key.Matches(msg, m.keys.Collapse):
+		return m.toggleCollapse(focusThread)
 	}
 	var cmd tea.Cmd
 	m.threadView, cmd = m.threadView.Update(msg)
@@ -3569,11 +3571,53 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.openReactionPicker(p.Id)
+	case key.Matches(msg, m.keys.Collapse):
+		return m.toggleCollapse(focusMessages)
 	}
 	// Anything else (pgup/pgdn, half-page, etc.) falls through to viewport.
 	var cmd tea.Cmd
 	m.msgsView, cmd = m.msgsView.Update(msg)
 	return m, cmd
+}
+
+// toggleCollapse flips the fold state of the selected post in the given pane
+// (the messages transcript or the open thread). A folded long message shows a
+// preview plus a "… N more lines" footer; toggling expands it to full and back.
+// The change is recorded in expandedPosts (keyed by post id) and the pane is
+// re-rendered. No-ops when collapsing is disabled, nothing is selected, or the
+// post hasn't landed on the server yet (an optimistic stub has no stable id to
+// key on).
+func (m Model) toggleCollapse(pane focus) (tea.Model, tea.Cmd) {
+	var p *model.Post
+	if pane == focusThread {
+		if m.threadIdx < 0 || m.threadIdx >= len(m.threadPosts) {
+			return m, nil
+		}
+		p = m.threadPosts[m.threadIdx]
+	} else {
+		if m.postIdx < 0 || m.postIdx >= len(m.posts) {
+			return m, nil
+		}
+		p = m.posts[m.postIdx]
+	}
+	if m.collapseRows <= 0 {
+		m.status = "message collapsing is disabled"
+		return m, nil
+	}
+	if p.Id == "" {
+		m.status = "message hasn't landed yet"
+		return m, nil
+	}
+	if m.expandedPosts == nil {
+		m.expandedPosts = map[string]bool{}
+	}
+	m.expandedPosts[p.Id] = !m.expandedPosts[p.Id]
+	if pane == focusThread {
+		m.renderThread()
+	} else {
+		m.renderMessages()
+	}
+	return m, nil
 }
 
 // canMutatePost reports whether the current user is allowed (per local

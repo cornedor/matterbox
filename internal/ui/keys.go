@@ -81,6 +81,7 @@ type keyMap struct {
 	EditPost      key.Binding
 	DeletePost    key.Binding
 	React         key.Binding
+	Collapse      key.Binding
 	CloseThread   key.Binding
 	ChannelInfo   key.Binding
 
@@ -206,6 +207,7 @@ var actionDefs = []actionDef{
 	{id: "edit_post", field: func(k *keyMap) *key.Binding { return &k.EditPost }, keys: []string{"e"}, desc: "edit message"},
 	{id: "delete_post", field: func(k *keyMap) *key.Binding { return &k.DeletePost }, keys: []string{"D"}, desc: "delete message"},
 	{id: "react", field: func(k *keyMap) *key.Binding { return &k.React }, keys: []string{"R"}, desc: "react"},
+	{id: "collapse_message", field: func(k *keyMap) *key.Binding { return &k.Collapse }, keys: []string{"z"}, desc: "collapse/expand message"},
 	{id: "close_thread", field: func(k *keyMap) *key.Binding { return &k.CloseThread }, keys: []string{"esc"}, desc: "close thread"},
 	{id: "channel_info", field: func(k *keyMap) *key.Binding { return &k.ChannelInfo }, keys: []string{"I"}, desc: "channel info"},
 

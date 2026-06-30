@@ -212,6 +212,22 @@ type Model struct {
 	// line). Snapshotted from config at New(); 0 disables grouping so every
 	// message keeps its header. See groupWithPrev.
 	groupWindow time.Duration
+
+	// collapseRows is the body-height threshold (in soft-wrapped visual rows)
+	// above which a message folds to a preview in the transcript; collapseShow
+	// is how many leading rows that preview keeps. Snapshotted from config at
+	// New(); collapseRows == 0 disables collapsing entirely. collapseKeyHint is
+	// the expand/collapse key's label, baked into the fold footer so it reflects
+	// the live keymap. See collapseBody and expandedPosts.
+	collapseRows    int
+	collapseShow    int
+	collapseKeyHint string
+	// expandedPosts records the posts the user has explicitly expanded (keyed by
+	// post id); a post not in the set folds whenever its body exceeds
+	// collapseRows. Tracking expansions rather than collapses means a new long
+	// message folds by default without any bookkeeping. nil until the first
+	// toggle. See collapseBody and toggleCollapse.
+	expandedPosts map[string]bool
 	// viewGen is bumped on every channel open. A scheduled mark-read tick
 	// captures the generation it was queued under and only fires if it still
 	// matches — so switching (or refocusing) before the dwell elapses drops the
@@ -855,6 +871,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	embedAuto := false
 	markReadDelay := defaultMarkReadDelay
 	groupWindow := defaultGroupWindow
+	collapseRows := defaultCollapseRows
 	showCustomStatus := true
 	showSQL := false
 	mouseEnabled := true
@@ -893,6 +910,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		}
 		if cfg.GroupMessageSeconds != nil {
 			groupWindow = time.Duration(*cfg.GroupMessageSeconds) * time.Second
+		}
+		if cfg.CollapseLongMessages != nil {
+			collapseRows = *cfg.CollapseLongMessages
 		}
 		if cfg.CustomStatus != nil {
 			showCustomStatus = *cfg.CustomStatus
@@ -992,6 +1012,18 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		km = newKeyMap(navModifier)
 	}
 
+	// A folded message shows roughly two-thirds of its threshold height, so the
+	// preview is generous enough to recognise the message while still saving
+	// most of the screen. The footer names the live expand/collapse key.
+	collapseShow := collapseRows * 2 / 3
+	if collapseShow < 1 {
+		collapseShow = 1
+	}
+	collapseKey := "z"
+	if ks := km.Collapse.Keys(); len(ks) > 0 {
+		collapseKey = prettyKey(ks[0])
+	}
+
 	return Model{
 		client:              client,
 		serverURL:           serverURL,
@@ -1062,6 +1094,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		embedder:            embedderState{enabled: embedderEnabled},
 		markReadDelay:       markReadDelay,
 		groupWindow:         groupWindow,
+		collapseRows:        collapseRows,
+		collapseShow:        collapseShow,
+		collapseKeyHint:     collapseKey,
 		emojiImg:            newEmojiImages(emojiMode, animateEmoji),
 		animatePreview:      animatePreview,
 		giphyAPIKey:         giphyAPIKey,
@@ -1078,6 +1113,10 @@ const defaultMarkReadDelay = 5 * time.Second
 // fallback message-grouping window used when no config is supplied (e.g. in
 // tests).
 const defaultGroupWindow = 120 * time.Second
+
+// defaultCollapseRows mirrors config.defaultCollapseLongMessages and is the
+// fallback fold threshold used when no config is supplied (e.g. in tests).
+const defaultCollapseRows = 12
 
 // statusPollInterval is how often DM partner presence is re-fetched in a
 // single batched request — the same cadence the official Mattermost web

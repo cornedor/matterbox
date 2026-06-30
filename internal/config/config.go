@@ -55,6 +55,15 @@ type Config struct {
 	// defaultGroupMessageSeconds (120) while an explicit 0 disables grouping —
 	// every message keeps its own header. See internal/ui.
 	GroupMessageSeconds *int `yaml:"group_message_seconds"`
+	// CollapseLongMessages folds a long message in the transcript down to a
+	// short preview (the first few lines plus a "… N more lines" footer) so a
+	// big paste or log dump doesn't bury the surrounding conversation; press the
+	// collapse key (default z) on the selected message to expand or re-collapse
+	// it. The value is the body-height threshold in visual rows: a message whose
+	// body wraps to more rows than this is collapsed. Pointer so an absent key
+	// defaults to defaultCollapseLongMessages (12) while an explicit 0 disables
+	// collapsing — every message renders in full. See internal/ui.
+	CollapseLongMessages *int `yaml:"collapse_long_messages"`
 	// CustomStatus toggles showing DM partners' custom statuses (the emoji +
 	// text a user sets, e.g. "🌴 On vacation"): the full text in the messages
 	// header and a small hint glyph in the sidebar. Pointer so an absent key
@@ -693,6 +702,10 @@ const defaultDownloadDir = "~/Downloads"
 // the grouping window the Mattermost web client and similar chat clients use.
 const defaultGroupMessageSeconds = 120
 
+// defaultCollapseLongMessages is the body-height threshold (in soft-wrapped
+// visual rows) above which a message folds to a preview in the transcript.
+const defaultCollapseLongMessages = 12
+
 // AI-search defaults. The agent runs against the same local server as the
 // summarizer (Summary.Endpoint / Summary.Model).
 const (
@@ -775,7 +788,7 @@ func Load() (*Config, error) {
 	// and rewrite the file once so the discovered model + prompt show up as
 	// editable defaults. Best-effort: a failed rewrite only means the file
 	// keeps working off in-memory defaults.
-	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.DownloadDir == "" || cfg.SQLTab == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.CodeTheme == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.TwoWay == nil || cfg.Listen.NotifyDMs == nil || cfg.Listen.NotifyDelaySeconds == nil
+	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.CollapseLongMessages == nil || cfg.DownloadDir == "" || cfg.SQLTab == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.CodeTheme == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.TwoWay == nil || cfg.Listen.NotifyDMs == nil || cfg.Listen.NotifyDelaySeconds == nil
 	cfg.fillDefaults()
 	if addDefaults {
 		if werr := writeConfig(p, cfg); werr != nil {
@@ -833,6 +846,10 @@ func (c *Config) fillDefaults() {
 	if c.GroupMessageSeconds == nil {
 		d := defaultGroupMessageSeconds
 		c.GroupMessageSeconds = &d
+	}
+	if c.CollapseLongMessages == nil {
+		d := defaultCollapseLongMessages
+		c.CollapseLongMessages = &d
 	}
 	if c.CustomStatus == nil {
 		t := true

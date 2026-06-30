@@ -98,6 +98,13 @@ func (m *Model) postLineFingerprint(p *model.Post, width int, isThread, isRoot, 
 		b.WriteString("|H:")
 		b.WriteString(m.hoverLink.url)
 	}
+	// A long post folds to a preview unless the user expanded it; key the cache
+	// on that so toggling expand/collapse re-renders. Only matters while
+	// collapsing is enabled (collapseRows > 0). Width — which the fold decision
+	// depends on — is already encoded above.
+	if m.collapseRows > 0 && m.expandedPosts[p.Id] {
+		b.WriteString("|X")
+	}
 	return b.String()
 }
 

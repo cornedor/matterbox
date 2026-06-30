@@ -265,7 +265,7 @@ var keyContexts = []keyContext{
 				m.keys.Up, m.keys.Down, m.keys.Home, m.keys.End, m.keys.PageUp, m.keys.PageDown,
 				m.keys.NextHit, m.keys.PrevHit, m.keys.OpenThread, m.keys.ReplyInThread,
 				m.keys.EditPost, m.keys.DeletePost, m.keys.OpenAttach, m.keys.Download, m.keys.OpenRef, m.keys.Preview, m.keys.CopyMD,
-				m.keys.CopyCode, m.keys.ShowHistory, m.keys.React, m.keys.ChannelInfo,
+				m.keys.CopyCode, m.keys.ShowHistory, m.keys.React, m.keys.Collapse, m.keys.ChannelInfo,
 			}
 		},
 	},
@@ -276,7 +276,7 @@ var keyContexts = []keyContext{
 		claims: func(m *Model) []key.Binding {
 			return []key.Binding{
 				m.keys.Up, m.keys.Down, m.keys.Home, m.keys.End, m.keys.OpenAttach, m.keys.Download, m.keys.OpenRef, m.keys.Preview,
-				m.keys.CopyMD, m.keys.CopyCode, m.keys.ShowHistory, m.keys.EditPost, m.keys.DeletePost, m.keys.React,
+				m.keys.CopyMD, m.keys.CopyCode, m.keys.ShowHistory, m.keys.EditPost, m.keys.DeletePost, m.keys.React, m.keys.Collapse,
 			}
 		},
 	},

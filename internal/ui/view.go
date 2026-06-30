@@ -40,9 +40,9 @@ var (
 	dimColor     = lipgloss.Color("241") // grey
 	unreadColor  = lipgloss.Color("67")  // muted steel blue — the "new messages" divider
 
-	titleStyle    = lipgloss.NewStyle().Bold(true)
-	userStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("4")).Bold(true)
-	timeStyle     = lipgloss.NewStyle().Foreground(dimColor)
+	titleStyle = lipgloss.NewStyle().Bold(true)
+	userStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("4")).Bold(true)
+	timeStyle  = lipgloss.NewStyle().Foreground(dimColor)
 	// meMarkerStyle paints the leading "*" of a /me emote line ("* alice waves").
 	meMarkerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("5")).Bold(true)
 	selectedRow   = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("8"))
@@ -73,6 +73,7 @@ var (
 	replyHintStyle     = lipgloss.NewStyle().Foreground(dimColor)              // ↳ reply, ↪ N replies
 	editedStyle        = lipgloss.NewStyle().Foreground(dimColor).Italic(true) // right-aligned "edited" tag
 	deletedStyle       = lipgloss.NewStyle().Foreground(dimColor).Italic(true) // "⊘ message deleted" tombstone
+	collapsedFootStyle = lipgloss.NewStyle().Foreground(dimColor).Italic(true) // "┄┄ N more lines ┄┄" fold footer
 )
 
 // tabBorderWithBottom returns a rounded border with the bottom row
@@ -762,6 +763,52 @@ func postVisualRows(lines []string, width int) int {
 	return visualRowsBefore(lines, len(lines), width)
 }
 
+// collapseBody folds a tall message body down to a short preview. body holds
+// the post's soft-wrapped body lines (gutter-prefixed, as produced by
+// appendBodyLines); width is the pane width those lines were wrapped to. When
+// the body occupies more than threshold visual rows, collapseBody keeps the
+// leading whole lines that fit within show visual rows — always at least the
+// first line — and appends a dim footer summarizing the hidden remainder, e.g.
+// "  ┄┄ 38 more lines · z to expand ┄┄". Otherwise — a body that fits, or
+// collapsing disabled (threshold <= 0) — it returns body unchanged. keyHint is
+// the expand/collapse key's label shown in the footer. The footer is folded
+// into the returned lines so the caller's row accounting (postVisualRows,
+// msgRowStarts) measures the collapsed height directly.
+func collapseBody(body []string, width, threshold, show int, keyHint string) []string {
+	if threshold <= 0 || len(body) == 0 {
+		return body
+	}
+	total := postVisualRows(body, width)
+	if total <= threshold {
+		return body
+	}
+	kept, rows := 0, 0
+	for kept < len(body) {
+		r := visualRowsBefore(body[kept:kept+1], 1, width)
+		// Always keep the first line; stop once another would overflow the
+		// preview budget.
+		if kept > 0 && rows+r > show {
+			break
+		}
+		rows += r
+		kept++
+	}
+	if kept >= len(body) {
+		// A single line taller than the whole budget: nothing left to hide.
+		return body
+	}
+	hidden := total - rows
+	noun := "lines"
+	if hidden == 1 {
+		noun = "line"
+	}
+	footer := "  " + collapsedFootStyle.Render(fmt.Sprintf("┄┄ %d more %s · %s to expand ┄┄", hidden, noun, keyHint))
+	out := make([]string, 0, kept+1)
+	out = append(out, body[:kept]...)
+	out = append(out, footer)
+	return out
+}
+
 var scrollbarThumbStyle = lipgloss.NewStyle().Foreground(focusedColor)
 
 // renderRightBorder builds a 1-column wide string `outerH` rows tall
@@ -918,7 +965,11 @@ func (m *Model) renderThreadPostLines(p *model.Post, isRoot, grouped bool) ([]st
 			lines = append(lines, header)
 		}
 		if body := m.markdownBody(p); body != "" {
-			lines = appendBodyLines(lines, body, width)
+			bodyLines := appendBodyLines(nil, body, width)
+			if m.collapseRows > 0 && !m.expandedPosts[p.Id] {
+				bodyLines = collapseBody(bodyLines, width, m.collapseRows, m.collapseShow, m.collapseKeyHint)
+			}
+			lines = append(lines, bodyLines...)
 		}
 		if poll {
 			selected := m.focus == focusThread && m.threadIdx >= 0 && m.threadIdx < len(m.threadPosts) && m.threadPosts[m.threadIdx] == p
@@ -1036,7 +1087,11 @@ func (m *Model) renderPostLines(p *model.Post, grouped bool) ([]string, int) {
 			lines = append(lines, header)
 		}
 		if body := m.markdownBody(p); body != "" {
-			lines = appendBodyLines(lines, body, width)
+			bodyLines := appendBodyLines(nil, body, width)
+			if m.collapseRows > 0 && !m.expandedPosts[p.Id] {
+				bodyLines = collapseBody(bodyLines, width, m.collapseRows, m.collapseShow, m.collapseKeyHint)
+			}
+			lines = append(lines, bodyLines...)
 		}
 		if poll {
 			selected := m.focus == focusMessages && m.postIdx >= 0 && m.postIdx < len(m.posts) && m.posts[m.postIdx] == p
