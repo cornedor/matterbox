@@ -2212,6 +2212,13 @@ func (m *Model) enterChannel(channelID string) tea.Cmd {
 	m.unreadBoundary = 0
 	m.unreadDividerID = ""
 	m.unreadDividerResolved = false
+	// A fresh channel view starts pinned to its newest message — never inheriting
+	// the previous channel's mouse free-scroll offset. handleKey already clears
+	// this before keyboard nav, but the mouse open paths (tab/sidebar clicks,
+	// feed, control socket, permalink fallback) route straight here, so clear it
+	// centrally for all of them.
+	m.msgScrollFree = false
+	m.msgFreeOffset = 0
 	// New focus session: start a fresh dwell. The badges are intentionally
 	// left intact until the dwell elapses (see scheduleMarkViewed), so a
 	// quick peek doesn't clear unread.
@@ -2240,9 +2247,19 @@ func (m *Model) openChannelLoadCmd(channelID string) tea.Cmd {
 		m.postIdx = len(m.posts) - 1
 		m.status = ""
 		m.loading = false
+		// A normal open lands on the bottom: anchor the newest message to the
+		// pane's bottom edge explicitly rather than leaning on the default
+		// "keep the selection visible" branch, which anchors a newest message
+		// taller than the pane to its *top* (leaving the latest lines off-screen).
+		// Skip it when a search/permalink jump is pending so that jump keeps
+		// control of the scroll position.
+		normalOpen := m.pendingJumpPostID == ""
 		// If a search hit queued a jump to a specific post and it's in the
 		// cached page, position the cursor on it before painting.
 		m.jumpToPendingPost()
+		if normalOpen {
+			m.anchorMsgSelBottom = true
+		}
 		m.renderMessages()
 		// Reconcile the recent window against the server rather than only
 		// fetching posts *after* the newest cached one. The cache is not
