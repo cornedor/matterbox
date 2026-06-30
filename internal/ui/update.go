@@ -434,6 +434,16 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case wasAtBottom:
 			m.postIdx = len(m.posts) - 1
+			// Mirror the live WS new-post path: a reconcile that arrives while the
+			// user is at the bottom (e.g. the fetchRecent every channel-open kicks
+			// off) must keep them pinned there. Without this, renderMessages'
+			// default keep-visible branch top-anchors a newest post taller than the
+			// pane, knocking the just-opened channel off the bottom — so ↓ then
+			// scrolls inside that post instead of dropping into the composer.
+			// Skip it when a search/permalink jump is pending so that jump wins.
+			if m.pendingJumpPostID == "" {
+				m.anchorMsgSelBottom = true
+			}
 		case selID != "":
 			for i, p := range m.posts {
 				if p.Id == selID {
