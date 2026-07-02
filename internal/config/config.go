@@ -808,6 +808,10 @@ func Load() (*Config, error) {
 		if werr := writeConfig(p, cfg); werr != nil {
 			fmt.Fprintf(os.Stderr, "matterbox: could not add LLM defaults to %s: %v\n", p, werr)
 		}
+	} else {
+		// An already-complete config isn't rewritten, but still make sure the
+		// editor-autocomplete support (schema file + header modeline) is in place.
+		ensureAutocomplete(p, b)
 	}
 	return cfg, nil
 }
@@ -999,7 +1003,8 @@ func writeConfig(p string, cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	const header = "# matterbox configuration\n" +
+	const header = schemaModeline +
+		"# matterbox configuration\n" +
 		"# server_url: Mattermost base URL (https://...).\n" +
 		"# reactions:  emoji shortcodes shown in the reaction picker (R on a message).\n" +
 		"# team_order: left-to-right team tabs (team names); reorder in-app with < / >.\n" +
@@ -1152,5 +1157,14 @@ func writeConfig(p string, cfg *Config) error {
 		"#             against — en-US, en-GB, nl, … or auto (default) to detect\n" +
 		"#             it per message; picky true enables strict mode (extra\n" +
 		"#             style/typography/grammar rules; default false).\n"
-	return os.WriteFile(p, append([]byte(header), body...), 0o644)
+	if err := os.WriteFile(p, append([]byte(header), body...), 0o644); err != nil {
+		return err
+	}
+	// Drop the JSON Schema next to the config so a YAML-aware editor picks up
+	// the schemaModeline in the header above and offers autocomplete. Non-fatal:
+	// a failure only loses editor assistance, not the (already written) config.
+	if err := writeSchemaBeside(p); err != nil {
+		fmt.Fprintf(os.Stderr, "matterbox: could not write config schema next to %s: %v\n", p, err)
+	}
+	return nil
 }

@@ -1,0 +1,635 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://matterbox/config.schema.json",
+  "title": "matterbox configuration",
+  "description": "User configuration for the matterbox Mattermost TUI (~/.config/matterbox/config.yaml). A missing or partial file is fine; matterbox fills in defaults.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "server_url": {
+      "type": "string",
+      "description": "Mattermost base URL (https://...). The placeholder https://mattermost.example.com counts as \"not configured yet\".",
+      "format": "uri",
+      "default": "https://mattermost.example.com"
+    },
+    "reactions": {
+      "type": "array",
+      "description": "Emoji shortcodes shown in the reaction picker (R on a message). Names match Mattermost's shortcodes (no colons).",
+      "items": { "type": "string" },
+      "default": ["+1", "-1", "heart", "tada", "eyes", "rocket", "laughing", "thinking_face"]
+    },
+    "team_order": {
+      "type": "array",
+      "description": "Preferred left-to-right ordering of team tabs, by team URL name (or display name; case-insensitive). Teams not listed are appended alphabetically. Reorder in-app with < / >.",
+      "items": { "type": "string" }
+    },
+    "summary": { "$ref": "#/definitions/summary" },
+    "ai_search": { "$ref": "#/definitions/aiSearch" },
+    "embeddings": { "$ref": "#/definitions/embeddings" },
+    "search": { "$ref": "#/definitions/search" },
+    "mark_read_delay_seconds": {
+      "type": "integer",
+      "description": "How long a channel must stay open before it's marked read (default 5). 0 marks read immediately on open.",
+      "minimum": 0,
+      "default": 5
+    },
+    "group_message_seconds": {
+      "type": "integer",
+      "description": "Collapse the name+time header on consecutive messages from the same person sent within this many seconds of each other (default 120). 0 keeps a header on every message.",
+      "minimum": 0,
+      "default": 120
+    },
+    "collapse_long_messages": {
+      "type": "integer",
+      "description": "Fold a message taller than this many wrapped rows down to a preview plus a \"… N more lines\" footer (default 12; press z to expand). 0 disables folding.",
+      "minimum": 0,
+      "default": 12
+    },
+    "collapse_preview_lines": {
+      "type": "integer",
+      "description": "How many leading rows a folded message keeps as its preview (default: two-thirds of collapse_long_messages). Clamped to 1…collapse_long_messages; ignored when folding is off.",
+      "minimum": 1
+    },
+    "custom_status": {
+      "type": "boolean",
+      "description": "Show DM partners' custom statuses — emoji + text — in the header and sidebar (default true). false shows presence dots only.",
+      "default": true
+    },
+    "date_separators": {
+      "type": "boolean",
+      "description": "Draw a labelled rule (\"Today\", \"Yesterday\", or a full date) above the first message of each local calendar day (default true).",
+      "default": true
+    },
+    "mouse": {
+      "type": "boolean",
+      "description": "Enable mouse support: wheel-scroll, click a tab/channel/message to switch or select, drag to select text (default true). false keeps the terminal's native click-drag copy.",
+      "default": true
+    },
+    "download_dir": {
+      "type": "string",
+      "description": "Where the download-attachment key (s on a message) saves files (default ~/Downloads). A leading ~ is expanded; the directory is created on first download.",
+      "default": "~/Downloads"
+    },
+    "sql_tab": {
+      "type": "boolean",
+      "description": "Show the read-only SQL tab — a query editor over your local message cache whose rows render as chat messages (default false, hidden).",
+      "default": false
+    },
+    "keybindings": { "$ref": "#/definitions/keybindings" },
+    "emoji_images": {
+      "type": "string",
+      "description": "Render custom (server) emoji as inline images via the Kitty graphics protocol. \"auto\" (default) enables them on a Kitty/Ghostty truecolor terminal outside tmux; \"off\" keeps literal :name: text. Unicode emoji are unaffected.",
+      "enum": ["auto", "off"],
+      "default": "auto"
+    },
+    "code_theme": {
+      "type": "string",
+      "description": "Colour scheme for syntax-highlighting fenced code blocks. Any chroma style name plus the bundled everforest-dark. An unknown name falls back to the default; NO_COLOR disables code colour.",
+      "default": "monokai",
+      "examples": ["monokai", "dracula", "github-dark", "gruvbox", "nord", "onedark", "catppuccin-mocha", "tokyonight-night", "everforest-dark"]
+    },
+    "animations": { "$ref": "#/definitions/animations" },
+    "giphy": { "$ref": "#/definitions/giphy" },
+    "telegram": { "$ref": "#/definitions/telegram" },
+    "listen": { "$ref": "#/definitions/listen" },
+    "rules": {
+      "type": "array",
+      "description": "Per-message automation for `matterbox listen`. Each rule has a match (conditions, ANDed) and actions (run in order). With no rules the daemon uses a built-in notify rule from the listen options. Full reference in docs/rules.md.",
+      "items": { "$ref": "#/definitions/rule" }
+    },
+    "jira": { "$ref": "#/definitions/jira" },
+    "gitlab": { "$ref": "#/definitions/gitlab" },
+    "language_tool": { "$ref": "#/definitions/languageTool" }
+  },
+  "definitions": {
+    "stringList": {
+      "description": "A single value or a list of values (match any).",
+      "oneOf": [
+        { "type": "string" },
+        { "type": "array", "items": { "type": "string" } }
+      ]
+    },
+    "stringOrList": {
+      "description": "A single key/chord, a list of them, or an empty list / \"none\" / null to unbind.",
+      "oneOf": [
+        { "type": "string" },
+        { "type": "array", "items": { "type": "string" } },
+        { "type": "null" }
+      ]
+    },
+    "summary": {
+      "type": "object",
+      "description": "The '> Summarize' command (ctrl+k): sends a transcript to an OpenAI-compatible chat server and shows the model's summary.",
+      "additionalProperties": false,
+      "properties": {
+        "endpoint": {
+          "type": "string",
+          "description": "Base URL of the OpenAI-compatible server; the client appends /v1/chat/completions.",
+          "default": "http://127.0.0.1:8321"
+        },
+        "api_key": {
+          "type": "string",
+          "description": "Optional Bearer token sent in the Authorization header. Not needed for a local server."
+        },
+        "model": {
+          "type": "string",
+          "description": "Model id sent in the request. Run `curl <endpoint>/v1/models` to see what your server has loaded."
+        },
+        "prompt": {
+          "type": "string",
+          "description": "System prompt prepended to the transcript. The reader's @username is appended at request time."
+        }
+      }
+    },
+    "aiSearch": {
+      "type": "object",
+      "description": "Agentic search on the Search tab (a query ending in '?'). Reuses the summary endpoint+model.",
+      "additionalProperties": false,
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "description": "System prompt that frames the search agent (how to use tools, when to stop, never answer from its own knowledge)."
+        },
+        "max_steps": {
+          "type": "integer",
+          "description": "Caps how many tool-call rounds the agent may take before it must answer (default 32).",
+          "minimum": 1,
+          "default": 32
+        },
+        "timeout_minutes": {
+          "type": "integer",
+          "description": "Bounds the whole agentic run, all tool rounds together (default 4). Raise for a slow server or high max_steps.",
+          "minimum": 1,
+          "default": 4
+        }
+      }
+    },
+    "embeddings": {
+      "type": "object",
+      "description": "Semantic search. A SEPARATE OpenAI-compatible server from summary (its own port + an embedding model loaded with --embeddings; see scripts/llama-embeddings.sh).",
+      "additionalProperties": false,
+      "properties": {
+        "endpoint": {
+          "type": "string",
+          "description": "Base URL of the OpenAI-compatible embeddings server; the client appends /v1/embeddings.",
+          "default": "http://127.0.0.1:8322"
+        },
+        "api_key": {
+          "type": "string",
+          "description": "Optional Bearer token (not needed for a local server)."
+        },
+        "model": {
+          "type": "string",
+          "description": "Embedding model id sent in each request.",
+          "default": "embeddinggemma-300m-qat-Q8_0.gguf"
+        },
+        "dim": {
+          "type": "integer",
+          "description": "Truncate each vector (Matryoshka) to this many dimensions before storing, then renormalise (default 256). 0 keeps the model's native dimensionality.",
+          "minimum": 0,
+          "default": 256
+        },
+        "auto_index": {
+          "type": "boolean",
+          "description": "Enable the TUI's background indexer, embedding not-yet-embedded messages while you use the app (default true). false embeds only via `matterbox embed`.",
+          "default": true
+        }
+      }
+    },
+    "search": {
+      "type": "object",
+      "description": "Ranking for the Search tab and AI search.",
+      "additionalProperties": false,
+      "properties": {
+        "recency_half_life_days": {
+          "type": "number",
+          "description": "Halves a match's relevance weight per this many days of age (default 90). Lower = stronger recency bias.",
+          "exclusiveMinimum": 0,
+          "default": 90
+        }
+      }
+    },
+    "keybindings": {
+      "type": "object",
+      "description": "Optional keymap tweaks.",
+      "additionalProperties": false,
+      "properties": {
+        "nav_modifier": {
+          "type": "string",
+          "description": "Modifier for arrow-key team/channel navigation. \"none\" turns arrow-nav off (freeing ctrl+←/→ for the composer). On macOS ctrl+arrows clash with Mission Control — try shift, or super on a Kitty-protocol terminal.",
+          "enum": ["ctrl", "alt", "shift", "super", "cmd", "meta", "hyper", "none"],
+          "default": "ctrl"
+        },
+        "vim_nav": {
+          "type": "string",
+          "description": "When the ctrl+h/j/k/l vim keys switch team/channel: \"global\" (default, from anywhere incl. while typing), \"reading\" (only outside text inputs, freeing ctrl+h/ctrl+k for composer editing), or \"off\".",
+          "enum": ["global", "reading", "off"],
+          "default": "global"
+        },
+        "ctrl_arrow_nav": {
+          "type": "boolean",
+          "description": "Superseded boolean toggle kept only for pre-nav_modifier configs; false migrates to nav_modifier: none. Prefer nav_modifier."
+        },
+        "bindings": {
+          "type": "object",
+          "description": "Rebind individual actions by id, e.g. {compose: [i, a], delete_post: shift+d}. Value is a single key or a list; an empty list or \"none\" unbinds. Jump actions: goto_team, goto_dm, goto_feed, search_here, search_all.",
+          "additionalProperties": { "$ref": "#/definitions/stringOrList" }
+        }
+      }
+    },
+    "animations": {
+      "type": "object",
+      "description": "Optional motion effects, off-able if distracting.",
+      "additionalProperties": false,
+      "properties": {
+        "custom_emoji": {
+          "type": "boolean",
+          "description": "Animate GIF custom (server) emoji in place (default true). No effect unless emoji_images renders custom emoji as images.",
+          "default": true
+        },
+        "image_preview": {
+          "type": "boolean",
+          "description": "Animate GIFs in the space-to-preview image modal (default true). false shows the first frame only.",
+          "default": true
+        }
+      }
+    },
+    "giphy": {
+      "type": "object",
+      "description": "Expand a pasted Giphy link into an inline ![alt](url) image in the composer.",
+      "additionalProperties": false,
+      "properties": {
+        "api_key": {
+          "type": "string",
+          "description": "Giphy API key (https://developers.giphy.com, or the GIPHY_API_KEY env var). Optional: without it a link still expands offline, but the alt text comes from the URL slug rather than the GIF's real title."
+        },
+        "rendition": {
+          "type": "string",
+          "description": "Which Giphy size to post. downsized / downsized_medium need api_key; original can be several MB.",
+          "enum": ["fixed_height", "fixed_height_small", "fixed_width", "downsized", "downsized_medium", "original"],
+          "default": "fixed_height"
+        }
+      }
+    },
+    "telegram": {
+      "type": "object",
+      "description": "Outbound Telegram bridge for `matterbox listen`.",
+      "additionalProperties": false,
+      "properties": {
+        "bot_token": {
+          "type": "string",
+          "description": "Bot token from @BotFather. Empty disables delivery (the daemon still keeps the cache warm)."
+        },
+        "chat_id": {
+          "type": "string",
+          "description": "Destination: a numeric chat id (message the bot, then read it from getUpdates) or an @channelusername."
+        }
+      }
+    },
+    "listen": {
+      "type": "object",
+      "description": "The `matterbox listen` background daemon.",
+      "additionalProperties": false,
+      "properties": {
+        "notify_on_mention": {
+          "type": "boolean",
+          "description": "Forward a notification when you're directly @mentioned or sent a DM (default true). false runs the daemon as a cache-warmer only.",
+          "default": true
+        },
+        "summarize": {
+          "type": "boolean",
+          "description": "Send an LLM summary of the surrounding conversation (default true, via the summary endpoint+model, falling back to raw text when it's down) instead of the bare message.",
+          "default": true
+        },
+        "notify_prompt": {
+          "type": "string",
+          "description": "System prompt for the notification summary. The reader's @username and the message source are appended at request time."
+        },
+        "respect_mutes": {
+          "type": "boolean",
+          "description": "Skip notifications for channels you've muted in Mattermost (default true).",
+          "default": true
+        },
+        "quiet_hours": {
+          "type": "string",
+          "description": "Suppress notifications during a daily window, \"HH:MM-HH:MM\" local time (may wrap past midnight, e.g. \"22:00-08:00\"). Empty = always on; messages are still cached.",
+          "pattern": "^$|^[0-2][0-9]:[0-5][0-9]-[0-2][0-9]:[0-5][0-9]$"
+        },
+        "two_way": {
+          "type": "boolean",
+          "description": "Enable replying from Telegram and the /search /unread /digest commands (default true; needs telegram.chat_id). false for notify-only.",
+          "default": true
+        },
+        "notify_dms": {
+          "type": "boolean",
+          "description": "Also forward direct-message channels (default false, so a DM you're actively reading stays quiet). true restores the original behaviour.",
+          "default": false
+        },
+        "notify_delay_seconds": {
+          "type": "integer",
+          "description": "Wait this long before sending, then re-check the server's read state — if any client marked the channel read during the window the notification is suppressed (default 60). 0 delivers immediately with no read-check.",
+          "minimum": 0,
+          "default": 60
+        }
+      }
+    },
+    "jira": {
+      "type": "object",
+      "description": "The Jira issue side panel. Press v on a message naming a Jira issue to fetch it from Jira Cloud and view it inline. Empty base_url/email/api_token disables the panel.",
+      "additionalProperties": false,
+      "properties": {
+        "base_url": {
+          "type": "string",
+          "description": "Instance root, e.g. https://your-instance.atlassian.net. Also used to recognise /browse/KEY links.",
+          "format": "uri"
+        },
+        "email": {
+          "type": "string",
+          "description": "Atlassian account email — the username half of the Cloud Basic-auth pair."
+        },
+        "api_token": {
+          "type": "string",
+          "description": "Atlassian API token (id.atlassian.com → Security → API tokens). The JIRA_API_TOKEN env var overrides this."
+        },
+        "projects": {
+          "type": "array",
+          "description": "Allowlist of project keys (e.g. [\"ABC\", \"PROJ\"]) whose bare ids (ABC-123) open the panel. Empty means only full /browse/KEY links are detected, so look-alikes like \"UTF-8\" never trigger.",
+          "items": { "type": "string" }
+        },
+        "story_points_field": {
+          "type": "string",
+          "description": "Pins the story-points custom-field id (e.g. customfield_10016). Empty auto-detects it from the instance's field metadata."
+        }
+      }
+    },
+    "gitlab": {
+      "type": "object",
+      "description": "The GitLab merge-request side panel. Press v on a message linking a merge request to view it inline. Empty base_url (with no usable token) disables the panel.",
+      "additionalProperties": false,
+      "properties": {
+        "base_url": {
+          "type": "string",
+          "description": "Instance root, e.g. https://git.example.com. Also used to recognise /-/merge_requests/N links.",
+          "format": "uri"
+        },
+        "token": {
+          "type": "string",
+          "description": "Personal or project access token (read_api to view; api to approve/merge). Empty falls back to the GITLAB_TOKEN env var, then to an existing glab CLI login for the host."
+        }
+      }
+    },
+    "languageTool": {
+      "type": "object",
+      "description": "Composer grammar/spell check (off by default). While you type, the draft is checked against a LanguageTool server and mistakes are underlined in place (alt+g opens suggestions).",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Turn the composer grammar/spell check on (default false).",
+          "default": false
+        },
+        "server_url": {
+          "type": "string",
+          "description": "LanguageTool API /v2 root; the check endpoint is this + /check.",
+          "default": "http://localhost:8010/v2"
+        },
+        "language": {
+          "type": "string",
+          "description": "Checking language code, or \"auto\" (default) to let the server detect it per message.",
+          "default": "auto",
+          "examples": ["auto", "en-US", "en-GB", "nl"]
+        },
+        "picky": {
+          "type": "boolean",
+          "description": "Enable LanguageTool's \"picky\" level — stricter style, typography and grammar rules (default false).",
+          "default": false
+        }
+      }
+    },
+    "rule": {
+      "type": "object",
+      "description": "One rule for the `matterbox listen` daemon: a match plus ordered actions.",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Labels the rule in the daemon log (optional)."
+        },
+        "stop": {
+          "type": "boolean",
+          "description": "Halt evaluation of later rules once this one matches.",
+          "default": false
+        },
+        "match": { "$ref": "#/definitions/ruleMatch" },
+        "actions": {
+          "type": "array",
+          "description": "Actions run in order when the match passes.",
+          "items": { "$ref": "#/definitions/ruleAction" }
+        }
+      }
+    },
+    "ruleMatch": {
+      "type": "object",
+      "description": "A rule's conditions; all set conditions must hold (AND). An empty match matches every non-system, non-empty post.",
+      "additionalProperties": false,
+      "properties": {
+        "channel": {
+          "description": "Case-insensitive glob (*, ?) over the channel's display name, or an exact channel id. A single value or a list (match any).",
+          "$ref": "#/definitions/stringList"
+        },
+        "team": {
+          "description": "Case-insensitive glob over the team's URL name (the slug, e.g. \"core\"), or an exact team id. A single value or a list (match any). A DM carries no team.",
+          "$ref": "#/definitions/stringList"
+        },
+        "author": {
+          "description": "Username (no leading @), case-insensitive. A single value or a list (match any).",
+          "$ref": "#/definitions/stringList"
+        },
+        "message": {
+          "type": "string",
+          "description": "RE2 regexp over the body (prefix (?i) for case-insensitive)."
+        },
+        "mention": {
+          "type": "boolean",
+          "description": "Require that you were directly named (@you).",
+          "default": false
+        },
+        "dm": {
+          "type": "boolean",
+          "description": "When set, require a direct message (true) or a channel (false)."
+        },
+        "from_me": {
+          "type": "boolean",
+          "description": "When set, require the post be your own (true) or someone else's (false). `from_me: false` keeps an exec/webhook/react rule from firing on your own messages."
+        },
+        "has_file": {
+          "type": "boolean",
+          "description": "Require at least one attachment.",
+          "default": false
+        },
+        "is_thread": {
+          "type": "boolean",
+          "description": "When set, require a thread reply (true) or a root post (false)."
+        },
+        "not": {
+          "description": "Inverts a nested match: the rule fires only when the post does NOT satisfy it.",
+          "$ref": "#/definitions/ruleMatch"
+        },
+        "frequency": { "$ref": "#/definitions/ruleFrequency" },
+        "cooldown": { "$ref": "#/definitions/ruleCooldown" },
+        "state": {
+          "description": "Match against the persistent ledger (the state_* actions). A single condition or a list (all ANDed).",
+          "oneOf": [
+            { "$ref": "#/definitions/ruleState" },
+            { "type": "array", "items": { "$ref": "#/definitions/ruleState" } }
+          ]
+        }
+      }
+    },
+    "ruleFrequency": {
+      "type": "object",
+      "description": "Rolling-window gate: the actions run only once `count` matches accumulate within `within`.",
+      "additionalProperties": false,
+      "properties": {
+        "count": {
+          "type": "integer",
+          "description": "How many matches within the window fire the rule (>= 1).",
+          "minimum": 1
+        },
+        "within": {
+          "type": "string",
+          "description": "Window length as a Go duration (\"10m\", \"1h30m\")."
+        },
+        "by": {
+          "type": "string",
+          "description": "Groups the counting (default global).",
+          "enum": ["author", "channel", "global"]
+        }
+      }
+    },
+    "ruleCooldown": {
+      "type": "object",
+      "description": "Minimum-interval gate: fires at most once per interval. Persisted, so it survives a restart — the general form of \"once a day/week\".",
+      "additionalProperties": false,
+      "properties": {
+        "every": {
+          "type": "string",
+          "description": "Minimum time between firings as a Go duration (\"48h\", \"168h\")."
+        },
+        "by": {
+          "type": "string",
+          "description": "Groups the cooldown (default global).",
+          "enum": ["author", "channel", "team", "global"]
+        }
+      }
+    },
+    "ruleState": {
+      "type": "object",
+      "description": "One condition on a ledger key.",
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "type": "string",
+          "description": "The ledger key to read (required)."
+        },
+        "exists": {
+          "type": "boolean",
+          "description": "Require the key be present (true) or absent (false)."
+        },
+        "eq": {
+          "type": "string",
+          "description": "The stored value equals this (compared as a string)."
+        },
+        "ne": {
+          "type": "string",
+          "description": "The stored value differs from this (compared as a string)."
+        },
+        "gt": {
+          "type": "number",
+          "description": "The stored value, as a number, is greater than this."
+        },
+        "gte": {
+          "type": "number",
+          "description": "The stored value, as a number, is >= this."
+        },
+        "lt": {
+          "type": "number",
+          "description": "The stored value, as a number, is less than this."
+        },
+        "lte": {
+          "type": "number",
+          "description": "The stored value, as a number, is <= this."
+        }
+      }
+    },
+    "ruleAction": {
+      "type": "object",
+      "description": "One action. `type` is required; the remaining fields are read per type.",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "string",
+          "description": "The action to run.",
+          "enum": ["notify", "exec", "webhook", "react", "mark_read", "send", "log", "state_set", "state_incr", "state_del"]
+        },
+        "summarize": {
+          "type": "boolean",
+          "description": "(notify) Override listen.summarize for this rule only."
+        },
+        "urgent": {
+          "type": "boolean",
+          "description": "(notify) Deliver even during quiet hours / for muted channels.",
+          "default": false
+        },
+        "chat_id": {
+          "type": "string",
+          "description": "(notify) Override the destination Telegram chat for this rule."
+        },
+        "command": {
+          "type": "array",
+          "description": "(exec) The argv; the post is piped to stdin as JSON and its fields exported as MATTERBOX_* env vars.",
+          "items": { "type": "string" }
+        },
+        "url": {
+          "type": "string",
+          "description": "(webhook) Receives the post envelope as a JSON POST body.",
+          "format": "uri"
+        },
+        "headers": {
+          "type": "object",
+          "description": "(webhook) Extra request headers; values are expanded from the daemon's environment ($TOKEN) so secrets stay out of the config.",
+          "additionalProperties": { "type": "string" }
+        },
+        "emoji": {
+          "type": "string",
+          "description": "(react) The Mattermost emoji shortcode to add (no colons)."
+        },
+        "text": {
+          "type": "string",
+          "description": "(log) The log line prefix, or (send) the message body — a text/template over the post."
+        },
+        "channel": {
+          "type": "string",
+          "description": "(send) The target channel — \"team/channel\" or \"@user\". Empty posts into the channel the triggering message arrived in."
+        },
+        "thread": {
+          "type": "boolean",
+          "description": "(send) Post as a reply in the triggering post's thread instead of a new top-level post. Ignored when channel is set.",
+          "default": false
+        },
+        "key": {
+          "type": "string",
+          "description": "(state_set/state_incr/state_del) The ledger key, a text/template over the post (e.g. \"failures:{{ .author }}\")."
+        },
+        "value": {
+          "type": "string",
+          "description": "(state_set) The value to store, a text/template over the post and current state (e.g. \"{{ .create_at }}\")."
+        },
+        "by": {
+          "type": "integer",
+          "description": "(state_incr) The amount to add; omitted means 1 (negative decrements)."
+        }
+      }
+    }
+  }
+}
