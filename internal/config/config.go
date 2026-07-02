@@ -64,6 +64,14 @@ type Config struct {
 	// defaults to defaultCollapseLongMessages (12) while an explicit 0 disables
 	// collapsing — every message renders in full. See internal/ui.
 	CollapseLongMessages *int `yaml:"collapse_long_messages"`
+	// CollapsePreviewLines is how many leading visual rows a folded message
+	// keeps as its preview (before the "… N more lines" footer). Pointer so an
+	// absent key defaults to two-thirds of CollapseLongMessages (min 1) — the
+	// original derived height — while an explicit value pins it. Clamped to at
+	// least 1 and at most CollapseLongMessages in internal/ui, since a preview
+	// taller than the fold threshold would never fold anything. Ignored when
+	// collapsing is disabled (collapse_long_messages: 0). See internal/ui.
+	CollapsePreviewLines *int `yaml:"collapse_preview_lines"`
 	// CustomStatus toggles showing DM partners' custom statuses (the emoji +
 	// text a user sets, e.g. "🌴 On vacation"): the full text in the messages
 	// header and a small hint glyph in the sidebar. Pointer so an absent key
@@ -794,7 +802,7 @@ func Load() (*Config, error) {
 	// and rewrite the file once so the discovered model + prompt show up as
 	// editable defaults. Best-effort: a failed rewrite only means the file
 	// keeps working off in-memory defaults.
-	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.CollapseLongMessages == nil || cfg.DownloadDir == "" || cfg.SQLTab == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.CodeTheme == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.TwoWay == nil || cfg.Listen.NotifyDMs == nil || cfg.Listen.NotifyDelaySeconds == nil
+	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.CollapseLongMessages == nil || cfg.CollapsePreviewLines == nil || cfg.DownloadDir == "" || cfg.SQLTab == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.CodeTheme == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.TwoWay == nil || cfg.Listen.NotifyDMs == nil || cfg.Listen.NotifyDelaySeconds == nil
 	cfg.fillDefaults()
 	if addDefaults {
 		if werr := writeConfig(p, cfg); werr != nil {
@@ -856,6 +864,12 @@ func (c *Config) fillDefaults() {
 	if c.CollapseLongMessages == nil {
 		d := defaultCollapseLongMessages
 		c.CollapseLongMessages = &d
+	}
+	if c.CollapsePreviewLines == nil {
+		// Two-thirds of the fold threshold: a preview generous enough to
+		// recognise the message while still saving most of the screen.
+		d := max(1, *c.CollapseLongMessages*2/3)
+		c.CollapsePreviewLines = &d
 	}
 	if c.CustomStatus == nil {
 		t := true
@@ -1012,6 +1026,15 @@ func writeConfig(p string, cfg *Config) error {
 		"#             messages from the same person sent within this many seconds\n" +
 		"#             of each other (default 120). 0 keeps a header on every\n" +
 		"#             message.\n" +
+		"# collapse_long_messages: fold a message taller than this many wrapped\n" +
+		"#             rows down to a preview plus a \"… N more lines\" footer, so a\n" +
+		"#             big paste doesn't bury the conversation (default 12; press z\n" +
+		"#             on the message to expand). 0 disables folding — everything\n" +
+		"#             renders in full.\n" +
+		"# collapse_preview_lines: how many leading rows a folded message keeps as\n" +
+		"#             its preview (default: two-thirds of collapse_long_messages).\n" +
+		"#             Clamped to 1…collapse_long_messages; ignored when folding is\n" +
+		"#             off.\n" +
 		"# custom_status: show DM partners' custom statuses (default true); false\n" +
 		"#             shows presence dots only.\n" +
 		"# download_dir: where the download-attachment key (s on a message) saves\n" +

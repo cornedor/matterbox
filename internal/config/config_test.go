@@ -293,3 +293,54 @@ rules:
 		t.Fatalf("alias not resolved: %+v", c.Rules[1].Match.Not)
 	}
 }
+
+// TestCollapseDefaults: an absent collapse config folds at the default
+// threshold and previews two-thirds of it, so a fresh config keeps the
+// original behaviour.
+func TestCollapseDefaults(t *testing.T) {
+	c := &Config{}
+	c.fillDefaults()
+	if c.CollapseLongMessages == nil || *c.CollapseLongMessages != defaultCollapseLongMessages {
+		t.Errorf("default collapse threshold = %v; want %d", c.CollapseLongMessages, defaultCollapseLongMessages)
+	}
+	want := defaultCollapseLongMessages * 2 / 3
+	if c.CollapsePreviewLines == nil || *c.CollapsePreviewLines != want {
+		t.Errorf("default preview lines = %v; want %d (two-thirds of the threshold)", c.CollapsePreviewLines, want)
+	}
+}
+
+// TestCollapsePreviewLinesParse pins the yaml keys and confirms an explicit
+// preview height survives fillDefaults rather than being re-derived from the
+// threshold.
+func TestCollapsePreviewLinesParse(t *testing.T) {
+	const y = "collapse_long_messages: 20\ncollapse_preview_lines: 3\n"
+	var c Config
+	if err := yaml.Unmarshal([]byte(y), &c); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if c.CollapsePreviewLines == nil || *c.CollapsePreviewLines != 3 {
+		t.Fatalf("parsed preview lines = %v; want 3", c.CollapsePreviewLines)
+	}
+	c.fillDefaults()
+	if *c.CollapsePreviewLines != 3 {
+		t.Errorf("fillDefaults clobbered explicit preview lines: got %d", *c.CollapsePreviewLines)
+	}
+	if *c.CollapseLongMessages != 20 {
+		t.Errorf("fillDefaults clobbered explicit threshold: got %d", *c.CollapseLongMessages)
+	}
+}
+
+// TestCollapsePreviewLinesDisabledThreshold: with folding disabled
+// (collapse_long_messages: 0) the derived preview default still resolves to a
+// sane 1 rather than 0.
+func TestCollapsePreviewLinesDisabledThreshold(t *testing.T) {
+	const y = "collapse_long_messages: 0\n"
+	var c Config
+	if err := yaml.Unmarshal([]byte(y), &c); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	c.fillDefaults()
+	if c.CollapsePreviewLines == nil || *c.CollapsePreviewLines != 1 {
+		t.Errorf("preview lines with folding off = %v; want 1", c.CollapsePreviewLines)
+	}
+}

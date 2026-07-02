@@ -215,10 +215,12 @@ type Model struct {
 
 	// collapseRows is the body-height threshold (in soft-wrapped visual rows)
 	// above which a message folds to a preview in the transcript; collapseShow
-	// is how many leading rows that preview keeps. Snapshotted from config at
-	// New(); collapseRows == 0 disables collapsing entirely. collapseKeyHint is
-	// the expand/collapse key's label, baked into the fold footer so it reflects
-	// the live keymap. See collapseBody and expandedPosts.
+	// is how many leading rows that preview keeps (config collapse_preview_lines,
+	// defaulting to two-thirds of collapseRows, clamped to 1…collapseRows).
+	// Snapshotted from config at New(); collapseRows == 0 disables collapsing
+	// entirely. collapseKeyHint is the expand/collapse key's label, baked into
+	// the fold footer so it reflects the live keymap. See collapseBody and
+	// expandedPosts.
 	collapseRows    int
 	collapseShow    int
 	collapseKeyHint string
@@ -882,6 +884,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	markReadDelay := defaultMarkReadDelay
 	groupWindow := defaultGroupWindow
 	collapseRows := defaultCollapseRows
+	var collapseShowCfg *int
 	showCustomStatus := true
 	showDateSeparators := true
 	showSQL := false
@@ -924,6 +927,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		}
 		if cfg.CollapseLongMessages != nil {
 			collapseRows = *cfg.CollapseLongMessages
+		}
+		if cfg.CollapsePreviewLines != nil {
+			collapseShowCfg = cfg.CollapsePreviewLines
 		}
 		if cfg.CustomStatus != nil {
 			showCustomStatus = *cfg.CustomStatus
@@ -1026,12 +1032,21 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		km = newKeyMap(navModifier)
 	}
 
-	// A folded message shows roughly two-thirds of its threshold height, so the
-	// preview is generous enough to recognise the message while still saving
-	// most of the screen. The footer names the live expand/collapse key.
+	// A folded message shows roughly two-thirds of its threshold height by
+	// default, so the preview is generous enough to recognise the message while
+	// still saving most of the screen; collapse_preview_lines overrides that.
+	// The footer names the live expand/collapse key.
 	collapseShow := collapseRows * 2 / 3
+	if collapseShowCfg != nil {
+		collapseShow = *collapseShowCfg
+	}
 	if collapseShow < 1 {
 		collapseShow = 1
+	}
+	// A preview taller than the fold threshold would never fold anything, so
+	// cap it (only meaningful while collapsing is enabled).
+	if collapseRows > 0 && collapseShow > collapseRows {
+		collapseShow = collapseRows
 	}
 	collapseKey := "z"
 	if ks := km.Collapse.Keys(); len(ks) > 0 {

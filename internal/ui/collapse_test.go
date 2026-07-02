@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"matterbox/internal/config"
+
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
@@ -101,6 +103,40 @@ func collapseModel(posts []*model.Post) Model {
 	m.collapseKeyHint = "z"
 	return m
 }
+
+// TestNewCollapseThresholds checks how New() derives the two collapse knobs
+// from config: an explicit collapse_preview_lines is honoured, an absent one
+// falls back to two-thirds of the threshold, and a preview taller than the
+// threshold is clamped down to it.
+func TestNewCollapseThresholds(t *testing.T) {
+	rows, preview := 20, 5
+	cases := []struct {
+		name             string
+		threshold, prev  *int
+		wantRows, wantSh int
+	}{
+		{"explicit preview honoured", &rows, &preview, 20, 5},
+		{"absent preview derives two-thirds", &rows, nil, 20, 13},
+		{"preview over threshold is clamped", intp(20), intp(50), 20, 20},
+		{"preview clamps up to at least one", intp(20), intp(0), 20, 1},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			m := New(nil, &config.Config{
+				CollapseLongMessages: c.threshold,
+				CollapsePreviewLines: c.prev,
+			})
+			if m.collapseRows != c.wantRows {
+				t.Errorf("collapseRows = %d; want %d", m.collapseRows, c.wantRows)
+			}
+			if m.collapseShow != c.wantSh {
+				t.Errorf("collapseShow = %d; want %d", m.collapseShow, c.wantSh)
+			}
+		})
+	}
+}
+
+func intp(v int) *int { return &v }
 
 // TestRenderPostLinesCollapse: a long message renders folded by default and in
 // full once the user expands it, and the cache serves the right variant across
