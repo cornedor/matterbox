@@ -222,6 +222,10 @@ type Model struct {
 	collapseRows    int
 	collapseShow    int
 	collapseKeyHint string
+	// showDateSeparators mirrors config.DateSeparators: when true (the default)
+	// renderMessages draws a subtle date rule above the first message of each
+	// local calendar day. See dateDivider and crossesLocalDay.
+	showDateSeparators bool
 	// expandedPosts records the posts the user has explicitly expanded (keyed by
 	// post id); a post not in the set folds whenever its body exceeds
 	// collapseRows. Tracking expansions rather than collapses means a new long
@@ -879,6 +883,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	groupWindow := defaultGroupWindow
 	collapseRows := defaultCollapseRows
 	showCustomStatus := true
+	showDateSeparators := true
 	showSQL := false
 	mouseEnabled := true
 	navModifier := navModifierFromConfig(cfg)
@@ -922,6 +927,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		}
 		if cfg.CustomStatus != nil {
 			showCustomStatus = *cfg.CustomStatus
+		}
+		if cfg.DateSeparators != nil {
+			showDateSeparators = *cfg.DateSeparators
 		}
 		if cfg.SQLTab != nil {
 			showSQL = *cfg.SQLTab
@@ -1042,6 +1050,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		statuses:            map[string]string{},
 		customStatuses:      map[string]model.CustomStatus{},
 		showCustomStatus:    showCustomStatus,
+		showDateSeparators:  showDateSeparators,
 		mouseEnabled:        mouseEnabled,
 		focus:               focusMessages,
 		msgsView:            msgsView,

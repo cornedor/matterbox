@@ -70,6 +70,12 @@ type Config struct {
 	// defaults to true; an explicit false hides the custom-status glyph and
 	// text everywhere, leaving only the presence dots. See internal/ui.
 	CustomStatus *bool `yaml:"custom_status"`
+	// DateSeparators draws a subtle labelled rule ("Today", "Yesterday", or a
+	// full date) above the first message of each local calendar day in the
+	// message pane, so a long scroll-back stays anchored in time. Mirrors the
+	// "unread messages" divider's shape in a dimmer colour. Pointer so an absent
+	// key defaults to true; set `date_separators: false` to hide them. See internal/ui.
+	DateSeparators *bool `yaml:"date_separators"`
 	// Mouse enables mouse support: the wheel scrolls the message feed (and
 	// inside a message taller than the pane), the open thread, and the Search /
 	// Feed result lists; clicking a team tab or channel switches to it; clicking
@@ -854,6 +860,10 @@ func (c *Config) fillDefaults() {
 	if c.CustomStatus == nil {
 		t := true
 		c.CustomStatus = &t
+	}
+	if c.DateSeparators == nil {
+		t := true
+		c.DateSeparators = &t
 	}
 	if c.DownloadDir == "" {
 		c.DownloadDir = defaultDownloadDir

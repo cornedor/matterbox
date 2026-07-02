@@ -39,6 +39,7 @@ var (
 	focusedColor = lipgloss.Color("12")  // bright blue
 	dimColor     = lipgloss.Color("241") // grey
 	unreadColor  = lipgloss.Color("67")  // muted steel blue — the "new messages" divider
+	dateSepColor = lipgloss.Color("240") // dim grey — the (more subtle) date divider
 
 	titleStyle = lipgloss.NewStyle().Bold(true)
 	userStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("4")).Bold(true)
@@ -373,6 +374,60 @@ func unreadDivider(width int) string {
 	return style.Render(strings.Repeat("─", left) + label + strings.Repeat("─", right))
 }
 
+// dateDivider renders a full-width rule with a centered calendar-date label,
+// drawn above the first message of each local day so a long scroll-back stays
+// anchored in time. Mirrors unreadDivider's shape (a centered label in a ─
+// rule) but in a dimmer colour so it recedes behind the conversation.
+func dateDivider(width int, createAtMillis int64) string {
+	style := lipgloss.NewStyle().Foreground(dateSepColor)
+	label := " " + formatDividerDate(createAtMillis) + " "
+	lw := lipgloss.Width(label)
+	if width <= lw {
+		if width < 1 {
+			width = 1
+		}
+		return style.Render(strings.Repeat("─", width))
+	}
+	left := (width - lw) / 2
+	right := width - lw - left
+	return style.Render(strings.Repeat("─", left) + label + strings.Repeat("─", right))
+}
+
+// formatDividerDate labels a date separator: "Today" / "Yesterday" for the two
+// most recent local days, otherwise the weekday and date ("Monday, January 2"),
+// with the year appended when it differs from the current one.
+func formatDividerDate(createAtMillis int64) string {
+	t := time.UnixMilli(createAtMillis).Local()
+	now := time.Now()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	day := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+	switch {
+	case day.Equal(today):
+		return "Today"
+	case day.Equal(today.AddDate(0, 0, -1)):
+		return "Yesterday"
+	case t.Year() != now.Year():
+		return t.Format("Monday, January 2, 2006")
+	default:
+		return t.Format("Monday, January 2")
+	}
+}
+
+// crossesLocalDay reports whether cur begins a new local calendar day relative
+// to prev — i.e. a date separator belongs above cur. The first loaded post
+// (prev == nil) starts a day, so the visible window always opens with a label.
+func crossesLocalDay(prev, cur *model.Post) bool {
+	if cur == nil {
+		return false
+	}
+	if prev == nil {
+		return true
+	}
+	ct := time.UnixMilli(cur.CreateAt).Local()
+	pt := time.UnixMilli(prev.CreateAt).Local()
+	return ct.Year() != pt.Year() || ct.YearDay() != pt.YearDay()
+}
+
 // resolveUnreadDivider picks the post the "new messages" divider sits above,
 // once, from the posts loaded for a freshly-opened channel — then freezes it
 // so a message sent or received while the channel is open never moves or
@@ -436,6 +491,21 @@ func (m *Model) renderMessages() {
 	rowStarts := make([]int, len(m.posts)+1)
 	dividerDrawn := false
 	for i, p := range m.posts {
+		var prev *model.Post
+		if i > 0 {
+			prev = m.posts[i-1]
+		}
+		// Insert a subtle date separator above the first message of each local
+		// day. Drawn inline (unlike the frozen unread divider) by comparing
+		// adjacent posts' local dates; the extra row lives in the gap before the
+		// post so rowStarts still points at the post's real first line. A post
+		// that opens a new day also keeps its own header, so a grouped
+		// continuation line never renders bare beneath the rule.
+		crossDay := m.showDateSeparators && crossesLocalDay(prev, p)
+		if crossDay {
+			allLines = append(allLines, dateDivider(width, p.CreateAt))
+			visAcc++
+		}
 		// Insert the "new messages" divider above its frozen anchor post. The
 		// extra row lives in the gap before the post, so rowStarts still points
 		// at the post's real first line.
@@ -445,11 +515,11 @@ func (m *Model) renderMessages() {
 			dividerDrawn = true
 		}
 		rowStarts[i] = visAcc
-		var prev *model.Post
-		if i > 0 {
-			prev = m.posts[i-1]
+		grouped := m.groupWithPrev(p, prev, false)
+		if crossDay {
+			grouped = false
 		}
-		chunk, rows := m.renderPostLines(p, m.groupWithPrev(p, prev, false))
+		chunk, rows := m.renderPostLines(p, grouped)
 		if i == m.postIdx {
 			selVisStart = visAcc
 			if decorate {
