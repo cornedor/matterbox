@@ -35,6 +35,12 @@ func builtinCommands() []switcherCommand {
 			run: runSummarize,
 		},
 		{
+			name: "Create channel",
+			desc: "make a new public or private channel on one of your teams",
+			// No argPrompt: the command opens its own form modal.
+			run: runCreateChannel,
+		},
+		{
 			name:           "Start group DM",
 			desc:           "open (creating if new) a group DM with the people you name",
 			argPrompt:      "users: ",

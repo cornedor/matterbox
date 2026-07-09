@@ -718,3 +718,16 @@ func (c *Client) GroupChannel(ctx context.Context, userIDs []string) (*model.Cha
 	}
 	return ch, nil
 }
+
+// CreateChannel creates a public or private channel and joins the calling
+// user to it. TeamId, DisplayName, Name and Type must be set; the server
+// owns everything else on the record (Id, CreatorId, timestamps). Direct
+// and group channels are rejected here by the server — use DirectChannel /
+// GroupChannel for those.
+func (c *Client) CreateChannel(ctx context.Context, ch *model.Channel) (*model.Channel, error) {
+	created, _, err := c.c.CreateChannel(ctx, ch)
+	if err != nil {
+		return nil, fmt.Errorf("create channel %s: %w", ch.Name, err)
+	}
+	return created, nil
+}

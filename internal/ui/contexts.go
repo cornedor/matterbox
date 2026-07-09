@@ -56,7 +56,8 @@ func (m *Model) contentFocus() bool {
 func (m *Model) inModal() bool {
 	return m.deleteConfirmPostID != "" || m.reactionPickerPostID != "" ||
 		m.openPickerActive() || m.codePickerActive() || m.pollDialog.open || m.historyMode ||
-		m.summary.active() || m.switcherMode || m.keysSheetMode || m.preview.active
+		m.summary.active() || m.switcherMode || m.keysSheetMode || m.preview.active ||
+		m.createChan != nil
 }
 
 // popupOpenInComposer mirrors handleKey's popupOpen guard: the @-mention /

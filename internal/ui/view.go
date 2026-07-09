@@ -1432,6 +1432,9 @@ func (m *Model) renderViewContent() string {
 	if m.pollDialog.open {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderPollDialog())
 	}
+	if m.createChan != nil {
+		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderCreateChannel())
+	}
 	if m.summary.active() {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderSummaryPopup())
 	}

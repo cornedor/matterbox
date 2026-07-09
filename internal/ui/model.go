@@ -628,6 +628,11 @@ type Model struct {
 	// arrives after the user fires the corresponding action button.
 	pollDialog pollDialogState
 
+	// createChan owns the "Create channel" form modal (> palette). Nil when
+	// closed — it's boxed because its textinputs are fat and no unconditional
+	// layout/render pass touches it.
+	createChan *createChannelState
+
 	// reactionEmojis is the picker list configured at startup from
 	// ~/.config/matterbox/config.yaml. Snapshot at New() time — the file
 	// isn't watched, so editing it requires a restart.
@@ -2636,6 +2641,19 @@ func (m *Model) bucketChannels(chs []*model.Channel) {
 		m.channels[k] = list
 	}
 	_, m.hasDMs = m.channels[dmTeamID]
+}
+
+// sortTeamBucket re-orders a team's bucket alphabetically by label, matching
+// bucketChannels. Called after a freshly-created channel is spliced in so it
+// lands in its sorted position rather than at the end of the sidebar.
+func (m *Model) sortTeamBucket(teamID string) {
+	list := m.channels[teamID]
+	if len(list) < 2 {
+		return
+	}
+	sort.SliceStable(list, func(i, j int) bool {
+		return strings.ToLower(m.channelLabel(list[i])) < strings.ToLower(m.channelLabel(list[j]))
+	})
 }
 
 // sortDMBucket re-orders the DM bucket by most recent activity (newest
