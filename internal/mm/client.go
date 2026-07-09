@@ -233,6 +233,18 @@ func (c *Client) ChannelUsers(ctx context.Context, channelID string) ([]*model.U
 	return all, nil
 }
 
+// AddChannelMember joins a user to a channel (POST /channels/{id}/members).
+// Adding someone who is already a member is a no-op server-side. The server
+// posts a "added to the channel" system message and broadcasts a
+// `user_added` WS event, so other clients (and our own message pane) learn of
+// it without a refetch.
+func (c *Client) AddChannelMember(ctx context.Context, channelID, userID string) error {
+	if _, _, err := c.c.AddChannelMember(ctx, channelID, userID); err != nil {
+		return fmt.Errorf("add channel member: %w", err)
+	}
+	return nil
+}
+
 // ViewChannel marks the channel as read for the user (updates
 // LastViewedAt / MsgCount on the server-side ChannelMember).
 func (c *Client) ViewChannel(ctx context.Context, userID, channelID string) error {

@@ -130,9 +130,10 @@ func TestRenderInfoBuildsTargetsAndContent(t *testing.T) {
 		}
 	}
 
-	// Document order: purpose link, members (self first), then pinned messages.
-	if len(m.infoTargets) != 5 {
-		t.Fatalf("targets = %d, want 5 (1 link + 2 members + 2 pins)", len(m.infoTargets))
+	// Document order: purpose link, members (self first), the add-members row
+	// closing the member list, then pinned messages.
+	if len(m.infoTargets) != 6 {
+		t.Fatalf("targets = %d, want 6 (1 link + 2 members + 1 add + 2 pins)", len(m.infoTargets))
 	}
 	if m.infoTargets[0].kind != infoTargetLink || m.infoTargets[0].url != "https://ex.com/d" {
 		t.Errorf("target[0] = %+v, want purpose link https://ex.com/d", m.infoTargets[0])
@@ -143,11 +144,14 @@ func TestRenderInfoBuildsTargetsAndContent(t *testing.T) {
 	if m.infoTargets[2].kind != infoTargetMember || m.infoTargets[2].userID != "u_alice" {
 		t.Errorf("target[2] = %+v, want member u_alice", m.infoTargets[2])
 	}
-	if m.infoTargets[3].kind != infoTargetPin || m.infoTargets[3].postID != "pin1" {
-		t.Errorf("target[3] = %+v, want pin pin1", m.infoTargets[3])
+	if m.infoTargets[3].kind != infoTargetAddMember {
+		t.Errorf("target[3] = %+v, want the add-members row", m.infoTargets[3])
 	}
-	if m.infoTargets[4].kind != infoTargetPin || m.infoTargets[4].postID != "pin2" {
-		t.Errorf("target[4] = %+v, want pin pin2", m.infoTargets[4])
+	if m.infoTargets[4].kind != infoTargetPin || m.infoTargets[4].postID != "pin1" {
+		t.Errorf("target[4] = %+v, want pin pin1", m.infoTargets[4])
+	}
+	if m.infoTargets[5].kind != infoTargetPin || m.infoTargets[5].postID != "pin2" {
+		t.Errorf("target[5] = %+v, want pin pin2", m.infoTargets[5])
 	}
 }
 
@@ -160,8 +164,8 @@ func TestInfoMemberOpensDM(t *testing.T) {
 	m.infoPinnedLoaded = true
 	m.renderInfo()
 
-	if len(m.infoTargets) != 2 || m.infoTargets[1].kind != infoTargetMember {
-		t.Fatalf("targets = %+v, want a purpose link + one member", m.infoTargets)
+	if len(m.infoTargets) != 3 || m.infoTargets[1].kind != infoTargetMember {
+		t.Fatalf("targets = %+v, want a purpose link + one member + the add row", m.infoTargets)
 	}
 	m.infoIdx = 1 // the alice member
 

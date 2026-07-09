@@ -26,20 +26,21 @@ import (
 // mouse, exactly like the messages/thread/reference panes.
 
 // infoTargetKind distinguishes the activatable things in the panel: a link
-// (open it), a pinned message (jump the main pane to it), and a member (open a
-// DM with them).
+// (open it), a pinned message (jump the main pane to it), a member (open a DM
+// with them), and the row that adds members to the channel.
 type infoTargetKind int
 
 const (
 	infoTargetLink infoTargetKind = iota
 	infoTargetPin
 	infoTargetMember
+	infoTargetAddMember
 )
 
 // infoTarget is one focusable item in the panel. Only the field for its kind is
 // set. startRow/endRow are the inclusive logical-line range it occupies in the
-// rendered content (endRow == startRow for a link/member), used to scroll the
-// selection into view and to resolve a mouse click.
+// rendered content (endRow == startRow for everything but a pinned message),
+// used to scroll the selection into view and to resolve a mouse click.
 type infoTarget struct {
 	kind     infoTargetKind
 	url      string // infoTargetLink: the link target
@@ -49,11 +50,20 @@ type infoTarget struct {
 	endRow   int
 }
 
+// isRow reports whether the target occupies whole indented lines — everything
+// but a link, which is a run of characters inside a line. Rows carry the
+// selection bar and the pointer-hover background; links get their own
+// link-scoped highlight instead.
+func (t infoTarget) isRow() bool { return t.kind != infoTargetLink }
+
 var (
 	infoLabelStyle   = lipgloss.NewStyle().Foreground(focusedColor).Bold(true)
 	infoMetaKeyStyle = lipgloss.NewStyle().Foreground(dimColor)
 	infoDimStyle     = lipgloss.NewStyle().Foreground(dimColor)
 	infoErrStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("9"))
+	// infoActionStyle paints an actionable row (the "+ Add members…" affordance)
+	// in the accent colour so it reads as a button, not another member.
+	infoActionStyle = lipgloss.NewStyle().Foreground(focusedColor)
 	// infoSelLinkStyle paints the keyboard-selected link, distinct from the
 	// pointer-hover highlight (mdLinkHoverStyle).
 	infoSelLinkStyle = mdLinkStyle.Reverse(true)
@@ -241,7 +251,8 @@ func (m *Model) renderInfo() {
 		addMarkdown(expandTables(renderMarkdown(c.Header, m.emojiImg, nil, self), width))
 	}
 
-	// Members — each is a focusable target that opens a DM with that person.
+	// Members — each is a focusable target that opens a DM with that person,
+	// closed by an "add members" row on channels that accept new ones.
 	section(infoCountLabel("Members", len(m.infoMembers), m.infoMembersLoaded))
 	switch {
 	case m.infoMembersErr != nil:
@@ -256,6 +267,11 @@ func (m *Model) renderInfo() {
 			lines = append(lines, "  "+mem.label)
 			targets = append(targets, infoTarget{kind: infoTargetMember, userID: mem.id, startRow: start, endRow: start})
 		}
+	}
+	if canAddMembers(c) {
+		start := len(lines)
+		lines = append(lines, "  "+infoActionStyle.Render("+ Add members…"))
+		targets = append(targets, infoTarget{kind: infoTargetAddMember, startRow: start, endRow: start})
 	}
 
 	// Pinned messages.
@@ -296,10 +312,10 @@ func (m *Model) renderInfo() {
 	if m.focus == focusInfo && m.infoIdx >= 0 && m.infoIdx < len(targets) {
 		selIdx = m.infoIdx
 	}
-	// Hover highlight on the member row under the pointer, unless it's the row
-	// already carrying the selection bar.
+	// Hover highlight on the member / add-members row under the pointer, unless
+	// it's the row already carrying the selection bar.
 	if m.infoHoverIdx >= 0 && m.infoHoverIdx < len(targets) && m.infoHoverIdx != selIdx {
-		if t := targets[m.infoHoverIdx]; t.kind == infoTargetMember {
+		if t := targets[m.infoHoverIdx]; t.kind == infoTargetMember || t.kind == infoTargetAddMember {
 			for r := t.startRow; r <= t.endRow && r < len(lines); r++ {
 				lines[r] = infoHoverRowStyle.Render(lines[r])
 			}
@@ -311,7 +327,7 @@ func (m *Model) renderInfo() {
 	if selIdx >= 0 {
 		t := targets[selIdx]
 		selVisStart = visualOffsetOf(lines, t.startRow, width)
-		if t.kind == infoTargetPin || t.kind == infoTargetMember {
+		if t.isRow() {
 			bar := selectedBarStyle.Render("▎")
 			for r := t.startRow; r <= t.endRow && r < len(lines); r++ {
 				if strings.HasPrefix(lines[r], "  ") {
@@ -512,6 +528,8 @@ func (m Model) activateInfoTarget() (tea.Model, tea.Cmd) {
 		return m.jumpToInfoPin(t.postID)
 	case infoTargetMember:
 		return m.openDMWithMember(t.userID)
+	case infoTargetAddMember:
+		return m.openAddMembersPrompt()
 	}
 	return m, nil
 }
@@ -602,8 +620,9 @@ func (m *Model) hitInfoContent(x, y int) hit {
 	return hit{zone: hitInfo, line: line, col: col}
 }
 
-// infoHoverAt resolves the pointer to the member row under it in the panel, or
-// -1 over anything else (links carry their own OSC 8 hover via hoverLinkAt).
+// infoHoverAt resolves the pointer to the member / add-members row under it in
+// the panel, or -1 over anything else (links carry their own OSC 8 hover via
+// hoverLinkAt).
 func (m *Model) infoHoverAt(x, y int) int {
 	if !m.infoOpen {
 		return -1
@@ -613,7 +632,10 @@ func (m *Model) infoHoverAt(x, y int) int {
 		return -1
 	}
 	for i, t := range m.infoTargets {
-		if t.kind == infoTargetMember && h.line >= t.startRow && h.line <= t.endRow {
+		if t.kind != infoTargetMember && t.kind != infoTargetAddMember {
+			continue
+		}
+		if h.line >= t.startRow && h.line <= t.endRow {
 			return i
 		}
 	}
@@ -644,6 +666,8 @@ func (m Model) clickInfoTarget(line int) (tea.Model, tea.Cmd) {
 			return m.jumpToInfoPin(t.postID)
 		case infoTargetMember:
 			return m.openDMWithMember(t.userID)
+		case infoTargetAddMember:
+			return m.openAddMembersPrompt()
 		}
 		// A link line clicked off the link text: just focus it.
 		m.infoScrollFree = false

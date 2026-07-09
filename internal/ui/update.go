@@ -296,6 +296,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case groupDMResolvedMsg:
 		return m.applyGroupDMResolved(msg)
 
+	case channelMembersAddedMsg:
+		return m.applyMembersAdded(msg)
+
 	case slashExecMsg:
 		if msg.err != nil {
 			m.status = "command failed: " + msg.err.Error()

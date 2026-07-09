@@ -422,20 +422,26 @@ func (m Model) commandQuery() string {
 }
 
 // allCommands is the full ordered command list for the current context: the
-// static builtins plus any channel-specific commands (the mute toggle) that
-// only apply when a channel is open. The mute toggle is clustered next to
-// Summarize at the top, since both act on the currently-open channel.
+// static builtins plus any channel-specific commands (the mute toggle, adding
+// members) that only apply when a channel is open. Those are clustered next to
+// Summarize at the top, since they all act on the currently-open channel.
 func (m Model) allCommands() []switcherCommand {
 	base := builtinCommands()
-	mute, ok := m.muteCommand()
-	if !ok {
+	var contextual []switcherCommand
+	if mute, ok := m.muteCommand(); ok {
+		contextual = append(contextual, mute)
+	}
+	if add, ok := m.addMembersCommand(); ok {
+		contextual = append(contextual, add)
+	}
+	if len(contextual) == 0 {
 		return base
 	}
-	out := make([]switcherCommand, 0, len(base)+1)
+	out := make([]switcherCommand, 0, len(base)+len(contextual))
 	if len(base) > 0 {
 		out = append(out, base[0]) // Summarize stays first
 	}
-	out = append(out, mute)
+	out = append(out, contextual...)
 	if len(base) > 1 {
 		out = append(out, base[1:]...)
 	}

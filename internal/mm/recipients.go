@@ -36,11 +36,11 @@ func ResolveRecipients(ctx context.Context, r Recipients, meID, spec string) (*m
 	ids := []string{meID}
 	seen := map[string]bool{meID: true}
 	var names []string
-	for _, part := range strings.Split(spec, ",") {
-		name := strings.TrimPrefix(strings.TrimSpace(part), "@")
-		if name == "" {
-			return nil, fmt.Errorf("empty username in %q", spec)
-		}
+	parsed, err := parseUsernames(spec)
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range parsed {
 		u, err := r.UserByUsername(ctx, name)
 		if err != nil {
 			return nil, fmt.Errorf("no user %q: %w", "@"+name, err)

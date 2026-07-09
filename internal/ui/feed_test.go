@@ -308,14 +308,15 @@ func TestMuteCommand(t *testing.T) {
 		t.Error("allCommands added a command when none should apply")
 	}
 
-	// Unmuted channel → a "Mute …" command, listed second (after Summarize).
+	// Unmuted channel → a "Mute …" command, listed second (after Summarize),
+	// ahead of the other channel-contextual command ("Add members to …").
 	m := newModel(false)
 	cmd, ok := m.muteCommand()
 	if !ok || cmd.name != "Mute #general" {
 		t.Fatalf("muteCommand = %q, ok=%v; want \"Mute #general\", true", cmd.name, ok)
 	}
 	all := m.allCommands()
-	if len(all) != len(builtinCommands())+1 || all[1].name != "Mute #general" {
+	if len(all) != len(builtinCommands())+2 || all[1].name != "Mute #general" {
 		t.Fatalf("allCommands[1] = %q; want the mute command second", all[1].name)
 	}
 
