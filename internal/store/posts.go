@@ -1118,6 +1118,26 @@ LIMIT 1`
 	return id, nil
 }
 
+// NewestCreateAt returns the largest create_at (unix-ms) stored for the channel,
+// tombstones included, or 0 if none. Tombstones count because they render in the
+// transcript too, so a caller comparing this against the last post it has loaded
+// is asking the same question the pane draws: is there anything below this?
+// Answered off idx_posts_channel_createat, so it's a single index seek.
+func (s *Store) NewestCreateAt(channelID string) (int64, error) {
+	if s == nil || channelID == "" {
+		return 0, nil
+	}
+	const q = `SELECT COALESCE(MAX(create_at), 0) FROM posts WHERE channel_id = ?`
+	var at int64
+	if err := s.db.QueryRow(q, channelID).Scan(&at); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("newest create_at: %w", err)
+	}
+	return at, nil
+}
+
 // MaxUpdateAt returns the largest update_at (unix-ms) stored for the channel
 // across all rows — deleted ones included — or 0 if none. It's the cursor for
 // the offline-deletion sync: a deletion that happened while matterbox was away

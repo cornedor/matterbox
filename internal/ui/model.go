@@ -770,6 +770,20 @@ type Model struct {
 	msgsContentVer   uint64
 	threadContentVer uint64
 	refContentVer    uint64
+
+	// msgsTailBehind reports that the loaded window's newest post is older than
+	// the newest message cached for its channel — i.e. the transcript continues
+	// below what renderMessages laid out. A window opened around a permalink or
+	// search hit reaches only ~30 posts past its target, so "the viewport is at
+	// the bottom of its content" does not mean "the user is at the bottom of the
+	// channel"; the jump-to-bottom pill needs both facts (see msgsMoreBelow).
+	//
+	// tailBehindChan/Post memoize it against the tail post it was computed for:
+	// the tail changes exactly when new content lands, so a scroll or a selection
+	// move re-renders without going back to the store.
+	msgsTailBehind bool
+	tailBehindChan string
+	tailBehindPost string
 	// sqlContentVer is bumped whenever renderSQLResults rebuilds the SQL result
 	// viewport, so the wrap-index cache (linkAt / hover) keys off it like the
 	// transcript panes do.

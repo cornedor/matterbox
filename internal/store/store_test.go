@@ -267,6 +267,33 @@ func TestLatestPostID(t *testing.T) {
 	}
 }
 
+// TestNewestCreateAt: 0 for an unknown channel, the largest create_at otherwise,
+// and — unlike LatestPostID — tombstones count, since they render in the
+// transcript and so are content the reader can still be "below".
+func TestNewestCreateAt(t *testing.T) {
+	s := tempStore(t)
+	if at, err := s.NewestCreateAt("c1"); err != nil || at != 0 {
+		t.Fatalf("empty channel: got %d, %v; want 0, nil", at, err)
+	}
+	p1 := mkPost("p1aaaaaaaaaaaaaaaaaaaaaaaa", "c1", "first", 100)
+	p2 := mkPost("p2aaaaaaaaaaaaaaaaaaaaaaaa", "c1", "second", 300)
+	other := mkPost("p3aaaaaaaaaaaaaaaaaaaaaaaa", "c2", "elsewhere", 900)
+	if err := s.UpsertMany([]*model.Post{p1, p2, other}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if at, _ := s.NewestCreateAt("c1"); at != 300 {
+		t.Errorf("NewestCreateAt(c1) = %d, want 300 (another channel's post must not leak in)", at)
+	}
+
+	// A deleted newest post still bounds the channel: the pane draws its tombstone.
+	if err := s.Delete(p2); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if at, _ := s.NewestCreateAt("c1"); at != 300 {
+		t.Errorf("NewestCreateAt after soft-delete = %d, want 300 (tombstones count)", at)
+	}
+}
+
 func TestRecentLimit(t *testing.T) {
 	s := tempStore(t)
 	for i := 0; i < 5; i++ {

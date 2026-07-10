@@ -1,12 +1,17 @@
 package ui
 
 import (
+	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/store"
 )
 
 // jumpModel is mouseModel laid out for real (panes sized from the terminal
@@ -17,7 +22,7 @@ func jumpModel(t *testing.T) Model {
 	m.resizeMessagesViewport()
 	m.postIdx = 0
 	m.renderMessages()
-	if !m.msgsScrolledUp() {
+	if !m.msgsMoreBelow() {
 		t.Fatal("setup: expected the transcript to be scrolled up")
 	}
 	m.viewContent() // arms vcache.jumpZone, as the real View path does
@@ -38,8 +43,8 @@ func TestJumpPillShowsOnlyWhenScrolledUp(t *testing.T) {
 
 	m.selectLastMessage()
 	m.renderMessages()
-	if m.msgsScrolledUp() {
-		t.Fatal("at bottom: msgsScrolledUp still true")
+	if m.msgsMoreBelow() {
+		t.Fatal("at bottom: msgsMoreBelow still true")
 	}
 	m.vcache.viewValid = false
 	if frame := ansi.Strip(m.viewContent()); strings.Contains(frame, want) {
@@ -144,7 +149,7 @@ func TestJumpPillClickJumps(t *testing.T) {
 	if got.focus != focusInput {
 		t.Errorf("focus = %v, want focusInput (the click must not steal the composer)", got.focus)
 	}
-	if got.msgsScrolledUp() {
+	if got.msgsMoreBelow() {
 		t.Error("still scrolled up after clicking jump-to-bottom")
 	}
 }
@@ -198,6 +203,122 @@ func TestJumpPillInactiveIsNoop(t *testing.T) {
 	}
 	if got := overlayJumpPill("", jumpPill{active: true, text: "x"}); got != "" {
 		t.Errorf("empty view mutated: %q", got)
+	}
+}
+
+// jumpStoreModel seeds a channel with n contiguous cached posts and returns a
+// laid-out model wired to that store — the shape openChannelAtPost / openHitChannel
+// (and the Feed's pending jump) leave behind.
+func jumpStoreModel(t *testing.T, n int) Model {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "jump.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	seed := make([]*model.Post, n)
+	for i := range seed {
+		seed[i] = &model.Post{
+			Id: fmt.Sprintf("p%03d", i), ChannelId: "c", UserId: "u",
+			CreateAt: int64(1000 + i), UpdateAt: int64(1000 + i), Message: "msg",
+		}
+	}
+	if err := st.UpsertMany(seed); err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+	m := mouseModel(shortPosts(5))
+	m.store = st
+	m.resizeMessagesViewport()
+	return m
+}
+
+// TestJumpPillWhenWindowStopsShortOfNewest is the search-hit / permalink case.
+// Opening around an old post loads a window that reaches only ~30 posts past it,
+// so the viewport can be at the bottom of everything laid out while the channel
+// has a hundred newer messages. The pill has to stay up — and take you all the
+// way to the real newest message, not just to the end of the loaded window.
+func TestJumpPillWhenWindowStopsShortOfNewest(t *testing.T) {
+	m := jumpStoreModel(t, 200)
+	out, _ := m.openChannelAtPost(m.findChannel("c"), "p050")
+	m = out.(Model)
+
+	tail := m.posts[len(m.posts)-1]
+	if tail.Id == "p199" {
+		t.Fatalf("setup: window reached the newest post (%s); it must stop short", tail.Id)
+	}
+	if !m.msgsMoreBelow() {
+		t.Error("landing on the hit: no pill, but the window is scrolled")
+	}
+
+	// Scroll to the very bottom of the loaded window. The viewport is now at 100%
+	// — yet 119 newer messages sit in the cache below it.
+	m.postIdx = len(m.posts) - 1
+	m.renderMessages()
+	if _, pct := m.msgsScrollGeom(); pct < 1.0 {
+		t.Fatalf("setup: viewport not at the bottom of its content (pct=%.3f)", pct)
+	}
+	if !m.msgsTailBehind {
+		t.Error("tail is p080 and the cache holds p199: msgsTailBehind should be set")
+	}
+	if !m.msgsMoreBelow() {
+		t.Fatal("at the bottom of the loaded window, the pill vanished — the newest message is still 119 posts below")
+	}
+
+	// The pill's action must reach the channel's newest message, not the window's.
+	m.viewContent()
+	z := m.vcache.jumpZone
+	if !z.active {
+		t.Fatal("pill not armed at the bottom of a short window")
+	}
+	out, _ = m.handleMouseClick(click(tea.MouseLeft, (z.x0+z.x1)/2, z.y))
+	got := out.(Model)
+	if newest := got.posts[got.postIdx]; newest.Id != "p199" {
+		t.Errorf("clicked jump-to-bottom, landed on %s, want the channel's newest p199", newest.Id)
+	}
+	if got.msgsMoreBelow() {
+		t.Error("pill still showing after jumping to the channel's newest message")
+	}
+}
+
+// TestTailBehindTracksTheLoadedWindow: the flag is about the window's tail versus
+// the cache, so it clears once the newest message is loaded and stays clear while
+// the selection moves around inside that window.
+func TestTailBehindTracksTheLoadedWindow(t *testing.T) {
+	m := jumpStoreModel(t, 200)
+	out, _ := m.openChannelAtPost(m.findChannel("c"), "p050")
+	m = out.(Model)
+	if !m.msgsTailBehind {
+		t.Fatal("window stops at p080: want msgsTailBehind")
+	}
+
+	m.selectLastMessage()
+	m.renderMessages()
+	if m.msgsTailBehind {
+		t.Error("newest message is loaded: msgsTailBehind should have cleared")
+	}
+	// Moving the selection within a window that already reaches the newest post
+	// must not resurrect it (and must not re-query: the tail is unchanged).
+	m.postIdx = 0
+	m.renderMessages()
+	if m.msgsTailBehind {
+		t.Error("scrolling up inside a live window set msgsTailBehind")
+	}
+	if !m.msgsMoreBelow() {
+		t.Error("scrolled to the top: the pill should show on the viewport rule alone")
+	}
+}
+
+// TestTailBehindNoStore: without a cache there's nothing to compare against, so
+// the pill falls back to the viewport-only rule rather than pinning itself on.
+func TestTailBehindNoStore(t *testing.T) {
+	m := jumpModel(t) // mouseModel has no store
+	if m.msgsTailBehind {
+		t.Error("no store: msgsTailBehind must stay false")
+	}
+	m.selectLastMessage()
+	m.renderMessages()
+	if m.msgsMoreBelow() {
+		t.Error("no store, at the bottom: pill should be hidden")
 	}
 }
 

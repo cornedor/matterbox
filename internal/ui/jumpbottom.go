@@ -58,21 +58,53 @@ func (m *Model) jumpBottomText() string {
 	return " Jump to bottom ↓ "
 }
 
-// msgsScrolledUp reports whether the message viewport sits above its newest
-// content — the same test the scrollbar uses to decide it has anything to show.
+// msgsMoreBelow reports whether the channel's newest message is somewhere below
+// what the user can see. Two ways for that to be true, and the pill needs both:
+//
+//   - the viewport sits above the bottom of the laid-out transcript (the same
+//     test the scrollbar uses to decide it has anything to show), or
+//   - the laid-out transcript itself stops short of the channel's newest message.
+//     Opening a permalink, a search hit or a Feed entry loads a window *around*
+//     its target, so scrolling to the bottom of that window can leave hundreds of
+//     newer messages unloaded beneath it. Checking only the viewport would drop
+//     the pill exactly there — the moment it's most needed.
+//
 // Called before any mention/emoji popup shrinks the viewport, so opening a popup
 // (which pushes the bottom rows out of view without moving the scroll) doesn't
 // summon the pill mid-keystroke.
-func (m *Model) msgsScrolledUp() bool {
+func (m *Model) msgsMoreBelow() bool {
+	if m.msgsTailBehind {
+		return true
+	}
 	total, pct := m.msgsScrollGeom()
 	return total > m.msgsView.Height() && pct < 1.0
+}
+
+// refreshTailBehind recomputes msgsTailBehind for the loaded window, memoized on
+// the tail post so the wheel-scroll and arrow-key renders — which never change
+// the tail — cost nothing. renderMessages calls it; View only reads the flag,
+// keeping the store off the per-keystroke path.
+func (m *Model) refreshTailBehind() {
+	if m.store == nil || len(m.posts) == 0 {
+		m.tailBehindChan, m.tailBehindPost, m.msgsTailBehind = "", "", false
+		return
+	}
+	last := m.posts[len(m.posts)-1]
+	if last.ChannelId == m.tailBehindChan && last.Id == m.tailBehindPost {
+		return
+	}
+	newest, err := m.store.NewestCreateAt(last.ChannelId)
+	m.tailBehindChan, m.tailBehindPost = last.ChannelId, last.Id
+	// On a store error, fall back to the viewport-only test rather than pinning
+	// a pill the user can't dismiss.
+	m.msgsTailBehind = err == nil && newest > last.CreateAt
 }
 
 // jumpPillFor sizes and centers the pill within the message viewport, or
 // returns the zero jumpPill when it's hidden or the pane is too narrow to hold
 // it without crowding the text it covers.
-func (m *Model) jumpPillFor(scrolledUp bool) jumpPill {
-	if !scrolledUp {
+func (m *Model) jumpPillFor(moreBelow bool) jumpPill {
+	if !moreBelow {
 		return jumpPill{}
 	}
 	w, h := m.msgsView.Width(), m.msgsView.Height()

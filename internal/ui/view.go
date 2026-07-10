@@ -460,6 +460,7 @@ func (m *Model) renderMessages() {
 	// (see scrollcache.go). Bump unconditionally — every path below resets the
 	// viewport content.
 	m.msgsContentVer++
+	m.refreshTailBehind()
 	if len(m.posts) == 0 {
 		m.msgsView.SetContent(lipgloss.NewStyle().Foreground(dimColor).Render("no messages"))
 		m.msgRowStarts = nil
@@ -1666,9 +1667,9 @@ func (m *Model) renderMessagesPane(height, width int) string {
 		titleRendered = titleStyle.Render(title)
 	}
 
-	// Whether the transcript is parked above its newest content, measured before
-	// a popup shrinks the viewport below (see msgsScrolledUp).
-	scrolledUp := m.msgsScrolledUp()
+	// Whether the channel's newest message is below the fold, measured before a
+	// popup shrinks the viewport below (see msgsMoreBelow).
+	moreBelow := m.msgsMoreBelow()
 
 	// Shrink the messages viewport (on this local copy of m) to make
 	// room for the @-mention / :emoji popup when it's open. The mutation
@@ -1736,7 +1737,7 @@ func (m *Model) renderMessagesPane(height, width int) string {
 	// here rather than inside renderMsgsUpper, whose body a cache hit skips.
 	var pill jumpPill
 	if lowerH >= 1 {
-		pill = m.jumpPillFor(scrolledUp)
+		pill = m.jumpPillFor(moreBelow)
 	}
 	m.armJumpZone(pill)
 
