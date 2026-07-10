@@ -131,9 +131,9 @@ func TestRenderInfoBuildsTargetsAndContent(t *testing.T) {
 	}
 
 	// Document order: purpose link, members (self first), the add-members row
-	// closing the member list, then pinned messages.
-	if len(m.infoTargets) != 6 {
-		t.Fatalf("targets = %d, want 6 (1 link + 2 members + 1 add + 2 pins)", len(m.infoTargets))
+	// closing the member list, pinned messages, then the media drill-down row.
+	if len(m.infoTargets) != 7 {
+		t.Fatalf("targets = %d, want 7 (1 link + 2 members + 1 add + 2 pins + 1 media)", len(m.infoTargets))
 	}
 	if m.infoTargets[0].kind != infoTargetLink || m.infoTargets[0].url != "https://ex.com/d" {
 		t.Errorf("target[0] = %+v, want purpose link https://ex.com/d", m.infoTargets[0])
@@ -153,6 +153,9 @@ func TestRenderInfoBuildsTargetsAndContent(t *testing.T) {
 	if m.infoTargets[5].kind != infoTargetPin || m.infoTargets[5].postID != "pin2" {
 		t.Errorf("target[5] = %+v, want pin pin2", m.infoTargets[5])
 	}
+	if m.infoTargets[6].kind != infoTargetMedia {
+		t.Errorf("target[6] = %+v, want the media row", m.infoTargets[6])
+	}
 }
 
 // TestInfoMemberOpensDM: activating a member target closes the panel and kicks
@@ -164,8 +167,8 @@ func TestInfoMemberOpensDM(t *testing.T) {
 	m.infoPinnedLoaded = true
 	m.renderInfo()
 
-	if len(m.infoTargets) != 3 || m.infoTargets[1].kind != infoTargetMember {
-		t.Fatalf("targets = %+v, want a purpose link + one member + the add row", m.infoTargets)
+	if len(m.infoTargets) != 4 || m.infoTargets[1].kind != infoTargetMember {
+		t.Fatalf("targets = %+v, want a purpose link + one member + the add row + the media row", m.infoTargets)
 	}
 	m.infoIdx = 1 // the alice member
 
@@ -324,5 +327,240 @@ func TestOpenChannelInfoClosesThread(t *testing.T) {
 	}
 	if !m.infoOpen {
 		t.Error("info panel should be open")
+	}
+}
+
+// mediaInfoModel is infoTestModel with a loaded media listing: two images and a
+// PDF between them, newest first (the order ChannelFiles returns).
+func mediaInfoModel() Model {
+	m := infoTestModel()
+	m.infoMembersLoaded = true
+	m.infoPinnedLoaded = true
+	m.infoMediaLoaded = true
+	m.userNames["u_alice"] = "alice"
+	m.infoMedia = []*model.FileInfo{
+		{Id: "f1", PostId: "p1", CreatorId: "u_alice", Name: "shot.png", MimeType: "image/png", Size: 2048, CreateAt: 300},
+		{Id: "f2", PostId: "p2", CreatorId: "u_alice", Name: "spec.pdf", MimeType: "application/pdf", Size: 1024, CreateAt: 200},
+		{Id: "f3", PostId: "p3", CreatorId: "u_bob", Name: "logo.gif", MimeType: "image/gif", Size: 512, CreateAt: 100},
+	}
+	m.renderInfo()
+	return m
+}
+
+// The main view advertises the drill-down with a live count.
+func TestInfoMediaRowShowsCount(t *testing.T) {
+	m := mediaInfoModel()
+	if !strings.Contains(m.infoView.GetContent(), "All media (3)") {
+		t.Errorf("info panel has no media row\n---\n%s", m.infoView.GetContent())
+	}
+
+	// Not loaded yet → no count rather than a wrong one.
+	m2 := infoTestModel()
+	m2.infoMembersLoaded, m2.infoPinnedLoaded = true, true
+	m2.renderInfo()
+	if c := m2.infoView.GetContent(); !strings.Contains(c, "All media") || strings.Contains(c, "All media (") {
+		t.Errorf("unloaded media row should carry no count\n---\n%s", c)
+	}
+}
+
+// Activating the media row drills in; esc returns to the row it came from.
+func TestInfoMediaDrillDownAndBack(t *testing.T) {
+	m := mediaInfoModel()
+	mediaIdx := len(m.infoTargets) - 1
+	if m.infoTargets[mediaIdx].kind != infoTargetMedia {
+		t.Fatalf("last target = %+v, want the media row", m.infoTargets[mediaIdx])
+	}
+	m.infoIdx = mediaIdx
+
+	out, _ := m.activateInfoTarget()
+	m = out.(Model)
+	if m.infoMode != infoModeMedia {
+		t.Fatal("activating the media row should enter media mode")
+	}
+	content := m.infoView.GetContent()
+	for _, want := range []string{"Media (3)", "shot.png", "spec.pdf", "logo.gif", "alice", "2.0KB", "esc back"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("media view missing %q\n---\n%s", want, content)
+		}
+	}
+	if len(m.infoTargets) != 3 {
+		t.Fatalf("media targets = %d, want 3", len(m.infoTargets))
+	}
+	if m.infoTargets[0].kind != infoTargetMediaItem || m.infoTargets[0].mediaIdx != 0 {
+		t.Errorf("target[0] = %+v, want media item 0", m.infoTargets[0])
+	}
+	// Each row spans its name line and its meta line.
+	if m.infoTargets[0].endRow != m.infoTargets[0].startRow+1 {
+		t.Errorf("media row should span 2 lines, got %+v", m.infoTargets[0])
+	}
+	if m.infoPaneTitle(40) != "Media · #general" {
+		t.Errorf("pane title = %q", m.infoPaneTitle(40))
+	}
+
+	// Drive esc through handleKey, not handleInfoKey: a global esc handler runs
+	// ahead of the focus dispatch and used to close the panel outright from the
+	// media view, which calling handleInfoKey directly would never catch.
+	out, _ = m.handleKey(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	m = out.(Model)
+	if m.infoMode != infoModeMain {
+		t.Error("esc in media mode should return to the main view")
+	}
+	if !m.infoOpen {
+		t.Error("esc in media mode should not close the panel")
+	}
+	if m.infoIdx != mediaIdx {
+		t.Errorf("esc should restore the media row selection, got infoIdx %d want %d", m.infoIdx, mediaIdx)
+	}
+
+	// A second esc closes the panel, as it always did.
+	out, _ = m.handleKey(tea.KeyPressMsg(tea.Key{Code: tea.KeyEscape}))
+	if out.(Model).infoOpen {
+		t.Error("esc in the main view should close the panel")
+	}
+}
+
+// `s` saves only the selected file, not every file on its message.
+func TestInfoMediaDownloadSelected(t *testing.T) {
+	m := mediaInfoModel()
+	m.openInfoMedia()
+	m.infoIdx = 1 // spec.pdf
+
+	out, cmd := m.handleInfoKey(tea.KeyPressMsg(tea.Key{Code: 's'}))
+	m = out.(Model)
+	if cmd == nil {
+		t.Fatal("s on a media row should return a download Cmd")
+	}
+	if !strings.Contains(m.status, "spec.pdf") {
+		t.Errorf("status = %q, want it to name spec.pdf", m.status)
+	}
+}
+
+// `o` opens the selected file rather than raising the multi-openable picker.
+func TestInfoMediaOpenSelected(t *testing.T) {
+	m := mediaInfoModel()
+	m.openInfoMedia()
+	m.infoIdx = 0 // shot.png
+
+	out, cmd := m.handleInfoKey(tea.KeyPressMsg(tea.Key{Code: 'o'}))
+	m = out.(Model)
+	if cmd == nil {
+		t.Fatal("o on a media row should return an open Cmd")
+	}
+	if m.openPickerActive() {
+		t.Error("o on a single file should not raise the open picker")
+	}
+	if !strings.Contains(m.status, "shot.png") {
+		t.Errorf("status = %q, want it to name shot.png", m.status)
+	}
+}
+
+// space previews the selected image, and the gallery it opens spans every
+// previewable file in the channel — so ←/→ walk across messages.
+func TestInfoMediaPreviewGallerySpansChannel(t *testing.T) {
+	m := mediaInfoModel()
+	m.emojiImg = &emojiImages{mode: "on", probeDone: true, probeOK: true, profileKnown: true, truecolor: true}
+	m.openInfoMedia()
+	m.infoIdx = 2 // logo.gif — the second previewable file
+
+	out, _ := m.handleInfoKey(tea.KeyPressMsg(tea.Key{Code: ' ', Text: " "}))
+	m = out.(Model)
+	if !m.preview.active {
+		t.Fatal("space on an image row should open the preview")
+	}
+	// The PDF is skipped; the gif is the gallery's second entry.
+	if len(m.preview.items) != 2 {
+		t.Fatalf("gallery = %d items, want the 2 previewable ones", len(m.preview.items))
+	}
+	if m.preview.items[0].name != "shot.png" || m.preview.items[1].name != "logo.gif" {
+		t.Errorf("gallery = %+v", m.preview.items)
+	}
+	if m.preview.idx != 1 {
+		t.Errorf("preview idx = %d, want 1 (logo.gif)", m.preview.idx)
+	}
+}
+
+// space on a non-previewable row explains itself instead of opening a preview.
+func TestInfoMediaPreviewNonImage(t *testing.T) {
+	m := mediaInfoModel()
+	m.openInfoMedia()
+	m.infoIdx = 1 // spec.pdf
+
+	out, cmd := m.handleInfoKey(tea.KeyPressMsg(tea.Key{Code: ' ', Text: " "}))
+	m = out.(Model)
+	if m.preview.active || cmd != nil {
+		t.Error("space on a PDF should not open the preview")
+	}
+	if !strings.Contains(m.status, "no preview for") || !strings.Contains(m.status, "spec.pdf") {
+		t.Errorf("status = %q", m.status)
+	}
+}
+
+// In the main view, space must still page the viewport — the media keys are
+// scoped to a selected media row.
+func TestInfoMainSpaceStillScrolls(t *testing.T) {
+	m := mediaInfoModel()
+	m.infoView.SetHeight(3)
+	m.renderInfo()
+	before := m.infoView.YOffset()
+
+	out, _ := m.handleInfoKey(tea.KeyPressMsg(tea.Key{Code: ' ', Text: " "}))
+	m = out.(Model)
+	if m.preview.active {
+		t.Fatal("space in the main info view should not open a preview")
+	}
+	if m.infoView.YOffset() == before {
+		t.Errorf("space in the main info view should scroll, offset stayed %d", before)
+	}
+}
+
+// TestMediaIcon: MIME wins, but the server leaves mime_type empty on plenty of
+// real uploads (videos, archives), so the extension has to carry those.
+func TestMediaIcon(t *testing.T) {
+	cases := []struct {
+		name, mime, ext, want string
+	}{
+		{"a.png", "image/png", "png", "🖼"},
+		{"a.jpg", "image/jpeg; charset=binary", "jpg", "🖼"},
+		{"a.pdf", "application/pdf", "pdf", "📄"},
+		{"a.txt", "text/plain", "txt", "📄"},
+		{"a.zip", "application/zip", "zip", "📦"},
+		{"a.mp3", "audio/mpeg", "mp3", "🎵"},
+		// Empty mime_type — the shape 3.7% of the real cache has.
+		{"clip.mov", "", "mov", "🎬"},
+		{"clip.mp4", "", "mp4", "🎬"},
+		{"data.csv", "", "csv", "📄"},
+		{"bundle.zip", "", "zip", "📦"},
+		{"song.flac", "", "flac", "🎵"},
+		// No mime and no extension field: fall back to the filename.
+		{"clip.mkv", "", "", "🎬"},
+		{"mystery", "", "", "📎"},
+		{"thing.bin", "application/octet-stream", "bin", "📎"},
+	}
+	for _, tc := range cases {
+		f := &model.FileInfo{Name: tc.name, MimeType: tc.mime, Extension: tc.ext}
+		if got := mediaIcon(f); got != tc.want {
+			t.Errorf("mediaIcon(%q, mime=%q, ext=%q) = %q, want %q", tc.name, tc.mime, tc.ext, got, tc.want)
+		}
+	}
+}
+
+// With nothing selected, the hint names what this view actually holds.
+func TestInfoMediaNoSelectionHint(t *testing.T) {
+	m := mediaInfoModel()
+	m.openInfoMedia() // enters media mode with infoIdx == -1
+	out, cmd := m.activateInfoTarget()
+	m = out.(Model)
+	if cmd != nil {
+		t.Error("activating nothing should not return a Cmd")
+	}
+	if m.status != "nothing selected — ↑/↓ to pick an attachment" {
+		t.Errorf("media hint = %q", m.status)
+	}
+
+	m2 := mediaInfoModel()
+	m2.infoIdx = -1
+	out2, _ := m2.activateInfoTarget()
+	if got := out2.(Model).status; got != "nothing selected — ↑/↓ to pick a link or pinned message" {
+		t.Errorf("main hint = %q", got)
 	}
 }

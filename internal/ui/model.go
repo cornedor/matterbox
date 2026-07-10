@@ -547,6 +547,17 @@ type Model struct {
 	infoScrollFree    bool
 	infoFreeOffset    int
 
+	// infoMode selects which content the panel's viewport shows: the channel
+	// facts, or the "All media" drill-down listing every cached attachment.
+	// infoMainIdx parks the main view's selection while media is showing, so
+	// esc lands back on the row the user left from.
+	infoMode           infoMode
+	infoMainIdx        int
+	infoMedia          []*model.FileInfo
+	infoMediaLoaded    bool
+	infoMediaTruncated bool
+	infoMediaErr       error
+
 	// editingPostID is non-empty while the user is editing an existing
 	// post: the textarea is preloaded with that post's message and Send
 	// patches it on the server instead of creating a new post. Cleared

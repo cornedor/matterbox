@@ -764,6 +764,20 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.renderInfo()
 		return m, nil
 
+	case infoMediaLoadedMsg:
+		if !m.infoOpen || msg.channelID != m.infoChannelID {
+			return m, nil // stale (closed or switched)
+		}
+		m.infoMediaLoaded = true
+		m.infoMediaErr = msg.err
+		m.infoMedia = msg.files
+		m.infoMediaTruncated = msg.truncated
+		for id, name := range msg.users {
+			m.userNames[id] = name
+		}
+		m.renderInfo()
+		return m, nil
+
 	case jiraLoadedMsg:
 		return m.handleJiraLoaded(msg)
 
@@ -1959,6 +1973,12 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.infoOpen {
+			// Inside the media listing, esc backs out one level rather than
+			// closing the panel outright.
+			if m.infoMode == infoModeMedia {
+				m.closeInfoMedia()
+				return m, nil
+			}
 			m.closeInfo()
 			return m, nil
 		}

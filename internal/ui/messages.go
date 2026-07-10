@@ -131,6 +131,18 @@ type infoPinnedLoadedMsg struct {
 	err       error
 }
 
+// infoMediaLoadedMsg carries the channel-info panel's attachment listing, read
+// from the local cache rather than the server (Mattermost has no channel-files
+// endpoint). truncated reports that the scan hit its post limit, so the panel
+// can say so instead of implying the list is complete.
+type infoMediaLoadedMsg struct {
+	channelID string
+	files     []*model.FileInfo
+	users     map[string]string
+	truncated bool
+	err       error
+}
+
 type fileInfosLoadedMsg struct {
 	postID string
 	infos  []*model.FileInfo

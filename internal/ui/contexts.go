@@ -302,6 +302,17 @@ var keyContexts = []keyContext{
 		// channel-info key toggles it shut, ↑/↓ move between focusable targets
 		// (links + pinned messages), ↵/o activate the selected one; esc
 		// (hardwired) also closes. Anything else scrolls the viewport.
+		name:     "focus:info-media",
+		active:   func(m *Model) bool { return m.focus == focusInfo && m.infoMode == infoModeMedia },
+		terminal: true,
+		claims: func(m *Model) []key.Binding {
+			return []key.Binding{
+				m.keys.Up, m.keys.Down, m.keys.ChannelInfo, m.keys.OpenAttach, m.keys.OpenChannel,
+				m.keys.Preview, m.keys.Download,
+			}
+		},
+	},
+	{
 		name:     "focus:info",
 		active:   func(m *Model) bool { return m.focus == focusInfo },
 		terminal: true,

@@ -99,7 +99,7 @@ func TestInfoAddMemberRow(t *testing.T) {
 	for _, tgt := range m.infoTargets {
 		kinds = append(kinds, tgt.kind)
 	}
-	want := []infoTargetKind{infoTargetLink, infoTargetMember, infoTargetAddMember, infoTargetPin}
+	want := []infoTargetKind{infoTargetLink, infoTargetMember, infoTargetAddMember, infoTargetPin, infoTargetMedia}
 	if len(kinds) != len(want) {
 		t.Fatalf("target kinds = %v, want %v", kinds, want)
 	}

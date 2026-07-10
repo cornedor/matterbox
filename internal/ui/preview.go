@@ -194,14 +194,29 @@ func (m Model) openImagePreview(p *model.Post) (tea.Model, tea.Cmd) {
 		m.status = "no image to preview on this message"
 		return m, nil
 	}
+	return m.openPreviewItems(items, 0)
+}
+
+// openPreviewItems raises the preview modal on items[start], with ←/→ cycling
+// the rest. Callers own the gallery: a post's own images (openImagePreview) or
+// every previewable file in the channel (the info panel's media view). start is
+// clamped, so a caller that lost track of its index still opens something.
+func (m Model) openPreviewItems(items []previewItem, start int) (tea.Model, tea.Cmd) {
+	if len(items) == 0 {
+		m.status = "no image to preview"
+		return m, nil
+	}
+	if start < 0 || start >= len(items) {
+		start = 0
+	}
 	if m.emojiImg == nil || !m.emojiImg.active() {
 		m.status = "image preview unavailable: " + m.emojiImg.statusReason() + " — press o to open"
 		return m, nil
 	}
 	id := m.emojiImg.allocID()
-	m.preview = previewState{active: true, items: items, idx: 0, loading: true, id: id}
+	m.preview = previewState{active: true, items: items, idx: start, loading: true, id: id}
 	m.previewGen++
-	return m, m.loadPreviewImage(m.previewGen, id, items[0])
+	return m, m.loadPreviewImage(m.previewGen, id, items[start])
 }
 
 // loadPreviewImage fetches (reusing the on-disk cache), decodes, sizes, and

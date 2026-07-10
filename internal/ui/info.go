@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"fmt"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,9 +27,20 @@ import (
 // cache when it's outside the loaded range). Links are also clickable with the
 // mouse, exactly like the messages/thread/reference panes.
 
+// infoMode selects the panel's content. The media view is a drill-down inside
+// the same viewport, not a second pane: it reuses the whole target machinery
+// below, so selection, scrolling, hover and click resolution work unchanged.
+type infoMode int
+
+const (
+	infoModeMain infoMode = iota
+	infoModeMedia
+)
+
 // infoTargetKind distinguishes the activatable things in the panel: a link
 // (open it), a pinned message (jump the main pane to it), a member (open a DM
-// with them), and the row that adds members to the channel.
+// with them), the row that adds members to the channel, the row that opens the
+// media listing, and one attachment within that listing.
 type infoTargetKind int
 
 const (
@@ -35,17 +48,21 @@ const (
 	infoTargetPin
 	infoTargetMember
 	infoTargetAddMember
+	infoTargetMedia
+	infoTargetMediaItem
 )
 
 // infoTarget is one focusable item in the panel. Only the field for its kind is
 // set. startRow/endRow are the inclusive logical-line range it occupies in the
-// rendered content (endRow == startRow for everything but a pinned message),
-// used to scroll the selection into view and to resolve a mouse click.
+// rendered content (endRow == startRow for everything but a pinned message and
+// a media item), used to scroll the selection into view and to resolve a mouse
+// click.
 type infoTarget struct {
 	kind     infoTargetKind
 	url      string // infoTargetLink: the link target
 	postID   string // infoTargetPin: the pinned post id
 	userID   string // infoTargetMember: the member's user id
+	mediaIdx int    // infoTargetMediaItem: index into m.infoMedia
 	startRow int
 	endRow   int
 }
@@ -99,12 +116,18 @@ func (m Model) openChannelInfo() (tea.Model, tea.Cmd) {
 	}
 	m.infoOpen = true
 	m.infoChannelID = c.Id
+	m.infoMode = infoModeMain
+	m.infoMainIdx = -1
 	m.infoMembers = nil
 	m.infoMembersLoaded = false
 	m.infoMembersErr = nil
 	m.infoPinned = nil
 	m.infoPinnedLoaded = false
 	m.infoPinnedErr = nil
+	m.infoMedia = nil
+	m.infoMediaLoaded = false
+	m.infoMediaTruncated = false
+	m.infoMediaErr = nil
 	m.infoTargets = nil
 	m.infoIdx = -1
 	m.infoHoverIdx = -1
@@ -116,7 +139,7 @@ func (m Model) openChannelInfo() (tea.Model, tea.Cmd) {
 	m.resizeMessagesViewport()
 	m.renderMessages()
 	m.renderInfo()
-	return m, tea.Batch(threadCmd, m.fetchInfoMembers(c.Id), m.fetchInfoPinned(c.Id))
+	return m, tea.Batch(threadCmd, m.fetchInfoMembers(c.Id), m.fetchInfoPinned(c.Id), m.fetchInfoMedia(c.Id))
 }
 
 // closeInfo tears the panel down and returns focus to the messages pane.
@@ -126,8 +149,10 @@ func (m *Model) closeInfo() {
 	}
 	m.infoOpen = false
 	m.infoChannelID = ""
+	m.infoMode = infoModeMain
 	m.infoMembers = nil
 	m.infoPinned = nil
+	m.infoMedia = nil
 	m.infoTargets = nil
 	m.infoIdx = -1
 	m.infoHoverIdx = -1
@@ -137,6 +162,87 @@ func (m *Model) closeInfo() {
 	}
 	m.resizeMessagesViewport()
 	m.renderMessages()
+}
+
+// openInfoMedia drills the panel into the media listing, parking the main
+// view's selection so esc can restore it.
+func (m *Model) openInfoMedia() {
+	m.infoMainIdx = m.infoIdx
+	m.infoMode = infoModeMedia
+	m.infoIdx = -1
+	m.infoHoverIdx = -1
+	m.infoScrollFree = false
+	m.infoView.GotoTop()
+	if m.infoMediaErr != nil {
+		m.status = "media: " + m.infoMediaErr.Error()
+	} else {
+		m.status = "media · ↑/↓ select · space preview · o open · s save · esc back"
+	}
+	m.renderInfo()
+}
+
+// closeInfoMedia returns from the media listing to the channel facts, landing
+// the cursor back on the row the drill-down was entered from.
+func (m *Model) closeInfoMedia() {
+	m.infoMode = infoModeMain
+	m.infoIdx = m.infoMainIdx
+	m.infoHoverIdx = -1
+	m.infoScrollFree = false
+	m.status = "channel info · ↑/↓ select · ↵ open/jump/DM · esc closes"
+	m.renderInfo()
+}
+
+// infoMediaLimit caps how many of a channel's posts ChannelFiles scans. A post
+// can carry several attachments, so the listing can be longer than this; what
+// it bounds is the newest-first walk, keeping the query in the low milliseconds
+// even on a channel with tens of thousands of posts.
+const infoMediaLimit = 500
+
+// fetchInfoMedia loads the channel's cached attachments for the panel. The
+// local store is the only source — Mattermost exposes no channel-files endpoint
+// — so this is a disk read, not a request, and works offline.
+func (m Model) fetchInfoMedia(channelID string) tea.Cmd {
+	// Snapshot the name cache on the UI goroutine; the closure runs on a Bubble
+	// Tea worker and must not read m.userNames while Update writes it. Same
+	// reasoning as fetchInfoPinned.
+	st, client, ctx, known := m.store, m.client, m.ctx, snapshotNames(m.userNames)
+	return func() tea.Msg {
+		if st == nil {
+			return infoMediaLoadedMsg{channelID: channelID}
+		}
+		files, err := st.ChannelFiles(channelID, infoMediaLimit)
+		if err != nil {
+			return infoMediaLoadedMsg{channelID: channelID, err: err}
+		}
+		// Resolve uploaders the name cache can't already name. Distinct posts
+		// dedupe to a handful of ids, so this is one request at most.
+		posts := map[string]struct{}{}
+		need := map[string]struct{}{}
+		for _, f := range files {
+			posts[f.PostId] = struct{}{}
+			if _, have := known[f.CreatorId]; !have && f.CreatorId != "" {
+				need[f.CreatorId] = struct{}{}
+			}
+		}
+		users := map[string]string{}
+		if len(need) > 0 {
+			ids := make([]string, 0, len(need))
+			for id := range need {
+				ids = append(ids, id)
+			}
+			if us, err := client.UsersByIDs(ctx, ids); err == nil {
+				for _, u := range us {
+					users[u.Id] = u.Username
+				}
+			}
+		}
+		return infoMediaLoadedMsg{
+			channelID: channelID,
+			files:     files,
+			users:     users,
+			truncated: len(posts) >= infoMediaLimit,
+		}
+	}
 }
 
 // fetchInfoMembers loads the channel's member profiles for the panel. A failure
@@ -201,9 +307,10 @@ func orderedPinned(pl *model.PostList) []*model.Post {
 	return posts
 }
 
-// renderInfo rebuilds the panel viewport from the open channel's metadata,
-// recording the focusable targets (purpose/header links + pinned messages) and
-// keeping the selected one in view.
+// renderInfo rebuilds the panel viewport for the current mode, then applies the
+// decoration both modes share: the selection bar, the pointer hover, and the
+// scroll-into-view geometry. Those work off the target list alone, so a new
+// content mode only has to produce (lines, targets).
 func (m *Model) renderInfo() {
 	if !m.infoOpen {
 		return
@@ -218,6 +325,22 @@ func (m *Model) renderInfo() {
 		return
 	}
 
+	var lines []string
+	var targets []infoTarget
+	if m.infoMode == infoModeMedia {
+		lines, targets = m.infoMediaContent()
+	} else {
+		lines, targets = m.infoMainContent(c, width)
+	}
+
+	m.clampInfoIdx(len(targets))
+
+	m.decorateInfo(lines, targets, width)
+}
+
+// infoMainContent builds the panel's default view: purpose, header, members,
+// pinned messages, the media drill-down row, and the channel facts.
+func (m *Model) infoMainContent(c *model.Channel, width int) ([]string, []infoTarget) {
 	self := ""
 	if m.me != nil {
 		self = m.me.Username
@@ -296,6 +419,15 @@ func (m *Model) renderInfo() {
 		}
 	}
 
+	// The media drill-down. Its own section heading would cost two lines to say
+	// what the row already says, so it stands alone.
+	if len(lines) > 0 {
+		lines = append(lines, "")
+	}
+	mediaStart := len(lines)
+	lines = append(lines, "  "+infoActionStyle.Render("📎 "+infoCountLabel("All media", len(m.infoMedia), m.infoMediaLoaded)+" ›"))
+	targets = append(targets, infoTarget{kind: infoTargetMedia, startRow: mediaStart, endRow: mediaStart})
+
 	// Channel facts.
 	section("Channel")
 	muted := "no"
@@ -306,16 +438,56 @@ func (m *Model) renderInfo() {
 	lines = append(lines, infoMetaLine("Muted", muted))
 	lines = append(lines, infoMetaLine("ID", c.Id))
 
-	m.clampInfoIdx(len(targets))
+	return lines, targets
+}
 
+// infoMediaContent builds the media drill-down: every attachment cached for the
+// channel, newest first, as a two-line row (name, then uploader · time · size).
+// Width isn't needed — rows are plain text the viewport wraps.
+func (m *Model) infoMediaContent() ([]string, []infoTarget) {
+	var lines []string
+	var targets []infoTarget
+
+	lines = append(lines, infoLabelStyle.Render(infoCountLabel("Media", len(m.infoMedia), m.infoMediaLoaded)))
+	switch {
+	case m.infoMediaErr != nil:
+		lines = append(lines, "  "+infoErrStyle.Render(m.infoMediaErr.Error()))
+	case !m.infoMediaLoaded:
+		lines = append(lines, "  "+infoDimStyle.Render("loading…"))
+	case len(m.infoMedia) == 0:
+		lines = append(lines, "  "+infoDimStyle.Render("none"))
+	default:
+		for i, f := range m.infoMedia {
+			start := len(lines)
+			lines = append(lines, "  "+mediaIcon(f)+" "+normalizeFilename(f.Name))
+			meta := m.fileAuthorName(f) + " · " + formatPostTime(f.CreateAt) + " · " + humanSize(f.Size)
+			lines = append(lines, "     "+infoDimStyle.Render(meta))
+			targets = append(targets, infoTarget{kind: infoTargetMediaItem, mediaIdx: i, postID: f.PostId, startRow: start, endRow: len(lines) - 1})
+		}
+		if m.infoMediaTruncated {
+			lines = append(lines, "")
+			lines = append(lines, "  "+infoDimStyle.Render(fmt.Sprintf("newest %d messages only", infoMediaLimit)))
+		}
+	}
+	lines = append(lines, "")
+	lines = append(lines, "  "+infoDimStyle.Render("esc back"))
+	return lines, targets
+}
+
+// decorateInfo applies what both content modes share: the pointer-hover
+// background, the selection bar, the selected-link highlight, and the
+// scroll-into-view geometry. lines is mutated in place.
+func (m *Model) decorateInfo(lines []string, targets []infoTarget, width int) {
 	selIdx := -1
 	if m.focus == focusInfo && m.infoIdx >= 0 && m.infoIdx < len(targets) {
 		selIdx = m.infoIdx
 	}
-	// Hover highlight on the member / add-members row under the pointer, unless
-	// it's the row already carrying the selection bar.
+	// Hover highlight on the actionable row under the pointer, unless it's the
+	// row already carrying the selection bar. A pinned message is excluded: it
+	// spans a rendered markdown body that already carries its own styling.
 	if m.infoHoverIdx >= 0 && m.infoHoverIdx < len(targets) && m.infoHoverIdx != selIdx {
-		if t := targets[m.infoHoverIdx]; t.kind == infoTargetMember || t.kind == infoTargetAddMember {
+		switch t := targets[m.infoHoverIdx]; t.kind {
+		case infoTargetMember, infoTargetAddMember, infoTargetMedia, infoTargetMediaItem:
 			for r := t.startRow; r <= t.endRow && r < len(lines); r++ {
 				lines[r] = infoHoverRowStyle.Render(lines[r])
 			}
@@ -513,12 +685,89 @@ func (m *Model) moveInfoTarget(delta int) {
 	m.renderInfo()
 }
 
-// activateInfoTarget acts on the selected item: open a link, or jump the main
-// pane to a pinned message.
+// mediaIcon picks a glyph for an attachment, preferring its MIME type and
+// falling back to the file extension. The fallback isn't belt-and-braces: the
+// server leaves mime_type empty for a fair slice of uploads (videos and
+// archives especially), which would otherwise all read as a plain paperclip.
+func mediaIcon(f *model.FileInfo) string {
+	mime, _, _ := strings.Cut(f.MimeType, ";")
+	kind, sub, _ := strings.Cut(strings.TrimSpace(mime), "/")
+	switch kind {
+	case "image":
+		return "🖼"
+	case "video":
+		return "🎬"
+	case "audio":
+		return "🎵"
+	case "text":
+		return "📄"
+	}
+	switch sub {
+	case "pdf":
+		return "📄"
+	case "zip", "gzip", "x-tar", "x-7z-compressed", "vnd.rar":
+		return "📦"
+	}
+	return iconForExt(f)
+}
+
+// iconForExt is mediaIcon's fallback: the extension the server recorded, or the
+// one on the filename when even that is missing.
+func iconForExt(f *model.FileInfo) string {
+	ext := strings.ToLower(strings.TrimPrefix(f.Extension, "."))
+	if ext == "" {
+		_, ext, _ = strings.Cut(strings.ToLower(filepath.Ext(f.Name)), ".")
+	}
+	switch ext {
+	case "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "tiff", "heic", "heif", "avif":
+		return "🖼"
+	case "mp4", "mov", "mkv", "webm", "avi", "m4v", "wmv", "flv", "mpg", "mpeg":
+		return "🎬"
+	case "mp3", "wav", "ogg", "oga", "m4a", "flac", "aac", "opus":
+		return "🎵"
+	case "pdf", "txt", "md", "csv", "tsv", "log", "json", "yaml", "yml", "xml", "html",
+		"patch", "diff", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods":
+		return "📄"
+	case "zip", "tar", "gz", "tgz", "bz2", "7z", "rar", "xz", "zst":
+		return "📦"
+	}
+	return "📎"
+}
+
+// fileAuthorName names an attachment's uploader, mirroring postAuthorName's
+// fallback to a truncated id when the name cache can't resolve them.
+func (m *Model) fileAuthorName(f *model.FileInfo) string {
+	name := m.userNames[f.CreatorId]
+	if name == "" {
+		name = f.CreatorId
+		if len(name) > 8 {
+			name = name[:8]
+		}
+	}
+	return name
+}
+
+// infoSelectedFile returns the attachment the media view's cursor is on, or nil
+// when the selection isn't a media row.
+func (m *Model) infoSelectedFile() *model.FileInfo {
+	t := m.infoCurrentTarget()
+	if t == nil || t.kind != infoTargetMediaItem || t.mediaIdx >= len(m.infoMedia) {
+		return nil
+	}
+	return m.infoMedia[t.mediaIdx]
+}
+
+// activateInfoTarget acts on the selected item: open a link or an attachment,
+// jump the main pane to a pinned message, DM a member, or drill into the media
+// listing.
 func (m Model) activateInfoTarget() (tea.Model, tea.Cmd) {
 	t := m.infoCurrentTarget()
 	if t == nil {
-		m.status = "nothing selected — ↑/↓ to pick a link or pinned message"
+		if m.infoMode == infoModeMedia {
+			m.status = "nothing selected — ↑/↓ to pick an attachment"
+		} else {
+			m.status = "nothing selected — ↑/↓ to pick a link or pinned message"
+		}
 		return m, nil
 	}
 	switch t.kind {
@@ -530,8 +779,57 @@ func (m Model) activateInfoTarget() (tea.Model, tea.Cmd) {
 		return m.openDMWithMember(t.userID)
 	case infoTargetAddMember:
 		return m.openAddMembersPrompt()
+	case infoTargetMedia:
+		m.openInfoMedia()
+		return m, nil
+	case infoTargetMediaItem:
+		f := m.infoSelectedFile()
+		if f == nil {
+			return m, nil
+		}
+		m.status = "opening " + normalizeFilename(f.Name) + "…"
+		return m, m.openTarget(openable{name: f.Name, file: f})
 	}
 	return m, nil
+}
+
+// downloadInfoMedia saves just the selected attachment, unlike `s` on a message
+// (downloadFromPost), which saves every file that message carries.
+func (m Model) downloadInfoMedia() (tea.Model, tea.Cmd) {
+	f := m.infoSelectedFile()
+	if f == nil {
+		m.status = "no attachment selected"
+		return m, nil
+	}
+	m.status = "downloading " + normalizeFilename(f.Name) + "…"
+	return m, m.downloadFiles([]*model.FileInfo{f})
+}
+
+// previewInfoMedia opens the image preview on the selected attachment, with the
+// whole listing as the gallery — so ←/→ walk every previewable file in the
+// channel, not just the ones sharing a message.
+func (m Model) previewInfoMedia() (tea.Model, tea.Cmd) {
+	f := m.infoSelectedFile()
+	if f == nil {
+		m.status = "no attachment selected"
+		return m, nil
+	}
+	if !previewableMIME(f.MimeType) {
+		m.status = "no preview for " + normalizeFilename(f.Name) + " — press o to open"
+		return m, nil
+	}
+	var items []previewItem
+	start := 0
+	for _, cand := range m.infoMedia {
+		if !previewableMIME(cand.MimeType) {
+			continue
+		}
+		if cand.Id == f.Id {
+			start = len(items)
+		}
+		items = append(items, previewItem{file: cand, name: cand.Name})
+	}
+	return m.openPreviewItems(items, start)
 }
 
 // jumpToInfoPin closes the panel and jumps the main pane to the pinned post.
@@ -620,9 +918,9 @@ func (m *Model) hitInfoContent(x, y int) hit {
 	return hit{zone: hitInfo, line: line, col: col}
 }
 
-// infoHoverAt resolves the pointer to the member / add-members row under it in
-// the panel, or -1 over anything else (links carry their own OSC 8 hover via
-// hoverLinkAt).
+// infoHoverAt resolves the pointer to the actionable row under it in the panel,
+// or -1 over anything else (links carry their own OSC 8 hover via hoverLinkAt).
+// The set of hoverable kinds matches decorateInfo's.
 func (m *Model) infoHoverAt(x, y int) int {
 	if !m.infoOpen {
 		return -1
@@ -632,7 +930,9 @@ func (m *Model) infoHoverAt(x, y int) int {
 		return -1
 	}
 	for i, t := range m.infoTargets {
-		if t.kind != infoTargetMember && t.kind != infoTargetAddMember {
+		switch t.kind {
+		case infoTargetMember, infoTargetAddMember, infoTargetMedia, infoTargetMediaItem:
+		default:
 			continue
 		}
 		if h.line >= t.startRow && h.line <= t.endRow {
@@ -677,14 +977,21 @@ func (m Model) clickInfoTarget(line int) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleInfoKey owns every keystroke while the panel has focus: esc / the
-// channel-info key close it, ↑/↓ move between focusable targets, ↵/o activate
-// the selected one, and anything else scrolls the viewport.
+// handleInfoKey owns every keystroke while the panel has focus: esc backs out
+// of the media drill-down (or closes the panel), the channel-info key closes it
+// outright, ↑/↓ move between focusable targets, ↵/o activate the selected one,
+// and — on a media row — space previews and s saves it. Anything else scrolls
+// the viewport, which is why the media keys only fire on a media row: space
+// still has to page the panel in the main view.
 func (m Model) handleInfoKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
 	case "esc":
+		if m.infoMode == infoModeMedia {
+			m.closeInfoMedia()
+			return m, nil
+		}
 		m.closeInfo()
 		return m, nil
 	}
@@ -701,6 +1008,14 @@ func (m Model) handleInfoKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if len(m.infoTargets) > 0 {
 			m.moveInfoTarget(-1)
 			return m, nil
+		}
+	case key.Matches(msg, m.keys.Preview):
+		if m.infoSelectedFile() != nil {
+			return m.previewInfoMedia()
+		}
+	case key.Matches(msg, m.keys.Download):
+		if m.infoSelectedFile() != nil {
+			return m.downloadInfoMedia()
 		}
 	case key.Matches(msg, m.keys.OpenAttach), key.Matches(msg, m.keys.OpenChannel):
 		return m.activateInfoTarget()
@@ -743,9 +1058,13 @@ func (m *Model) renderInfoPane(height, width int) string {
 
 // infoPaneTitle is the pane heading: the channel's label, truncated to width.
 func (m *Model) infoPaneTitle(width int) string {
-	title := "Info"
+	head := "Info"
+	if m.infoMode == infoModeMedia {
+		head = "Media"
+	}
+	title := head
 	if c := m.findChannel(m.infoChannelID); c != nil {
-		title = "Info · " + m.channelLabel(c)
+		title = head + " · " + m.channelLabel(c)
 	}
 	if width > 2 {
 		title = truncate(title, width-2)
