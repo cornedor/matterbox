@@ -36,6 +36,7 @@ const (
 	hitInfo
 	hitSQL
 	hitComposer
+	hitJumpBottom
 )
 
 // hit is the result of hitTest. idx's meaning depends on zone: a tab index
@@ -57,9 +58,11 @@ type tabZone struct {
 }
 
 // hoverState is the clickable element the pointer is currently over, painted
-// with a hover style. zone is hitNone over nothing clickable. Only hitTab and
-// hitChannel are tracked — the cheap navigational targets — so per-motion
-// hover never drags the message-pane render onto the hot path.
+// with a hover style. zone is hitNone over nothing clickable. Only hitTab,
+// hitChannel and hitJumpBottom are tracked — targets whose hover test is a
+// rectangle compare — so per-motion hover never drags the message-pane render
+// onto the hot path. (The pill does live in the memoized upper box, but its
+// state is in that box's fingerprint, so only crossing its edge re-renders.)
 type hoverState struct {
 	zone hitZone
 	idx  int
@@ -198,6 +201,8 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case hitComposer:
 		return m.clickComposer(h.line, h.col, count, shift)
+	case hitJumpBottom:
+		return m.clickJumpBottom()
 	case hitFeed:
 		return m.clickFeedEntry(h.idx)
 	case hitSearch:
@@ -354,7 +359,11 @@ func (m Model) handleMouseMotion(msg tea.MouseMotionMsg) (tea.Model, tea.Cmd) {
 		return m.dragTextSel(msg.X, msg.Y)
 	}
 	next := m.hoverAt(msg.X, msg.Y)
-	hl := m.hoverLinkAt(msg.X, msg.Y)
+	// The pill hides the cells it covers, so a link under it must not light up.
+	var hl hoverLink
+	if next.zone != hitJumpBottom {
+		hl = m.hoverLinkAt(msg.X, msg.Y)
+	}
 	ih := m.infoHoverAt(msg.X, msg.Y)
 	if m.hover == next && m.hoverLink == hl && m.infoHoverIdx == ih {
 		return m, nil
@@ -369,9 +378,10 @@ func (m Model) handleMouseMotion(msg tea.MouseMotionMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// hoverAt resolves the pointer to a hoverable element — only team tabs and
-// channel rows are tracked, so it skips the message/thread content-coordinate
-// work hitTest does for clicks, keeping the per-motion hover path cheap.
+// hoverAt resolves the pointer to a hoverable element — only team tabs, channel
+// rows and the jump-to-bottom pill are tracked, so it skips the message/thread
+// content-coordinate work hitTest does for clicks, keeping the per-motion hover
+// path cheap.
 func (m *Model) hoverAt(x, y int) hoverState {
 	if y < tabsHeight {
 		if m.vcache != nil {
@@ -387,6 +397,11 @@ func (m *Model) hoverAt(x, y int) hoverState {
 		if h := m.hitChannel(y); h.zone == hitChannel {
 			return hoverState{zone: hitChannel, idx: h.idx}
 		}
+	}
+	// The zone is disarmed on any tab that doesn't draw the pill, so this needs
+	// no tab guard of its own.
+	if m.vcache != nil && m.vcache.jumpZone.contains(x, y) {
+		return hoverState{zone: hitJumpBottom}
 	}
 	return hoverState{}
 }
@@ -657,6 +672,11 @@ func (m *Model) hitTest(x, y int) hit {
 	if m.inComposer(x, y) {
 		vrow, vcol := m.composerCell(x, y)
 		return hit{zone: hitComposer, line: vrow, col: vcol}
+	}
+	// The jump-to-bottom pill is painted over the transcript's last row, so it
+	// wins over the message underneath it.
+	if m.vcache != nil && m.vcache.jumpZone.contains(x, y) {
+		return hit{zone: hitJumpBottom}
 	}
 	if x < channelsWidth {
 		return m.hitChannel(y)

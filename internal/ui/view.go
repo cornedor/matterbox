@@ -1348,8 +1348,11 @@ func (m *Model) renderViewContent() string {
 	// Record the body height for the mouse layer: composerGeom anchors the
 	// compose box from the bottom of the body and must do so without re-rendering
 	// the footer (the hover path is alloc-free). Persists via the vcache pointer.
+	// The jump-to-bottom target is disarmed here and re-armed by renderMessagesPane,
+	// which the Search / Feed / SQL tabs below never reach.
 	if m.vcache != nil {
 		m.vcache.bodyH = bodyH
+		m.vcache.jumpZone = jumpZone{}
 	}
 
 	var body string
@@ -1663,6 +1666,10 @@ func (m *Model) renderMessagesPane(height, width int) string {
 		titleRendered = titleStyle.Render(title)
 	}
 
+	// Whether the transcript is parked above its newest content, measured before
+	// a popup shrinks the viewport below (see msgsScrolledUp).
+	scrolledUp := m.msgsScrolledUp()
+
 	// Shrink the messages viewport (on this local copy of m) to make
 	// room for the @-mention / :emoji popup when it's open. The mutation
 	// is scoped to this render call — no side effect on the real model.
@@ -1723,10 +1730,20 @@ func (m *Model) renderMessagesPane(height, width int) string {
 	upperRows := 1 + m.msgsView.Height()
 	lowerH := innerH - upperRows
 
+	// The jump-to-bottom pill rides the viewport's last row, which is only a row
+	// the user can see (and click) when the pane splits — the degenerate branch
+	// below lets the box clip the viewport instead. Its screen rect is recorded
+	// here rather than inside renderMsgsUpper, whose body a cache hit skips.
+	var pill jumpPill
+	if lowerH >= 1 {
+		pill = m.jumpPillFor(scrolledUp)
+	}
+	m.armJumpZone(pill)
+
 	var upper string
 	var lowerParts []string
 	if lowerH >= 1 {
-		upper = m.renderMsgsUpper(width, upperRows, titleLine, borderColor, highlighted)
+		upper = m.renderMsgsUpper(width, upperRows, titleLine, borderColor, highlighted, pill)
 	} else {
 		// Degenerate (very short terminal): no room to split. Fold the title and
 		// viewport into the single lower box — byte-identical to the pre-split,
@@ -1777,7 +1794,7 @@ func (m *Model) renderMessagesPane(height, width int) string {
 // equal key means byte-identical output and the re-style is skipped. Falls back
 // to an uncached render when there's no viewCache (tests build Models without
 // one); the output is identical either way.
-func (m *Model) renderMsgsUpper(width, upperRows int, titleLine string, borderColor color.Color, highlighted bool) string {
+func (m *Model) renderMsgsUpper(width, upperRows int, titleLine string, borderColor color.Color, highlighted bool, pill jumpPill) string {
 	var c *scrollbackCache
 	var fp string
 	if m.vcache != nil {
@@ -1785,10 +1802,11 @@ func (m *Model) renderMsgsUpper(width, upperRows int, titleLine string, borderCo
 		// Fingerprint inputs: width + upperRows fix the box geometry; the viewport
 		// width, YOffset and content version fix its rendered rows; focus +
 		// highlighted fix the border colour (and guard the focus-dependent
-		// selection bar baked into the content); titleLine is included verbatim
-		// (channel name, presence dot, custom status). Equal key ⇒ identical bytes.
+		// selection bar baked into the content); the pill's state fixes the
+		// overlay on the last row; titleLine is included verbatim (channel name,
+		// presence dot, custom status). Equal key ⇒ identical bytes.
 		var b strings.Builder
-		b.Grow(64 + len(titleLine))
+		b.Grow(64 + len(titleLine) + len(pill.text))
 		b.WriteString(strconv.Itoa(width))
 		b.WriteByte('|')
 		b.WriteString(strconv.Itoa(upperRows))
@@ -1805,6 +1823,20 @@ func (m *Model) renderMsgsUpper(width, upperRows int, titleLine string, borderCo
 			b.WriteByte('0')
 		}
 		b.WriteString(strconv.Itoa(int(m.focus)))
+		b.WriteByte('|')
+		if pill.active {
+			b.WriteByte('1')
+		} else {
+			b.WriteByte('0')
+		}
+		if pill.hovered {
+			b.WriteByte('1')
+		} else {
+			b.WriteByte('0')
+		}
+		b.WriteString(strconv.Itoa(pill.col0))
+		b.WriteByte('\x1f')
+		b.WriteString(pill.text)
 		b.WriteByte('\x1f')
 		b.WriteString(titleLine)
 		fp = b.String()
@@ -1813,7 +1845,7 @@ func (m *Model) renderMsgsUpper(width, upperRows int, titleLine string, borderCo
 		}
 	}
 
-	content := lipgloss.JoinVertical(lipgloss.Left, titleLine, m.msgsView.View())
+	content := lipgloss.JoinVertical(lipgloss.Left, titleLine, overlayJumpPill(m.msgsView.View(), pill))
 	s := lipgloss.NewStyle().Border(border).UnsetBorderTop().UnsetBorderRight().UnsetBorderBottom().
 		Width(width - 1).Height(upperRows).BorderForeground(borderColor).
 		Render(content)

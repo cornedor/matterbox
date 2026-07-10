@@ -53,6 +53,11 @@ type viewCache struct {
 	// compose box from the bottom without re-rendering the footer — which would
 	// allocate on the per-motion hover path (see composerGeom / hitTest).
 	bodyH int
+	// jumpZone is the jump-to-bottom pill's screen rect, written by
+	// renderMessagesPane (the only place that knows the viewport's height after a
+	// popup shrinks it) and read back by the mouse layer. Cleared each render, so
+	// a tab that doesn't draw the pill can't leave a stale target behind.
+	jumpZone jumpZone
 }
 
 // scrollGeom caches one viewport's total wrapped-row count. That total depends
