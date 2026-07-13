@@ -1680,6 +1680,14 @@ func (m Model) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 		m.chanOff = 0
 		return m, cmd
 	}
+	// A file dragged onto the terminal arrives here: the emulator writes the
+	// dropped path into the pty as a bracketed paste. When the whole paste is
+	// existing files, attach them instead of typing their paths out.
+	if m.focus == focusInput || m.focus == focusMessages || m.focus == focusAttachments {
+		if cmd, ok := m.attachDroppedFiles(msg.Content); ok {
+			return m, cmd
+		}
+	}
 	if m.focus == focusInput {
 		// A pasted Giphy link becomes an inline ![alt](url) image instead of a
 		// bare URL: expand it instantly (offline, from the GIF id) and, when a

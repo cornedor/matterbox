@@ -136,6 +136,12 @@ type Model struct {
 	// and drags select text to copy. Off keeps the terminal's native text selection.
 	mouseEnabled bool
 
+	// attachOnDrop mirrors config.AttachOnDrop: when true, a paste that is
+	// nothing but existing absolute file paths is treated as a drag-and-drop
+	// (terminals deliver a drop as a pasted path) and attached rather than
+	// typed into the composer. See dropfiles.go.
+	attachOnDrop bool
+
 	// hover is the clickable element the pointer is currently over (a team tab
 	// or a channel row), painted with a hover style; textSel is an in-progress
 	// or just-finished click-drag text selection in the message / thread pane.
@@ -928,6 +934,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	showDateSeparators := true
 	showSQL := false
 	mouseEnabled := true
+	attachOnDrop := true
 	navModifier := navModifierFromConfig(cfg)
 	vimNav := vimNavGlobal
 	emojiMode := "auto"
@@ -981,6 +988,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		}
 		if cfg.Mouse != nil {
 			mouseEnabled = *cfg.Mouse
+		}
+		if cfg.AttachOnDrop != nil {
+			attachOnDrop = *cfg.AttachOnDrop
 		}
 		if cfg.EmojiImages != "" {
 			emojiMode = cfg.EmojiImages
@@ -1106,6 +1116,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		showCustomStatus:    showCustomStatus,
 		showDateSeparators:  showDateSeparators,
 		mouseEnabled:        mouseEnabled,
+		attachOnDrop:        attachOnDrop,
 		focus:               focusMessages,
 		msgsView:            msgsView,
 		threadView:          threadView,

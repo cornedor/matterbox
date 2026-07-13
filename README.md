@@ -32,6 +32,10 @@ local LLM.
   uses tools to dig through your channels to answer it.
 - **Clipboard paste** — paste images and files from the clipboard directly into
   the composer (macOS and Linux with wl-clipboard/xclip).
+- **Drag and drop** — drag a file onto the terminal and it's attached. Terminals
+  have no drag-and-drop protocol — they deliver a drop by pasting the file's
+  path — so a paste that is nothing but existing file paths becomes an
+  attachment (`attach_on_drop: false` to paste such paths as text instead).
 - **Per-channel drafts** — unsent composer text is saved per channel via
   Mattermost's server-side drafts API, so each channel keeps its own draft,
   switching channels never loses what you typed, and a draft started here shows

@@ -65,6 +65,11 @@
       "description": "Enable mouse support: wheel-scroll, click a tab/channel/message to switch or select, drag to select text (default true). false keeps the terminal's native click-drag copy.",
       "default": true
     },
+    "attach_on_drop": {
+      "type": "boolean",
+      "description": "Attach a file dragged onto the terminal (default true). Terminals deliver a drop by pasting the file's path, so this is a heuristic: a paste that is nothing but existing absolute file paths is attached instead of typed into the composer. false pastes such paths as plain text.",
+      "default": true
+    },
     "download_dir": {
       "type": "string",
       "description": "Where the download-attachment key (s on a message) saves files (default ~/Downloads). A leading ~ is expanded; the directory is created on first download.",

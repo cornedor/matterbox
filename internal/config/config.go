@@ -94,6 +94,13 @@ type Config struct {
 	// native click-drag text selection / copy, which capturing the mouse
 	// otherwise disables (most terminals fall back to shift-drag). See internal/ui.
 	Mouse *bool `yaml:"mouse"`
+	// AttachOnDrop attaches a file dragged onto the terminal. Terminals have no
+	// drag-and-drop protocol — the emulator delivers a drop by pasting the
+	// file's path — so this is a heuristic: a paste that is nothing but existing
+	// absolute file paths becomes an attachment instead of composer text.
+	// Pointer so an absent key defaults to true; set `attach_on_drop: false` if
+	// you'd rather paste such paths as text. See internal/ui/dropfiles.go.
+	AttachOnDrop *bool `yaml:"attach_on_drop"`
 	// DownloadDir is where the "download attachment" key (s on a message)
 	// saves files. A leading "~" is expanded to the home directory and the
 	// directory is created on first download. Empty defaults to ~/Downloads.
@@ -1045,6 +1052,11 @@ func writeConfig(p string, cfg *Config) error {
 		"# download_dir: where the download-attachment key (s on a message) saves\n" +
 		"#             files (default ~/Downloads). A leading ~ is expanded and the\n" +
 		"#             directory is created on first download.\n" +
+		"# attach_on_drop: attach a file dragged onto the terminal (default true).\n" +
+		"#             Terminals deliver a drop by pasting the file's path, so this\n" +
+		"#             is a heuristic: a paste that is nothing but existing absolute\n" +
+		"#             file paths is attached instead of typed into the composer.\n" +
+		"#             Set false to paste such paths as plain text.\n" +
 		"# sql_tab:    show the read-only SQL tab — a query editor over your local\n" +
 		"#             message cache whose rows render as chat messages (default\n" +
 		"#             false, hidden). Set true to add it to the tab strip.\n" +
