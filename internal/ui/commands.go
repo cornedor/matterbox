@@ -41,6 +41,12 @@ func builtinCommands() []switcherCommand {
 			run: runCreateChannel,
 		},
 		{
+			name: "Join a channel",
+			desc: "browse the public channels you're not in yet",
+			// No argPrompt: the command opens its own browse-and-filter list.
+			run: runJoinChannel,
+		},
+		{
 			name:           "Start group DM",
 			desc:           "open (creating if new) a group DM with the people you name",
 			argPrompt:      "users: ",
@@ -429,8 +435,9 @@ func (m Model) commandQuery() string {
 
 // allCommands is the full ordered command list for the current context: the
 // static builtins plus any channel-specific commands (the mute toggle, adding
-// members) that only apply when a channel is open. Those are clustered next to
-// Summarize at the top, since they all act on the currently-open channel.
+// members, editing/archiving/leaving the channel) that only apply when a
+// channel is open. Those are clustered next to Summarize at the top, since they
+// all act on the currently-open channel.
 func (m Model) allCommands() []switcherCommand {
 	base := builtinCommands()
 	var contextual []switcherCommand
@@ -439,6 +446,12 @@ func (m Model) allCommands() []switcherCommand {
 	}
 	if add, ok := m.addMembersCommand(); ok {
 		contextual = append(contextual, add)
+	}
+	if edits, ok := m.editChannelCommands(); ok {
+		contextual = append(contextual, edits...)
+	}
+	if actions, ok := m.channelActionCommands(); ok {
+		contextual = append(contextual, actions...)
 	}
 	if len(contextual) == 0 {
 		return base

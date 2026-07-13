@@ -405,9 +405,8 @@ func (m *Model) focusCreateChannelRow() tea.Cmd {
 	return nil
 }
 
-// applyChannelCreated closes the modal and jumps to the new channel. It isn't
-// in the sidebar yet (matterbox has no channel_created WebSocket handler), so
-// it's inserted into its team's bucket first, mirroring the group-DM path.
+// applyChannelCreated closes the modal and jumps to the new channel (see
+// adoptChannel, which also splices it into the sidebar — it isn't there yet).
 // A failure keeps the modal open with the server's message so the user can fix
 // the field and retry.
 func (m Model) applyChannelCreated(msg channelCreatedMsg) (tea.Model, tea.Cmd) {
@@ -423,18 +422,9 @@ func (m Model) applyChannelCreated(msg channelCreatedMsg) (tea.Model, tea.Cmd) {
 	m.closeCreateChannel()
 
 	ch := msg.ch
-	if m.findChannel(ch.Id) == nil {
-		m.channels[ch.TeamId] = append(m.channels[ch.TeamId], ch)
-		m.sortTeamBucket(ch.TeamId)
-	}
-	m.switchToChannelHomeTeam(ch)
-	// A live sidebar filter would otherwise hide the row we just jumped to.
-	m.filterValue = ""
-	m.filter.SetValue("")
-	m.focus = focusInput
-	// openChannelLoadCmd sets its own "loading messages…" status as a side
-	// effect, so claim the status bar after it, not before.
-	cmds := tea.Batch(m.input.Focus(), m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id))
+	// adoptChannel sets its own "loading messages…" status as a side effect, so
+	// claim the status bar after it, not before.
+	cmds := m.adoptChannel(ch)
 	m.status = "created " + m.channelLabel(ch)
 	return m, cmds
 }

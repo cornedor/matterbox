@@ -1439,6 +1439,15 @@ func (m *Model) renderViewContent() string {
 	if m.createChan != nil {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderCreateChannel())
 	}
+	if m.chanEdit != nil {
+		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderEditChannel())
+	}
+	if m.joinChan != nil {
+		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderJoinChannel())
+	}
+	if m.chanConfirm != nil {
+		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderChannelConfirm())
+	}
 	if m.summary.active() {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderSummaryPopup())
 	}

@@ -302,6 +302,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case channelCreatedMsg:
 		return m.applyChannelCreated(msg)
 
+	case channelPatchedMsg:
+		return m.applyChannelPatched(msg)
+
+	case channelActionDoneMsg:
+		return m.applyChannelActionDone(msg)
+
+	case publicChannelsMsg:
+		return m.applyPublicChannels(msg)
+
+	case channelJoinedMsg:
+		return m.applyChannelJoined(msg)
+
 	case slashExecMsg:
 		if msg.err != nil {
 			m.status = "command failed: " + msg.err.Error()
@@ -1803,6 +1815,18 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// switcher's "> Create channel" command, which closes itself first.
 	if m.createChan != nil {
 		return m.handleCreateChannelKey(msg)
+	}
+	// The other channel modals, likewise raised from a > command that closed
+	// the switcher first: the edit form (rename / purpose / header), the
+	// archive/leave/privacy confirm, and the join-a-channel catalogue.
+	if m.chanEdit != nil {
+		return m.handleEditChannelKey(msg)
+	}
+	if m.chanConfirm != nil {
+		return m.handleChannelConfirmKey(msg)
+	}
+	if m.joinChan != nil {
+		return m.handleJoinChannelKey(msg)
 	}
 	// History popup is fully modal: it owns every keystroke while open
 	// so esc/arrows route to the popup viewport, not the underlying pane.

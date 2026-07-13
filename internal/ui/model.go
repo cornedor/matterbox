@@ -644,6 +644,15 @@ type Model struct {
 	// layout/render pass touches it.
 	createChan *createChannelState
 
+	// The rest of the channel modals, all raised from the > palette and all
+	// boxed for the same reason as createChan: chanEdit is the rename /
+	// purpose / header form (editchannel.go), chanConfirm the y/n confirm
+	// behind archiving, leaving and public↔private (channelactions.go), and
+	// joinChan the browse-and-join catalogue (joinchannel.go).
+	chanEdit    *channelEditState
+	chanConfirm *channelConfirmState
+	joinChan    *joinChannelState
+
 	// reactionEmojis is the picker list configured at startup from
 	// ~/.config/matterbox/config.yaml. Snapshot at New() time — the file
 	// isn't watched, so editing it requires a restart.
@@ -2679,6 +2688,24 @@ func (m *Model) sortTeamBucket(teamID string) {
 	sort.SliceStable(list, func(i, j int) bool {
 		return strings.ToLower(m.channelLabel(list[i])) < strings.ToLower(m.channelLabel(list[j]))
 	})
+}
+
+// adoptChannel takes a channel the user has just gained access to — created it,
+// or joined it — into the sidebar and opens it. matterbox has no channel_created
+// WebSocket handler, so the row won't exist until it's spliced in here. Returns
+// the Cmd batch the caller should hand back to bubbletea; the caller owns the
+// status line, which openChannelLoadCmd would otherwise overwrite.
+func (m *Model) adoptChannel(ch *model.Channel) tea.Cmd {
+	if m.findChannel(ch.Id) == nil {
+		m.channels[ch.TeamId] = append(m.channels[ch.TeamId], ch)
+		m.sortTeamBucket(ch.TeamId)
+	}
+	m.switchToChannelHomeTeam(ch)
+	// A live sidebar filter would otherwise hide the row we just jumped to.
+	m.filterValue = ""
+	m.filter.SetValue("")
+	m.focus = focusInput
+	return tea.Batch(m.input.Focus(), m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id))
 }
 
 // sortDMBucket re-orders the DM bucket by most recent activity (newest

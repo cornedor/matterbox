@@ -36,31 +36,43 @@ func typeInto(t *testing.T, m *Model, s string) {
 	}
 }
 
-// press sends one named key (esc, tab, space, …) to the modal.
-func press(t *testing.T, m *Model, name string) {
+// keyMsg builds the event a named key (esc, tab, space, …) arrives as. Shared
+// by the modal tests, which each feed it to their own handler.
+func keyMsg(t *testing.T, name string) tea.KeyPressMsg {
 	t.Helper()
-	var msg tea.KeyPressMsg
 	switch name {
 	case "tab":
-		msg = tea.KeyPressMsg{Code: tea.KeyTab}
+		return tea.KeyPressMsg{Code: tea.KeyTab}
 	case "shift+tab":
-		msg = tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
+		return tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
 	case "esc":
-		msg = tea.KeyPressMsg{Code: tea.KeyEscape}
+		return tea.KeyPressMsg{Code: tea.KeyEscape}
 	case "enter":
-		msg = tea.KeyPressMsg{Code: tea.KeyEnter}
+		return tea.KeyPressMsg{Code: tea.KeyEnter}
 	case "space":
-		msg = tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}
+		return tea.KeyPressMsg{Code: tea.KeySpace, Text: " "}
 	case "left":
-		msg = tea.KeyPressMsg{Code: tea.KeyLeft}
+		return tea.KeyPressMsg{Code: tea.KeyLeft}
 	case "right":
-		msg = tea.KeyPressMsg{Code: tea.KeyRight}
+		return tea.KeyPressMsg{Code: tea.KeyRight}
+	case "up":
+		return tea.KeyPressMsg{Code: tea.KeyUp}
+	case "down":
+		return tea.KeyPressMsg{Code: tea.KeyDown}
 	case "backspace":
-		msg = tea.KeyPressMsg{Code: tea.KeyBackspace}
-	default:
-		t.Fatalf("press: unknown key %q", name)
+		return tea.KeyPressMsg{Code: tea.KeyBackspace}
 	}
-	out, _ := m.handleCreateChannelKey(msg)
+	if r := []rune(name); len(r) == 1 {
+		return tea.KeyPressMsg{Code: r[0], Text: name}
+	}
+	t.Fatalf("keyMsg: unknown key %q", name)
+	return tea.KeyPressMsg{}
+}
+
+// press sends one named key to the create-channel modal.
+func press(t *testing.T, m *Model, name string) {
+	t.Helper()
+	out, _ := m.handleCreateChannelKey(keyMsg(t, name))
 	*m = out.(Model)
 }
 

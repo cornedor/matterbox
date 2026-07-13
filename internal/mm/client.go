@@ -731,3 +731,67 @@ func (c *Client) CreateChannel(ctx context.Context, ch *model.Channel) (*model.C
 	}
 	return created, nil
 }
+
+// PatchChannel applies a partial update to a channel — only the patch's
+// non-nil fields change. It carries the display name, URL slug, purpose and
+// header; the channel's type is NOT patchable here (see UpdateChannelPrivacy).
+// The updated record is returned.
+func (c *Client) PatchChannel(ctx context.Context, channelID string, patch *model.ChannelPatch) (*model.Channel, error) {
+	ch, _, err := c.c.PatchChannel(ctx, channelID, patch)
+	if err != nil {
+		return nil, fmt.Errorf("patch channel: %w", err)
+	}
+	return ch, nil
+}
+
+// UpdateChannelPrivacy converts a channel between public (O) and private (P).
+// It's a dedicated endpoint rather than a PatchChannel field because each
+// direction carries its own permission, and the server refuses to convert a
+// team's default channel (town-square) at all.
+func (c *Client) UpdateChannelPrivacy(ctx context.Context, channelID string, privacy model.ChannelType) (*model.Channel, error) {
+	ch, _, err := c.c.UpdateChannelPrivacy(ctx, channelID, privacy)
+	if err != nil {
+		return nil, fmt.Errorf("update channel privacy: %w", err)
+	}
+	return ch, nil
+}
+
+// ArchiveChannel archives the channel. Mattermost's DELETE /channels/{id} is a
+// soft archive: the history survives and a system admin can restore it — which
+// is why the UI calls this "archive" rather than "delete".
+func (c *Client) ArchiveChannel(ctx context.Context, channelID string) error {
+	if _, err := c.c.DeleteChannel(ctx, channelID); err != nil {
+		return fmt.Errorf("archive channel: %w", err)
+	}
+	return nil
+}
+
+// RemoveChannelMember removes a user from a channel. Passing your own user id
+// is how you leave one: Mattermost has no separate leave endpoint. The server
+// refuses for a team's default channel.
+func (c *Client) RemoveChannelMember(ctx context.Context, channelID, userID string) error {
+	if _, err := c.c.RemoveUserFromChannel(ctx, channelID, userID); err != nil {
+		return fmt.Errorf("remove channel member: %w", err)
+	}
+	return nil
+}
+
+// PublicChannelsForTeam returns every open channel on the team, joined or not —
+// the catalogue behind "Join a channel". Unlike AllChannels (membership only)
+// this is the browsable directory; archived channels are excluded server-side.
+// Paged, since the server caps per_page.
+func (c *Client) PublicChannelsForTeam(ctx context.Context, teamID string) ([]*model.Channel, error) {
+	const perPage = 200
+	var all []*model.Channel
+	for page := 0; ; page++ {
+		batch, _, err := c.c.GetPublicChannelsForTeam(ctx, teamID, page, perPage, "")
+		if err != nil {
+			return nil, fmt.Errorf("get public channels: %w", err)
+		}
+		all = append(all, batch...)
+		if len(batch) < perPage {
+			break
+		}
+	}
+	return all, nil
+}
