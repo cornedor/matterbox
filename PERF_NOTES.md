@@ -163,6 +163,50 @@ state, vs. a full rebuild of both channels before.
   per-render sighting hook fires for the whole render window, not the screen —
   `renderMessages` is O(loaded posts) by design (see `project_render_window`).
 
+## 9. Every transmitted image allocated a fresh zlib writer — ✅ DONE
+Every image matterbox shows — custom emoji, inline thumbnails, the preview modal
+— is PNG-encoded and base64'd into a Kitty APC by `kittyTransmitImage`, and a
+pprof of scrolling an image-heavy channel put ~70% of all CPU there. The kitty
+library calls `png.Encode`, which **cannot be given a `BufferPool`** — so it
+allocates a fresh zlib writer and scratch buffers on *every call*: ~860KB of
+garbage per frame, costing more than the compression itself.
+
+`kittyTransmitImage` is now `kitty.EncodeGraphics` reimplemented around a shared
+pooled `png.Encoder` (`kittyPNG`). The framing — option keys, base64, 4KB
+chunking, `m=1`/`m=0` — is byte-for-byte what the library produces, pinned by
+`TestKittyTransmitMatchesLibraryFraming` against the library itself.
+
+    EncPNGDefault          15.2 ms   140 KB   856 KB/op, 28 allocs   ← stdlib png.Encode
+    EncPNGDefaultPooled     7.7 ms   140 KB   1.4 KB/op,  0 allocs   ← the pool is the win
+    EncPNGBestSpeedPooled   5.6 ms   140 KB   1.0 KB/op,  0 allocs   ← chosen
+    EncZlibRaw              3.6 ms   224 KB                          ← no filter search
+
+    kittyTransmitImage:  19.1 ms → 10.5 ms/frame,  2.9 MB → 1.3 MB/op
+
+**Compression level barely matters** for a thumbnail-sized frame (BestSpeed and
+Default are within 0.5% on photographic content), so BestSpeed is free speed.
+After pooling, the remaining bottleneck *moved*: `png.filter` is now ~75% of the
+encode, because stdlib PNG tries all five filter types per row and picks the
+smallest via `abs8` sums. `EncZlibRaw` bounds what removing that could buy —
+1.5×, at **60% more bytes**, for a hand-rolled PNG encoder or a raw-RGBA wire
+format. Not taken: the bytes go down a tty that re-sends GIF frames live.
+
+**Beware:** `TestKittyTransmitMatchesLibraryFraming` compares against the real
+library but can only reach payload sizes real PNGs happen to produce — **none of
+which land on a chunk boundary**. A payload that is an exact multiple of
+`MaxChunkSize` must end with an *empty* `m=0` chunk, and a `for len(p) > K` loop
+silently drops it (the terminal then waits forever for a continuation).
+`TestKittyChunkMatchesReadFullLoop` is what actually covers that, against a
+transcription of the library's `io.ReadFull` loop.
+
+### Next lever here: don't encode GIF frames nobody will watch
+`BenchmarkInlineThumbBuild`: a still thumbnail is ~20ms, a **30-frame GIF 390ms,
+a 90-frame GIF ~700ms** — all of it encoding frames at fetch time. But a GIF only
+animates while it is *on screen*, and most of the ones you scroll past never are.
+Building frame 0 at fetch (a still) and the rest only when the thumbnail actually
+becomes visible would cut a 90-frame GIF's build ~35×. This is now the dominant
+remaining cost in an image-heavy channel.
+
 ## Not a problem (measured, don't re-chase)
 - **Inline-thumbnail animation byte volume.** Re-transmitting a whole PNG per GIF
   frame *looks* alarming at a 10-row placement, but realistic cartoon/video GIF

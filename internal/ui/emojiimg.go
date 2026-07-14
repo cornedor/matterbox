@@ -3,12 +3,13 @@ package ui
 import (
 	"bytes"
 	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"image"
 	"image/draw"
 	"image/gif"
 	_ "image/jpeg" // some servers store emoji as JPEG
-	_ "image/png"  // PNG emoji (and the kitty transmit format)
+	"image/png"    // PNG emoji (and the kitty transmit format)
 	"os"
 	"path/filepath"
 	"sort"
@@ -111,15 +112,52 @@ func emojiIsPlaceholder(s string) bool {
 	return strings.ContainsRune(s, kitty.Placeholder)
 }
 
+// pngBufferPool recycles the zlib writer + scratch buffers image/png needs to
+// encode a frame. Without one, png.Encode allocates them fresh on *every call* —
+// ~860KB of garbage per frame, which for a thumbnail is more time than the
+// compression itself (BenchmarkEncPNGDefault vs BenchmarkEncPNGDefaultPooled:
+// 15.2ms/856KB → 7.7ms/1.4KB). png.Encoder does not mutate itself while encoding,
+// so one shared instance over a sync.Pool is safe from the several goroutines that
+// build images.
+type pngBufferPool struct{ p sync.Pool }
+
+func (b *pngBufferPool) Get() *png.EncoderBuffer {
+	e, _ := b.p.Get().(*png.EncoderBuffer)
+	return e // nil is fine: png allocates one and hands it back via Put
+}
+func (b *pngBufferPool) Put(e *png.EncoderBuffer) { b.p.Put(e) }
+
+// kittyPNG is the encoder every transmitted image goes through.
+//
+// BestSpeed rather than the stdlib default: compression level barely moves the
+// output of a thumbnail-sized frame (the two are within 0.5% on photographic
+// content, and where BestSpeed *is* bigger — flat cartoon-ish frames — the absolute
+// size is a couple of KB either way), but it is another ~25% off the encode on top
+// of what the pool saves. The frames we send are small and we send a lot of them:
+// spending CPU to shave KB off a few-KB payload is the wrong trade.
+var kittyPNG = png.Encoder{
+	CompressionLevel: png.BestSpeed,
+	BufferPool:       &pngBufferPool{},
+}
+
 // kittyTransmitImage builds the out-of-band APC that uploads img to the terminal
 // under id and registers a virtual placement sized to rows×cols text cells, so a
 // matching kittyPlaceholder(id, rows, cols) displays it. Action TransmitAndPut
 // with U=1 does transmit + virtual placement in one go; r/c size the placement;
 // q=2 suppresses the OK/error replies the terminal would otherwise emit. Chunked
-// at 4KB. Shared by the emoji path (1×2) and the image-preview modal (large
-// boxes); see preview.go.
+// at 4KB. Shared by the emoji path (1×2), the inline thumbnails and the
+// image-preview modal (large boxes); see preview.go and inlineimg.go.
+//
+// This is kitty.EncodeGraphics reimplemented for one reason: it calls png.Encode,
+// which cannot be given a BufferPool, and the allocation that costs dominates the
+// encode (see kittyPNG). The framing — option keys, base64, 4KB chunking, the m=1/
+// m=0 continuation flags — is byte-for-byte what the library produces, which
+// TestKittyTransmitMatchesLibraryFraming pins against the library itself.
 func kittyTransmitImage(id uint32, img image.Image, rows, cols int) (string, error) {
-	var sb strings.Builder
+	return kittyTransmitWith(&kittyPNG, id, img, rows, cols)
+}
+
+func kittyTransmitWith(enc *png.Encoder, id uint32, img image.Image, rows, cols int) (string, error) {
 	opts := &kitty.Options{
 		Action:           kitty.TransmitAndPut,
 		VirtualPlacement: true,
@@ -131,10 +169,54 @@ func kittyTransmitImage(id uint32, img image.Image, rows, cols int) (string, err
 		Quite:            2,
 		Chunk:            true,
 	}
-	if err := kitty.EncodeGraphics(&sb, img, opts); err != nil {
+	var raw bytes.Buffer
+	if err := enc.Encode(&raw, img); err != nil {
 		return "", fmt.Errorf("encode kitty graphics: %w", err)
 	}
-	return sb.String(), nil
+	payload := make([]byte, base64.StdEncoding.EncodedLen(raw.Len()))
+	base64.StdEncoding.Encode(payload, raw.Bytes())
+	return kittyChunk(payload, opts), nil
+}
+
+// kittyChunk splits a base64 payload into the 4KB APC chunks the protocol wants.
+// It is the library's io.ReadFull loop rewritten as slice arithmetic, and the one
+// subtlety it has to preserve is the boundary case: when the payload is an exact
+// multiple of the chunk size, the last full chunk still carries m=1 and the sequence
+// is terminated by an *empty* m=0 chunk. Cut that and the terminal sits waiting for
+// a continuation that never arrives. Hence >=, not >.
+// TestKittyChunkMatchesReadFullLoop pins it against a transcription of the original.
+func kittyChunk(payload []byte, opts *kitty.Options) string {
+	var sb strings.Builder
+	sb.Grow(len(payload) + (len(payload)/kitty.MaxChunkSize+1)*48)
+	first := true
+	for len(payload) >= kitty.MaxChunkSize {
+		sb.WriteString(ansi.KittyGraphics(payload[:kitty.MaxChunkSize], kittyChunkOpts(opts, first, false)...))
+		payload = payload[kitty.MaxChunkSize:]
+		first = false
+	}
+	sb.WriteString(ansi.KittyGraphics(payload, kittyChunkOpts(opts, first, true)...))
+	return sb.String()
+}
+
+// kittyChunkOpts mirrors the library's (unexported) buildChunkOptions: the first
+// chunk carries the full option set, later ones only what the protocol still allows
+// (q=), and m=1/m=0 mark continuation and end — omitted entirely when there is only
+// one chunk.
+func kittyChunkOpts(o *kitty.Options, first, last bool) []string {
+	var opts []string
+	if first {
+		opts = o.Options()
+	} else if o.Quite > 0 {
+		opts = append(opts, fmt.Sprintf("q=%d", o.Quite))
+	}
+	if !first || !last {
+		if last {
+			opts = append(opts, "m=0")
+		} else {
+			opts = append(opts, "m=1")
+		}
+	}
+	return opts
 }
 
 // kittyDelete builds the APC that frees image id from terminal memory — both the
