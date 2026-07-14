@@ -74,6 +74,27 @@ func (m *Model) syncComposerFocus() {
 	}
 }
 
+// preservesFrame reports whether msg leaves the rendered screen byte-identical,
+// so View() can hand back the memoized frame (viewCache.view) instead of
+// rebuilding it. Everything else invalidates.
+//
+//   - A wheel event only accumulates wheelPending; nothing moves until the flush
+//     tick (a wheelFlushMsg, not a MouseWheelMsg, so that still invalidates).
+//     This is what lets a trackpad flood reuse the cached frame.
+//   - A GIF animation tick re-transmits the next frame *under the same image id*
+//     (advanceImageAnim → tea.Raw). The placeholder cells on screen are unchanged
+//     — same id, same rows×cols — and the terminal repaints the image itself. The
+//     frame text is therefore identical, and rebuilding it was pure waste: it put
+//     a full ~1.5ms re-render behind every tick, 12–20×/s for as long as any GIF
+//     emoji or thumbnail was visible.
+func preservesFrame(msg tea.Msg) bool {
+	switch msg.(type) {
+	case tea.MouseWheelMsg, imgAnimTickMsg:
+		return true
+	}
+	return false
+}
+
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// User input that acts on the scroll position must see any coalesced wheel
 	// delta applied first (see handleMouseWheel). Background msgs and further
@@ -82,12 +103,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg, tea.MouseClickMsg, tea.MouseReleaseMsg, tea.MouseMotionMsg, tea.PasteMsg:
 		m.applyPendingWheel()
 	}
-	// Invalidate the memoized screen (viewCache.view) by default. The lone
-	// exception is a wheel event: handleMouseWheel only accumulates wheelPending,
-	// which changes nothing on screen until the flush tick (a wheelFlushMsg, not a
-	// MouseWheelMsg, so it still invalidates). That exception is what lets a
-	// trackpad flood reuse the cached frame instead of rebuilding it per event.
-	if _, isWheel := msg.(tea.MouseWheelMsg); !isWheel && m.vcache != nil {
+	// Invalidate the memoized screen (viewCache.view) by default; see
+	// preservesFrame for the two messages that don't change it.
+	if m.vcache != nil && !preservesFrame(msg) {
 		m.vcache.viewValid = false
 	}
 	switch msg := msg.(type) {

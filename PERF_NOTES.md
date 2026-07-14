@@ -92,6 +92,41 @@ async-closure audit. Eliminates the copy/box entirely rather than shrinking it.
 
 ---
 
+## 7. The GIF animation tick re-rendered the whole screen — ✅ DONE
+**Result:** adding `imgAnimTickMsg` to `preservesFrame` (`update.go`, alongside
+`tea.MouseWheelMsg`) took `BenchmarkInlineAnimTick/thumbs=3` from **1.57ms →
+76µs/tick (−95%), 1137 → 10 allocs**.
+
+`advanceImageAnim` is built so it needs *no* re-render: it re-transmits the next
+GIF frame under the **same** Kitty image id via `tea.Raw`, so the placeholder
+cells on screen are unchanged and the terminal repaints the image itself. But the
+tick still went through `update()`, which invalidated the memoized frame
+(`viewCache.view`) for every message except a wheel event — so each one rebuilt
+the entire screen for nothing. Any visible GIF (custom emoji *or*, since
+`image_thumbnails`, a Giphy thumbnail — the common case) meant a full ~1.5ms
+`View()` at 12–20Hz on an otherwise idle UI, which is what everything else then
+queued behind.
+
+Note this is the *same* storm the viewport-gating fix chased: gating cut how
+often the tick is armed, but every armed tick still paid a full re-render. The
+frame memo is what actually removes the cost.
+
+- **Lesson:** a `tea.Raw` side-channel write does not exempt a message from the
+  render loop. If a message leaves the frame byte-identical, it must say so in
+  `preservesFrame` or it costs a full `View()`.
+
+## Not a problem (measured, don't re-chase)
+- **Inline-thumbnail animation byte volume.** Re-transmitting a whole PNG per GIF
+  frame *looks* alarming at a 10-row placement, but realistic cartoon/video GIF
+  content is **~1.9KB/frame (~23KB/s per GIF)** at `inlineThumbRows`. Only
+  pathologically noisy/photographic content approaches ~95KB/frame. Not worth
+  moving to Kitty native animation frames (`a=f`/`a=a`) on perf grounds alone.
+- **Per-event overhead of `image_thumbnails`.** `fetchPendingInlineImages` +
+  `maybeStartImageAnim` on the post-dispatch path are in the noise against the
+  keystroke's own `View()` (`BenchmarkThumbKeystroke`, thumbs=0 vs 8).
+
+---
+
 ## Other things noticed (not measured)
 - **cmd-builders copy the whole `Model`** (value receivers) on each call, but
   only fire on actions (send/fetch), not per keystroke — low priority.

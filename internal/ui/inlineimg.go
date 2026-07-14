@@ -86,11 +86,22 @@ type inlineImgEntry struct {
 	// visible is true while this thumbnail is inside a viewport's visible rows.
 	// Only visible animated GIFs drive the animation loop — without this, every
 	// GIF ever scrolled past would keep ticking (and forcing a re-render) for the
-	// rest of the session. Recomputed by refreshAnimVisibility.
+	// rest of the session. Recomputed by refreshAnimVisibility, which only
+	// considers animated entries, so a still image's flag is always false — use
+	// onScreen, not this, to ask "is it displayed right now".
 	visible bool
 
-	// seen is the sighting stamp used for LRU eviction: bumped every time the
-	// image is rendered, so on-screen images sort newest and survive.
+	// onScreen is true while this thumbnail — animated or still — is inside a
+	// viewport's visible rows. It is what protects a displayed image from being
+	// evicted; see evictLocked. Recomputed only when a fetched batch is installed
+	// (the one place eviction can happen), so it costs nothing per event.
+	onScreen bool
+
+	// seen is the sighting stamp used for LRU eviction, bumped by sight(). Note
+	// it is NOT bumped on every render: renderPostLines serves an unchanged
+	// visible post straight from postLineCache and never reaches sight(), so a
+	// displayed image's stamp goes stale. That is exactly why eviction cannot rely
+	// on this alone to spare what's on screen, and consults onScreen instead.
 	seen uint64
 }
 
@@ -236,22 +247,42 @@ func (ii *inlineImages) markReady(fileID string, r readyInlineImg) (evicted []ui
 
 // evictLocked drops the least-recently-sighted ready images until at most
 // maxInlineImages remain, returning their terminal ids. Callers hold mu.
+//
+// An image that is currently on screen is never a candidate, however old its
+// stamp. Freeing one would kittyDelete it out from under the placeholder cells
+// still displaying it — and because those cells live in the post's cached lines,
+// nothing would re-sight it, so it would stay blank for good. The stamps alone
+// can't prevent that: a visible post renders from postLineCache without being
+// re-sighted, so its stamp is stale precisely when it matters (see
+// inlineImgEntry.seen). Sparing them can leave us a little over the cap when a
+// screenful of images exceeds it; a few extra PNGs in terminal memory beats a
+// blank hole in the transcript.
 func (ii *inlineImages) evictLocked() (evicted []uint32) {
 	type aged struct {
 		id   string
 		seen uint64
 	}
 	var ready []aged
+	onScreen := 0
 	for id, ent := range ii.entries {
-		if ent.state == inlineImgReady {
-			ready = append(ready, aged{id, ent.seen})
+		if ent.state != inlineImgReady {
+			continue
 		}
+		if ent.onScreen {
+			onScreen++
+			continue
+		}
+		ready = append(ready, aged{id, ent.seen})
 	}
-	if len(ready) <= maxInlineImages {
+	over := len(ready) + onScreen - maxInlineImages
+	if over <= 0 {
 		return nil
 	}
+	if over > len(ready) {
+		over = len(ready) // everything else is displayed; keep it
+	}
 	sort.Slice(ready, func(i, j int) bool { return ready[i].seen < ready[j].seen })
-	for _, a := range ready[:len(ready)-maxInlineImages] {
+	for _, a := range ready[:over] {
 		if ent := ii.entries[a.id]; ent != nil {
 			evicted = append(evicted, ent.id)
 		}
@@ -260,6 +291,37 @@ func (ii *inlineImages) evictLocked() (evicted []uint32) {
 		delete(ii.entries, a.id)
 	}
 	return evicted
+}
+
+// setOnScreen marks exactly the named thumbnails as displayed and clears the flag
+// on all others, so evictLocked can spare them. Called just before a fetched batch
+// is installed — the only point at which eviction runs.
+func (ii *inlineImages) setOnScreen(keys map[string]struct{}) {
+	if ii == nil {
+		return
+	}
+	ii.mu.Lock()
+	defer ii.mu.Unlock()
+	for key, ent := range ii.entries {
+		_, ok := keys[key]
+		ent.onScreen = ok
+	}
+}
+
+// readyIDs returns the keys of every ready thumbnail, animated or still.
+func (ii *inlineImages) readyIDs() []string {
+	if ii == nil {
+		return nil
+	}
+	ii.mu.Lock()
+	defer ii.mu.Unlock()
+	out := make([]string, 0, len(ii.entries))
+	for id, ent := range ii.entries {
+		if ent.state == inlineImgReady {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 func (ii *inlineImages) markFailed(fileIDs ...string) {
@@ -641,6 +703,11 @@ func (m Model) handleInlineImagesFetched(msg inlineImagesFetchedMsg) (Model, tea
 	var transmit strings.Builder
 	readyKeys := make(map[string]struct{}, len(msg.ready))
 	animated := false
+	// Installing these is what can push us over maxInlineImages and trigger
+	// eviction, so tell the cache what is displayed right now first — an on-screen
+	// image must never be the one freed, and its LRU stamp can't be trusted to say
+	// so (see inlineImgEntry.seen).
+	m.inlineImg.setOnScreen(m.visibleInlineImageKeys())
 	for key, r := range msg.ready {
 		if len(r.frameSeqs) == 0 {
 			m.inlineImg.markFailed(key)
@@ -725,17 +792,33 @@ func (m *Model) invalidatePostsForThumbs(keys map[string]struct{}) {
 	}
 }
 
-// viewportVisibleInlineImages returns the ready animated thumbnails currently
-// inside a viewport's visible rows — the main message pane plus the open thread.
-// It maps the live YOffset back to on-screen posts through the row spans captured
-// by renderMessages/renderThread, so it tracks scrolling without a re-render.
-// Short-circuits to nil (the overwhelmingly common case) when no animated
-// thumbnail is cached. Mirrors viewportVisibleAnimatedEmoji.
+// viewportVisibleInlineImages returns the ready *animated* thumbnails currently
+// on screen — the set that drives the animation loop. Short-circuits to nil (the
+// overwhelmingly common case) when no animated thumbnail is cached, which is what
+// keeps it off the per-event path's back. Mirrors viewportVisibleAnimatedEmoji.
 func (m *Model) viewportVisibleInlineImages() map[string]struct{} {
 	if m.inlineImg == nil {
 		return nil
 	}
-	keys := m.inlineImg.readyAnimatedIDs()
+	return m.visibleThumbKeys(m.inlineImg.readyAnimatedIDs())
+}
+
+// visibleInlineImageKeys returns every ready thumbnail on screen, animated or
+// still — the set eviction must spare. Deliberately *not* on the per-event path:
+// it is computed only when a fetched batch is installed, the one place eviction
+// can run.
+func (m *Model) visibleInlineImageKeys() map[string]struct{} {
+	if m.inlineImg == nil {
+		return nil
+	}
+	return m.visibleThumbKeys(m.inlineImg.readyIDs())
+}
+
+// visibleThumbKeys narrows keys to those owned by a post currently inside a
+// viewport's visible rows — the main message pane plus the open thread. It maps
+// the live YOffset back to on-screen posts through the row spans captured by
+// renderMessages/renderThread, so it tracks scrolling without a re-render.
+func (m *Model) visibleThumbKeys(keys []string) map[string]struct{} {
 	if len(keys) == 0 {
 		return nil
 	}
