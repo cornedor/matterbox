@@ -71,6 +71,35 @@ func effectsPreprocess(raw string) string {
 	return injectEffectSentinels(hidden.Strip(raw), spans)
 }
 
+// renderMarkdownEffects styles a post body with its effect spans marked, and is
+// what the message pane renders through.
+//
+// It also enforces the one rule the sentinels can't enforce themselves: an
+// effect boundary must not land *inside* a markdown token. `**bold*\shimmer{*}`
+// puts a sentinel between the two closing asterisks, and goldmark then sees a
+// broken token and prints the asterisks literally — the effect would corrupt the
+// text it was decorating, which is the one thing this feature must never do. So
+// the marked render is compared against the plain one: if taking the sentinels
+// back out doesn't reproduce it byte for byte, they changed the markdown, and the
+// post is rendered without effects instead. The words always win.
+//
+// The extra pass runs only for posts that carry effects, and only on a miss of
+// the (width-independent) markdown cache above it.
+func renderMarkdownEffects(raw string, ei *emojiImages, mr mrInlineFn, self string) string {
+	marked := effectsPreprocess(raw)
+	if marked == raw {
+		return renderMarkdown(raw, ei, mr, self) // no effects — the ordinary path
+	}
+	// renderMarkdown strips the payload itself, so this is the body as every
+	// other client sees it.
+	plain := renderMarkdown(raw, ei, mr, self)
+	out := renderMarkdown(marked, ei, mr, self)
+	if stripEffectSentinels(out) != plain {
+		return plain // a span straddles a markdown token: drop the effects, keep the text
+	}
+	return out
+}
+
 // injectEffectSentinels brackets each span of visible with start/end sentinels.
 // Spans whose offsets fall outside visible (stale after a foreign edit) or name
 // an unknown effect are dropped — the effect simply stops applying, it never
@@ -322,12 +351,25 @@ func effectSpanLengths(lines []string, chrome int) []int {
 }
 
 // effectColorSGR returns the truecolor foreground SGR for the rune at position
-// pos within a span of n runes, at animation phase (in [0,1)). Shimmer reuses the
-// composer's command gradient (editor.ShimmerColor) so the two match exactly;
-// rainbow cycles hue across the span; pulse and glow breathe uniformly.
+// pos within a span of n runes, at animation phase (in [0,1)). Empty for an
+// unknown effect, which leaves the rune's existing colour alone.
 func effectColorSGR(id byte, pos, n int, phase float64) string {
+	c := effectColor(id, pos, n, phase)
+	if c == nil {
+		return ""
+	}
+	return rgbSGR(c)
+}
+
+// effectColor is the colour an effect paints the rune at position pos within a
+// span of n runes, at animation phase (in [0,1)), or nil if id is unknown.
+// Shimmer reuses the composer's command gradient (editor.ShimmerColor) so a
+// /command token and a \shimmer{} span are the same thing; rainbow cycles hue
+// along the span; pulse and glow breathe uniformly. The composer's static
+// preview reads from here too, so it can't drift from what gets sent.
+func effectColor(id byte, pos, n int, phase float64) color.Color {
 	if id == effects.Shimmer {
-		return rgbSGR(editor.ShimmerColor(pos, n, phase))
+		return editor.ShimmerColor(pos, n, phase)
 	}
 	var h, s, v float64
 	x := float64(pos)
@@ -341,10 +383,10 @@ func effectColorSGR(id byte, pos, n int, phase float64) string {
 		h, s = 0.12, 0.80
 		v = 0.70 + 0.30*(0.5+0.5*math.Sin(2*math.Pi*phase))
 	default:
-		return ""
+		return nil
 	}
 	r, g, b := hsv2rgb(h, s, clamp01(v))
-	return sgr(r, g, b)
+	return color.RGBA{R: r, G: g, B: b, A: 0xff}
 }
 
 // rgbSGR renders a color.Color as a truecolor foreground SGR.

@@ -52,7 +52,7 @@ func TestSyncGrammarDecorations(t *testing.T) {
 		{Offset: 4, Length: 7, IssueType: "grammar"},
 	}
 	m := grammarModel("som sentnce", matches)
-	m.syncGrammarDecorations()
+	m.syncComposerDecorations()
 
 	decos := m.input.Decorations()
 	if len(decos) != 2 {
@@ -68,7 +68,7 @@ func TestSyncGrammarDecorations(t *testing.T) {
 	// Findings tied to a draft that no longer matches the live value must not
 	// paint: simulate the draft moving under the findings.
 	m.grammar.checkedText = "different"
-	m.syncGrammarDecorations()
+	m.syncComposerDecorations()
 	if got := len(m.input.Decorations()); got != 0 {
 		t.Errorf("stale findings left %d decorations, want 0", got)
 	}
@@ -79,7 +79,7 @@ func TestSyncGrammarDecorations(t *testing.T) {
 func TestClearGrammarDropsDecorations(t *testing.T) {
 	matches := []languagetool.Match{{Offset: 0, Length: 3, IssueType: "misspelling"}}
 	m := grammarModel("som text", matches)
-	m.syncGrammarDecorations()
+	m.syncComposerDecorations()
 	if len(m.input.Decorations()) == 0 {
 		t.Fatal("expected decorations before clear")
 	}

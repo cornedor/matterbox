@@ -780,6 +780,10 @@ type Model struct {
 	// rather than running its own: the placeholder encoding is identical.
 	inlineImg *inlineImages
 
+	// effectPopup is the composer's "\" effect picker (see effectpopup.go) — how
+	// anyone finds out \shimmer{...} exists.
+	effectPopup effectPopupState
+
 	// effectsAnim drives the animated text effects (\shimmer{...} and friends)
 	// carried invisibly in post bodies: the frame loop's guard, its phase, and
 	// the viewport gate that stops it whenever no post with effects is on

@@ -1787,6 +1787,8 @@ func (m Model) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 		m.updateEmoji()
 		slashCmd := m.updateSlash()
 		m.updateLang()
+		m.updateEffectPopup()
+		m.syncComposerDecorations()
 		cmdHlCmd := m.updateCommandHighlight()
 		m.syncInputHeight()
 		return m, tea.Batch(cmd, mentionCmd, slashCmd, cmdHlCmd, giphyCmd)
@@ -1940,7 +1942,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// sidebar navigation below, so the switcher moved to ctrl+p.) The
 	// @-mention / :emoji popups bind ctrl+p to "move selection up", so don't
 	// steal it while one of those is open in the composer.
-	popupOpen := m.focus == focusInput && (m.mention.active || m.emoji.active || m.slash.active || m.lang.active)
+	popupOpen := m.focus == focusInput && (m.mention.active || m.emoji.active || m.slash.active || m.lang.active || m.effectPopup.active)
 	if key.Matches(msg, m.keys.Switcher) && msg.String() != "ctrl+c" && !popupOpen {
 		return m.openSwitcher()
 	}
@@ -2640,6 +2642,31 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// The "\" effect picker owns the same navigation/accept/dismiss keys when it's
+	// open, mirroring the popups above. It only fires on a backslash followed by
+	// letters, where none of the other triggers can have opened one.
+	if m.effectPopup.active && len(m.effectPopup.items) > 0 {
+		switch {
+		case key.Matches(msg, m.keys.InputUp):
+			if m.effectPopup.idx > 0 {
+				m.effectPopup.idx--
+			}
+			return m, nil
+		case key.Matches(msg, m.keys.InputDown):
+			if m.effectPopup.idx < len(m.effectPopup.items)-1 {
+				m.effectPopup.idx++
+			}
+			return m, nil
+		case key.Matches(msg, m.keys.Tab), key.Matches(msg, m.keys.Send):
+			if m.acceptEffectPopup() {
+				return m, nil
+			}
+		case msg.String() == "esc": // hardwired popup dismiss
+			m.closeEffectPopup()
+			return m, nil
+		}
+	}
+
 	// The ```-fence language picker owns the same navigation/accept/dismiss keys
 	// when it's open, mirroring the popups above. It only opens on an opening
 	// code fence's info string, where '@', ':' or a leading '/' can't have
@@ -2673,7 +2700,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// rather than going through the configurable keymap.) Suppressed while an
 	// @-mention / :emoji / ```-language popup owns the slot so they never fight
 	// over it.
-	if m.grammarEnabled() && !m.mention.active && !m.emoji.active && !m.slash.active && !m.lang.active {
+	if m.grammarEnabled() && !m.mention.active && !m.emoji.active && !m.slash.active && !m.lang.active && !m.effectPopup.active {
 		if msg.String() == "alt+g" && len(m.grammar.matches) > 0 {
 			m.openOrCycleGrammarPopup()
 			return m, nil
@@ -2776,6 +2803,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.closeEmoji()
 		m.closeSlash()
 		m.closeLang()
+		m.closeEffectPopup()
 		m.clearGrammar()
 		m.status = "draft cleared"
 		// Wiping a draft also drops its server copy — for whichever target the
@@ -2801,6 +2829,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.closeEmoji()
 		m.closeSlash()
 		m.closeLang()
+		m.closeEffectPopup()
 		m.clearGrammar()
 		if editing {
 			m.cancelEdit()
@@ -2837,6 +2866,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.closeEmoji()
 			m.closeSlash()
 			m.closeLang()
+			m.closeEffectPopup()
 			m.clearGrammar()
 			m.restoreInputPrompt()
 			m.status = "saving edit…"
@@ -2881,6 +2911,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.closeEmoji()
 		m.closeSlash()
 		m.closeLang()
+		m.closeEffectPopup()
 		m.clearGrammar()
 		wire := compileEffects(text)
 		m.appendOptimistic(channelID, rootID, wire, fileIDs)
@@ -2929,6 +2960,8 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	m.updateEmoji()
 	slashCmd := m.updateSlash()
 	m.updateLang()
+	m.updateEffectPopup()
+	m.syncComposerDecorations()
 	cmdHlCmd := m.updateCommandHighlight()
 	m.syncInputHeight()
 	return m, tea.Batch(cmd, mentionCmd, slashCmd, cmdHlCmd, typingCmd, grammarCmd, draftCmd)

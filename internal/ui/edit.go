@@ -26,6 +26,7 @@ func (m *Model) beginEditPost(p *model.Post) tea.Cmd {
 	m.closeMention()
 	m.closeSlash()
 	m.closeLang()
+	m.closeEffectPopup()
 	m.editingPostID = p.Id
 	m.input.Reset()
 	// Show the markup, not the compiled body: a post sent as \shimmer{today}
@@ -33,6 +34,10 @@ func (m *Model) beginEditPost(p *model.Post) tea.Cmd {
 	// and any edit to the text would shift the offsets out from under it.
 	m.input.SetValue(decompileEffects(p.Message))
 	m.input.CursorEnd()
+	// Preview the markup we just put back straight away, rather than waiting for
+	// the first keystroke (scheduleGrammarCheck below is a no-op when grammar is
+	// off, so it can't be relied on for this).
+	m.syncComposerDecorations()
 	m.input.SetPromptFunc(2, inputPromptFunc("✎ "))
 	m.focus = focusInput
 	focusCmd := m.input.Focus()

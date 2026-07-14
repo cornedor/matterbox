@@ -209,6 +209,38 @@ func TestResolveEffectsDoesNotPaintOverImagePlaceholder(t *testing.T) {
 	}
 }
 
+// An effect whose boundary lands inside a markdown token would split it, and
+// goldmark would print the asterisks literally — the effect corrupting the very
+// text it decorates. The span is dropped instead: the words render exactly as
+// they would with no effect at all.
+func TestEffectStraddlingMarkdownIsDropped(t *testing.T) {
+	// The closing "**" is split: the span starts between the two asterisks.
+	wire := compileEffects("**bold*\\shimmer{*} tail")
+	got := renderMarkdownEffects(wire, nil, nil, "")
+	want := renderMarkdown("**bold** tail", nil, nil, "")
+
+	if got != want {
+		t.Errorf("a straddling effect changed the rendered text:\n got  %q\n want %q", got, want)
+	}
+	if hasEffectSentinel(got) {
+		t.Error("the dropped span still left sentinels behind")
+	}
+}
+
+// The guard must not fire on the ordinary case: an effect wrapping a markdown
+// token (rather than splitting one) keeps both the styling and the effect.
+func TestEffectAroundMarkdownIsKept(t *testing.T) {
+	wire := compileEffects("\\shimmer{**bold**} tail")
+	got := renderMarkdownEffects(wire, nil, nil, "")
+
+	if !hasEffectSentinel(got) {
+		t.Fatal("the effect was dropped even though it doesn't split a token")
+	}
+	if want := renderMarkdown("**bold** tail", nil, nil, ""); stripEffectSentinels(got) != want {
+		t.Errorf("the markdown rendered differently:\n got  %q\n want %q", stripEffectSentinels(got), want)
+	}
+}
+
 // The sentinels must survive renderMarkdown untouched, or the whole pipeline
 // breaks: the injected runes have to reach the wrap stage intact.
 func TestSentinelsSurviveRenderMarkdown(t *testing.T) {

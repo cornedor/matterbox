@@ -97,3 +97,31 @@ func TestDecompileEffectsDropsStaleSpans(t *testing.T) {
 		t.Errorf("decompileEffects(stale) = %q; want the plain text %q", got, "hi")
 	}
 }
+
+// The per-effect slash commands apply one effect to the entire message. The text
+// is taken literally, so a path or a brace in it is shimmered rather than parsed.
+func TestWholeMessageEffect(t *testing.T) {
+	wire := wholeMessageEffect(effects.Shimmer, "ship it")
+	if got := hidden.Strip(wire); got != "ship it" {
+		t.Fatalf("visible text = %q; want %q", got, "ship it")
+	}
+	payload, ok := hidden.Decode(effects.MagicEffects, wire)
+	if !ok {
+		t.Fatal("no payload")
+	}
+	spans, _ := effects.UnmarshalPayload(payload)
+	want := effects.Span{ID: effects.Shimmer, Start: 0, Len: 7}
+	if len(spans) != 1 || spans[0] != want {
+		t.Fatalf("spans = %+v; want one span over the whole message (%+v)", spans, want)
+	}
+
+	// Literal, not parsed: no escaping hazard.
+	lit := wholeMessageEffect(effects.Glow, "C:\\temp {braces}")
+	if got := hidden.Strip(lit); got != "C:\\temp {braces}" {
+		t.Errorf("the text was reinterpreted: %q", got)
+	}
+	// An unknown effect id can't produce a payload.
+	if got := wholeMessageEffect(0, "x"); got != "x" {
+		t.Errorf("an unknown effect produced a payload: %q", got)
+	}
+}

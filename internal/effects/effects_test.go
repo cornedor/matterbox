@@ -214,3 +214,56 @@ func TestOrderedNestsOutermostFirst(t *testing.T) {
 		t.Errorf("Ordered = %+v; want shimmer (outer) before glow (inner)", got)
 	}
 }
+
+// Highlight addresses the composer *source*, not the visible text — the composer
+// is still showing the markup, so Parse's offsets would point at the wrong runes.
+func TestHighlightRegions(t *testing.T) {
+	// 0123456789...
+	// "go \shimmer{now}"
+	regions := Highlight("go \\shimmer{now}")
+	want := []Region{
+		{ID: Shimmer, Start: 3, End: 12},              // "\shimmer{"
+		{ID: Shimmer, Start: 12, End: 15, Body: true}, // "now"
+		{ID: Shimmer, Start: 15, End: 16},             // "}"
+	}
+	if len(regions) != len(want) {
+		t.Fatalf("regions = %+v; want %+v", regions, want)
+	}
+	for i := range want {
+		if regions[i] != want[i] {
+			t.Errorf("region %d = %+v; want %+v", i, regions[i], want[i])
+		}
+	}
+}
+
+// Only what Parse would actually act on lights up — that is the whole feedback
+// value: a typo looks different from a working directive.
+func TestHighlightIgnoresWhatParseIgnores(t *testing.T) {
+	for _, src := range []string{
+		"\\shimer{typo}",       // unknown name
+		"\\shimmer{unbalanced", // never closed
+		"a path C:\\temp",      // not a directive
+		"\\\\shimmer{escaped}", // an escaped backslash
+		"nothing at all",
+	} {
+		if got := Highlight(src); len(got) != 0 {
+			t.Errorf("Highlight(%q) lit up %+v; want nothing", src, got)
+		}
+	}
+}
+
+// Nested directives are reported innermost-first, so a UI resolving overlaps by
+// "first match wins" gives the inner effect the body.
+func TestHighlightNestsInnermostFirst(t *testing.T) {
+	regions := Highlight("\\shimmer{a \\glow{b} c}")
+	var firstBody Region
+	for _, r := range regions {
+		if r.Body {
+			firstBody = r
+			break
+		}
+	}
+	if firstBody.ID != Glow {
+		t.Errorf("first body region is %+v; want the inner glow to come first", firstBody)
+	}
+}

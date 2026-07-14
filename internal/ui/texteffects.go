@@ -23,6 +23,19 @@ func compileEffects(text string) string {
 	return visible + hidden.Encode(effects.MagicEffects, effects.MarshalPayload(spans))
 }
 
+// wholeMessageEffect puts one effect over an entire message — what the
+// per-effect slash commands (/shimmer <text>) send. The text is taken literally:
+// no directive is parsed inside it, so `/shimmer C:\temp` shimmers the path
+// rather than trying to read it as markup, and there is nothing to escape.
+func wholeMessageEffect(id byte, text string) string {
+	n := len([]rune(text))
+	if n == 0 || effects.Name(id) == "" {
+		return text
+	}
+	spans := []effects.Span{{ID: id, Start: 0, Len: n}}
+	return text + hidden.Encode(effects.MagicEffects, effects.MarshalPayload(spans))
+}
+
 // decompileEffects is compileEffects' inverse, for editing: it turns a post body
 // that carries an effects payload back into the markup that produced it, so
 // re-opening your own `\shimmer{today}` in the composer shows exactly that rather

@@ -63,6 +63,26 @@ var nameByID = map[byte]string{
 // Name returns an effect's directive name, or "" if id is not recognised.
 func Name(id byte) string { return nameByID[id] }
 
+// Effect describes one recognised effect for a UI that has to offer them (the
+// composer's "\" picker). Listed in the order they should be shown, not by id.
+type Effect struct {
+	ID   byte
+	Name string
+	Desc string
+}
+
+// All returns the effects a user can type, in presentation order. It is the one
+// list a picker should read: an effect that isn't here can't be typed, and one
+// that is here is guaranteed to parse.
+func All() []Effect {
+	return []Effect{
+		{Shimmer, "shimmer", "a bright band sweeps across the text"},
+		{Rainbow, "rainbow", "hue cycles along the text"},
+		{Pulse, "pulse", "the text breathes, bright to dim"},
+		{Glow, "glow", "a soft warm halo, breathing"},
+	}
+}
+
 // Known reports whether name is a recognised effect. This is the safety gate:
 // Parse leaves any \name{...} whose name is not Known as literal text.
 func Known(name string) bool {
@@ -145,6 +165,74 @@ func Parse(src string) (visible string, spans []Span) {
 	// Frames still open here are unbalanced; their bodies are already in the
 	// visible text, so there is nothing to record — the effect just doesn't apply.
 	return b.String(), spans
+}
+
+// Region is a piece of composer *source* that a UI can style: either a
+// directive's syntax (`\shimmer{`, `}`) or the body it wraps. Offsets are rune
+// indices into the source, not the visible text — Parse's spans address the text
+// after the markup is gone, which is no use to an editor still showing it.
+type Region struct {
+	ID         byte
+	Start, End int
+	Body       bool // the text the effect will paint; false = the syntax that disappears
+}
+
+// Highlight finds the recognised directives in composer source, so the composer
+// can show what will happen before it happens: an effect that will actually fire
+// is visibly an effect, and a typo (`\shimer{...}`) stays plain text — which is
+// the only feedback that tells you why it isn't working.
+//
+// Only balanced directives with known names are reported, exactly matching what
+// Parse would act on. Regions are returned innermost-first, so a caller that
+// resolves overlaps by "first match wins" gets the nesting right.
+func Highlight(src string) []Region {
+	rs := []rune(src)
+	var out []Region
+
+	type frame struct {
+		id        byte
+		open      int // '\' index
+		bodyStart int
+	}
+	var stack []frame
+
+	for i := 0; i < len(rs); {
+		switch {
+		case rs[i] == '\\' && i+1 < len(rs) && rs[i+1] == '\\':
+			i += 2 // an escaped backslash is literal; it opens nothing
+		case rs[i] == '\\':
+			name, brace, ok := directiveAt(rs, i)
+			if !ok {
+				i++
+				continue
+			}
+			if _, closed := matchBrace(rs, brace); !closed {
+				i++ // unbalanced: Parse leaves it literal, so we don't light it up
+				continue
+			}
+			out = append(out, Region{ID: idByName[name], Start: i, End: brace + 1})
+			stack = append(stack, frame{id: idByName[name], open: i, bodyStart: brace + 1})
+			i = brace + 1
+		case rs[i] == '{':
+			stack = append(stack, frame{open: -1}) // a bare brace, kept only for balance
+			i++
+		case rs[i] == '}':
+			if n := len(stack); n > 0 {
+				f := stack[n-1]
+				stack = stack[:n-1]
+				if f.open >= 0 {
+					if i > f.bodyStart { // an empty body has nothing to paint
+						out = append(out, Region{ID: f.id, Start: f.bodyStart, End: i, Body: true})
+					}
+					out = append(out, Region{ID: f.id, Start: i, End: i + 1})
+				}
+			}
+			i++
+		default:
+			i++
+		}
+	}
+	return out
 }
 
 // directiveAt reports the directive opening at rs[i] (which must be '\'): its

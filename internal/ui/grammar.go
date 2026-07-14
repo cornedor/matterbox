@@ -85,8 +85,9 @@ func (m *Model) scheduleGrammarCheck() tea.Cmd {
 	}
 	// Draft changed and no result is ready yet: drop the now-stale underlines
 	// until the pending check returns (mirrors the old overlay, which only drew
-	// while checkedText == the live value).
-	m.input.ClearDecorations()
+	// while checkedText == the live value). Rebuilt rather than cleared, so this
+	// doesn't take the effect previews down with them.
+	m.syncComposerDecorations()
 	m.grammar.seq++
 	seq := m.grammar.seq
 	return tea.Tick(grammarDebounce, func(time.Time) tea.Msg {
@@ -149,7 +150,7 @@ func (m *Model) setGrammarMatches(text string, matches []languagetool.Match) {
 	if len(matches) == 0 {
 		m.grammar.popup = false
 	}
-	m.syncGrammarDecorations()
+	m.syncComposerDecorations()
 }
 
 func (m *Model) cacheGrammar(text string, matches []languagetool.Match) {
@@ -173,7 +174,7 @@ func (m *Model) clearGrammar() {
 	m.grammar.matches = nil
 	m.grammar.popup = false
 	m.grammar.popupIdx = 0
-	m.input.ClearDecorations()
+	m.syncComposerDecorations() // the findings are gone; any effect preview is not
 }
 
 // ---- cursor → match -------------------------------------------------------
@@ -306,21 +307,19 @@ func grammarLabel(mt languagetool.Match) string {
 
 // ---- underline decorations ------------------------------------------------
 
-// syncGrammarDecorations pushes the current findings to the input as inline
-// curly-underline decorations, or clears them when they no longer apply. The
-// editor draws decorations during its own wrap+scroll pass, so offsets always
-// line up with what's on screen — even when the composer has scrolled. This
-// must be called whenever the findings or the draft change.
-func (m *Model) syncGrammarDecorations() {
+// grammarDecorations renders the current findings as inline curly underlines, or
+// nil when they no longer apply. The editor draws decorations during its own
+// wrap+scroll pass, so offsets always line up with what's on screen — even when
+// the composer has scrolled.
+func (m *Model) grammarDecorations() []editor.Decoration {
 	if !m.grammarEnabled() {
-		return
+		return nil
 	}
 	// Findings are addressed by rune offset into the checked draft; only paint
 	// while that still equals the live value, so a half-typed change never
 	// shows stale squiggles at the wrong place.
 	if len(m.grammar.matches) == 0 || m.grammar.checkedText != m.input.Value() {
-		m.input.ClearDecorations()
-		return
+		return nil
 	}
 	decos := make([]editor.Decoration, 0, len(m.grammar.matches))
 	for _, mt := range m.grammar.matches {
@@ -335,7 +334,7 @@ func (m *Model) syncGrammarDecorations() {
 				UnderlineColor(grammarColor(mt.IssueType)),
 		})
 	}
-	m.input.SetDecorations(decos)
+	return decos
 }
 
 // ---- footer hint + popup --------------------------------------------------

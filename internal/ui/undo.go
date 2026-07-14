@@ -148,6 +148,8 @@ func (m *Model) applyComposerSnapshot(v string) tea.Cmd {
 	m.updateEmoji()
 	slashCmd := m.updateSlash()
 	m.updateLang()
+	m.updateEffectPopup()
+	m.syncComposerDecorations()
 	cmdHlCmd := m.updateCommandHighlight()
 	m.clearGrammar()
 	return tea.Batch(mentionCmd, slashCmd, cmdHlCmd, m.scheduleGrammarCheck())

@@ -1737,6 +1737,9 @@ func (m *Model) renderMessagesPane(height, width int) string {
 		popup = m.renderLangPopup()
 	}
 	if popup == "" {
+		popup = m.renderEffectPopup(width)
+	}
+	if popup == "" {
 		popup = m.renderGrammarPopup()
 	}
 	if popup != "" {

@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattermost/mattermost/server/public/model"
 
+	"matterbox/internal/effects"
 	"matterbox/internal/mm"
 )
 
@@ -39,7 +40,7 @@ type slashCommand struct {
 // slashRegistry is the ordered list of built-in "/" commands. Order is the
 // display order in /help.
 func slashRegistry() []slashCommand {
-	return []slashCommand{
+	cmds := []slashCommand{
 		{name: "me", args: "<action>", desc: "send an action / emote message", run: slashMe},
 		{name: "shrug", args: "[message]", desc: `append ¯\_(ツ)_/¯ to your message`, run: slashShrug},
 		{name: "dm", aliases: []string{"msg"}, args: "@user[,@user…] [message]",
@@ -48,6 +49,36 @@ func slashRegistry() []slashCommand {
 			desc: "open the Search tab and run a query", run: slashSearch},
 		{name: "help", aliases: []string{"commands"}, desc: "list the available slash commands", run: slashHelp},
 	}
+	return append(cmds, slashEffectCommands()...)
+}
+
+// slashEffectCommands generates one command per text effect (/shimmer <text>),
+// which applies it to the whole message — the shorthand for wrapping everything
+// you were going to type in \shimmer{…} anyway. Generated from effects.All() so
+// a new effect cannot be added without its command appearing too.
+func slashEffectCommands() []slashCommand {
+	cmds := make([]slashCommand, 0, len(effects.All()))
+	for _, e := range effects.All() {
+		id := e.ID
+		cmds = append(cmds, slashCommand{
+			name: e.Name,
+			args: "<text>",
+			desc: "send the whole message with the " + e.Name + " effect (" + e.Desc + ")",
+			run:  func(m *Model, args string) tea.Cmd { return m.sendEffectMessage(id, args) },
+		})
+	}
+	return cmds
+}
+
+// sendEffectMessage posts args as an ordinary message carrying one effect over
+// the whole of it.
+func (m *Model) sendEffectMessage(id byte, args string) tea.Cmd {
+	text := strings.TrimSpace(args)
+	if text == "" {
+		m.status = "usage: /" + effects.Name(id) + " <text>"
+		return nil
+	}
+	return m.sendComposedText(wholeMessageEffect(id, text))
 }
 
 // lookupSlash finds a registered command by name or alias (case-insensitive
@@ -107,6 +138,7 @@ func (m *Model) consumeComposer() tea.Cmd {
 	m.closeEmoji()
 	m.closeSlash()
 	m.closeLang()
+	m.closeEffectPopup()
 	m.clearGrammar()
 	if !m.threadOpen && m.openChannelID != "" {
 		return m.clearDraft(m.openChannelID)
