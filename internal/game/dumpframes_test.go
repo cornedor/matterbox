@@ -19,7 +19,9 @@ func TestDumpFrames(t *testing.T) {
 		t.Skip("set GORILLA_DUMP=<dir> to write frames")
 	}
 
-	const pxW, pxH = 1280, 700 // 2× the field, so a 6×7 banana is legible on screen
+	// A 4:3 box, which is the shape the field is actually given — see
+	// DisplayAspect. Twice the frame buffer's width, so a 6×7 banana is legible.
+	const pxW, pxH = 1280, 960
 	var r Renderer
 	dump := func(name string, img *image.RGBA) {
 		t.Helper()

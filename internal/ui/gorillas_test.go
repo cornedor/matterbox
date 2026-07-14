@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -127,6 +128,38 @@ func TestSizeGorillasFitsTheTerminal(t *testing.T) {
 		}
 		if g.rows > max(dim[1]-8, 8) {
 			t.Errorf("%dx%d: field is %d rows tall, taller than the terminal", dim[0], dim[1], g.rows)
+		}
+	}
+}
+
+// The field must come out 4:3 in *pixels*, whatever the terminal's cell size.
+//
+// SCREEN 9's 640×350 buffer was only ever seen on a 4:3 monitor, so the field's
+// units are 1.37 times taller than they are wide — which the game's own geometry
+// already assumes, drawing circles as squat ellipses so they come out round. Give
+// the field a 640:350 box and every one of those ellipses stays an ellipse.
+//
+// Two corrections stack: the display aspect, and the terminal cell's own. Test
+// both a tall cell and a nearly square one, since applying only one of the two
+// still passes at some cell sizes by luck.
+func TestSizeGorillasIsFourThree(t *testing.T) {
+	for _, cell := range [][2]int{{8, 16}, {10, 20}, {9, 18}, {8, 10}} {
+		for _, dim := range [][2]int{{200, 60}, {160, 50}, {120, 44}} {
+			m := &Model{width: dim[0], height: dim[1], cellPxW: cell[0], cellPxH: cell[1]}
+			m.gorillas.active = true
+			m.sizeGorillas()
+
+			g := m.gorillas
+			pxW := float64(g.cols * cell[0])
+			pxH := float64(g.rows * cell[1])
+			got := pxW / pxH
+
+			// One cell of rounding slop at these sizes is a few percent.
+			if math.Abs(got-game.DisplayAspect) > 0.06 {
+				t.Errorf("cell %dx%d, terminal %dx%d: field is %d×%d cells = %.0f×%.0f px, "+
+					"aspect %.2f; want %.2f",
+					cell[0], cell[1], dim[0], dim[1], g.cols, g.rows, pxW, pxH, got, game.DisplayAspect)
+			}
 		}
 	}
 }

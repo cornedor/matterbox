@@ -572,21 +572,30 @@ func (m *Model) closeGorillas() tea.Cmd {
 	return nil
 }
 
-// sizeGorillas fits the field to the terminal, keeping the original's 640×350
-// aspect so the city is never stretched.
+// sizeGorillas fits the field to the terminal, in the shape a monitor would have
+// given it: 4:3, not the frame buffer's 640×350.
+//
+// Two aspect corrections stack here, and it is easy to apply only one. The field
+// wants to be shown at game.DisplayAspect — that is the CRT's doing, and it is
+// why the sun is stored as an ellipse and comes out round. And a terminal cell is
+// about twice as tall as it is wide, so the box measured in *cells* is nothing
+// like the box measured in pixels. Miss the first and the city is a third too
+// wide; miss the second and it is unrecognisable.
+//
+// The renderer needs none of this. It maps the field onto whatever pixel box it
+// is handed, so the shape of that box is the whole question.
 func (m *Model) sizeGorillas() {
 	g := &m.gorillas
 	maxCols := max(m.width-6, 20)
 	maxRows := max(m.height-8, 8)
 
 	cw, ch := m.cellPxOr(8), m.cellPxHOr(16)
-	// A terminal cell is about twice as tall as it is wide, so the field's 640:350
-	// has to be corrected by the cell's own aspect or the city comes out stretched.
+	// cols·cw : rows·ch must come out as DisplayAspect : 1.
 	cols := maxCols
-	rows := int(float64(cols) * (float64(game.FieldH) / float64(game.FieldW)) * (float64(cw) / float64(ch)))
+	rows := int(float64(cols) * float64(cw) / (game.DisplayAspect * float64(ch)))
 	if rows > maxRows {
 		rows = maxRows
-		cols = int(float64(rows) * (float64(game.FieldW) / float64(game.FieldH)) * (float64(ch) / float64(cw)))
+		cols = int(float64(rows) * game.DisplayAspect * float64(ch) / float64(cw))
 	}
 	g.cols = max(min(cols, maxCols), 10)
 	g.rows = max(min(rows, maxRows), 5)

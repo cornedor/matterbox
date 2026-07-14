@@ -14,6 +14,20 @@ const (
 	FieldW = 640
 	FieldH = 350
 
+	// DisplayAspect is the shape the field has to be given on screen — 4:3, not
+	// 640:350.
+	//
+	// SCREEN 9 is a 640×350 frame buffer, but it was only ever seen on a 4:3
+	// monitor, so a field unit is not square: it is 1.37 times taller than it is
+	// wide. That is not a detail of presentation, it is baked into the geometry —
+	// it is exactly why CIRCLE's default aspect is defAspect, and why every circle
+	// in the game is stored as a squat ellipse and comes out round.
+	//
+	// Hand the field a 640:350 box instead and the drawing is still internally
+	// consistent; it is the *city* that is wrong, stretched a third wider than it
+	// has any business being, with a squashed sun over it.
+	DisplayAspect = 4.0 / 3.0
+
 	bottomLine   = 335 // ground: the base of every building
 	htInc        = 10  // per-building height step along the skyline's slope
 	defBWidth    = 37  // building width is defBWidth + ran(defBWidth)
