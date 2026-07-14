@@ -22,3 +22,33 @@ func compileEffects(text string) string {
 	}
 	return visible + hidden.Encode(effects.MagicEffects, effects.MarshalPayload(spans))
 }
+
+// decompileEffects is compileEffects' inverse, for editing: it turns a post body
+// that carries an effects payload back into the markup that produced it, so
+// re-opening your own `\shimmer{today}` in the composer shows exactly that rather
+// than the bare word (with an invisible payload silently riding along behind it,
+// which the next edit would then misalign).
+//
+// A body carrying no effects payload is returned untouched — including a body
+// carrying some *other* channel's payload, such as a Gorillas game post, whose
+// bytes are not ours to rewrite. Spans that no longer fit the text are dropped,
+// the same way the renderer drops them: the effect stops applying, the words are
+// never corrupted.
+func decompileEffects(body string) string {
+	spans, ok := decodeEffectSpans(body)
+	if !ok || len(spans) == 0 {
+		return body
+	}
+	visible := hidden.Strip(body)
+	n := len([]rune(visible))
+	kept := make([]effects.Span, 0, len(spans))
+	for _, s := range spans {
+		if s.Len > 0 && s.Start >= 0 && s.Start+s.Len <= n && effects.Name(s.ID) != "" {
+			kept = append(kept, s)
+		}
+	}
+	if len(kept) == 0 {
+		return visible
+	}
+	return effects.Reconstruct(visible, kept)
+}

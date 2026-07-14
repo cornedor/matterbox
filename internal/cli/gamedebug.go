@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"matterbox/internal/effects"
 	"matterbox/internal/game"
 )
 
@@ -100,8 +101,9 @@ func inspectGamePost(out io.Writer, body string, cols, rows int, raw bool) error
 		fmt.Fprintln(out, "\nhidden runs — where the bytes are smuggled")
 		for _, r := range runs {
 			magic := "no magic, not ours"
-			if r.magic {
-				magic = fmt.Sprintf("magic %s + %d payload bytes", game.Magic, len(r.bytes)-len(game.Magic))
+			if r.magic != "" {
+				magic = fmt.Sprintf("magic %s (%s) + %d payload bytes",
+					r.magic, r.channel, len(r.bytes)-len(r.magic))
 			}
 			fmt.Fprintf(out, "  bytes %d–%d · runes %d–%d · %d runes · %s\n",
 				r.byteStart, r.byteEnd, r.runeStart, r.runeStart+len(r.bytes), len(r.bytes), magic)
@@ -123,6 +125,14 @@ func inspectGamePost(out io.Writer, body string, cols, rows int, raw bool) error
 		fmt.Fprintln(out)
 		if hidden == 0 {
 			return errors.New("no payload: the body carries no invisible runes at all — whatever copied it stripped them (try --post <id>)")
+		}
+		// The body does carry a payload, just not the game's. Say which, rather
+		// than send the reader hunting for a corrupt blob that isn't corrupt.
+		for _, r := range runs {
+			if r.magic != "" && r.magic != game.Magic {
+				return fmt.Errorf("not a game post: this body carries a %s payload (magic %s), not %s — %s posts have no game state to decode",
+					r.channel, r.magic, game.Magic, r.channel)
+			}
 		}
 		return fmt.Errorf("no payload: %d invisible runes present, but no run of them starts with the %s magic — the blob is truncated or mangled (try --post <id>)", hidden, game.Magic)
 	}
@@ -222,7 +232,28 @@ type hiddenRun struct {
 	byteStart, byteEnd int
 	runeStart          int
 	bytes              []byte // the bytes the run's runes carry, magic included
-	magic              bool
+	magic              string // the channel magic the run opens with, "" if none
+	channel            string // what writes that channel, for humans
+}
+
+// channels are the payload magics matterbox smuggles through a post body. More
+// than one feature now uses the same invisible transport (see internal/hidden),
+// so a run is reported as the channel it actually belongs to — a text-effects
+// blob in a post is a fact about that post, not an unrecognised smear of bytes.
+var channels = []struct{ magic, name string }{
+	{game.Magic, "gorillas"},
+	{effects.MagicEffects, "text effects"},
+}
+
+// channelOf names the channel a run's bytes open with, or ok=false when they
+// match none — an emoji's lone U+FE0F, or a truncated blob.
+func channelOf(b []byte) (magic, name string, ok bool) {
+	for _, c := range channels {
+		if len(b) > len(c.magic) && string(b[:len(c.magic)]) == c.magic {
+			return c.magic, c.name, true
+		}
+	}
+	return "", "", false
 }
 
 func hiddenRuns(body string) []hiddenRun {
@@ -242,7 +273,7 @@ func hiddenRuns(body string) []hiddenRun {
 		}
 		cur.bytes = append(cur.bytes, b)
 		cur.byteEnd = bi + len(string(r))
-		cur.magic = len(cur.bytes) > len(game.Magic) && string(cur.bytes[:len(game.Magic)]) == game.Magic
+		cur.magic, cur.channel, _ = channelOf(cur.bytes)
 		ri++
 	}
 	return runs

@@ -4,7 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	"matterbox/internal/effects"
 	"matterbox/internal/game"
+	"matterbox/internal/hidden"
 )
 
 // hostBody is the shape of a real host post: a visible header, an ASCII board,
@@ -51,7 +53,7 @@ func TestGameDebugState(t *testing.T) {
 		"board",
 		// The raw view spells the blob out where it sits: magic first, then the
 		// state's version byte and its little-endian seed (4242 = 0x1092).
-		"magic MBG1 + 50 payload bytes",
+		"magic MBG1 (gorillas) + 50 payload bytes",
 		"‹4d›‹42›‹47›‹31›‹02›‹92›‹10›",
 	} {
 		if !strings.Contains(got, want) {
@@ -78,8 +80,8 @@ func TestHiddenRuns(t *testing.T) {
 	if body[r.byteStart:r.byteEnd] != blob {
 		t.Errorf("run offsets %d–%d do not bracket the blob", r.byteStart, r.byteEnd)
 	}
-	if !r.magic || string(r.bytes) != game.Magic+"\xaa" {
-		t.Errorf("run carries %q (magic=%v), want the magic + 0xaa", r.bytes, r.magic)
+	if r.magic != game.Magic || string(r.bytes) != game.Magic+"\xaa" {
+		t.Errorf("run carries %q (magic=%q), want the magic + 0xaa", r.bytes, r.magic)
 	}
 	if r.runeStart != 3 {
 		t.Errorf("rune start = %d, want 3", r.runeStart)
@@ -120,5 +122,27 @@ func TestGameDebugEmojiOnly(t *testing.T) {
 	err := inspectGamePost(&out, "just a message with an emoji ☀️", 0, 0, false)
 	if err == nil || !strings.Contains(err.Error(), "MBG1 magic") {
 		t.Fatalf("want a no-magic error, got %v", err)
+	}
+}
+
+// More than one feature rides the invisible transport now. A post carrying a
+// text-effects payload must be named as what it is, not reported as a game blob
+// that came out mangled — that would send someone debugging a corruption that
+// never happened.
+func TestGameDebugNamesTheEffectsChannel(t *testing.T) {
+	spans := []effects.Span{{ID: effects.Shimmer, Start: 0, Len: 5}}
+	body := "today" + hidden.Encode(effects.MagicEffects, effects.MarshalPayload(spans))
+
+	var out strings.Builder
+	err := inspectGamePost(&out, body, 0, 0, false)
+	if err == nil {
+		t.Fatal("an effects post must not decode as a game")
+	}
+	if !strings.Contains(err.Error(), "text effects") || !strings.Contains(err.Error(), effects.MagicEffects) {
+		t.Fatalf("the error should name the effects channel, got: %v", err)
+	}
+	// ...and the run listing should say which channel the blob belongs to.
+	if got := out.String(); !strings.Contains(got, "magic MBF1 (text effects)") {
+		t.Errorf("the hidden-run listing did not name the channel:\n%s", got)
 	}
 }

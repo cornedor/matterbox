@@ -2840,7 +2840,9 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.clearGrammar()
 			m.restoreInputPrompt()
 			m.status = "saving edit…"
-			return m, m.editPost(id, text)
+			// Same compile as a fresh send: the composer holds markup (see
+			// beginEditPost), the wire gets visible text + payload.
+			return m, m.editPost(id, compileEffects(text))
 		}
 		// A leading "/" + letter is a slash command, not a message: handle it
 		// (or forward it to the server) instead of posting the raw text.

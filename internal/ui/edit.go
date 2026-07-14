@@ -28,7 +28,10 @@ func (m *Model) beginEditPost(p *model.Post) tea.Cmd {
 	m.closeLang()
 	m.editingPostID = p.Id
 	m.input.Reset()
-	m.input.SetValue(p.Message)
+	// Show the markup, not the compiled body: a post sent as \shimmer{today}
+	// would otherwise re-open as the bare word trailed by an invisible payload,
+	// and any edit to the text would shift the offsets out from under it.
+	m.input.SetValue(decompileEffects(p.Message))
 	m.input.CursorEnd()
 	m.input.SetPromptFunc(2, inputPromptFunc("✎ "))
 	m.focus = focusInput

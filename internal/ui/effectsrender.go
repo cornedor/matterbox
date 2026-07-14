@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"image/color"
 	"math"
-	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -88,25 +87,22 @@ func injectEffectSentinels(visible string, spans []effects.Span) string {
 	if len(valid) == 0 {
 		return visible
 	}
+	// Open in the directives' own nesting order (effects.Ordered), so the
+	// innermost of a nested pair is pushed last and therefore wins the colour —
+	// the same nesting the composer's markup shows.
+	ordered := effects.Ordered(valid)
 	var b strings.Builder
 	b.Grow(len(visible) + len(valid)*8)
 	for p := 0; p <= len(rs); p++ {
-		var closing, opening []effects.Span
 		for _, s := range valid {
 			if s.Start+s.Len == p {
-				closing = append(closing, s)
+				b.WriteRune(effSentinelEnd) // a close carries no id; only the count matters
 			}
+		}
+		for _, s := range ordered {
 			if s.Start == p {
-				opening = append(opening, s)
+				b.WriteRune(effStart(s.ID))
 			}
-		}
-		sort.Slice(closing, func(i, j int) bool { return closing[i].Start > closing[j].Start })
-		for range closing {
-			b.WriteRune(effSentinelEnd)
-		}
-		sort.Slice(opening, func(i, j int) bool { return opening[i].Len > opening[j].Len })
-		for _, s := range opening {
-			b.WriteRune(effStart(s.ID))
 		}
 		if p < len(rs) {
 			b.WriteRune(rs[p])

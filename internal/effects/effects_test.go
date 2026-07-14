@@ -164,6 +164,15 @@ func TestReconstructRoundTrips(t *testing.T) {
 		"\\glow{ship \\pulse{it}}",
 		"plain, no effects",
 		"a literal backslash \\\\ stays",
+		// Two directives over exactly the same runes: length can't tell them
+		// apart, so only their recorded order says which is the outer one.
+		"\\shimmer{\\glow{nested}}",
+		// A backslash that is neither an escape nor a directive must survive
+		// untouched — an edited Windows path must not grow a slash per edit.
+		"a path C:\\temp and a \\shimmer{live} word",
+		"regex \\d+ next to \\rainbow{colour}",
+		// A literal, escaped directive must stay literal.
+		"\\\\shimmer{not an effect} but \\pulse{this is}",
 	} {
 		visible, spans := Parse(src)
 		re := Reconstruct(visible, spans)
@@ -172,5 +181,36 @@ func TestReconstructRoundTrips(t *testing.T) {
 			t.Errorf("Reconstruct(%q) = %q re-parsed to (%q, %+v); want (%q, %+v)",
 				src, re, v2, s2, visible, spans)
 		}
+	}
+}
+
+// The markup a re-opened post shows must be the markup that was typed, not just
+// something that happens to compile to the same thing.
+func TestReconstructReproducesTheSource(t *testing.T) {
+	for _, src := range []string{
+		"release is \\shimmer{today}",
+		"\\shimmer{\\glow{nested}}",
+		"a path C:\\temp and a \\shimmer{live} word",
+		"regex \\d+ next to \\rainbow{colour}",
+	} {
+		visible, spans := Parse(src)
+		if got := Reconstruct(visible, spans); got != src {
+			t.Errorf("Reconstruct = %q; want the original source %q", got, src)
+		}
+	}
+}
+
+// Ordered puts nested spans in opening order — outermost first — even when they
+// cover exactly the same runes and Parse recorded the inner one first.
+func TestOrderedNestsOutermostFirst(t *testing.T) {
+	_, spans := Parse("\\shimmer{\\glow{x}}")
+	if len(spans) != 2 {
+		t.Fatalf("expected 2 spans, got %+v", spans)
+	}
+	if spans[0].ID != Glow {
+		t.Fatalf("Parse should record the inner span first; got %+v", spans)
+	}
+	if got := Ordered(spans); got[0].ID != Shimmer || got[1].ID != Glow {
+		t.Errorf("Ordered = %+v; want shimmer (outer) before glow (inner)", got)
 	}
 }

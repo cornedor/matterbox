@@ -190,40 +190,60 @@ func matchBrace(rs []rune, open int) (close int, ok bool) {
 	return 0, false
 }
 
+// Ordered returns spans in the order their directives *open*: by start, then
+// outermost first. This is not the order Parse emits them — a span is recorded
+// when it closes, so the inner of two nested directives is appended first — and
+// for two spans covering exactly the same runes (`\shimmer{\glow{x}}`) length
+// alone cannot tell them apart. There the original order decides: the one
+// recorded later closed later, so it is the outer one.
+//
+// Anything that has to re-nest spans needs this — the composer rebuilding the
+// markup (Reconstruct) and the renderer bracketing the text — or the two
+// directives silently swap.
+func Ordered(spans []Span) []Span {
+	out := make([]Span, 0, len(spans))
+	for i := len(spans) - 1; i >= 0; i-- {
+		out = append(out, spans[i]) // reversed, so the outer of an identical pair leads
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Start != out[j].Start {
+			return out[i].Start < out[j].Start
+		}
+		return out[i].Len > out[j].Len
+	})
+	return out
+}
+
 // Reconstruct is Parse's inverse: it rebuilds composer source from visible text
-// and its spans, so an own-post edit can show the markup again. Literal
-// backslashes are re-escaped; nested spans are re-opened outermost-first and
-// closed innermost-first.
+// and its spans, so an own-post edit can show the markup again rather than the
+// bare words. Parse(Reconstruct(v, spans)) returns (v, spans).
+//
+// A literal backslash is escaped only where leaving it alone would change that:
+// where it opens a known directive, or where it would pair up with the next
+// backslash into an escape. Ordinary ones are left exactly as the author typed
+// them — a Windows path in an edited message must not grow a slash every time it
+// is re-opened.
 func Reconstruct(visible string, spans []Span) string {
 	rs := []rune(visible)
+	ordered := Ordered(spans)
 	var b strings.Builder
 	for p := 0; p <= len(rs); p++ {
-		// Close spans ending here, innermost (largest Start) first.
-		var closing []Span
+		// Close every span ending here. Only the count matters — a close is just
+		// '}', so their relative order can't be observed.
 		for _, s := range spans {
 			if s.Start+s.Len == p {
-				closing = append(closing, s)
+				b.WriteByte('}')
 			}
 		}
-		sort.Slice(closing, func(i, j int) bool { return closing[i].Start > closing[j].Start })
-		for range closing {
-			b.WriteByte('}')
-		}
-		// Open spans starting here, outermost (largest Len) first.
-		var opening []Span
-		for _, s := range spans {
+		for _, s := range ordered {
 			if s.Start == p {
-				opening = append(opening, s)
+				b.WriteByte('\\')
+				b.WriteString(nameByID[s.ID])
+				b.WriteByte('{')
 			}
-		}
-		sort.Slice(opening, func(i, j int) bool { return opening[i].Len > opening[j].Len })
-		for _, s := range opening {
-			b.WriteByte('\\')
-			b.WriteString(nameByID[s.ID])
-			b.WriteByte('{')
 		}
 		if p < len(rs) {
-			if rs[p] == '\\' {
+			if rs[p] == '\\' && backslashNeedsEscape(rs, p) {
 				b.WriteString(`\\`)
 			} else {
 				b.WriteRune(rs[p])
@@ -231,6 +251,17 @@ func Reconstruct(visible string, spans []Span) string {
 		}
 	}
 	return b.String()
+}
+
+// backslashNeedsEscape reports whether the literal backslash at rs[p] would be
+// re-read as something other than itself: as the escape of a following backslash,
+// or as the opening of a known directive.
+func backslashNeedsEscape(rs []rune, p int) bool {
+	if p+1 < len(rs) && rs[p+1] == '\\' {
+		return true
+	}
+	_, _, isDirective := directiveAt(rs, p)
+	return isDirective
 }
 
 // MarshalPayload encodes spans as the MBF1 payload body:
