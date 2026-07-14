@@ -889,6 +889,8 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	// Live-highlight inline markdown (bold/italic/strike/code) as the user types,
 	// keeping the markers visible so they can see what each will change.
 	ta.MarkdownHighlight = true
+	// A newline inside a list item opens the next one ("- x" → "- ", "1. x" → "2. ").
+	ta.ContinueLists = true
 	// PromptFunc only renders "> " on the first visual row of the input
 	// and pads continuation lines with two spaces so multi-line content
 	// reads cleanly. The default prompt is updated when a thread is opened

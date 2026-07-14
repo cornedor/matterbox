@@ -43,6 +43,7 @@ func newCommentTextarea() editor.Model {
 	// Place the real terminal cursor in the comment editor (see jiraCommentCursor).
 	ta.NativeCursor = true
 	ta.Styles.Placeholder = lipgloss.NewStyle().Foreground(dimColor)
+	ta.ContinueLists = true
 	ta.KeyMap.InsertNewline = key.NewBinding(
 		key.WithKeys("alt+enter", "shift+enter"),
 		key.WithHelp("alt+↵/shift+↵", "newline"),

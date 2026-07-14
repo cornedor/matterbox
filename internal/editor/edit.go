@@ -66,8 +66,15 @@ func (m *Model) insert(rs []rune) {
 	m.afterEdit()
 }
 
-// InsertNewline inserts a hard line break at the cursor.
-func (m *Model) InsertNewline() { m.insert([]rune{'\n'}) }
+// InsertNewline inserts a hard line break at the cursor. With ContinueLists set
+// it first offers the break to the markdown list continuation (see list.go),
+// which may open the next item instead of inserting a bare line.
+func (m *Model) InsertNewline() {
+	if m.ContinueLists && !m.HasSelection() && m.continueList() {
+		return
+	}
+	m.insert([]rune{'\n'})
+}
 
 // deleteBackward removes the rune before the cursor, joining lines at a line
 // start.

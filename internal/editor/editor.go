@@ -79,6 +79,13 @@ type Model struct {
 	// (the composer, jira comments) opt in. See markdown.go and Styles.Markdown.
 	MarkdownHighlight bool
 
+	// ContinueLists, when set, carries a markdown list marker onto the next line
+	// when the caret is in a list item and a newline is inserted ("- x" ⏎ opens
+	// "- ", "1. x" ⏎ opens "2. "); a newline on the still-empty item ends the
+	// list. Off by default — an editor holding non-markdown text (the SQL tab)
+	// doesn't want it. See list.go.
+	ContinueLists bool
+
 	// NativeCursor, when set, suppresses the drawn reverse-video caret in View:
 	// the owner reads CursorViewPos and places the real terminal cursor instead
 	// (so its blink, colour and shape follow the terminal). Off by default — an
