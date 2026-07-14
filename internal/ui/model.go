@@ -780,6 +780,12 @@ type Model struct {
 	// rather than running its own: the placeholder encoding is identical.
 	inlineImg *inlineImages
 
+	// effectsAnim drives the animated text effects (\shimmer{...} and friends)
+	// carried invisibly in post bodies: the frame loop's guard, its phase, and
+	// the viewport gate that stops it whenever no post with effects is on
+	// screen. See effectsanim.go.
+	effectsAnim effectsAnimState
+
 	// imgAnimating guards the single GIF animation loop, shared by custom emoji
 	// and inline image thumbnails: it's set when the first animated image of
 	// either kind becomes ready and the tick is armed, and cleared when the loop
@@ -1152,8 +1158,11 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		mouseEnabled:        mouseEnabled,
 		attachOnDrop:        attachOnDrop,
 		focus:               focusMessages,
-		msgsView:            msgsView,
-		threadView:          threadView,
+		// Start the effects mid-sweep, so the first frame drawn for a post that is
+		// already on screen shows the gradient rather than the band's exited edge.
+		effectsAnim: effectsAnimState{phase: effectStaticPhase},
+		msgsView:    msgsView,
+		threadView:  threadView,
 		refView:             refView,
 		infoView:            infoView,
 		infoIdx:             -1,

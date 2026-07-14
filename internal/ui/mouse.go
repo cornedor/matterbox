@@ -1091,7 +1091,9 @@ func (m *Model) selectedText() string {
 		if end < start {
 			end = start
 		}
-		seg := ansi.Strip(ansi.Cut(lines[li], start, end))
+		// ansi.Strip drops the escape sequences; the effect sentinels are ordinary
+		// (invisible) runes and would otherwise be copied to the clipboard.
+		seg := stripEffectSentinels(ansi.Strip(ansi.Cut(lines[li], start, end)))
 		if li != l1 {
 			seg = strings.TrimRight(seg, " ")
 			b.WriteString(seg)

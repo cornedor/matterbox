@@ -96,3 +96,9 @@ func shimmerColor(pos, n int, phase float64) color.Color {
 func lerpByte(a, b uint8, t float64) uint8 {
 	return uint8(float64(a) + (float64(b)-float64(a))*t + 0.5)
 }
+
+// ShimmerColor exposes the command shimmer gradient so the message pane's
+// \shimmer{} text effect can paint with the identical band — a /command token in
+// the composer and a shimmering span in a post read as the same thing. pos is the
+// rune position within a span of n runes, at phase in [0,1).
+func ShimmerColor(pos, n int, phase float64) color.Color { return shimmerColor(pos, n, phase) }

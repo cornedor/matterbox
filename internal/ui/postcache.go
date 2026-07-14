@@ -249,13 +249,13 @@ func (m *Model) markdownBodyMarked(p *model.Post) string {
 	}
 	mr := m.buildMRInlineFn(p.Id)
 	if p.Id == "" {
-		return renderMarkdown(p.Message, m.emojiImg, mr, self)
+		return renderMarkdown(effectsPreprocess(p.Message), m.emojiImg, mr, self)
 	}
 	fp := markdownFingerprint(p)
 	if e, ok := m.postMarkdownCache[p.Id]; ok && e.fp == fp {
 		return e.body
 	}
-	body := renderMarkdown(p.Message, m.emojiImg, mr, self)
+	body := renderMarkdown(effectsPreprocess(p.Message), m.emojiImg, mr, self)
 	if m.postMarkdownCache == nil {
 		m.postMarkdownCache = make(map[string]postMarkdownCacheEntry, 128)
 	}

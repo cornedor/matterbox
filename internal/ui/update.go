@@ -55,6 +55,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if anim := nm.maybeStartImageAnim(); anim != nil {
 		cmd = tea.Batch(cmd, anim)
 	}
+	// Same shape for the text effects: refresh the viewport gate (so an effect
+	// scrolled into view is painted on this very event) and arm the frame loop if
+	// it isn't running. Free when nothing on screen carries effects.
+	if fx := nm.maybeStartEffectsAnim(); fx != nil {
+		cmd = tea.Batch(cmd, fx)
+	}
 	// Reconcile the composer's cursor with m.focus *after* the handler ran, so no
 	// focus-changing path can leave the editor visibly focused (or dark) by
 	// forgetting to blur/focus it. Every event funnels through here, so this is
@@ -275,6 +281,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case imgAnimTickMsg:
 		return m, m.advanceImageAnim()
+
+	case effectsAnimTickMsg:
+		return m, m.applyEffectsTick()
 
 	case typingIndicatorTickMsg:
 		return m, m.applyTypingIndicatorTick()
@@ -2871,7 +2880,8 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.closeSlash()
 		m.closeLang()
 		m.clearGrammar()
-		m.appendOptimistic(channelID, rootID, text, fileIDs)
+		wire := compileEffects(text)
+		m.appendOptimistic(channelID, rootID, wire, fileIDs)
 		m.clearAttachments()
 		m.resizeMessagesViewport()
 		if !m.threadOpen {
@@ -2888,7 +2898,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		} else {
 			draftCmd = m.clearThreadDraft(channelID, rootID)
 		}
-		return m, tea.Batch(m.sendMessage(channelID, rootID, text, fileIDs), draftCmd)
+		return m, tea.Batch(m.sendMessage(channelID, rootID, wire, fileIDs), draftCmd)
 	}
 	var cmd tea.Cmd
 	before := m.input.Value()

@@ -1063,6 +1063,11 @@ func (m *Model) renderThreadPostLines(p *model.Post, isRoot, grouped bool) ([]st
 			lines = append(lines, "  ")
 		}
 	}
+	// Text-effect spans are deliberately left unresolved here: the lines cached
+	// below keep their invisible sentinels, which are width-0 and carry no
+	// colour, so this cache (and every measurement taken from it) is
+	// animation-phase-independent. The spans are painted at the very end of the
+	// render, on the rows actually on screen — see paintEffects / effectsanim.go.
 	rows := postVisualRows(lines, width)
 	if !poll && p.Id != "" {
 		m.putPostLines(p.Id, fp, lines, rows)
@@ -1193,6 +1198,11 @@ func (m *Model) renderPostLines(p *model.Post, grouped bool) ([]string, int) {
 			lines = append(lines, "  ")
 		}
 	}
+	// Text-effect spans are deliberately left unresolved here: the lines cached
+	// below keep their invisible sentinels, which are width-0 and carry no
+	// colour, so this cache (and every measurement taken from it) is
+	// animation-phase-independent. The spans are painted at the very end of the
+	// render, on the rows actually on screen — see paintEffects / effectsanim.go.
 	rows := postVisualRows(lines, width)
 	if !poll && p.Id != "" {
 		m.putPostLines(p.Id, fp, lines, rows)
@@ -1790,7 +1800,9 @@ func (m *Model) renderMessagesPane(height, width int) string {
 		// viewport into the single lower box — byte-identical to the pre-split,
 		// uncached render.
 		lowerH = innerH
-		lowerParts = append(lowerParts, titleLine, m.msgsView.View())
+		// Painted before the box here (the border isn't on these lines yet), so no
+		// chrome to skip — unlike the cached upper box above.
+		lowerParts = append(lowerParts, titleLine, m.paintEffects(m.msgsView.View(), 0))
 	}
 	if popup != "" {
 		lowerParts = append(lowerParts, popup)
@@ -1882,7 +1894,7 @@ func (m *Model) renderMsgsUpper(width, upperRows int, titleLine string, borderCo
 		b.WriteString(titleLine)
 		fp = b.String()
 		if c.valid && c.fp == fp {
-			return c.rendered
+			return m.paintEffects(c.rendered, msgsBoxChrome)
 		}
 	}
 
@@ -1893,8 +1905,19 @@ func (m *Model) renderMsgsUpper(width, upperRows int, titleLine string, borderCo
 	if c != nil {
 		*c = scrollbackCache{fp: fp, rendered: s, valid: true}
 	}
-	return s
+	// Paint the text effects *after* the cache, never into it: the stored box keeps
+	// its invisible sentinels, so it stays valid across animation frames and the
+	// fingerprint above needs no phase. A frame is then just this recolour of the
+	// visible rows, not a re-style of the box (which is the expensive part, and the
+	// reason this cache exists at all).
+	return m.paintEffects(s, msgsBoxChrome)
 }
+
+// msgsBoxChrome is the number of leading runes on each line of the messages box
+// that belong to the frame, not the message: the left border. paintEffects copies
+// them through unpainted, so a span still open across a soft-wrap can't colour
+// the border column of the continuation row.
+const msgsBoxChrome = 1
 
 // renderInputBox renders the compose textarea with a top rule, sized to
 // fit `width` columns. Border colour mirrors focus. Used by both the
@@ -1957,7 +1980,9 @@ func (m *Model) renderThreadPane(height, width int) string {
 	threadTotal, threadPct := m.threadScrollGeom()
 	showScrollbar := threadTotal > m.threadView.Height() && threadPct < 1.0
 
-	parts := []string{titleStyle.Render(title), m.threadView.View()}
+	// The thread pane isn't memoized, so its effects are painted on the bare
+	// viewport rows, before the box adds a border (chrome 0).
+	parts := []string{titleStyle.Render(title), m.paintEffects(m.threadView.View(), 0)}
 	if bar := m.renderAttachmentBar(width - 2); bar != "" {
 		parts = append(parts, bar)
 	}
