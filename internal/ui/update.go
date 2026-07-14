@@ -153,8 +153,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// this re-render re-wraps cached bodies instead of re-styling them.
 		m.postLineCache = nil
 		m.renderAllPanes()
-		// A resize while the image preview is open re-fits + re-transmits it.
-		return m, m.resizePreview()
+		// A resize while the image preview or a game is open re-fits + re-transmits it.
+		return m, tea.Batch(m.resizePreview(), m.resizeGorillas())
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)

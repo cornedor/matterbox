@@ -765,3 +765,17 @@ func (m *Model) gorillasWSEdited(p *model.Post) tea.Cmd {
 	}
 	return nil
 }
+
+// resizeGorillas re-fits the field to a resized terminal and re-transmits it.
+//
+// Deliberately driven from the resize *settle* rather than from layoutPanes: the
+// placeholder grid in View() and the image the terminal is holding have to change
+// size together. Re-fitting on every drag frame would move the grid while the
+// image lagged a frame behind it, and the field would tear.
+func (m *Model) resizeGorillas() tea.Cmd {
+	if !m.gorillas.active {
+		return nil
+	}
+	m.sizeGorillas()
+	return m.gorillasFrameCmd()
+}
