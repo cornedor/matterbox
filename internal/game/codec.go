@@ -31,12 +31,14 @@ const (
 	vsLowCount  = vsLowEnd - vsLowStart + 1 // 16
 )
 
-// magic prefixes every payload. It exists because U+FE0F is also the ordinary
+// Magic prefixes every payload. It exists because U+FE0F is also the ordinary
 // emoji presentation selector, so any post containing an emoji already ends up
 // with stray payload runes in it. Without a magic prefix, Decode would happily
 // read a 🎮 as a one-byte payload. Four bytes is enough that a false positive
 // needs a deliberate effort.
-var magic = []byte{'M', 'B', 'G', '1'}
+const Magic = "MBG1"
+
+var magic = []byte(Magic)
 
 // encodeByte maps a byte onto its variation selector.
 func encodeByte(b byte) rune {
@@ -63,6 +65,12 @@ func isPayloadRune(r rune) bool {
 	_, ok := decodeRune(r)
 	return ok
 }
+
+// PayloadByte reports the byte r carries, or ok=false if r is not one of ours.
+// It exists for `matterbox game-debug`, which has to walk a post body rune by
+// rune and show the blob: the encoding's whole purpose is that nothing on screen
+// reveals it, so a debug view is the only way anyone ever sees where it sits.
+func PayloadByte(r rune) (byte, bool) { return decodeRune(r) }
 
 // Encode renders payload as an invisible run of variation selectors, magic
 // included. The result is safe to append to any post body.

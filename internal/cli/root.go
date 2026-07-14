@@ -42,9 +42,9 @@ func newRootCmd() *cobra.Command {
 			"Run with no arguments to open the interactive UI — on a first run (no saved\n" +
 			"login) it opens the `welcome` setup wizard first, so a fresh install is usable\n" +
 			"out of the box. Or use a subcommand (login, send, reply, react, read, unread,\n" +
-			"mark-read, open, search, channels, digest, whoami, embed, listen, keys) to work\n" +
-			"with messages non-interactively for scripting or to run the background\n" +
-			"sync/notification daemon (listen).",
+			"mark-read, open, search, channels, digest, whoami, embed, listen, keys,\n" +
+			"game-debug) to work with messages non-interactively for scripting or to run\n" +
+			"the background sync/notification daemon (listen).",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		// No subcommand → open the interactive UI. On a first run (no saved
@@ -68,7 +68,7 @@ func newRootCmd() *cobra.Command {
 	}
 	root.Flags().StringVar(&pprofAddr, "pprof", "",
 		"if set (e.g. localhost:6060), serve net/http/pprof on this address")
-	root.AddCommand(newWelcomeCmd(), newLoginCmd(), newURLHandlerCmd(), newRegisterHandlerCmd(), newSendCmd(), newReplyCmd(), newReactCmd(), newReadCmd(), newUnreadCmd(), newMarkReadCmd(), newOpenCmd(), newSearchCmd(), newChannelsCmd(), newDigestCmd(), newWhoamiCmd(), newEmbedCmd(), newListenCmd(), newKeysCmd())
+	root.AddCommand(newWelcomeCmd(), newLoginCmd(), newURLHandlerCmd(), newRegisterHandlerCmd(), newSendCmd(), newReplyCmd(), newReactCmd(), newReadCmd(), newUnreadCmd(), newMarkReadCmd(), newOpenCmd(), newSearchCmd(), newChannelsCmd(), newDigestCmd(), newWhoamiCmd(), newEmbedCmd(), newListenCmd(), newKeysCmd(), newGameDebugCmd())
 	return root
 }
 
