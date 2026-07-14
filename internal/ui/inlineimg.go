@@ -3,6 +3,7 @@ package ui
 import (
 	"errors"
 	"fmt"
+	"image"
 	"sort"
 	"strings"
 	"sync"
@@ -121,6 +122,13 @@ type inlineImgEntry struct {
 	// APC per frame, every one targeting id, so flipping frames just re-emits the
 	// next APC and the placeholder cells already on screen repaint in place — no
 	// re-render. A still image has exactly one entry and a nil delays slice.
+	//
+	// So, for a while, does an animated GIF: encoding a frame costs ~10ms, and a GIF
+	// only animates while it is on screen, so a GIF is built as its first frame alone
+	// and the rest are encoded only if it is ever actually displayed (inlineImages.
+	// deferred → buildVisibleThumbFrames → markFramesBuilt fills these in). Every
+	// consumer here already treats len(frameSeqs) <= 1 as "still", so a GIF waiting
+	// for its frames simply doesn't animate yet.
 	frameSeqs  []string
 	delays     []time.Duration
 	frameIdx   int
@@ -173,6 +181,16 @@ type inlineImages struct {
 	// renders, which is what lets a post that is *not* re-sighted (its lines are
 	// cached) still get fetched later when it comes into reach.
 	pending map[string]previewItem
+	// deferred is the built-but-still GIFs whose frames past the first have not been
+	// encoded yet — the second half of the laziness. `pending` withholds work from
+	// images that are far from the viewport; this withholds the *animation* frames
+	// from images that were built but are not actually on screen, which is most of
+	// them (the fetch margin reaches several screens further than the eye does).
+	// buildVisibleThumbFrames drains the ones that make it on screen. It holds the
+	// previewItem rather than the bytes: the frames are re-read from the same disk
+	// cache the first build populated, so a GIF scrolled past costs no memory beyond
+	// its one still frame.
+	deferred map[string]previewItem
 	// needTransmit is the ready-but-not-resident images sight() has seen this
 	// render; the Update wrapper drains it and re-transmits them (flushInlineTransmits).
 	needTransmit map[string]struct{}
@@ -195,6 +213,7 @@ func newInlineImages(mode string) *inlineImages {
 		mode:         mode,
 		entries:      map[string]*inlineImgEntry{},
 		pending:      map[string]previewItem{},
+		deferred:     map[string]previewItem{},
 		needTransmit: map[string]struct{}{},
 	}
 }
@@ -277,6 +296,7 @@ func (ii *inlineImages) sight(it previewItem, box, resRows, resCols int) sightRe
 		ent.state = inlineImgPending
 		ent.reservedRows, ent.reservedCols = resRows, resCols
 		ii.pending[key] = it
+		delete(ii.deferred, key) // it rebuilds from scratch, under a fresh id
 		return reserved
 	}
 	// Built, but the terminal may no longer hold it — we free images to stay under
@@ -388,7 +408,72 @@ func (ii *inlineImages) markReady(fileID string, r readyInlineImg) (replaced []u
 	}
 	ii.entries[fileID] = ent
 	ii.builtBytes += ent.builtSize()
+	// A GIF arrives as its first frame only; the rest are encoded if and when it is
+	// displayed. Until then it is an ordinary still, and this is the note to come back.
+	if r.deferredFrames {
+		ii.deferred[fileID] = r.item
+	} else {
+		delete(ii.deferred, fileID)
+	}
 	return replaced
+}
+
+// takeDeferredFrames hands back the GIFs whose remaining frames are now worth
+// encoding: built, and on screen. Each is taken out of ii.deferred, so at most one
+// build is ever in flight per thumbnail; if that build fails, the thumbnail stays
+// the still it already is (which is what the user is looking at anyway) rather than
+// being retried on every event.
+func (ii *inlineImages) takeDeferredFrames() []thumbFramesJob {
+	if ii == nil {
+		return nil
+	}
+	ii.mu.Lock()
+	defer ii.mu.Unlock()
+	if ii.mode != "auto" || len(ii.deferred) == 0 {
+		return nil
+	}
+	var out []thumbFramesJob
+	for key, it := range ii.deferred {
+		ent := ii.entries[key]
+		if ent == nil || ent.state != inlineImgReady || !ent.onScreen {
+			continue
+		}
+		delete(ii.deferred, key)
+		out = append(out, thumbFramesJob{key: key, item: it, id: ent.id, box: ent.box})
+	}
+	return out
+}
+
+// markFramesBuilt fills in the animation frames of a GIF that was built as a still,
+// leaving everything else about the entry — its id, its placement, the placeholder
+// on screen — exactly as it was. The frames all target the same id as the still, so
+// there is nothing to re-transmit and nothing to re-render: the next animation tick
+// simply has somewhere to go. The caller need not even arm the loop, since the
+// per-event kicker (maybeStartImageAnim) sees the entry become animated.
+//
+// It is a no-op unless this is still the entry the frames were built for. A re-fit
+// at a new pane width rebuilds under a fresh id and evictBuiltLocked can drop the
+// entry outright, either of which makes these frames garbage; and a cell-size change
+// under the build would land them on a different cell box, which is the one thing
+// that could reflow the transcript.
+func (ii *inlineImages) markFramesBuilt(b builtThumbFrames) bool {
+	if ii == nil {
+		return false
+	}
+	ii.mu.Lock()
+	defer ii.mu.Unlock()
+	ent := ii.entries[b.key]
+	if ent == nil || ent.state != inlineImgReady || ent.id != b.id ||
+		ent.rows != b.rows || ent.cols != b.cols || len(b.seqs) <= 1 {
+		return false
+	}
+	ii.builtBytes -= ent.builtSize()
+	ent.frameSeqs = b.seqs
+	ent.delays = b.delays
+	ent.frameIdx = 0 // the still already on screen is frame 0
+	ent.frameStart = time.Time{}
+	ii.builtBytes += ent.builtSize()
+	return true
 }
 
 // builtSize is the memory this entry's built frames occupy, for the
@@ -486,6 +571,7 @@ func (ii *inlineImages) evictBuiltLocked() (freed []uint32) {
 		ii.builtBytes -= ent.builtSize()
 		delete(ii.entries, a.key)
 		delete(ii.needTransmit, a.key)
+		delete(ii.deferred, a.key)
 	}
 	return freed
 }
@@ -553,6 +639,7 @@ func (ii *inlineImages) markFailed(fileIDs ...string) {
 	defer ii.mu.Unlock()
 	for _, id := range fileIDs {
 		ii.entries[id] = &inlineImgEntry{state: inlineImgFailed}
+		delete(ii.deferred, id)
 	}
 }
 
@@ -563,6 +650,7 @@ func (ii *inlineImages) markUnresolved(fileIDs ...string) {
 	defer ii.mu.Unlock()
 	for _, id := range fileIDs {
 		delete(ii.entries, id)
+		delete(ii.deferred, id)
 	}
 }
 
@@ -797,6 +885,38 @@ type readyInlineImg struct {
 	placeholder string
 	frameSeqs   []string
 	delays      []time.Duration
+
+	// deferredFrames says this is an animatable GIF built as its first frame only,
+	// so markReady knows to remember (via item) that the rest are still owed. See
+	// buildInlineThumb.
+	deferredFrames bool
+	item           previewItem
+}
+
+// thumbFramesJob is one deferred GIF whose frames are now worth encoding, and
+// everything the background build needs to slot them into the still that is already
+// on screen: the same terminal id, and the same box it was fitted to.
+type thumbFramesJob struct {
+	key  string
+	item previewItem
+	id   uint32
+	box  int
+}
+
+// builtThumbFrames is the outcome of one such build. rows/cols come back with it so
+// markFramesBuilt can refuse anything that would land on a different cell box than
+// the still it is completing.
+type builtThumbFrames struct {
+	key        string
+	id         uint32
+	rows, cols int
+	seqs       []string
+	delays     []time.Duration
+}
+
+// inlineThumbFramesMsg carries finished GIF frames back to the main goroutine.
+type inlineThumbFramesMsg struct {
+	built []builtThumbFrames
 }
 
 // inlineImagesFetchedMsg is the result of a background thumbnail batch. ready maps
@@ -889,8 +1009,18 @@ func (m Model) loadInlineImages(items []previewItem, box int) tea.Msg {
 }
 
 // buildInlineThumb downloads (or reads from the disk cache) an image attachment,
-// decodes its frames, right-sizes each to the thumbnail's cell box, and prebuilds
-// the transmit sequences and placeholder. All of it off the render loop.
+// decodes it, right-sizes it to the thumbnail's cell box, and prebuilds the
+// transmit sequences and placeholder. All of it off the render loop.
+//
+// A GIF is built as a *still* — its first frame and nothing else. Encoding a frame
+// costs ~10ms, so a 90-frame GIF is ~700ms of PNG encoding here, and the fetch
+// margin (inlineFetchMarginScreens) deliberately builds several screens' worth of
+// images to display one screenful: nearly all of that animation work would be for
+// GIFs nobody ever looks at, since a GIF only animates while it is on screen. So the
+// frames past the first are left to buildVisibleThumbFrames, which encodes them if
+// and when the thumbnail is actually displayed. decodeFirstGIFFrame is bit-identical
+// to a full decode's frame 0, so the still lands on precisely the cell box the frames
+// will need, and completing it later moves nothing.
 func (m Model) buildInlineThumb(it previewItem, box int) (readyInlineImg, error) {
 	raw, err := m.readThumbBytes(it)
 	if err != nil {
@@ -898,22 +1028,45 @@ func (m Model) buildInlineThumb(it previewItem, box int) (readyInlineImg, error)
 	}
 	// Animate any GIF, whether it arrived as an attachment or a body link — a
 	// Giphy link is the latter, and a frozen Giphy would be a strange thing to ship.
-	// decodeImageFrames sniffs the bytes, so a mislabelled MIME can't fool it.
-	frames, delays, err := decodeImageFrames(raw, m.animateInline)
+	// The bytes are sniffed, so a mislabelled MIME can't fool it either way.
+	if m.animateInline && isGIF(raw) {
+		first, err := decodeFirstGIFFrame(raw)
+		if err != nil {
+			return readyInlineImg{}, decodeFailure{err}
+		}
+		r, err := m.encodeInlineThumb(0, []image.Image{first}, box)
+		if err != nil {
+			return readyInlineImg{}, err
+		}
+		r.deferredFrames, r.item = true, it
+		return r, nil
+	}
+	frames, _, err := decodeImageFrames(raw, false)
 	if err != nil {
 		return readyInlineImg{}, decodeFailure{err}
 	}
 	if len(frames) == 0 {
 		return readyInlineImg{}, decodeFailure{fmt.Errorf("no frames")}
 	}
+	return m.encodeInlineThumb(0, frames, box)
+}
 
-	// Size from the decoded frame rather than FileInfo.Width/Height: a server
-	// preview rendition is already downscaled, so its real bounds are what the
-	// placement must match.
+// encodeInlineThumb fits every frame to the thumbnail's cell box and prebuilds one
+// Kitty transmit APC per frame, all under id — 0 allocates a fresh one, and the
+// deferred-frames build passes the id of the still it is completing so the frames
+// repaint the placeholder already on screen.
+//
+// This is the expensive half of a thumbnail (~10ms/frame, dominated by the PNG
+// encode; see PERF_NOTES) and the reason a GIF's frames are not all encoded up
+// front. The placement is sized from the decoded frame rather than
+// FileInfo.Width/Height: a server preview rendition is already downscaled, so its
+// real bounds are what the placement must match.
+func (m Model) encodeInlineThumb(id uint32, frames []image.Image, box int) (readyInlineImg, error) {
 	b := frames[0].Bounds()
 	cols, rows := inlineThumbCells(b.Dx(), b.Dy(), box, m.cellPxW, m.cellPxH)
-
-	id := m.emojiImg.allocID() // one shared 24-bit id space with emoji + preview
+	if id == 0 {
+		id = m.emojiImg.allocID() // one shared 24-bit id space with emoji + preview
+	}
 	seqs := make([]string, len(frames))
 	for i, fr := range frames {
 		fitted := fitFrameToCells(fr, cols, rows, m.cellPxW, m.cellPxH)
@@ -930,8 +1083,74 @@ func (m Model) buildInlineThumb(it previewItem, box int) (readyInlineImg, error)
 		box:         box,
 		placeholder: kittyPlaceholder(id, rows, cols),
 		frameSeqs:   seqs,
-		delays:      delays,
 	}, nil
+}
+
+// buildVisibleThumbFrames encodes the animation frames of every GIF that was built
+// as a still and has since come on screen — the deferred half of buildInlineThumb.
+// Run from Update after each event, right after flushInlineTransmits has refreshed
+// which thumbnails are displayed; returns nil cheaply (an empty map) when no GIF is
+// waiting, which is the common case.
+//
+// The bytes are re-read from the disk cache the first build populated, so this costs
+// no resident memory per scrolled-past GIF and no second download.
+func (m *Model) buildVisibleThumbFrames() tea.Cmd {
+	if !m.inlineImagesActive() {
+		return nil
+	}
+	jobs := m.inlineImg.takeDeferredFrames()
+	if len(jobs) == 0 {
+		return nil
+	}
+	snap := m // the Cmd runs on another goroutine
+	return func() tea.Msg {
+		return snap.loadInlineThumbFrames(jobs)
+	}
+}
+
+// loadInlineThumbFrames re-reads and fully decodes each job's GIF, encoding every
+// frame under the id of the still already on screen. Runs on a background goroutine.
+//
+// A failure here is silent by design: the thumbnail keeps the still it already has,
+// which is exactly what it looks like now, and the job is gone from ii.deferred so
+// nothing retries it. There is little left to fail — the same bytes decoded once
+// already, to build that still.
+func (m Model) loadInlineThumbFrames(jobs []thumbFramesJob) tea.Msg {
+	built := make([]builtThumbFrames, 0, len(jobs))
+	for _, j := range jobs {
+		raw, err := m.readThumbBytes(j.item)
+		if err != nil {
+			continue
+		}
+		frames, delays, err := decodeImageFrames(raw, true)
+		if err != nil || len(frames) <= 1 {
+			continue // a single-frame GIF: the still we built is the whole image
+		}
+		r, err := m.encodeInlineThumb(j.id, frames, j.box)
+		if err != nil {
+			continue
+		}
+		built = append(built, builtThumbFrames{
+			key: j.key, id: j.id, rows: r.rows, cols: r.cols,
+			seqs: r.frameSeqs, delays: delays,
+		})
+	}
+	if len(built) == 0 {
+		return nil
+	}
+	return inlineThumbFramesMsg{built: built}
+}
+
+// handleInlineThumbFrames installs finished GIF frames. Nothing on screen changes —
+// the frames carry the still's own id and cell box, so the placeholder cells and the
+// post's cached lines are all still correct — which is why this neither invalidates
+// nor re-renders anything. The Update wrapper's maybeStartImageAnim sees the entry
+// become animated on this same event and starts the loop.
+func (m Model) handleInlineThumbFrames(msg inlineThumbFramesMsg) (Model, tea.Cmd) {
+	for _, b := range msg.built {
+		m.inlineImg.markFramesBuilt(b)
+	}
+	return m, nil
 }
 
 // readThumbBytes returns the bytes to build a thumbnail from.

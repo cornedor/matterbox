@@ -199,13 +199,43 @@ silently drops it (the terminal then waits forever for a continuation).
 `TestKittyChunkMatchesReadFullLoop` is what actually covers that, against a
 transcription of the library's `io.ReadFull` loop.
 
-### Next lever here: don't encode GIF frames nobody will watch
-`BenchmarkInlineThumbBuild`: a still thumbnail is ~20ms, a **30-frame GIF 390ms,
-a 90-frame GIF ~700ms** — all of it encoding frames at fetch time. But a GIF only
-animates while it is *on screen*, and most of the ones you scroll past never are.
-Building frame 0 at fetch (a still) and the rest only when the thumbnail actually
-becomes visible would cut a 90-frame GIF's build ~35×. This is now the dominant
-remaining cost in an image-heavy channel.
+## 10. GIF thumbnails encoded every frame at fetch time — ✅ DONE
+
+A GIF only animates while it is *on screen*, and the fetch margin
+(`inlineFetchMarginScreens`) deliberately builds several screens' worth of images
+to display one screenful — so nearly every GIF whose frames we encoded was one
+nobody ever watched. At ~10ms per frame (§9), that was the dominant cost left in
+an image-heavy channel.
+
+`buildInlineThumb` now builds a GIF as a **still — its first frame and nothing
+else**. The rest are encoded only if the thumbnail actually reaches the visible
+rows: `inlineImages.deferred` → `buildVisibleThumbFrames` (an Update kicker, right
+after `flushInlineTransmits` refreshes what's on screen) → `markFramesBuilt`.
+
+    frames    eager (was)   fetch (now)   on-screen completion
+    1            13 ms        13 ms         —
+    30          350 ms        13 ms        350 ms
+    90          740 ms        13 ms        730 ms
+
+**The fetch cost is flat in the frame count** — `gif.Decode` returns at the first
+image descriptor, so the other 89 frames' LZW streams are never touched. A GIF you
+scroll past costs what a still costs (**27× / 57×** less at 30 / 90 frames); a GIF
+you actually watch pays ~0.5% more than before (frame 0 gets encoded twice), which
+is the trade.
+
+Everything rests on the still being **frame 0 of the full decode, bit for bit**.
+`decodeFirstGIFFrame` therefore paints the decoded frame onto the logical-screen
+canvas exactly as `compositeGIF` does — a raw `gif.Decode` hands back the first
+*sub-rectangle*, which for an offset first frame has different bounds, and the
+placement is sized from those bounds. Get that wrong and the post silently changes
+height when the frames land. `TestFirstGIFFrameMatchesComposite` pins the identity;
+`TestGIFThumbBuildsStillFirst` pins that the still's transmit APC is byte-identical
+to the full build's frame 0 at the same cell box.
+
+Because the frames carry the still's own id and cell box, installing them changes
+*nothing that is drawn*: no invalidation, no re-render, and
+`inlineThumbFramesMsg` joins `imgAnimTickMsg` in `preservesFrame`. The next
+animation tick simply has somewhere to go.
 
 ## Not a problem (measured, don't re-chase)
 - **Inline-thumbnail animation byte volume.** Re-transmitting a whole PNG per GIF

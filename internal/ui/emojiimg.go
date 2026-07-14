@@ -251,6 +251,37 @@ func decodeImageFrames(raw []byte, animate bool) (frames []image.Image, delays [
 	return []image.Image{img}, nil, nil
 }
 
+// decodeFirstGIFFrame decodes *only* the first frame of a GIF and paints it onto
+// the logical-screen canvas — which is exactly what compositeGIF produces as its
+// frames[0], pixel for pixel (TestFirstGIFFrameMatchesComposite pins that).
+//
+// Two properties make it the cheap half of an animated thumbnail. stdlib's
+// gif.Decode returns as soon as it has one image descriptor, so the LZW streams of
+// every other frame are never touched — a 90-frame GIF costs about what a
+// single-frame one does. And because the result is bit-identical to a full decode's
+// first frame, a thumbnail built from it lands on exactly the cell box the full
+// decode would have chosen, so the remaining frames can arrive later (see
+// buildInlineThumb) without moving the placement by a single cell.
+func decodeFirstGIFFrame(raw []byte) (image.Image, error) {
+	cfg, err := gif.DecodeConfig(bytes.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("decode gif config: %w", err)
+	}
+	src, err := gif.Decode(bytes.NewReader(raw))
+	if err != nil {
+		return nil, fmt.Errorf("decode gif frame: %w", err)
+	}
+	bounds := image.Rect(0, 0, cfg.Width, cfg.Height)
+	if bounds.Empty() {
+		bounds = src.Bounds()
+	}
+	// draw.Over onto a fresh transparent canvas, at the frame's own offset — the
+	// first step of compositeGIF's loop, with no disposal to honour yet.
+	canvas := image.NewRGBA(bounds)
+	draw.Draw(canvas, src.Bounds(), src, src.Bounds().Min, draw.Over)
+	return canvas, nil
+}
+
 // compositeGIF flattens an animated GIF into one fully-painted RGBA frame per
 // step, honouring the disposal methods (gif.DecodeAll hands back only the
 // changed sub-rectangle of each step, layered on whatever the disposal left

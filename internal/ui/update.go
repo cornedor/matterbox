@@ -43,6 +43,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if raw := nm.flushInlineTransmits(); raw != nil {
 		cmd = tea.Batch(cmd, raw)
 	}
+	// Encode the animation frames of any GIF that has come on screen — they are left
+	// out of the first build (see buildInlineThumb). Must follow flushInlineTransmits,
+	// which is what refreshes "on screen".
+	if frames := nm.buildVisibleThumbFrames(); frames != nil {
+		cmd = tea.Batch(cmd, frames)
+	}
 	if fetch := nm.fetchPendingMRStatus(); fetch != nil {
 		cmd = tea.Batch(cmd, fetch)
 	}
@@ -93,9 +99,13 @@ func (m *Model) syncComposerFocus() {
 //     frame text is therefore identical, and rebuilding it was pure waste: it put
 //     a full ~1.5ms re-render behind every tick, 12–20×/s for as long as any GIF
 //     emoji or thumbnail was visible.
+//   - Finished GIF frames (inlineThumbFramesMsg) only fill in an existing
+//     thumbnail's animation frames, under the id and cell box the still on screen
+//     already uses. Nothing about the *text* of the screen changes — that is the
+//     whole premise of building them late (see buildInlineThumb).
 func preservesFrame(msg tea.Msg) bool {
 	switch msg.(type) {
-	case tea.MouseWheelMsg, imgAnimTickMsg:
+	case tea.MouseWheelMsg, imgAnimTickMsg, inlineThumbFramesMsg:
 		return true
 	}
 	return false
@@ -259,6 +269,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case inlineImagesFetchedMsg:
 		return m.handleInlineImagesFetched(msg)
+
+	case inlineThumbFramesMsg:
+		return m.handleInlineThumbFrames(msg)
 
 	case imgAnimTickMsg:
 		return m, m.advanceImageAnim()

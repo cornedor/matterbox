@@ -160,20 +160,64 @@ func BenchmarkInlineAnimBytes(b *testing.B) {
 	}
 }
 
-// BenchmarkInlineThumbBuild measures the *first-paint* cost of one GIF thumbnail:
-// decode every frame, downscale each to the cell box, PNG-encode each. This runs
-// off the render loop (loadInlineImages, on a Cmd goroutine), so it doesn't
-// stall the UI — but loadInlineImages loops over a batch sequentially, so a
-// screenful of GIFs pays this serially before any of them appear.
+// benchThumbModel is the minimum Model the build path itself needs: a cell size to
+// fit the placement to, and the shared id allocator.
+func benchThumbModel() Model {
+	return Model{cellPxW: 10, cellPxH: 20, emojiImg: newEmojiImages("auto", true)}
+}
+
+// BenchmarkInlineThumbBuild measures the *first-paint* cost of one GIF thumbnail —
+// decode, downscale to the cell box, PNG-encode — split the way the build itself is
+// now split. It runs off the render loop (a Cmd goroutine), so it stalls nothing; but
+// loadInlineImages walks its batch sequentially, so a screenful of GIFs pays it
+// serially before any of them appear, and the fetch margin builds several screens'
+// worth to show one.
+//
+//   - eager is what the whole thumbnail used to cost at fetch: every frame, always.
+//   - fetch is what it costs now — decodeFirstGIFFrame + one PNG encode. Flat in the
+//     frame count, because stdlib's gif.Decode stops at the first image descriptor.
+//   - onscreen is the rest, paid only by a GIF that is actually displayed.
+//
+// eager/fetch is the win on every GIF you merely scroll past, which is nearly all of
+// them; fetch+onscreen is what a GIF you do watch costs, and the little it adds over
+// eager (one re-encoded frame 0) is the price of that.
 func BenchmarkInlineThumbBuild(b *testing.B) {
 	for _, f := range []int{1, 30, 90} {
-		b.Run("frames="+strconv.Itoa(f), func(b *testing.B) {
-			raw := benchAnimGIF(480, 270, f)
+		raw := benchAnimGIF(480, 270, f)
+		m := benchThumbModel()
+		const box = 88
+
+		b.Run("frames="+strconv.Itoa(f)+"/eager", func(b *testing.B) {
 			b.ReportAllocs()
 			b.SetBytes(int64(len(raw)))
-			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_ = benchThumbFromGIF(b, raw, 0x200000, 88, 10, 20)
+				_ = benchThumbFromGIF(b, raw, 0x200000, box, m.cellPxW, m.cellPxH)
+			}
+		})
+		b.Run("frames="+strconv.Itoa(f)+"/fetch", func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(raw)))
+			for i := 0; i < b.N; i++ {
+				first, err := decodeFirstGIFFrame(raw)
+				if err != nil {
+					b.Fatalf("decodeFirstGIFFrame: %v", err)
+				}
+				if _, err := m.encodeInlineThumb(0, []image.Image{first}, box); err != nil {
+					b.Fatalf("encodeInlineThumb: %v", err)
+				}
+			}
+		})
+		b.Run("frames="+strconv.Itoa(f)+"/onscreen", func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(raw)))
+			for i := 0; i < b.N; i++ {
+				frames, _, err := decodeImageFrames(raw, true)
+				if err != nil {
+					b.Fatalf("decodeImageFrames: %v", err)
+				}
+				if _, err := m.encodeInlineThumb(0x200000, frames, box); err != nil {
+					b.Fatalf("encodeInlineThumb: %v", err)
+				}
 			}
 		})
 	}
