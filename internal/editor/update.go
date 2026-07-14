@@ -61,6 +61,13 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) {
 		m.deleteWordForward()
 	case key.Matches(msg, k.InsertNewline):
 		m.InsertNewline()
+	// Tab steps through a table's cells, but only from inside one: the InTableRow
+	// test comes second so an ordinary keystroke never pays for it, and a tab that
+	// lands anywhere else falls through to the owner's binding for the key.
+	case key.Matches(msg, k.NextTableCell) && m.InTableRow():
+		m.NextTableCell(1)
+	case key.Matches(msg, k.PrevTableCell) && m.InTableRow():
+		m.NextTableCell(-1)
 	case key.Matches(msg, k.LineEnd):
 		m.cursorLineEnd()
 	case key.Matches(msg, k.LineStart):

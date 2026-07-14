@@ -891,6 +891,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	ta.MarkdownHighlight = true
 	// A newline inside a list item opens the next one ("- x" → "- ", "1. x" → "2. ").
 	ta.ContinueLists = true
+	// Keep a pipe table's columns padded to their widest cell as it is typed; a
+	// newline opens the next row, tab steps from cell to cell.
+	ta.ContinueTables = true
 	// PromptFunc only renders "> " on the first visual row of the input
 	// and pads continuation lines with two spaces so multi-line content
 	// reads cleanly. The default prompt is updated when a thread is opened

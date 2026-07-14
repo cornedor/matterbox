@@ -86,6 +86,13 @@ type Model struct {
 	// doesn't want it. See list.go.
 	ContinueLists bool
 
+	// ContinueTables, when set, makes the editor markdown-table aware: the columns
+	// of a pipe table are kept padded to their widest cell as it is typed (within
+	// the editor's width), a newline opens the next row — and the |---| separator
+	// under a fresh header — and Tab steps from cell to cell. Off by default, for
+	// the same reason ContinueLists is. See table.go.
+	ContinueTables bool
+
 	// NativeCursor, when set, suppresses the drawn reverse-video caret in View:
 	// the owner reads CursorViewPos and places the real terminal cursor instead
 	// (so its blink, colour and shape follow the terminal). Off by default — an

@@ -66,19 +66,29 @@ func (m *Model) insert(rs []rune) {
 	m.afterEdit()
 }
 
-// InsertNewline inserts a hard line break at the cursor. With ContinueLists set
-// it first offers the break to the markdown list continuation (see list.go),
-// which may open the next item instead of inserting a bare line.
+// InsertNewline inserts a hard line break at the cursor. With ContinueLists or
+// ContinueTables set it first offers the break to the markdown list continuation
+// (list.go) and the table continuation (table.go), either of which may open the
+// next item or row instead of inserting a bare line.
 func (m *Model) InsertNewline() {
-	if m.ContinueLists && !m.HasSelection() && m.continueList() {
-		return
+	if !m.HasSelection() {
+		if m.ContinueTables && m.continueTable() {
+			return
+		}
+		if m.ContinueLists && m.continueList() {
+			return
+		}
 	}
 	m.insert([]rune{'\n'})
 }
 
 // deleteBackward removes the rune before the cursor, joining lines at a line
-// start.
+// start. Inside a pipe table it goes through the table's own rules first, which
+// keep it off the bars and the padding (see table.go).
 func (m *Model) deleteBackward() {
+	if m.ContinueTables && m.deleteBackwardTable() {
+		return
+	}
 	if m.col > 0 {
 		line := m.lines[m.row]
 		m.lines[m.row] = append(line[:m.col-1], line[m.col:]...)
@@ -95,8 +105,11 @@ func (m *Model) deleteBackward() {
 }
 
 // deleteForward removes the rune at the cursor, joining the next line at a line
-// end.
+// end. Inside a pipe table the table's rules go first (see table.go).
 func (m *Model) deleteForward() {
+	if m.ContinueTables && m.deleteForwardTable() {
+		return
+	}
 	line := m.lines[m.row]
 	if m.col < len(line) {
 		m.lines[m.row] = append(line[:m.col], line[m.col+1:]...)
@@ -165,6 +178,9 @@ func (m *Model) deleteBeforeCursor() {
 // afterEdit re-establishes invariants after a mutation.
 func (m *Model) afterEdit() {
 	m.clampCursor()
+	// Re-pad the table the caret is in, so its columns track what is typed into
+	// them (see table.go). A no-op — a single line parse — anywhere else.
+	m.realignTables()
 	m.refreshDesired()
 	m.recalc()
 }

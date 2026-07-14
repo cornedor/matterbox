@@ -23,6 +23,11 @@ type KeyMap struct {
 	DeleteAfterCursor       key.Binding
 	DeleteBeforeCursor      key.Binding
 	InsertNewline           key.Binding
+	// NextTableCell / PrevTableCell only bite inside a pipe table of a
+	// ContinueTables editor; elsewhere they fall through to the owner (in the
+	// composer, tab still cycles focus — see ui.handleInputKey).
+	NextTableCell key.Binding
+	PrevTableCell key.Binding
 }
 
 // DefaultKeyMap mirrors textarea's default bindings for the actions matterbox
@@ -47,5 +52,7 @@ func DefaultKeyMap() KeyMap {
 		DeleteAfterCursor:       key.NewBinding(key.WithKeys("ctrl+k")),
 		DeleteBeforeCursor:      key.NewBinding(key.WithKeys("ctrl+u")),
 		InsertNewline:           key.NewBinding(key.WithKeys("enter", "ctrl+m")),
+		NextTableCell:           key.NewBinding(key.WithKeys("tab")),
+		PrevTableCell:           key.NewBinding(key.WithKeys("shift+tab")),
 	}
 }

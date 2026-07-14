@@ -2666,10 +2666,11 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			default:
 				m.closeGrammarPopup()
 			}
-		} else if key.Matches(msg, m.keys.Tab) {
+		} else if key.Matches(msg, m.keys.Tab) && !m.input.InTableRow() {
 			// With no popup open, Tab applies the top suggestion for the mistake
 			// the cursor is on (the one the footer hint is showing). When the
 			// cursor isn't on a fixable mistake it falls through to focus-cycle.
+			// Inside a table Tab means "next cell", so it never fixes a typo there.
 			if idx := m.matchAtCursor(); idx >= 0 && len(m.grammar.matches[idx].Replacements) > 0 {
 				m.grammar.popupIdx = idx
 				return m, m.applyGrammarSuggestion(0)
@@ -2682,9 +2683,13 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case key.Matches(msg, m.keys.Paste):
 		return m, readClipboard()
-	case key.Matches(msg, m.keys.Tab):
+	// Inside a pipe table tab steps from cell to cell instead of cycling focus:
+	// the key falls through to the textarea below, whose own binding moves the
+	// caret (and opens a new row off the last cell), so the edit picks up the
+	// undo/draft/typing hooks there like any other.
+	case key.Matches(msg, m.keys.Tab) && !m.input.InTableRow():
 		return m.cycleFocus(1)
-	case key.Matches(msg, m.keys.ShiftTab):
+	case key.Matches(msg, m.keys.ShiftTab) && !m.input.InTableRow():
 		return m.cycleFocus(-1)
 	case msg.String() == "up" && m.editingPostID == "" &&
 		m.input.CursorVisualRow() == 0:
