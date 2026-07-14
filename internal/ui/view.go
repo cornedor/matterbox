@@ -1425,6 +1425,9 @@ func (m *Model) renderViewContent() string {
 	if m.switcherMode {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderSwitcher(bodyH))
 	}
+	if m.gorillas.active {
+		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderGorillas(bodyH))
+	}
 	if m.historyMode {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderHistoryPopup())
 	}

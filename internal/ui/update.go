@@ -1066,6 +1066,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case typingTickMsg:
 		return m, m.applyTypingTick(msg)
 
+	case gorillasPostedMsg:
+		return m, m.applyGorillasPosted(msg)
+	case gorillasJoinedMsg:
+		return m, m.applyGorillasJoined(msg)
+	case gorillasTickMsg:
+		return m, m.applyGorillasTick(msg)
+	case gorillasFrameMsg:
+		return m, m.applyGorillasFrame(msg)
 	case ballStartedMsg:
 		return m, m.applyBallStarted(msg)
 
@@ -1212,6 +1220,11 @@ func (m *Model) applyMultipleChannelsViewed(ev *model.WebSocketEvent) tea.Cmd {
 // just bumps the unread (and mention, if we're tagged) counter.
 func (m *Model) applyPosted(ev *model.WebSocketEvent) tea.Cmd {
 	p := parsePost(ev)
+	if p != nil {
+		if cmd := m.gorillasWSPosted(p); cmd != nil {
+			return cmd
+		}
+	}
 	if p == nil {
 		// Fall back to refetch if we can't parse and it's the current
 		// channel; also refresh the open thread so it doesn't fall
@@ -1351,6 +1364,9 @@ func (m *Model) applyPostEdited(ev *model.WebSocketEvent) tea.Cmd {
 		return nil
 	}
 	m.invalidatePostLines(p.Id)
+	if cmd := m.gorillasWSEdited(p); cmd != nil {
+		return cmd
+	}
 	// Skip persisting frames of a live animation (typing / bouncing
 	// ball) — the per-frame churn would otherwise spam the local edit
 	// history captured by the posts UPDATE trigger.
@@ -1819,6 +1835,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// user can see exactly what the terminal sends for e.g. option+arrow.
 	if m.keyDebugMode {
 		return m.handleKeyDebugKey(msg)
+	}
+	// An open game is fully modal: it is a game, and every key belongs to it.
+	if m.gorillas.active {
+		return m.handleGorillasKey(msg)
 	}
 	// Delete-confirmation modal is fully modal: y/enter performs the
 	// delete, n/esc cancels. Anything else is ignored.

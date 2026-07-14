@@ -372,6 +372,9 @@ type Model struct {
 	// inside a code-block box, animated by editing one post per frame.
 	ball ballAnim
 
+	// gorillas is the open Gorillas game, if any. See gorillas.go.
+	gorillas gorillasState
+
 	// typingIndicator drives the animated three-dot cue on the composer
 	// separator when someone else is typing in the open channel. Unlike
 	// `typing` above, it's fed by inbound `typing` WebSocket events, not a

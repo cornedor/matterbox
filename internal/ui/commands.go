@@ -105,6 +105,16 @@ func builtinCommands() []switcherCommand {
 			run:            runTypingAnimation,
 		},
 		{
+			name: "Gorillas",
+			desc: "play the QBasic artillery classic against someone, inside a post",
+			run:  runGorillas,
+		},
+		{
+			name: "Gorillas (hotseat)",
+			desc: "play both sides yourself — the post still streams, so others can watch",
+			run:  runGorillasSolo,
+		},
+		{
 			name:           "Bouncing ball",
 			desc:           "animate a ball inside a code-block box (socket test)",
 			argPrompt:      "duration(s) fps: ",

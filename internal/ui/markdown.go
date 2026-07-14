@@ -10,6 +10,8 @@ import (
 	emoji "github.com/kyokomi/emoji/v2"
 
 	"matterbox/internal/gitlab"
+
+	"matterbox/internal/game"
 )
 
 // selfMentionReCache memoises the @self mention regex per username. The
@@ -307,6 +309,10 @@ func expandTabs(s string, tabWidth int) string {
 // custom server emoji to inline Kitty-graphics placeholders; mr (may be nil)
 // rewrites GitLab MR URLs to inline badge pills.
 func renderMarkdown(msg string, ei *emojiImages, mr mrInlineFn, self string) string {
+	// A game post carries its state as invisible variation selectors. They render
+	// as nothing, but they are still runes the wrapper would have to account for —
+	// strip them before anything measures or lays out the body.
+	msg = game.Strip(msg)
 	lines := strings.Split(strings.TrimRight(expandTabs(msg, 4), "\n"), "\n")
 	out := make([]string, 0, len(lines))
 	prevBlank := true // start of message counts as preceded by a blank line
