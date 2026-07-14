@@ -47,22 +47,50 @@ const (
 	// filename line.
 	inlineThumbMinCols = 8
 
-	// maxInlineImages caps how many thumbnails are held in terminal memory at
-	// once. Each is a PNG the terminal keeps until told otherwise, so a long
-	// scroll through an image-heavy channel would otherwise accumulate them for
-	// the rest of the session. Past the cap the least-recently-sighted images are
-	// freed with kittyDelete; because sightings are recorded on every render, the
-	// ones on screen always have the freshest stamp and are never the ones evicted.
-	// A freed image re-transmits from the disk cache (no HTTP) if scrolled back to.
+	// maxInlineImages caps how many thumbnails are resident in *terminal* memory
+	// at once. Each is a PNG the terminal holds until told otherwise, so a long
+	// scroll through an image-heavy channel would otherwise accumulate them for the
+	// rest of the session. Past the cap the least-recently-sighted ones are freed
+	// with kittyDelete — never one that is on screen (see evictResidentLocked).
+	//
+	// Freeing an image does NOT discard the built thumbnail: the decoded,
+	// downscaled, PNG-encoded frames stay in inlineImgEntry, so scrolling back to it
+	// costs one re-transmit of a string we already have, not another decode +
+	// re-encode. Conflating the two was what turned an image-heavy channel into a
+	// permanent rebuild loop (TestThumbFetchConverges).
 	maxInlineImages = 64
+
+	// maxInlineBuiltBytes bounds the built frames we keep in *our* memory, which is
+	// the resource maxInlineImages is not. A still thumbnail's PNG is tens of KB; a
+	// 30-frame GIF is a few MB, so a count-based cap would be meaningless here.
+	// Past the budget the coldest entries are dropped outright and would have to be
+	// rebuilt if revisited — the rare case this whole scheme exists to keep rare.
+	maxInlineBuiltBytes = 64 << 20
+
+	// inlineFetchMarginScreens is how far beyond the visible rows a thumbnail is
+	// still worth fetching, in viewport heights. The render window holds up to
+	// maxLoadedPosts (400) posts but the terminal only ever displays one screenful,
+	// so building every image in the window means paying for ~20 thumbnails to show
+	// ~3. Fetching only what's near the viewport cuts that, and the margin means an
+	// image is ready by the time you scroll to it rather than popping in under you.
+	inlineFetchMarginScreens = 2
+
+	// nominalBodyImage{W,H} is the size assumed for a body-image URL — a Giphy link
+	// and friends — which, unlike an uploaded attachment, carries no dimensions we
+	// can read before fetching it. It is only ever used to *reserve* the rows the
+	// thumbnail will occupy (see reserveThumbCells); the real bytes decide the final
+	// placement. A wrong guess costs at most a cosmetically wrong-width blank
+	// holder, never a wrong row count — see that function for why.
+	nominalBodyImageW = 480
+	nominalBodyImageH = 270
 )
 
 type inlineImgState int
 
 const (
-	inlineImgPending  inlineImgState = iota // sighted on screen, awaiting a fetch
+	inlineImgPending  inlineImgState = iota // sighted, awaiting a fetch
 	inlineImgFetching                       // fetch in flight
-	inlineImgReady                          // transmitted; placeholder usable
+	inlineImgReady                          // built; placeholder usable
 	inlineImgFailed                         // undecodable / gone — plain filename line forever
 )
 
@@ -73,6 +101,21 @@ type inlineImgEntry struct {
 	rows, cols  int    // placement size in text cells
 	box         int    // the max width this placement was fitted to; a narrower pane re-fits
 	placeholder string // prebuilt rows×cols placeholder block (ready only)
+
+	// resident is whether the image is currently in *terminal* memory. It is not
+	// the same question as state == inlineImgReady, which says we have the built
+	// frames in *our* memory. Freeing an image to stay under maxInlineImages clears
+	// this and keeps everything else, so a later sighting re-transmits frameSeqs
+	// rather than rebuilding them. sight() queues a re-transmit for any ready entry
+	// it finds non-resident.
+	resident bool
+
+	// reservedRows/reservedCols is the space this thumbnail will occupy, predicted
+	// before its bytes arrive (see reserveThumbCells). A not-yet-fetched image draws
+	// that many blank rows, so the post is already its final height and loading the
+	// image never reflows the transcript under a wheel-scroll — which anchors on an
+	// absolute row offset (m.msgFreeOffset) and would otherwise jump.
+	reservedRows, reservedCols int
 
 	// Animation (ready only), same shape as emojiImgEntry: one prebuilt transmit
 	// APC per frame, every one targeting id, so flipping frames just re-emits the
@@ -93,8 +136,8 @@ type inlineImgEntry struct {
 
 	// onScreen is true while this thumbnail — animated or still — is inside a
 	// viewport's visible rows. It is what protects a displayed image from being
-	// evicted; see evictLocked. Recomputed only when a fetched batch is installed
-	// (the one place eviction can happen), so it costs nothing per event.
+	// freed; see evictResidentLocked. Recomputed only where eviction can run, so it
+	// costs nothing per event.
 	onScreen bool
 
 	// seen is the sighting stamp used for LRU eviction, bumped by sight(). Note
@@ -123,8 +166,25 @@ type inlineImages struct {
 	mode string // "auto" | "off"
 
 	entries map[string]*inlineImgEntry
+	// pending is every image sighted but not yet built. Unlike the emoji path it is
+	// NOT drained wholesale: fetchPendingInlineImages takes only the entries near
+	// the viewport and leaves the rest here, so an image deep in the render window
+	// is never built until you scroll toward it. Entries therefore persist across
+	// renders, which is what lets a post that is *not* re-sighted (its lines are
+	// cached) still get fetched later when it comes into reach.
 	pending map[string]previewItem
-	tick    uint64 // monotonic sighting counter feeding inlineImgEntry.seen
+	// needTransmit is the ready-but-not-resident images sight() has seen this
+	// render; the Update wrapper drains it and re-transmits them (flushInlineTransmits).
+	needTransmit map[string]struct{}
+	// builtBytes tracks the frameSeqs we are holding, against maxInlineBuiltBytes.
+	builtBytes int
+	// lastScan memoizes the last (viewport offsets, content versions, pending count)
+	// the fetch scan ran against. In an image-heavy channel `pending` is never empty
+	// — the images beyond the fetch margin sit there indefinitely — so without this
+	// every keystroke would re-walk the posts looking for something to fetch. See
+	// needsFetchScan.
+	lastScan [5]uint64
+	tick     uint64 // monotonic sighting counter feeding inlineImgEntry.seen
 }
 
 func newInlineImages(mode string) *inlineImages {
@@ -132,9 +192,10 @@ func newInlineImages(mode string) *inlineImages {
 		mode = "off"
 	}
 	return &inlineImages{
-		mode:    mode,
-		entries: map[string]*inlineImgEntry{},
-		pending: map[string]previewItem{},
+		mode:         mode,
+		entries:      map[string]*inlineImgEntry{},
+		pending:      map[string]previewItem{},
+		needTransmit: map[string]struct{}{},
 	}
 }
 
@@ -159,55 +220,130 @@ func (ii *inlineImages) enabled() bool {
 	return ii.mode == "auto"
 }
 
-// sight records that image it is on screen and returns its ready placement, if it
-// has one. box is the widest the thumbnail may be (the pane minus the gutter);
-// a ready image fitted to a wider box than the pane now allows is re-fetched at
-// the new size rather than being drawn too wide and wrapped. Everything else
-// (pending, fetching, failed) draws nothing, and the caller falls back to
-// whatever it showed before (a filename line, or just the body text).
-func (ii *inlineImages) sight(it previewItem, box int) (placeholder string, rows int, ok bool) {
+// sightResult is what a render learns about one image: either draw its
+// placeholder, or hold rows×cols of blank space for the thumbnail that is coming,
+// or draw nothing at all because there will never be one.
+type sightResult struct {
+	placeholder string // ready: the rows×cols placeholder block
+	rows, cols  int    // the space it occupies — reserved size until it is ready
+	ready       bool   // draw the placeholder
+	reserve     bool   // draw blanks: not fetched yet, but it will be
+}
+
+// sight records that image it was rendered, and says what to draw for it. box is
+// the widest the thumbnail may be (the pane minus the gutter); resRows/resCols is
+// the space to hold for it until its bytes arrive (see Model.reserveThumbCells).
+//
+// A first sighting records the image as pending — it is NOT fetched here, and may
+// not be fetched for a long time: fetchPendingInlineImages only takes the ones near
+// the viewport. Until then the post reserves the thumbnail's height, so the image
+// appearing later never changes the post's size and never reflows the transcript.
+func (ii *inlineImages) sight(it previewItem, box, resRows, resCols int) sightResult {
 	key := thumbKey(it)
 	if key == "" {
-		return "", 0, false
+		return sightResult{}
 	}
+	reserved := sightResult{rows: resRows, cols: resCols, reserve: resRows > 0}
 	ii.mu.Lock()
 	defer ii.mu.Unlock()
 	ii.tick++
 	ent := ii.entries[key]
 	if ent == nil {
-		ii.entries[key] = &inlineImgEntry{state: inlineImgPending, seen: ii.tick}
+		ii.entries[key] = &inlineImgEntry{
+			state: inlineImgPending, seen: ii.tick,
+			reservedRows: resRows, reservedCols: resCols,
+		}
 		ii.pending[key] = it
-		return "", 0, false
+		return reserved
 	}
 	ent.seen = ii.tick
-	if ent.state != inlineImgReady {
-		return "", 0, false
+	switch ent.state {
+	case inlineImgFailed:
+		return sightResult{} // no image is coming; don't hold space for one
+	case inlineImgPending, inlineImgFetching:
+		// Keep the size we first reserved rather than resRows/resCols. The reservation
+		// is what the post's cached lines were built against, and re-predicting it
+		// mid-flight (a resize changed the box) would resize the post out from under
+		// them. A real resize drops the line cache and re-sights anyway.
+		return sightResult{rows: ent.reservedRows, cols: ent.reservedCols, reserve: ent.reservedRows > 0}
 	}
-	// Re-fit when the pane no longer matches what this placement was sized for:
-	// either it narrowed past the thumbnail's width (it would wrap), or it widened
-	// and the thumbnail is still shorter than the target height only because the
-	// old, narrower pane clamped it. The bytes are on disk, so a re-fit costs a
-	// decode + re-encode, not a download.
+	// Ready. Re-fit when the pane no longer matches what this placement was sized
+	// for: either it narrowed past the thumbnail's width (it would wrap), or it
+	// widened and the thumbnail is still shorter than the target height only because
+	// the old, narrower pane clamped it.
 	tooWide := ent.cols > box
 	couldGrow := box > ent.box && ent.rows < inlineThumbRows
 	if tooWide || couldGrow {
 		ent.state = inlineImgPending
+		ent.reservedRows, ent.reservedCols = resRows, resCols
 		ii.pending[key] = it
-		return "", 0, false
+		return reserved
 	}
-	return ent.placeholder, ent.rows, true
+	// Built, but the terminal may no longer hold it — we free images to stay under
+	// maxInlineImages without discarding the frames. Queue a re-transmit (a string
+	// we already have) rather than rebuilding it.
+	if !ent.resident {
+		ii.needTransmit[key] = struct{}{}
+	}
+	return sightResult{placeholder: ent.placeholder, rows: ent.rows, cols: ent.cols, ready: true}
 }
 
-// takePending drains the images sighted since the last call and marks them
-// fetching, returning them for a background fetch. Mirrors emojiImages.takePending.
-func (ii *inlineImages) takePending() []previewItem {
+// needsFetchScan reports whether anything could have changed which pending images
+// are within fetching reach: a viewport moved, its content was re-rendered, or a
+// new image was sighted. It is the guard that keeps the fetch scan off the typing
+// path — in an image-heavy channel `pending` is *never* empty (everything beyond
+// the fetch margin parks there indefinitely), so "is anything pending?" is not the
+// cheap early-out it looks like, and without this every keystroke would re-walk the
+// posts to answer a question whose inputs hadn't moved.
+func (ii *inlineImages) needsFetchScan(key [5]uint64) bool {
+	if ii == nil {
+		return false
+	}
+	ii.mu.Lock()
+	defer ii.mu.Unlock()
+	if ii.mode != "auto" || len(ii.pending) == 0 || key == ii.lastScan {
+		return false
+	}
+	ii.lastScan = key
+	return true
+}
+
+// pendingKeys lists the images sighted but not yet built, so the Model can work
+// out which of them are near enough to the viewport to be worth fetching.
+func (ii *inlineImages) pendingKeys() []string {
+	if ii == nil {
+		return nil
+	}
 	ii.mu.Lock()
 	defer ii.mu.Unlock()
 	if ii.mode != "auto" || len(ii.pending) == 0 {
 		return nil
 	}
-	out := make([]previewItem, 0, len(ii.pending))
-	for key, it := range ii.pending {
+	out := make([]string, 0, len(ii.pending))
+	for key := range ii.pending {
+		out = append(out, key)
+	}
+	return out
+}
+
+// takePending drains the pending images named in want, marking them fetching.
+// Anything not in want stays pending — it is too far from the viewport to be worth
+// building, and will be picked up if it ever comes into reach.
+func (ii *inlineImages) takePending(want map[string]struct{}) []previewItem {
+	if ii == nil || len(want) == 0 {
+		return nil
+	}
+	ii.mu.Lock()
+	defer ii.mu.Unlock()
+	if ii.mode != "auto" {
+		return nil
+	}
+	out := make([]previewItem, 0, len(want))
+	for key := range want {
+		it, ok := ii.pending[key]
+		if !ok {
+			continue
+		}
 		out = append(out, it)
 		delete(ii.pending, key)
 		if ent := ii.entries[key]; ent != nil {
@@ -221,17 +357,24 @@ func (ii *inlineImages) takePending() []previewItem {
 // evicted to stay under maxInlineImages — the caller frees those in the terminal
 // with kittyDelete. Eviction is least-recently-sighted, which never picks an
 // on-screen image because sight() re-stamps those on every render.
-func (ii *inlineImages) markReady(fileID string, r readyInlineImg) (evicted []uint32) {
+// markReady installs a freshly built thumbnail as ready and resident (the caller
+// transmits its first frame). It returns the terminal id of any image this one
+// replaced — a re-fit at a new pane width builds under a fresh id, and the old one
+// would otherwise sit in terminal memory with nothing pointing at it.
+//
+// It does not evict: that is enforceCapsLocked's job, run once per event from
+// flushInlineTransmits rather than once per installed image.
+func (ii *inlineImages) markReady(fileID string, r readyInlineImg) (replaced []uint32) {
 	ii.mu.Lock()
 	defer ii.mu.Unlock()
 	ii.tick++
-	// A re-fit (the pane changed width) replaces an entry that already owned a
-	// transmitted image under a different id. Free the old one, or it would sit in
-	// terminal memory with nothing pointing at it.
-	if prev := ii.entries[fileID]; prev != nil && prev.id != 0 && prev.id != r.id {
-		evicted = append(evicted, prev.id)
+	if prev := ii.entries[fileID]; prev != nil {
+		if prev.id != 0 && prev.id != r.id && prev.resident {
+			replaced = append(replaced, prev.id)
+		}
+		ii.builtBytes -= prev.builtSize()
 	}
-	ii.entries[fileID] = &inlineImgEntry{
+	ent := &inlineImgEntry{
 		state:       inlineImgReady,
 		id:          r.id,
 		rows:        r.rows,
@@ -240,62 +383,143 @@ func (ii *inlineImages) markReady(fileID string, r readyInlineImg) (evicted []ui
 		placeholder: r.placeholder,
 		frameSeqs:   r.frameSeqs,
 		delays:      r.delays,
+		resident:    true,
 		seen:        ii.tick,
 	}
-	return append(evicted, ii.evictLocked()...)
+	ii.entries[fileID] = ent
+	ii.builtBytes += ent.builtSize()
+	return replaced
 }
 
-// evictLocked drops the least-recently-sighted ready images until at most
-// maxInlineImages remain, returning their terminal ids. Callers hold mu.
+// builtSize is the memory this entry's built frames occupy, for the
+// maxInlineBuiltBytes budget.
+func (e *inlineImgEntry) builtSize() int {
+	n := len(e.placeholder)
+	for _, s := range e.frameSeqs {
+		n += len(s)
+	}
+	return n
+}
+
+// evictResidentLocked frees the least-recently-sighted images from *terminal*
+// memory until at most maxInlineImages remain resident, returning their ids for
+// kittyDelete. The built frames stay in ii.entries, so a later sighting re-transmits
+// a string we already have instead of decoding and re-encoding the image again —
+// which is what turned an image-heavy channel into a permanent rebuild loop.
 //
-// An image that is currently on screen is never a candidate, however old its
-// stamp. Freeing one would kittyDelete it out from under the placeholder cells
-// still displaying it — and because those cells live in the post's cached lines,
-// nothing would re-sight it, so it would stay blank for good. The stamps alone
-// can't prevent that: a visible post renders from postLineCache without being
-// re-sighted, so its stamp is stale precisely when it matters (see
-// inlineImgEntry.seen). Sparing them can leave us a little over the cap when a
-// screenful of images exceeds it; a few extra PNGs in terminal memory beats a
-// blank hole in the transcript.
-func (ii *inlineImages) evictLocked() (evicted []uint32) {
+// An image that is on screen is never a candidate, however old its stamp. Freeing
+// one would kittyDelete it out from under the placeholder cells still displaying
+// it, and those cells live in the post's cached lines, so nothing would re-sight it
+// and it would stay blank. Stamps alone can't prevent that: a visible post renders
+// from postLineCache without being re-sighted, so its stamp is stale precisely when
+// it matters (see inlineImgEntry.seen). Sparing them can leave us a little over the
+// cap when a screenful of images exceeds it; a few extra PNGs in terminal memory
+// beats a blank hole in the transcript. Callers hold mu.
+func (ii *inlineImages) evictResidentLocked() (freed []uint32) {
 	type aged struct {
-		id   string
+		key  string
 		seen uint64
 	}
-	var ready []aged
-	onScreen := 0
-	for id, ent := range ii.entries {
-		if ent.state != inlineImgReady {
+	var cand []aged
+	resident, pinned := 0, 0
+	for key, ent := range ii.entries {
+		if ent.state != inlineImgReady || !ent.resident {
 			continue
 		}
+		resident++
 		if ent.onScreen {
-			onScreen++
+			pinned++
 			continue
 		}
-		ready = append(ready, aged{id, ent.seen})
+		cand = append(cand, aged{key, ent.seen})
 	}
-	over := len(ready) + onScreen - maxInlineImages
+	over := resident - maxInlineImages
 	if over <= 0 {
 		return nil
 	}
-	if over > len(ready) {
-		over = len(ready) // everything else is displayed; keep it
+	if over > len(cand) {
+		over = len(cand) // the rest are displayed; keep them resident
 	}
-	sort.Slice(ready, func(i, j int) bool { return ready[i].seen < ready[j].seen })
-	for _, a := range ready[:over] {
-		if ent := ii.entries[a.id]; ent != nil {
-			evicted = append(evicted, ent.id)
+	sort.Slice(cand, func(i, j int) bool { return cand[i].seen < cand[j].seen })
+	for _, a := range cand[:over] {
+		ent := ii.entries[a.key]
+		if ent == nil {
+			continue
 		}
-		// Drop the entry entirely rather than marking it failed: a later sighting
-		// re-fetches (from the disk cache) and re-transmits.
-		delete(ii.entries, a.id)
+		freed = append(freed, ent.id)
+		ent.resident = false // the frames stay; only the terminal copy goes
+		delete(ii.needTransmit, a.key)
 	}
-	return evicted
+	return freed
+}
+
+// evictBuiltLocked drops the coldest entries outright once the built frames exceed
+// maxInlineBuiltBytes — the only place a thumbnail's expensive work is thrown away,
+// and the only case that ever pays for a rebuild. Never touches an on-screen image.
+// Callers hold mu.
+func (ii *inlineImages) evictBuiltLocked() (freed []uint32) {
+	if ii.builtBytes <= maxInlineBuiltBytes {
+		return nil
+	}
+	type aged struct {
+		key  string
+		seen uint64
+	}
+	var cand []aged
+	for key, ent := range ii.entries {
+		if ent.state == inlineImgReady && !ent.onScreen {
+			cand = append(cand, aged{key, ent.seen})
+		}
+	}
+	sort.Slice(cand, func(i, j int) bool { return cand[i].seen < cand[j].seen })
+	for _, a := range cand {
+		if ii.builtBytes <= maxInlineBuiltBytes {
+			break
+		}
+		ent := ii.entries[a.key]
+		if ent == nil {
+			continue
+		}
+		if ent.resident {
+			freed = append(freed, ent.id)
+		}
+		ii.builtBytes -= ent.builtSize()
+		delete(ii.entries, a.key)
+		delete(ii.needTransmit, a.key)
+	}
+	return freed
+}
+
+// takeTransmits drains the re-transmits sight() queued for ready images the
+// terminal no longer holds, then enforces both caps, returning everything to write
+// out of band in one string: the re-transmit APCs followed by the kittyDeletes.
+func (ii *inlineImages) takeTransmits() string {
+	if ii == nil {
+		return ""
+	}
+	ii.mu.Lock()
+	defer ii.mu.Unlock()
+	var sb strings.Builder
+	for key := range ii.needTransmit {
+		delete(ii.needTransmit, key)
+		ent := ii.entries[key]
+		if ent == nil || ent.state != inlineImgReady || ent.resident || len(ent.frameSeqs) == 0 {
+			continue
+		}
+		sb.WriteString(ent.frameSeqs[ent.frameIdx])
+		ent.resident = true
+	}
+	for _, id := range ii.evictResidentLocked() {
+		sb.WriteString(kittyDelete(id))
+	}
+	for _, id := range ii.evictBuiltLocked() {
+		sb.WriteString(kittyDelete(id))
+	}
+	return sb.String()
 }
 
 // setOnScreen marks exactly the named thumbnails as displayed and clears the flag
-// on all others, so evictLocked can spare them. Called just before a fetched batch
-// is installed — the only point at which eviction runs.
+// on all others, so eviction can spare them.
 func (ii *inlineImages) setOnScreen(keys map[string]struct{}) {
 	if ii == nil {
 		return
@@ -397,7 +621,9 @@ func (ii *inlineImages) advanceFrame(now time.Time) (seq string, next time.Durat
 	var sb strings.Builder
 	next = -1
 	for _, ent := range ii.entries {
-		if ent.state != inlineImgReady || len(ent.frameSeqs) <= 1 || !ent.visible {
+		// !resident: the terminal no longer holds this image, so re-transmitting a
+		// frame would paint nothing. sight() re-transmits it if it is drawn again.
+		if ent.state != inlineImgReady || len(ent.frameSeqs) <= 1 || !ent.visible || !ent.resident {
 			continue
 		}
 		animating = true
@@ -457,16 +683,45 @@ func inlineThumbCells(wPx, hPx, box, cellPxW, cellPxH int) (cols, rows int) {
 	return fitImageCells(wPx, hPx, box, inlineThumbRows, cellPxW, cellPxH)
 }
 
-// inlineThumbLines returns the placeholder rows for a ready image, each indented
-// by the standard two-cell gutter so it lines up with the message body and
-// survives wrapBodyLine untouched (the placement is fitted to the pane width, so
-// it never needs wrapping). Returns nil when thumbnails are off, the terminal
-// can't do them, the pane is too narrow, or the image's bytes haven't arrived
-// yet — in every one of those cases the caller falls back to what it drew before.
+// reserveThumbCells predicts the cell box a thumbnail will occupy *before* its
+// bytes have been fetched, so the post can hold that space from its very first
+// render and the image appearing later never changes the post's height.
 //
-// The rows are emitted raw, never through a lipgloss style: the image id rides in
-// each cell's truecolor foreground, and a style would overwrite it and collapse
-// the image.
+// That matters because thumbnails are now fetched lazily, only for posts near the
+// viewport. A post that grew when its image arrived would reflow the transcript —
+// and a wheel scroll anchors on an absolute row offset (m.msgFreeOffset), so
+// content above the viewport growing would jump the page under the cursor. Reserved
+// rows mean there is nothing to grow.
+//
+// Only the row count has to be right; cols is cosmetic (it sizes the blank holder,
+// and a wrong guess is invisible against the background). An uploaded attachment
+// carries its real dimensions in FileInfo, so its placement is predicted exactly.
+// A body-image URL — a Giphy link — carries none, so it is assumed to be
+// nominalBodyImage{W,H}: any image tall enough to hit the height cap lands on
+// exactly inlineThumbRows whatever its aspect, and that is essentially all of them.
+// Only a genuinely tiny image (shorter than the cap) reserves wrong, and it merely
+// shrinks by a row or two when it loads.
+func (m *Model) reserveThumbCells(it previewItem, box int) (cols, rows int) {
+	w, h := nominalBodyImageW, nominalBodyImageH
+	if it.file != nil && it.file.Width > 0 && it.file.Height > 0 {
+		w, h = it.file.Width, it.file.Height
+	}
+	return inlineThumbCells(w, h, box, m.cellPxW, m.cellPxH)
+}
+
+// inlineThumbLines returns the rows an image contributes to its post: the Kitty
+// placeholder block once the image is built, or that many blank rows while it is
+// still coming (see reserveThumbCells — the post is its final height either way).
+// nil only when there will never be an image here: thumbnails are off, the terminal
+// can't draw them, the pane is too narrow, or the image failed to decode.
+//
+// Every row is indented by the standard two-cell gutter so it lines up with the
+// message body and survives wrapBodyLine untouched (the placement is fitted to the
+// pane width, so it never needs wrapping).
+//
+// The placeholder rows are emitted raw, never through a lipgloss style: the image
+// id rides in each cell's truecolor foreground, and a style would overwrite it and
+// collapse the image.
 func (m *Model) inlineThumbLines(it previewItem, paneWidth int) []string {
 	if !m.inlineImagesActive() {
 		return nil
@@ -475,16 +730,27 @@ func (m *Model) inlineThumbLines(it previewItem, paneWidth int) []string {
 	if box == 0 {
 		return nil
 	}
-	ph, _, ok := m.inlineImg.sight(it, box)
-	if !ok {
-		return nil
+	resCols, resRows := m.reserveThumbCells(it, box)
+	r := m.inlineImg.sight(it, box, resRows, resCols)
+	switch {
+	case r.ready:
+		rows := strings.Split(r.placeholder, "\n")
+		out := make([]string, len(rows))
+		for i, row := range rows {
+			out[i] = "  " + row
+		}
+		return out
+	case r.reserve:
+		// Hold the space the thumbnail will fill. Plain spaces: the image lands on
+		// exactly these cells, so anything drawn here would only flash and vanish.
+		out := make([]string, r.rows)
+		blank := "  " + strings.Repeat(" ", r.cols)
+		for i := range out {
+			out[i] = blank
+		}
+		return out
 	}
-	rows := strings.Split(ph, "\n")
-	out := make([]string, len(rows))
-	for i, r := range rows {
-		out[i] = "  " + r
-	}
-	return out
+	return nil
 }
 
 // inlineFileThumbLines draws an uploaded image attachment (used by
@@ -543,32 +809,63 @@ type inlineImagesFetchedMsg struct {
 	retry  []string
 }
 
-// fetchPendingInlineImages drains the images sighted during the last render and,
-// if any, returns a Cmd that downloads, decodes and encodes them in the
-// background. Mirrors fetchPendingEmoji: run from Update after each event,
-// returns nil cheaply when nothing is pending or the feature is inactive.
+// fetchPendingInlineImages builds the sighted thumbnails that are near enough to
+// the viewport to be worth having, and returns a Cmd that downloads, decodes and
+// encodes them in the background. Run from Update after each event; returns nil
+// cheaply when nothing is pending or the feature is inactive.
+//
+// The "near enough" is the whole point. renderMessages renders every post in the
+// render window (up to maxLoadedPosts — 400), so *every* image in the window gets
+// sighted, while the terminal only ever displays one screenful. Building all of
+// them meant paying for ~20 thumbnails to show ~3, and — because the window can
+// hold more images than fit in terminal memory — evicting and rebuilding them
+// forever (TestThumbFetchConverges). Images beyond the margin stay pending and are
+// picked up if you ever scroll toward them; because sight() reserved their rows,
+// arriving late costs no reflow.
 func (m *Model) fetchPendingInlineImages() tea.Cmd {
 	if !m.inlineImagesActive() {
 		return nil
 	}
-	items := m.inlineImg.takePending()
-	if len(items) == 0 {
-		return nil
-	}
 	box := inlineThumbBox(m.msgsView.Width())
 	if box == 0 {
-		// Pane too narrow to place them; forget the sightings so a resize retries.
-		keys := make([]string, len(items))
-		for i, it := range items {
-			keys[i] = thumbKey(it)
-		}
-		m.inlineImg.markUnresolved(keys...)
+		return nil // pane too narrow to place any; they stay pending for a resize
+	}
+	// Nothing that decides which images are in reach has moved since the last scan,
+	// so there is nothing new to fetch. Keeps a channel full of parked pending images
+	// from re-walking the posts on every keystroke.
+	if !m.inlineImg.needsFetchScan([5]uint64{
+		uint64(m.msgsView.YOffset()), m.msgsContentVer,
+		uint64(m.threadView.YOffset()), m.threadContentVer,
+		uint64(len(m.posts)),
+	}) {
+		return nil
+	}
+	want := m.thumbKeysNearViewport(m.inlineImg.pendingKeys())
+	items := m.inlineImg.takePending(want)
+	if len(items) == 0 {
 		return nil
 	}
 	snap := m // value copy: the Cmd runs on another goroutine
 	return func() tea.Msg {
 		return snap.loadInlineImages(items, box)
 	}
+}
+
+// flushInlineTransmits writes out of band whatever the last render made necessary:
+// re-transmits for ready images the terminal no longer holds (freed to stay under
+// maxInlineImages, their frames kept — see evictResidentLocked), followed by the
+// kittyDeletes for anything now over a cap. Run from Update after each event, so a
+// re-transmit queued while rendering goes out in the same event that rendered it.
+func (m *Model) flushInlineTransmits() tea.Cmd {
+	if m.inlineImg == nil {
+		return nil
+	}
+	m.inlineImg.setOnScreen(m.visibleInlineImageKeys())
+	seq := m.inlineImg.takeTransmits()
+	if seq == "" {
+		return nil
+	}
+	return tea.Raw(seq)
 }
 
 // loadInlineImages fetches and builds a batch of sighted thumbnails. Runs on a
@@ -691,11 +988,14 @@ func isDecodeFailure(err error) bool {
 }
 
 // handleInlineImagesFetched installs a finished thumbnail batch: each ready image
-// is recorded, the posts that own it have their cached lines dropped so the next
-// render picks up the placeholder, and the image is transmitted raw (out of band)
-// so those placeholders resolve. Images evicted to stay under the terminal-memory
-// cap are freed in the same batch. If any installed thumbnail is animated and on
-// screen, the animation tick is armed.
+// is recorded and transmitted raw (out of band) so its placeholder resolves, and
+// the posts that own it have their cached lines dropped so the next render swaps
+// the reserved blank rows for the placeholder — same height, so nothing reflows. If
+// any installed thumbnail is animated and on screen, the animation tick is armed.
+//
+// It does not evict. Staying under the caps is flushInlineTransmits' job, which the
+// Update wrapper runs right after this, once per event rather than once per
+// installed image.
 func (m Model) handleInlineImagesFetched(msg inlineImagesFetchedMsg) (Model, tea.Cmd) {
 	if m.inlineImg == nil {
 		return m, nil
@@ -703,18 +1003,13 @@ func (m Model) handleInlineImagesFetched(msg inlineImagesFetchedMsg) (Model, tea
 	var transmit strings.Builder
 	readyKeys := make(map[string]struct{}, len(msg.ready))
 	animated := false
-	// Installing these is what can push us over maxInlineImages and trigger
-	// eviction, so tell the cache what is displayed right now first — an on-screen
-	// image must never be the one freed, and its LRU stamp can't be trusted to say
-	// so (see inlineImgEntry.seen).
-	m.inlineImg.setOnScreen(m.visibleInlineImageKeys())
 	for key, r := range msg.ready {
 		if len(r.frameSeqs) == 0 {
 			m.inlineImg.markFailed(key)
 			continue
 		}
 		for _, id := range m.inlineImg.markReady(key, r) {
-			transmit.WriteString(kittyDelete(id)) // freed to stay under the cap
+			transmit.WriteString(kittyDelete(id)) // an image this one re-fitted over
 		}
 		transmit.WriteString(r.frameSeqs[0])
 		readyKeys[key] = struct{}{}
@@ -725,8 +1020,25 @@ func (m Model) handleInlineImagesFetched(msg inlineImagesFetchedMsg) (Model, tea
 	m.inlineImg.markFailed(msg.failed...)
 	m.inlineImg.markUnresolved(msg.retry...)
 
-	if len(readyKeys) > 0 {
-		m.invalidatePostsForThumbs(readyKeys)
+	// Every outcome changes what the owning post should draw, so every outcome has
+	// to drop its cached lines — not just the happy one. A ready image swaps its
+	// reserved blank rows for the placeholder. A *failed* one must give the rows
+	// back, or the reservation it was granted at first sight stays behind as a
+	// permanent blank hole in the transcript. A *retry* was forgotten by
+	// markUnresolved, so its post has to be re-rendered to sight it afresh —
+	// otherwise the cached lines mean it is never asked for again and never arrives.
+	touched := make(map[string]struct{}, len(readyKeys)+len(msg.failed)+len(msg.retry))
+	for key := range readyKeys {
+		touched[key] = struct{}{}
+	}
+	for _, key := range msg.failed {
+		touched[key] = struct{}{}
+	}
+	for _, key := range msg.retry {
+		touched[key] = struct{}{}
+	}
+	if len(touched) > 0 {
+		m.invalidatePostsForThumbs(touched)
 		m.renderMessages()
 		m.renderThread()
 	}
@@ -804,9 +1116,7 @@ func (m *Model) viewportVisibleInlineImages() map[string]struct{} {
 }
 
 // visibleInlineImageKeys returns every ready thumbnail on screen, animated or
-// still — the set eviction must spare. Deliberately *not* on the per-event path:
-// it is computed only when a fetched batch is installed, the one place eviction
-// can run.
+// still — the set eviction must spare.
 func (m *Model) visibleInlineImageKeys() map[string]struct{} {
 	if m.inlineImg == nil {
 		return nil
@@ -814,11 +1124,27 @@ func (m *Model) visibleInlineImageKeys() map[string]struct{} {
 	return m.visibleThumbKeys(m.inlineImg.readyIDs())
 }
 
+// thumbKeysNearViewport returns which of keys belong to a post within
+// inlineFetchMarginScreens viewport-heights of the visible rows — the images worth
+// building. The margin is what makes lazy fetching invisible: an image is built
+// while it is still a couple of screens away, so it is ready by the time you reach
+// it rather than popping in under you.
+func (m *Model) thumbKeysNearViewport(keys []string) map[string]struct{} {
+	return m.thumbKeysInRows(keys, inlineFetchMarginScreens)
+}
+
 // visibleThumbKeys narrows keys to those owned by a post currently inside a
-// viewport's visible rows — the main message pane plus the open thread. It maps
-// the live YOffset back to on-screen posts through the row spans captured by
-// renderMessages/renderThread, so it tracks scrolling without a re-render.
+// viewport's visible rows.
 func (m *Model) visibleThumbKeys(keys []string) map[string]struct{} {
+	return m.thumbKeysInRows(keys, 0)
+}
+
+// thumbKeysInRows narrows keys to those owned by a post inside a viewport's visible
+// rows, widened by margin viewport-heights at each end — the main message pane plus
+// the open thread. It maps the live YOffset back to posts through the row spans
+// captured by renderMessages/renderThread, so it tracks scrolling without a
+// re-render.
+func (m *Model) thumbKeysInRows(keys []string, margin int) map[string]struct{} {
 	if len(keys) == 0 {
 		return nil
 	}
@@ -827,7 +1153,8 @@ func (m *Model) visibleThumbKeys(keys []string) map[string]struct{} {
 		if height <= 0 || len(starts) != len(posts)+1 {
 			return
 		}
-		bot := top + height
+		bot := top + height + margin*height
+		top -= margin * height
 		for i, p := range posts {
 			if starts[i] >= bot {
 				break // this post and all later ones start below the viewport

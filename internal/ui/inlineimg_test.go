@@ -32,10 +32,36 @@ func thumbModel() *Model {
 	m := &Model{
 		inlineImg: newInlineImages("auto"),
 		emojiImg:  newEmojiImages("auto", true),
+		cellPxW:   10,
+		cellPxH:   20,
 	}
 	m.emojiImg.setProbeOK()
 	m.emojiImg.setColorProfile(true)
 	return m
+}
+
+// takeAllPending drains every pending image regardless of where it sits relative to
+// the viewport. The real fetch path takes only what's near the viewport
+// (fetchPendingInlineImages → thumbKeysNearViewport); these unit tests carry no
+// viewport geometry, so they ask for the lot.
+func takeAllPending(ii *inlineImages) []previewItem {
+	keys := ii.pendingKeys()
+	want := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		want[k] = struct{}{}
+	}
+	return ii.takePending(want)
+}
+
+// blankRows reports whether every line is empty space — the holder a sighted but
+// not-yet-built thumbnail reserves so its post is already at its final height.
+func blankRows(lines []string) bool {
+	for _, l := range lines {
+		if strings.TrimSpace(l) != "" {
+			return false
+		}
+	}
+	return len(lines) > 0
 }
 
 func thumbPost(fileID string) *model.Post {
@@ -137,7 +163,7 @@ func TestRenderAttachmentsNoThumbnailWhenOff(t *testing.T) {
 	if emojiIsPlaceholder(out) {
 		t.Error("no placeholder cells should be emitted when thumbnails are off")
 	}
-	if got := m.inlineImg.takePending(); len(got) != 0 {
+	if got := takeAllPending(m.inlineImg); len(got) != 0 {
 		t.Errorf("nothing should be queued for fetch when thumbnails are off, got %d", len(got))
 	}
 }
@@ -175,34 +201,66 @@ func TestInlineThumbnailsWorkWithEmojiImagesOff(t *testing.T) {
 }
 
 // TestInlineThumbSightingQueuesFetch: the first render of an unseen image records
-// it for the background fetch and (this render) falls back to the filename line.
+// it for the background fetch and, in the meantime, *reserves* the rows the
+// thumbnail will occupy. Reserving is what makes lazy fetching safe: the post is
+// already its final height, so the image arriving later never reflows the
+// transcript (a wheel scroll anchors on an absolute row offset and would jump).
 func TestInlineThumbSightingQueuesFetch(t *testing.T) {
 	m := thumbModel()
-	f := thumbPost("f1").Metadata.Files[0]
+	f := thumbPost("f1").Metadata.Files[0] // 1920×1080 → the height cap, 10 rows
 
-	if lines := m.inlineFileThumbLines(f, 80); lines != nil {
-		t.Errorf("an unfetched image has no rows to draw yet, got %d", len(lines))
+	lines := m.inlineFileThumbLines(f, 80)
+	if len(lines) != inlineThumbRows {
+		t.Fatalf("an unfetched image should hold the %d rows its thumbnail will fill, got %d",
+			inlineThumbRows, len(lines))
 	}
-	pending := m.inlineImg.takePending()
+	if !blankRows(lines) {
+		t.Errorf("the reserved rows should be blank until the image arrives, got %q", lines)
+	}
+	pending := takeAllPending(m.inlineImg)
 	if len(pending) != 1 || thumbKey(pending[0]) != "f1" {
 		t.Fatalf("first sighting should queue exactly f1 for fetch, got %v", pending)
 	}
 	// Drained once: a second drain is empty, so Update doesn't refetch every event.
-	if got := m.inlineImg.takePending(); len(got) != 0 {
+	if got := takeAllPending(m.inlineImg); len(got) != 0 {
 		t.Errorf("takePending should drain; second call returned %d", len(got))
 	}
 }
 
+// TestInlineThumbReservedRowsMatchTheImage: the reservation is only worth anything
+// if it is the *same height* as the thumbnail that replaces it — otherwise the post
+// resizes on load and we've reflowed anyway, just later.
+func TestInlineThumbReservedRowsMatchTheImage(t *testing.T) {
+	m := thumbModel()
+	f := thumbPost("f1").Metadata.Files[0]
+
+	reserved := m.inlineFileThumbLines(f, 80)
+
+	// The real build sizes from the decoded frame; with the same dimensions it must
+	// land on the same cell box the reservation predicted.
+	cols, rows := inlineThumbCells(f.Width, f.Height, inlineThumbBox(80), m.cellPxW, m.cellPxH)
+	readyThumb(m, "f1", rows, cols, inlineThumbBox(80))
+
+	drawn := m.inlineFileThumbLines(f, 80)
+	if len(drawn) != len(reserved) {
+		t.Errorf("the image landed on %d rows but %d were reserved: the post would jump on load",
+			len(drawn), len(reserved))
+	}
+	if !emojiIsPlaceholder(drawn[0]) {
+		t.Error("once built, the reserved rows should become real placeholder cells")
+	}
+}
+
 // TestInlineThumbNonImageIgnored: a PDF (or anything we can't decode) never
-// queues a fetch and never draws rows.
+// queues a fetch, and reserves no space — there is no image coming.
 func TestInlineThumbNonImageIgnored(t *testing.T) {
 	m := thumbModel()
 	f := &model.FileInfo{Id: "f2", Name: "spec.pdf", MimeType: "application/pdf"}
 
 	if lines := m.inlineFileThumbLines(f, 80); lines != nil {
-		t.Errorf("a PDF should not draw image rows, got %d", len(lines))
+		t.Errorf("a PDF should not draw or reserve image rows, got %d", len(lines))
 	}
-	if got := m.inlineImg.takePending(); len(got) != 0 {
+	if got := takeAllPending(m.inlineImg); len(got) != 0 {
 		t.Errorf("a PDF should not be queued for fetch, got %d", len(got))
 	}
 }
@@ -230,11 +288,14 @@ func TestInlineThumbRefitsWhenPaneNarrows(t *testing.T) {
 	if lines := m.inlineFileThumbLines(f, 80); len(lines) != 10 {
 		t.Fatalf("wide pane should draw the thumbnail, got %d rows", len(lines))
 	}
-	// Pane narrows to 30 cols → box 28 < the thumbnail's 40 cols.
-	if lines := m.inlineFileThumbLines(f, 30); lines != nil {
-		t.Errorf("an over-wide thumbnail must not be drawn, got %d rows", len(lines))
+	// Pane narrows to 30 cols → box 28 < the thumbnail's 40 cols. It must not be
+	// drawn at its old size (it would wrap and tear); it holds blank space instead
+	// while the re-fit runs.
+	lines := m.inlineFileThumbLines(f, 30)
+	if !blankRows(lines) {
+		t.Errorf("an over-wide thumbnail must not be drawn; want reserved blanks, got %q", lines)
 	}
-	pending := m.inlineImg.takePending()
+	pending := takeAllPending(m.inlineImg)
 	if len(pending) != 1 || thumbKey(pending[0]) != "f1" {
 		t.Fatalf("the narrowed pane should queue f1 for a re-fit, got %v", pending)
 	}
@@ -277,26 +338,73 @@ func TestInlineThumbCellsPreserveAspect(t *testing.T) {
 	}
 }
 
+// sightAt is sight() with the reservation a Model would have computed, for tests
+// that only care about the ready/not-ready answer.
+func sightAt(ii *inlineImages, key string, box int) sightResult {
+	return ii.sight(previewItem{file: &model.FileInfo{Id: key}}, box, inlineThumbRows, 4)
+}
+
 // TestInlineImagesEvictLRU: past the terminal-memory cap the least-recently-seen
-// thumbnails are evicted and their ids handed back for a kittyDelete, while the
-// most-recently-seen (i.e. on-screen) ones survive.
+// thumbnail is freed from the *terminal* and its id handed back for a kittyDelete,
+// while the most-recently-seen (i.e. on-screen) ones stay resident.
+//
+// Crucially, freeing it does NOT discard the built thumbnail. Terminal memory and
+// the decoded/downscaled/PNG-encoded frames are two different resources, and
+// conflating them is what made an image-heavy channel rebuild forever
+// (TestThumbFetchConverges): the evicted entry vanished, the next render re-sighted
+// it as brand new, and it was decoded and re-encoded from scratch.
 func TestInlineImagesEvictLRU(t *testing.T) {
 	ii := newInlineImages("auto")
 	for i := 0; i < maxInlineImages; i++ {
 		ii.markReady(fileIDf(i), readyInlineImg{id: uint32(i + 1), rows: 4, cols: 4, box: 78})
 	}
 	// Re-sight the first one so it is no longer the oldest.
-	ii.sight(previewItem{file: &model.FileInfo{Id: fileIDf(0)}}, 78)
+	sightAt(ii, fileIDf(0), 78)
 
-	evicted := ii.markReady("overflow", readyInlineImg{id: 9999, rows: 4, cols: 4, box: 78})
-	if len(evicted) != 1 {
-		t.Fatalf("one image should be evicted past the cap, got %d", len(evicted))
+	ii.markReady("overflow", readyInlineImg{id: 9999, rows: 4, cols: 4, box: 78})
+	if seq := ii.takeTransmits(); seq == "" { // enforces the caps
+		t.Fatal("going over the cap should have freed an image from terminal memory")
 	}
-	if evicted[0] != 2 { // file 1's id — file 0 was just re-sighted, so file 1 is oldest
-		t.Errorf("evicted the wrong image: got id %d, want the least-recently-seen (2)", evicted[0])
+
+	// file 1 is the oldest (file 0 was just re-sighted), so it is the one freed.
+	old := ii.entries[fileIDf(1)]
+	if old == nil {
+		t.Fatal("eviction discarded the built thumbnail: a later sighting would have to " +
+			"decode and re-encode it from scratch, which is the rebuild loop")
 	}
-	if _, _, ok := ii.sight(previewItem{file: &model.FileInfo{Id: fileIDf(0)}}, 78); !ok {
-		t.Error("the re-sighted image should have survived eviction")
+	if old.resident {
+		t.Error("the least-recently-seen image should no longer be resident in the terminal")
+	}
+	if fresh := ii.entries[fileIDf(0)]; fresh == nil || !fresh.resident {
+		t.Error("the re-sighted image should have stayed resident")
+	}
+}
+
+// TestFreedImageRetransmitsNotRebuilds: once an image has been freed from terminal
+// memory, drawing it again must re-transmit the frames we still hold — not send it
+// back to the fetcher to be decoded and re-encoded.
+func TestFreedImageRetransmitsNotRebuilds(t *testing.T) {
+	ii := newInlineImages("auto")
+	ii.markReady("f1", readyInlineImg{
+		id: 11, rows: 4, cols: 4, box: 78,
+		placeholder: kittyPlaceholder(11, 4, 4),
+		frameSeqs:   []string{"<frame0>"},
+	})
+	ii.entries["f1"].resident = false // as if freed to stay under the cap
+
+	r := sightAt(ii, "f1", 78)
+	if !r.ready {
+		t.Fatal("a freed-but-built image should still draw its placeholder")
+	}
+	if got := takeAllPending(ii); len(got) != 0 {
+		t.Errorf("a freed image must not be re-queued for a rebuild, got %v", got)
+	}
+	seq := ii.takeTransmits()
+	if !strings.Contains(seq, "<frame0>") {
+		t.Errorf("drawing a freed image should re-transmit its cached frame, got %q", seq)
+	}
+	if !ii.entries["f1"].resident {
+		t.Error("re-transmitting should mark the image resident again")
 	}
 }
 
@@ -307,9 +415,9 @@ func TestInlineImagesRefitFreesOldImage(t *testing.T) {
 	ii := newInlineImages("auto")
 	ii.markReady("f1", readyInlineImg{id: 11, rows: 10, cols: 40, box: 78})
 
-	evicted := ii.markReady("f1", readyInlineImg{id: 22, rows: 6, cols: 24, box: 40})
-	if len(evicted) != 1 || evicted[0] != 11 {
-		t.Fatalf("a re-fit should free the old image id 11, got %v", evicted)
+	replaced := ii.markReady("f1", readyInlineImg{id: 22, rows: 6, cols: 24, box: 40})
+	if len(replaced) != 1 || replaced[0] != 11 {
+		t.Fatalf("a re-fit should free the old image id 11, got %v", replaced)
 	}
 }
 
@@ -337,11 +445,12 @@ func TestInlineBodyImageDrawsGiphyLink(t *testing.T) {
 	if p.Metadata != nil && len(p.Metadata.Files) != 0 {
 		t.Fatal("precondition: a Giphy link post has no attachments")
 	}
-	// Nothing to draw yet, but the sighting must be queued keyed by the URL.
-	if lines := m.inlineBodyImageLines(p, 80); lines != nil {
-		t.Errorf("unfetched body image has no rows yet, got %d", len(lines))
+	// Nothing drawn yet — but the space is held (a body URL carries no dimensions,
+	// so the reservation assumes nominalBodyImage) and the sighting is queued by URL.
+	if lines := m.inlineBodyImageLines(p, 80); !blankRows(lines) {
+		t.Errorf("an unfetched body image should reserve blank rows, got %q", lines)
 	}
-	pending := m.inlineImg.takePending()
+	pending := takeAllPending(m.inlineImg)
 	if len(pending) != 1 || thumbKey(pending[0]) != giphyURL {
 		t.Fatalf("the Giphy URL should be queued for fetch, got %v", pending)
 	}
@@ -379,7 +488,7 @@ func TestInlineBodyImageMatchesPreviewItems(t *testing.T) {
 	}
 	// The same item is what the thumbnail path queues.
 	m.inlineBodyImageLines(p, 80)
-	pending := m.inlineImg.takePending()
+	pending := takeAllPending(m.inlineImg)
 	if len(pending) != 1 || thumbKey(pending[0]) != thumbKey(items[0]) {
 		t.Errorf("thumbnails should cover the same item preview does: %v vs %v", pending, items)
 	}

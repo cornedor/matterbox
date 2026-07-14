@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Capture a profile set from a running `matterbox --pprof localhost:6060`.
+#
+#   ./scripts/matterbox-pprof [seconds] [label]
+#
+# Start matterbox with --pprof, then run this WHILE DOING THE SLOW THING — the
+# CPU profile only sees the window it samples, so an idle capture tells you
+# nothing about a laggy scroll. Profiles land in /tmp/matterbox-pprof/<label>/.
+set -euo pipefail
+
+SECS="${1:-20}"
+LABEL="${2:-$(date +%H%M%S)}"
+ADDR="${MATTERBOX_PPROF_ADDR:-localhost:6060}"
+OUT="/tmp/matterbox-pprof/$LABEL"
+
+if ! curl -fsS "http://$ADDR/debug/pprof/" >/dev/null 2>&1; then
+	echo "no pprof server at $ADDR — start the TUI with: ./matterbox --pprof $ADDR" >&2
+	exit 1
+fi
+
+mkdir -p "$OUT"
+echo "capturing ${SECS}s into $OUT — exercise the slow path NOW"
+
+# CPU is the one that must span the slow window; the rest are instantaneous
+# snapshots, so take them at the end (after the load has been applied).
+curl -fsS "http://$ADDR/debug/pprof/profile?seconds=$SECS" -o "$OUT/cpu.prof"
+for p in heap allocs goroutine block mutex; do
+	curl -fsS "http://$ADDR/debug/pprof/$p" -o "$OUT/$p.prof" || echo "  (skipped $p)" >&2
+done
+
+echo
+echo "wrote:"
+ls -1sh "$OUT"
+echo
+echo "inspect:  go tool pprof -http=: $OUT/cpu.prof"
+echo "top:      go tool pprof -top -nodecount=25 $OUT/cpu.prof"

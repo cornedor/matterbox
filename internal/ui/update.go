@@ -37,6 +37,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if fetch := nm.fetchPendingInlineImages(); fetch != nil {
 		cmd = tea.Batch(cmd, fetch)
 	}
+	// After the render: re-transmit any thumbnail that was drawn but is no longer in
+	// terminal memory, and free whatever is now over a cap. Must follow the fetch, so
+	// an image installed this event is on screen before the caps are enforced.
+	if raw := nm.flushInlineTransmits(); raw != nil {
+		cmd = tea.Batch(cmd, raw)
+	}
 	if fetch := nm.fetchPendingMRStatus(); fetch != nil {
 		cmd = tea.Batch(cmd, fetch)
 	}

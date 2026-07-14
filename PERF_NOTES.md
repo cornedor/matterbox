@@ -115,6 +115,54 @@ frame memo is what actually removes the cost.
   render loop. If a message leaves the frame byte-identical, it must say so in
   `preservesFrame` or it costs a full `View()`.
 
+## 8. Inline thumbnails rebuilt forever in image-heavy channels — ✅ DONE
+**Found by:** live pprof of channel-switching (`matterbox --pprof`, see
+`scripts/matterbox-pprof`). **70% of all CPU in `buildInlineThumb`, with
+`readThumbBytes` at 0.01s** — nothing was being downloaded. It was re-decoding,
+re-downscaling and re-PNG-encoding images already in the disk cache, forever.
+
+Two numbers disagreed. `renderMessages` renders **every post in the render
+window** (up to `maxLoadedPosts`, 400) — not just the viewport — so `sight()`
+fired for every image in the window. `maxInlineImages` capped *terminal* memory
+at 64. Past 64 images the cycle never closed: render sights all N → fetch builds
+them → eviction **deletes the entries** to stay under the cap → those posts'
+lines are invalidated → re-render sights them as brand new → rebuild. And because
+eviction discarded the *built* frames, switching between two image-heavy channels
+rebuilt every image from scratch each way.
+
+**Fixes, both needed:**
+1. **Terminal residency ≠ built frames.** `inlineImgEntry.resident` now tracks
+   the terminal copy; eviction `kittyDelete`s it and *keeps* the decoded/encoded
+   frames. A later sighting re-transmits a string we already have
+   (`sight` → `needTransmit` → `flushInlineTransmits`). Our own memory is bounded
+   separately by `maxInlineBuiltBytes` (bytes, not count — a still is ~tens of KB,
+   a 30-frame GIF is a few MB).
+2. **Fetch only near the viewport** (`inlineFetchMarginScreens`). The window holds
+   ~20× more images than the screen shows. Sighted-but-far images park in
+   `pending` and are picked up if you scroll toward them.
+
+**Row reservation is what makes (2) safe.** A post whose image loads later would
+*grow*, and a wheel scroll anchors on an absolute row offset (`m.msgFreeOffset`),
+so content growing above the viewport jumps the page under the cursor. `sight()`
+therefore reserves the thumbnail's rows on first render (`reserveThumbCells`) and
+draws blanks until it arrives — the post is its final height from the start. Only
+`rows` has to be right, and any image tall enough to hit the height cap lands on
+exactly `inlineThumbRows`, which is essentially all of them. Attachments predict
+exactly from `FileInfo`; a body URL (Giphy) has no dimensions, so it assumes
+`nominalBodyImage{W,H}`. **Corollary:** every fetch outcome — ready, failed *and*
+retry — must invalidate the owning post's lines, or a failed image's reservation
+stays as a permanent blank hole (`TestFailedThumbReleasesItsReservedRows`).
+
+**Results:** `TestThumbFetchConverges` — an 80-image window went **96 builds → 8**
+(96 = 80 + 16 immediately-evicted rebuilds; 8 = only what's within the margin).
+`BenchmarkChannelOpenThumbs`: **~0 builds per channel-switch pair** in steady
+state, vs. a full rebuild of both channels before.
+
+- **Lesson:** a cache that bounds one resource (terminal memory) must not throw
+  away a *different*, more expensive one (the decode + PNG encode). And a
+  per-render sighting hook fires for the whole render window, not the screen —
+  `renderMessages` is O(loaded posts) by design (see `project_render_window`).
+
 ## Not a problem (measured, don't re-chase)
 - **Inline-thumbnail animation byte volume.** Re-transmitting a whole PNG per GIF
   frame *looks* alarming at a 10-row placement, but realistic cartoon/video GIF
