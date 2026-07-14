@@ -365,10 +365,23 @@ func (e *emojiImages) permanentlyOff() bool {
 	return false
 }
 
-// active reports whether images can be fetched and transmitted: probe OK and a
-// known truecolor profile.
+// active reports whether custom-emoji images can be fetched and transmitted: the
+// feature is on, the probe came back OK, and the profile is known truecolor.
 func (e *emojiImages) active() bool {
-	return e.mode != "off" && e.probeDone && e.probeOK && e.profileKnown && e.truecolor
+	return e.mode != "off" && e.graphicsReady()
+}
+
+// graphicsReady reports whether the *terminal* can display Kitty placeholder
+// images — probe OK on a known truecolor profile — regardless of whether custom
+// emoji themselves are switched on. Inline image thumbnails gate on this rather
+// than on active(), so `emoji_images: off` with `image_thumbnails: auto` still
+// draws thumbnails. Callers hold no lock; the fields are set under mu but read
+// here from the same goroutine chain as active(). nil-safe.
+func (e *emojiImages) graphicsReady() bool {
+	if e == nil {
+		return false
+	}
+	return e.probeDone && e.probeOK && e.profileKnown && e.truecolor
 }
 
 // inline returns the prebuilt placeholder for a ready custom emoji and true;
@@ -797,7 +810,7 @@ func (m Model) buildReadyEmoji(raw []byte) (readyEmoji, error) {
 // retried ones are forgotten. Cached post lines that reference a newly-ready
 // emoji are invalidated and re-rendered, and each emoji's first frame is sent
 // raw (out of band) so its placeholders resolve. If any installed emoji is
-// animated, the animation tick is armed (once — emojiAnimating guards it).
+// animated, the animation tick is armed (once — imgAnimating guards it).
 func (m Model) handleEmojiImagesFetched(msg emojiImagesFetchedMsg) (Model, tea.Cmd) {
 	if m.emojiImg == nil {
 		return m, nil
@@ -830,10 +843,10 @@ func (m Model) handleEmojiImagesFetched(msg emojiImagesFetchedMsg) (Model, tea.C
 	}
 	// renderMessages above refreshed the visibility set; only arm the loop when
 	// a newly-ready animated emoji is actually on screen. The Update-level
-	// kicker (maybeStartEmojiAnim) handles the scroll/switch-in case.
-	if animated && !m.emojiAnimating && m.emojiImg.hasVisibleAnimated() {
-		m.emojiAnimating = true
-		cmds = append(cmds, emojiAnimTickCmd(0))
+	// kicker (maybeStartImageAnim) handles the scroll/switch-in case.
+	if animated && !m.imgAnimating && m.emojiImg.hasVisibleAnimated() {
+		m.imgAnimating = true
+		cmds = append(cmds, imgAnimTickCmd(0))
 	}
 	if len(cmds) == 0 {
 		return m, nil
@@ -896,46 +909,68 @@ func (e *emojiImages) markUnresolved(names ...string) {
 
 // --- GIF emoji animation tick ---------------------------------------------
 
-// emojiAnimMinInterval floors the tick cadence: it caps the wakeup rate (so a
+// imgAnimMinInterval floors the tick cadence: it caps the wakeup rate (so a
 // fast GIF can't spin the loop at hundreds of Hz) and stands in for a 0 initial
 // delay. Per-frame GIF delays below it are honoured loosely — the catch-up loop
 // in advanceFrame skips frames rather than playing in slow motion.
-const emojiAnimMinInterval = 50 * time.Millisecond
+const imgAnimMinInterval = 50 * time.Millisecond
 
-// emojiAnimTickMsg drives the single GIF-emoji animation loop. There is at most
-// one in flight (guarded by Model.emojiAnimating); it reschedules itself from
+// imgAnimTickMsg drives the single GIF-emoji animation loop. There is at most
+// one in flight (guarded by Model.imgAnimating); it reschedules itself from
 // the soonest next-due frame until nothing is left to animate.
-type emojiAnimTickMsg struct{}
+type imgAnimTickMsg struct{}
 
-// emojiAnimTickCmd schedules the next animation tick after d, floored to
-// emojiAnimMinInterval.
-func emojiAnimTickCmd(d time.Duration) tea.Cmd {
-	if d < emojiAnimMinInterval {
-		d = emojiAnimMinInterval
+// imgAnimTickCmd schedules the next animation tick after d, floored to
+// imgAnimMinInterval.
+func imgAnimTickCmd(d time.Duration) tea.Cmd {
+	if d < imgAnimMinInterval {
+		d = imgAnimMinInterval
 	}
-	return tea.Tick(d, func(time.Time) tea.Msg { return emojiAnimTickMsg{} })
+	return tea.Tick(d, func(time.Time) tea.Msg { return imgAnimTickMsg{} })
 }
 
-// advanceEmojiAnim steps every animated emoji whose frame is due, emits the
-// resulting re-transmits out of band (no re-render — the on-screen placeholders
-// keep their id and the terminal repaints them), and reschedules itself. It
-// clears emojiAnimating and stops once nothing animates.
-func (m *Model) advanceEmojiAnim() tea.Cmd {
-	if m.emojiImg == nil || !m.emojiAnimating {
+// advanceImageAnim steps every visible animated custom emoji *and* inline image
+// thumbnail whose frame is due, emits the resulting re-transmits out of band (no
+// re-render — the on-screen placeholders keep their id and the terminal repaints
+// them), and reschedules itself from whichever is due soonest. One loop drives
+// both so a channel with animated emoji and animated GIF attachments ticks at a
+// single, shared cadence rather than two competing ones. It clears imgAnimating
+// and stops once nothing animates.
+func (m *Model) advanceImageAnim() tea.Cmd {
+	if !m.imgAnimating {
 		return nil
 	}
-	// Re-check visibility each tick so an emoji scrolled out of view stops the
+	// Re-check visibility each tick so anything scrolled out of view stops the
 	// loop (the YOffset can move without a content re-render).
 	m.refreshAnimVisibility()
-	seq, next, animating := m.emojiImg.advanceFrame(time.Now())
+	now := time.Now()
+
+	var seq strings.Builder
+	next := time.Duration(-1)
+	animating := false
+	step := func(s string, n time.Duration, a bool) {
+		if !a {
+			return
+		}
+		animating = true
+		seq.WriteString(s)
+		if n >= 0 && (next < 0 || n < next) {
+			next = n
+		}
+	}
+	if m.emojiImg != nil {
+		step(m.emojiImg.advanceFrame(now))
+	}
+	step(m.inlineImg.advanceFrame(now))
+
 	if !animating {
-		m.emojiAnimating = false
+		m.imgAnimating = false
 		return nil
 	}
-	if seq == "" {
-		return emojiAnimTickCmd(next)
+	if seq.Len() == 0 {
+		return imgAnimTickCmd(next)
 	}
-	return tea.Batch(tea.Raw(seq), emojiAnimTickCmd(next))
+	return tea.Batch(tea.Raw(seq.String()), imgAnimTickCmd(next))
 }
 
 // viewportVisibleAnimatedEmoji returns the ready animated emoji whose posts are
@@ -997,34 +1032,42 @@ func (m *Model) viewportVisibleAnimatedEmoji() map[string]struct{} {
 	return visible
 }
 
-// refreshAnimVisibility recomputes the on-screen animated-emoji set and applies
-// it, returning whether any animated emoji is visible. Cheap unless animated
-// emoji are cached. Called wherever scrolling or content may have changed what's
-// on screen: renderMessages/renderThread, the animation tick, and the per-event
-// kicker.
+// refreshAnimVisibility recomputes the on-screen animated-emoji and animated-
+// thumbnail sets and applies them, returning whether anything animated is
+// visible. Cheap unless animated images are cached (both scans short-circuit to
+// nil when none exist). Called wherever scrolling or content may have changed
+// what's on screen: renderMessages/renderThread, the animation tick, and the
+// per-event kicker.
 func (m *Model) refreshAnimVisibility() bool {
-	if m.emojiImg == nil {
-		return false
+	var n int
+	if m.emojiImg != nil {
+		visible := m.viewportVisibleAnimatedEmoji()
+		m.emojiImg.setVisibleAnimated(visible)
+		n += len(visible)
 	}
-	visible := m.viewportVisibleAnimatedEmoji()
-	m.emojiImg.setVisibleAnimated(visible)
-	return len(visible) > 0
+	if m.inlineImg != nil {
+		visible := m.viewportVisibleInlineImages()
+		m.inlineImg.setVisibleAnimated(visible)
+		n += len(visible)
+	}
+	return n > 0
 }
 
-// maybeStartEmojiAnim (re-)arms the GIF-emoji animation loop when an animated
-// emoji is on screen but the loop is stopped. The loop self-stops via
-// advanceFrame whenever nothing animated is visible (switching channels,
-// scrolling the emoji out of view), so this is what restarts it on the way back.
-// Batched from Update after every event, mirroring the other pending-work
-// kickers; refreshAnimVisibility short-circuits when no animated emoji exist, so
-// the common typing path stays cheap.
-func (m *Model) maybeStartEmojiAnim() tea.Cmd {
-	if m.emojiImg == nil || m.emojiAnimating {
+// maybeStartImageAnim (re-)arms the GIF animation loop — one loop, shared by
+// custom emoji and inline image thumbnails — when something animated is on screen
+// but the loop is stopped. The loop self-stops via advanceImageAnim whenever
+// nothing animated is visible (switching channels, scrolling it out of view), so
+// this is what restarts it on the way back. Batched from Update after every
+// event, mirroring the other pending-work kickers; refreshAnimVisibility
+// short-circuits when nothing animated is cached, so the common typing path stays
+// cheap.
+func (m *Model) maybeStartImageAnim() tea.Cmd {
+	if m.imgAnimating {
 		return nil
 	}
 	if !m.refreshAnimVisibility() {
 		return nil
 	}
-	m.emojiAnimating = true
-	return emojiAnimTickCmd(0)
+	m.imgAnimating = true
+	return imgAnimTickCmd(0)
 }

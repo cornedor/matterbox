@@ -553,7 +553,7 @@ func (m *Model) renderSQLRow(p *model.Post, cols []string, row []any, width int)
 	if p.Message != "" {
 		lines = appendBodyLines(lines, m.markdownBody(p), width)
 	}
-	if att := renderAttachments(p, width); att != "" {
+	if att := m.renderAttachments(p, width); att != "" {
 		for _, l := range strings.Split(att, "\n") {
 			lines = append(lines, wrapBodyLine(l, width)...)
 		}

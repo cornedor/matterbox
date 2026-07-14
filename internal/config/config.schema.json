@@ -87,6 +87,12 @@
       "enum": ["auto", "off"],
       "default": "auto"
     },
+    "image_thumbnails": {
+      "type": "string",
+      "description": "Draw image attachments as inline thumbnails in the transcript, so an image is visible without pressing space for the full-size preview. \"off\" (default) shows only the filename line; \"auto\" draws thumbnails wherever emoji_images works (same Kitty-graphics terminal gate). Space still opens the full preview either way.",
+      "enum": ["auto", "off"],
+      "default": "off"
+    },
     "code_theme": {
       "type": "string",
       "description": "Colour scheme for syntax-highlighting fenced code blocks. Any chroma style name plus the bundled everforest-dark. An unknown name falls back to the default; NO_COLOR disables code colour.",
@@ -255,6 +261,11 @@
         "image_preview": {
           "type": "boolean",
           "description": "Animate GIFs in the space-to-preview image modal (default true). false shows the first frame only.",
+          "default": true
+        },
+        "inline_images": {
+          "type": "boolean",
+          "description": "Animate GIF attachments drawn as inline thumbnails (default true), and only while they are on screen. No effect unless image_thumbnails is auto. false shows the first frame only.",
           "default": true
         }
       }

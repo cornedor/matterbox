@@ -160,12 +160,13 @@ type advanced struct {
 	markRead     int  // mark_read_delay_seconds
 	sqlTab       bool // sql_tab
 	mouse        bool // mouse
-	animations   bool // animations.* (custom_emoji + image_preview)
+	thumbnails   bool // image_thumbnails: auto (vs off)
+	animations   bool // animations.* (custom_emoji + image_preview + inline_images)
 	ctrlArrow    bool // keybindings.nav_modifier == "ctrl" (vs "none")
 	codeThemeIdx int  // index into Model.themeNames → code_theme
 }
 
-const advFieldCount = 6
+const advFieldCount = 7
 
 // New builds the wizard over an already-loaded config, seeding the fields from
 // whatever is already configured so re-running `welcome` edits rather than
@@ -207,6 +208,7 @@ func New(cfg *config.Config, demo bool) *Model {
 		markRead:     derefInt(cfg.MarkReadDelaySeconds, 5),
 		sqlTab:       derefBool(cfg.SQLTab, false),
 		mouse:        derefBool(cfg.Mouse, true),
+		thumbnails:   cfg.ImageThumbnails == "auto",
 		animations:   derefBool(cfg.Animations.CustomEmoji, true),
 		ctrlArrow:    navModEnabled(cfg.Keybindings.NavModifier),
 		codeThemeIdx: themeIndex(m.themeNames, cfg.CodeTheme),

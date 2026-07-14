@@ -445,7 +445,7 @@ func TestHandleEmojiImagesFetchedArmsAnimation(t *testing.T) {
 		t.Fatalf("buildReadyEmoji(still): %v", err)
 	}
 	still, _ = still.handleEmojiImagesFetched(emojiImagesFetchedMsg{ready: map[string]readyEmoji{"p": stillRE}})
-	if still.emojiAnimating {
+	if still.imgAnimating {
 		t.Error("still emoji armed the animation loop")
 	}
 
@@ -460,7 +460,7 @@ func TestHandleEmojiImagesFetchedArmsAnimation(t *testing.T) {
 		t.Fatalf("animated GIF built %d frame(s), want > 1", len(animRE.frameSeqs))
 	}
 	anim, cmd := anim.handleEmojiImagesFetched(emojiImagesFetchedMsg{ready: map[string]readyEmoji{"a": animRE}})
-	if !anim.emojiAnimating {
+	if !anim.imgAnimating {
 		t.Error("on-screen animated emoji did not arm the animation loop")
 	}
 	if cmd == nil {
@@ -476,7 +476,7 @@ func TestHandleEmojiImagesFetchedArmsAnimation(t *testing.T) {
 		t.Fatalf("buildReadyEmoji(off): %v", err)
 	}
 	off, _ = off.handleEmojiImagesFetched(emojiImagesFetchedMsg{ready: map[string]readyEmoji{"a": offRE}})
-	if off.emojiAnimating {
+	if off.imgAnimating {
 		t.Error("off-screen animated emoji armed the animation loop (regression)")
 	}
 }

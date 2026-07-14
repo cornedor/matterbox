@@ -121,6 +121,14 @@ type Config struct {
 	// everywhere. Unicode emoji are unaffected — they always render as font
 	// glyphs. See internal/ui.
 	EmojiImages string `yaml:"emoji_images"`
+	// ImageThumbnails renders image attachments as inline thumbnails in the
+	// transcript, so an image is visible without pressing space to open the
+	// full-size preview. "off" (default) shows only the 🖼️ filename line;
+	// "auto" additionally draws a thumbnail on the terminals that support it —
+	// the same Kitty-graphics gate as EmojiImages, which it reuses rather than
+	// probing again. Space still opens the full-size preview either way.
+	// See internal/ui/inlineimg.go.
+	ImageThumbnails string `yaml:"image_thumbnails"`
 	// CodeTheme is the colour scheme used to syntax-highlight fenced code
 	// blocks in messages: any chroma style name (e.g. monokai, dracula,
 	// github-dark, gruvbox, nord, catppuccin-mocha, tokyonight-night) plus the
@@ -503,6 +511,12 @@ type AnimationsConfig struct {
 	// explicit false shows the first frame only. Pointer so an absent key
 	// defaults to true.
 	ImagePreview *bool `yaml:"image_preview"`
+	// InlineImages animates GIF attachments rendered as inline thumbnails in the
+	// transcript (image_thumbnails: auto). Only thumbnails actually on screen
+	// animate — scrolling one out of view freezes it — so a channel full of GIFs
+	// costs nothing once they're off screen. Pointer so an absent key defaults to
+	// true; an explicit false shows the first frame only.
+	InlineImages *bool `yaml:"inline_images"`
 }
 
 // KeybindingsConfig holds optional keymap tweaks. Defaults in fillDefaults.
@@ -809,7 +823,7 @@ func Load() (*Config, error) {
 	// and rewrite the file once so the discovered model + prompt show up as
 	// editable defaults. Best-effort: a failed rewrite only means the file
 	// keeps working off in-memory defaults.
-	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.CollapseLongMessages == nil || cfg.CollapsePreviewLines == nil || cfg.DownloadDir == "" || cfg.SQLTab == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.CodeTheme == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.TwoWay == nil || cfg.Listen.NotifyDMs == nil || cfg.Listen.NotifyDelaySeconds == nil
+	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.CollapseLongMessages == nil || cfg.CollapsePreviewLines == nil || cfg.DownloadDir == "" || cfg.SQLTab == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.ImageThumbnails == "" || cfg.CodeTheme == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Animations.InlineImages == nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.TwoWay == nil || cfg.Listen.NotifyDMs == nil || cfg.Listen.NotifyDelaySeconds == nil
 	cfg.fillDefaults()
 	if addDefaults {
 		if werr := writeConfig(p, cfg); werr != nil {
@@ -928,6 +942,12 @@ func (c *Config) fillDefaults() {
 	if c.EmojiImages == "" {
 		c.EmojiImages = "auto"
 	}
+	// Off rather than auto: an existing config predates the option, and silently
+	// changing how every image message renders on upgrade would be a surprise.
+	// The welcome wizard's last step offers it, which is where people find it.
+	if c.ImageThumbnails == "" {
+		c.ImageThumbnails = "off"
+	}
 	if c.CodeTheme == "" {
 		c.CodeTheme = defaultCodeTheme
 	}
@@ -938,6 +958,10 @@ func (c *Config) fillDefaults() {
 	if c.Animations.ImagePreview == nil {
 		t := true
 		c.Animations.ImagePreview = &t
+	}
+	if c.Animations.InlineImages == nil {
+		t := true
+		c.Animations.InlineImages = &t
 	}
 	if c.Giphy.Rendition == "" {
 		c.Giphy.Rendition = defaultGiphyRendition
@@ -1084,6 +1108,12 @@ func writeConfig(p string, cfg *Config) error {
 		"#             Kitty graphics protocol. auto (default) enables them on a\n" +
 		"#             Kitty/Ghostty truecolor terminal outside tmux; off keeps\n" +
 		"#             literal :name: text. Unicode emoji are unaffected.\n" +
+		"# image_thumbnails: draw image attachments as inline thumbnails in the\n" +
+		"#             transcript, so you see the image without pressing space for\n" +
+		"#             the full-size preview. off (default) shows just the filename\n" +
+		"#             line; auto draws thumbnails wherever emoji_images works (same\n" +
+		"#             Kitty-graphics terminal gate). Space still opens the full\n" +
+		"#             preview either way.\n" +
 		"# code_theme: colour scheme for syntax-highlighting fenced code blocks in\n" +
 		"#             messages. Any chroma style name — monokai (default), dracula,\n" +
 		"#             github-dark, gruvbox, nord, onedark, catppuccin-mocha,\n" +
@@ -1093,7 +1123,9 @@ func writeConfig(p string, cfg *Config) error {
 		"# animations: optional motion effects, off-able if distracting.\n" +
 		"#             custom_emoji (default true) animates GIF custom emoji in\n" +
 		"#             place; image_preview (default true) animates GIFs in the\n" +
-		"#             space-to-preview modal; false freezes either on frame one.\n" +
+		"#             space-to-preview modal; inline_images (default true) animates\n" +
+		"#             GIF thumbnails in the transcript, but only while they're on\n" +
+		"#             screen. false freezes any of them on frame one.\n" +
 		"# giphy:      expand a pasted Giphy link into an inline image. The link is\n" +
 		"#             turned into ![alt](url) instantly (offline, from its id);\n" +
 		"#             with api_key set (https://developers.giphy.com, or the\n" +

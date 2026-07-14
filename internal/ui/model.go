@@ -733,6 +733,9 @@ type Model struct {
 	// animatePreview snapshots animations.image_preview: when false, a GIF in
 	// the preview modal shows its first frame only. See preview.go.
 	animatePreview bool
+	// animateInline snapshots animations.inline_images: when false, a GIF drawn
+	// as an inline thumbnail shows its first frame only. See inlineimg.go.
+	animateInline bool
 
 	// giphyAPIKey / giphyRendition configure pasted-Giphy-link expansion. The
 	// key (empty = offline-only) enables the background title upgrade; the
@@ -760,11 +763,18 @@ type Model struct {
 	emojiImg         *emojiImages
 	customEmojiNames []string
 
-	// emojiAnimating guards the single GIF-emoji animation loop: it's set when
-	// the first animated emoji becomes ready and the tick is armed, and cleared
-	// when the loop finds nothing left to animate. Prevents a second batch from
-	// starting a parallel (rate-doubling) loop. See emojiimg.go.
-	emojiAnimating bool
+	// inlineImg renders image attachments as inline thumbnails in the transcript
+	// (image_thumbnails: auto — see inlineimg.go). A pointer for the same reason
+	// as emojiImg, and nil-safe throughout. It reuses emojiImg's terminal probe
+	// rather than running its own: the placeholder encoding is identical.
+	inlineImg *inlineImages
+
+	// imgAnimating guards the single GIF animation loop, shared by custom emoji
+	// and inline image thumbnails: it's set when the first animated image of
+	// either kind becomes ready and the tick is armed, and cleared when the loop
+	// finds nothing left to animate. Prevents a second batch from starting a
+	// parallel (rate-doubling) loop. See advanceImageAnim in emojiimg.go.
+	imgAnimating bool
 
 	// postLineCache memoizes renderPostLines / renderThreadPostLines
 	// output keyed by post id, with a fingerprint over the inputs (see
@@ -940,6 +950,8 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	emojiMode := "auto"
 	animateEmoji := true
 	animatePreview := true
+	thumbMode := "off" // mirrors config: opt-in, so an upgrade doesn't change how images render
+	animateInline := true
 	var giphyAPIKey string
 	giphyRendition := "fixed_height"             // mirrors config.defaultGiphyRendition
 	downloadDir := expandUserPath("~/Downloads") // mirrors config.defaultDownloadDir
@@ -995,6 +1007,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		if cfg.EmojiImages != "" {
 			emojiMode = cfg.EmojiImages
 		}
+		if cfg.ImageThumbnails != "" {
+			thumbMode = cfg.ImageThumbnails
+		}
 		if cfg.CodeTheme != "" {
 			setCodeTheme(cfg.CodeTheme)
 		}
@@ -1003,6 +1018,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		}
 		if cfg.Animations.ImagePreview != nil {
 			animatePreview = *cfg.Animations.ImagePreview
+		}
+		if cfg.Animations.InlineImages != nil {
+			animateInline = *cfg.Animations.InlineImages
 		}
 		giphyAPIKey = cfg.Giphy.APIKey
 		if cfg.Giphy.Rendition != "" {
@@ -1178,7 +1196,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		collapseShow:        collapseShow,
 		collapseKeyHint:     collapseKey,
 		emojiImg:            newEmojiImages(emojiMode, animateEmoji),
+		inlineImg:           newInlineImages(thumbMode),
 		animatePreview:      animatePreview,
+		animateInline:       animateInline,
 		giphyAPIKey:         giphyAPIKey,
 		giphyRendition:      giphyRendition,
 		downloadDir:         downloadDir,
@@ -1283,7 +1303,12 @@ const emojiProbeTimeout = 3 * time.Second
 // the same gate (Kitty-capable, non-tmux) is exactly when the image-preview
 // modal can open and wants it. The reply lands as a uv.CellSizeEvent.
 func (m Model) emojiProbeCmd() tea.Cmd {
-	if m.emojiImg == nil || m.emojiImg.mode != "auto" {
+	if m.emojiImg == nil {
+		return nil
+	}
+	// Probe when *either* image feature wants it: inline thumbnails share this one
+	// probe, so `emoji_images: off` with `image_thumbnails: auto` must still ask.
+	if m.emojiImg.mode != "auto" && !m.inlineImg.enabled() {
 		return nil
 	}
 	if os.Getenv("TMUX") != "" {

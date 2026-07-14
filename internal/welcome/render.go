@@ -152,9 +152,10 @@ func (m *Model) buildStep(p *panelBuilder) {
 		p.add(m.advRow("Mark read after", fmt.Sprintf("%ds", m.adv.markRead), accentCyan, 0))
 		p.add(m.advRow("SQL tab", onoff(m.adv.sqlTab), chipColor(m.adv.sqlTab), 1))
 		p.add(m.advRow("Mouse support", onoff(m.adv.mouse), chipColor(m.adv.mouse), 2))
-		p.add(m.advRow("Animations", onoff(m.adv.animations), chipColor(m.adv.animations), 3))
-		p.add(m.advRow("Ctrl+arrow navigation", onoff(m.adv.ctrlArrow), chipColor(m.adv.ctrlArrow), 4))
-		p.add(m.advRow("Code theme", m.currentThemeName(), accentCyan, 5))
+		p.add(m.advRow("Image thumbnails", onoff(m.adv.thumbnails), chipColor(m.adv.thumbnails), 3))
+		p.add(m.advRow("Animations", onoff(m.adv.animations), chipColor(m.adv.animations), 4))
+		p.add(m.advRow("Ctrl+arrow navigation", onoff(m.adv.ctrlArrow), chipColor(m.adv.ctrlArrow), 5))
+		p.add(m.advRow("Code theme", m.currentThemeName(), accentCyan, 6))
 		p.blank()
 		p.wrap(m.advHint(), dimC)
 		p.blank()
@@ -193,10 +194,12 @@ func (m *Model) advHint() string {
 	case 2:
 		return "Wheel-scroll and click to navigate; off keeps native terminal selection."
 	case 3:
-		return "Animate GIF custom emoji and image previews."
+		return "Draw image attachments right in the transcript, no need to press space. Needs a Kitty/Ghostty-class terminal."
 	case 4:
-		return "Switch team/channel with ctrl+arrow keys (off frees them for word-jump)."
+		return "Animate GIF custom emoji, image previews and thumbnails."
 	case 5:
+		return "Switch team/channel with ctrl+arrow keys (off frees them for word-jump)."
+	case 6:
 		return fmt.Sprintf("Syntax-highlight palette for code blocks — ←→ cycles %d themes.", len(m.themeNames))
 	}
 	return ""

@@ -128,7 +128,7 @@ func TestCodeThemeCyclesAndPersists(t *testing.T) {
 	if got := m.currentThemeName(); got != "monokai" {
 		t.Fatalf("seeded theme = %q, want monokai", got)
 	}
-	m.adv.focus = 5
+	m.adv.focus = advFieldCount - 1 // the code-theme cycler is the last row
 
 	start := m.adv.codeThemeIdx
 	m.handleKey(key(tea.KeyRight))

@@ -1042,13 +1042,15 @@ func (m *Model) renderThreadPostLines(p *model.Post, isRoot, grouped bool) ([]st
 			}
 			lines = append(lines, bodyLines...)
 		}
+		// See renderPostLines: body-linked images draw under the text that links them.
+		lines = append(lines, m.inlineBodyImageLines(p, width)...)
 		if poll {
 			selected := m.focus == focusThread && m.threadIdx >= 0 && m.threadIdx < len(m.threadPosts) && m.threadPosts[m.threadIdx] == p
 			for _, l := range m.renderPoll(p, width, selected) {
 				lines = append(lines, wrapBodyLine(l, width)...)
 			}
 		}
-		if att := renderAttachments(p, width); att != "" {
+		if att := m.renderAttachments(p, width); att != "" {
 			for _, l := range strings.Split(att, "\n") {
 				lines = append(lines, wrapBodyLine(l, width)...)
 			}
@@ -1164,13 +1166,17 @@ func (m *Model) renderPostLines(p *model.Post, grouped bool) ([]string, int) {
 			}
 			lines = append(lines, bodyLines...)
 		}
+		// Images linked in the body (a Giphy ![](…), any image URL) draw under the
+		// text that links them. Attachments are handled by renderAttachments below,
+		// each above its own filename line.
+		lines = append(lines, m.inlineBodyImageLines(p, width)...)
 		if poll {
 			selected := m.focus == focusMessages && m.postIdx >= 0 && m.postIdx < len(m.posts) && m.posts[m.postIdx] == p
 			for _, l := range m.renderPoll(p, width, selected) {
 				lines = append(lines, wrapBodyLine(l, width)...)
 			}
 		}
-		if att := renderAttachments(p, width); att != "" {
+		if att := m.renderAttachments(p, width); att != "" {
 			for _, l := range strings.Split(att, "\n") {
 				lines = append(lines, wrapBodyLine(l, width)...)
 			}
@@ -1238,12 +1244,22 @@ func normalizeFilename(s string) string {
 // post (icon + name + size, plus dimensions for images). Empty string
 // if the post has no files in its metadata. maxWidth bounds each
 // rendered line so the terminal never wraps it past the viewport.
-func renderAttachments(p *model.Post, maxWidth int) string {
+//
+// With image_thumbnails on, an image attachment whose thumbnail is ready also
+// contributes the thumbnail's placeholder rows, above its filename line. Those
+// rows are plain text cells (see inlineimg.go), so they simply become more lines
+// here and the rest of the pipeline is none the wiser.
+func (m *Model) renderAttachments(p *model.Post, maxWidth int) string {
 	if p.Metadata == nil || len(p.Metadata.Files) == 0 {
 		return ""
 	}
 	lines := make([]string, 0, len(p.Metadata.Files))
 	for _, f := range p.Metadata.Files {
+		// Emitted raw: each cell carries the image id in its truecolor foreground,
+		// and running it through attachmentStyle (or any lipgloss style) would
+		// overwrite that and collapse the image to blank cells.
+		lines = append(lines, m.inlineFileThumbLines(f, maxWidth)...)
+
 		icon := "📎"
 		var info string
 		if strings.HasPrefix(f.MimeType, "image/") {

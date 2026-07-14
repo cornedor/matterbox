@@ -350,10 +350,12 @@ func (m *Model) adjustAdvanced(delta int) {
 	case 2:
 		m.adv.mouse = !m.adv.mouse
 	case 3:
-		m.adv.animations = !m.adv.animations
+		m.adv.thumbnails = !m.adv.thumbnails
 	case 4:
-		m.adv.ctrlArrow = !m.adv.ctrlArrow
+		m.adv.animations = !m.adv.animations
 	case 5:
+		m.adv.ctrlArrow = !m.adv.ctrlArrow
+	case 6:
 		if n := len(m.themeNames); n > 0 {
 			m.adv.codeThemeIdx = (m.adv.codeThemeIdx + delta + n) % n
 		}
@@ -378,10 +380,17 @@ func (m *Model) applyAdvanced() {
 	m.cfg.SQLTab = &sql
 	mouse := m.adv.mouse
 	m.cfg.Mouse = &mouse
+	if m.adv.thumbnails {
+		m.cfg.ImageThumbnails = "auto"
+	} else {
+		m.cfg.ImageThumbnails = "off"
+	}
 	anim := m.adv.animations
 	m.cfg.Animations.CustomEmoji = &anim
 	ip := m.adv.animations
 	m.cfg.Animations.ImagePreview = &ip
+	ii := m.adv.animations
+	m.cfg.Animations.InlineImages = &ii
 	if m.adv.ctrlArrow {
 		m.cfg.Keybindings.NavModifier = "ctrl"
 	} else {

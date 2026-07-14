@@ -34,10 +34,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if fetch := nm.fetchPendingEmoji(); fetch != nil {
 		cmd = tea.Batch(cmd, fetch)
 	}
+	if fetch := nm.fetchPendingInlineImages(); fetch != nil {
+		cmd = tea.Batch(cmd, fetch)
+	}
 	if fetch := nm.fetchPendingMRStatus(); fetch != nil {
 		cmd = tea.Batch(cmd, fetch)
 	}
-	if anim := nm.maybeStartEmojiAnim(); anim != nil {
+	if anim := nm.maybeStartImageAnim(); anim != nil {
 		cmd = tea.Batch(cmd, anim)
 	}
 	// Reconcile the composer's cursor with m.focus *after* the handler ran, so no
@@ -230,8 +233,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case emojiImagesFetchedMsg:
 		return m.handleEmojiImagesFetched(msg)
 
-	case emojiAnimTickMsg:
-		return m, m.advanceEmojiAnim()
+	case inlineImagesFetchedMsg:
+		return m.handleInlineImagesFetched(msg)
+
+	case imgAnimTickMsg:
+		return m, m.advanceImageAnim()
 
 	case typingIndicatorTickMsg:
 		return m, m.applyTypingIndicatorTick()
