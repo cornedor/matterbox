@@ -1208,7 +1208,8 @@ func (m *Model) renderPostLines(p *model.Post, grouped bool) ([]string, int) {
 // are short.
 func (m *Model) meEmoteLine(p *model.Post) string {
 	name := m.postAuthorName(p)
-	action := strings.TrimRight(m.markdownBody(p), "\n")
+	// Plain: an emote draws no thumbnail, so an image in it gets no chevron.
+	action := strings.TrimRight(m.markdownBodyPlain(p), "\n")
 	// markdownBody indents every line by two spaces; drop the first line's indent
 	// and flatten any continuation lines so the whole emote reads on one line.
 	action = strings.TrimPrefix(action, "  ")
@@ -1248,7 +1249,10 @@ func normalizeFilename(s string) string {
 // With image_thumbnails on, an image attachment whose thumbnail is ready also
 // contributes the thumbnail's placeholder rows, above its filename line. Those
 // rows are plain text cells (see inlineimg.go), so they simply become more lines
-// here and the rest of the pipeline is none the wiser.
+// here and the rest of the pipeline is none the wiser. Its filename line then leads
+// with the disclosure chevron (▾ showing / ▸ collapsed) — only there, and only when
+// a thumbnail is actually drawn: with thumbnails off the line is exactly what it
+// always was.
 func (m *Model) renderAttachments(p *model.Post, maxWidth int) string {
 	if p.Metadata == nil || len(p.Metadata.Files) == 0 {
 		return ""
@@ -1258,12 +1262,20 @@ func (m *Model) renderAttachments(p *model.Post, maxWidth int) string {
 		// Emitted raw: each cell carries the image id in its truecolor foreground,
 		// and running it through attachmentStyle (or any lipgloss style) would
 		// overwrite that and collapse the image to blank cells.
-		lines = append(lines, m.inlineFileThumbLines(f, maxWidth)...)
+		lines = append(lines, m.inlineFileThumbLines(p, f, maxWidth)...)
 
 		icon := "📎"
-		var info string
+		var info, chev string
 		if strings.HasPrefix(f.MimeType, "image/") {
 			icon = "🖼️"
+			if previewableMIME(f.MimeType) {
+				// Only a file we can actually draw gets a chevron: a format we can't
+				// decode (a .webp, an .svg) shows no thumbnail, so there is nothing for
+				// the chevron to describe and z has nothing to hide.
+				if c := m.thumbChevron(p.Id); c != "" {
+					chev = c + " "
+				}
+			}
 			if f.Width > 0 && f.Height > 0 {
 				info = fmt.Sprintf(" (%d×%d, %s)", f.Width, f.Height, humanSize(f.Size))
 			} else {
@@ -1273,14 +1285,14 @@ func (m *Model) renderAttachments(p *model.Post, maxWidth int) string {
 			info = " (" + humanSize(f.Size) + ")"
 		}
 		name := normalizeFilename(f.Name)
-		// Reserve room for the two-space gutter, the icon+space prefix,
+		// Reserve room for the two-space gutter, the chevron and icon prefixes,
 		// and the trailing info; truncate the name so the whole line
 		// fits within maxWidth.
-		fixed := lipgloss.Width("  ") + lipgloss.Width(icon+" ") + lipgloss.Width(info)
+		fixed := lipgloss.Width("  ") + lipgloss.Width(chev+icon+" ") + lipgloss.Width(info)
 		if maxWidth > fixed {
 			name = truncate(name, maxWidth-fixed)
 		}
-		lines = append(lines, "  "+attachmentStyle.Render(icon+" "+name+info))
+		lines = append(lines, "  "+attachmentStyle.Render(chev+icon+" "+name+info))
 	}
 	return strings.Join(lines, "\n")
 }

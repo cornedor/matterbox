@@ -68,7 +68,41 @@ var (
 const (
 	mdCodeSentinel = "\x00MDCODE"
 	mdLinkSentinel = "\x00MDLINK"
+
+	// imgIndicatorMark is planted immediately before whatever a body image renders
+	// as — the "🖼️ alt" of a markdown image, the link text of an image URL — i.e.
+	// before the *indicator* the reader sees for an image the transcript draws a
+	// thumbnail of, further down the post. The transcript swaps it for that post's
+	// collapse chevron (Model.imgChevrons); every other consumer of a rendered body
+	// strips it (stripImgMarks), since a chevron would promise a thumbnail nobody is
+	// drawing there.
+	//
+	// It exists so the chevron doesn't have to key the markdown cache: a body is
+	// memoized once per message version, width- and state-independent (see
+	// markdownBodyRaw), and pressing z re-runs a string replace over it rather than
+	// the whole markdown pass. Zero-width and inert like every sentinel here, so a
+	// consumer that forgets to strip it prints nothing rather than corrupting a line.
+	imgIndicatorMark = "\x00MDIMG\x00"
 )
+
+// stripImgMarks removes the body-image markers from a rendered body. For anything
+// that shows a post's text *without* drawing its thumbnails: the SQL tab, the
+// message-info pane, a /me emote.
+func stripImgMarks(s string) string {
+	return strings.ReplaceAll(s, imgIndicatorMark, "")
+}
+
+// imgLinkMark marks a link that the transcript draws a thumbnail for — a bare or
+// bracketed image URL, the pasted-Giphy case — so its link text carries the collapse
+// chevron the same way a markdown image's "🖼️ alt" does. It is the same test
+// previewImages applies, so a URL we can't decode (a .webp, a page link) is left
+// unmarked and gets no chevron promising an image that never arrives.
+func imgLinkMark(url string) string {
+	if !isPreviewableImageURL(url) {
+		return ""
+	}
+	return imgIndicatorMark
+}
 
 // ansiOpenSeq returns the ANSI escape sequence a style emits immediately
 // before its content. The sentinel must not appear in the style's output.
@@ -378,14 +412,15 @@ func renderInline(s string, ei *emojiImages, mr mrInlineFn, self string) string 
 	})
 
 	// Inline images first, so the bracketed alt text isn't mistaken for
-	// other inline syntax.
+	// other inline syntax. The mark rides *inside* the style, so the chevron the
+	// transcript puts in its place is coloured like the indicator it belongs to.
 	s = mdImageRe.ReplaceAllStringFunc(s, func(m string) string {
 		sub := mdImageRe.FindStringSubmatch(m)
 		alt := sub[1]
 		if alt == "" {
 			alt = "image"
 		}
-		return attachmentStyle.Render("🖼️ " + alt)
+		return attachmentStyle.Render(imgIndicatorMark + "🖼️ " + alt)
 	})
 
 	// Stash links (markdown [text](url) first, then bare URLs) so their
@@ -406,7 +441,7 @@ func renderInline(s string, ei *emojiImages, mr mrInlineFn, self string) string 
 	s = mdLinkRe.ReplaceAllStringFunc(s, func(m string) string {
 		sub := mdLinkRe.FindStringSubmatch(m)
 		links = append(links, linkEntry{sub[2], sub[1]})
-		return mdLinkSentinel + strconv.Itoa(len(links)-1) + "\x00"
+		return imgLinkMark(sub[2]) + mdLinkSentinel + strconv.Itoa(len(links)-1) + "\x00"
 	})
 	const mrBadgeSentinel = "\x00MRBADGE"
 	s = mdURLRe.ReplaceAllStringFunc(s, func(m string) string {
@@ -423,7 +458,7 @@ func renderInline(s string, ei *emojiImages, mr mrInlineFn, self string) string 
 			}
 		}
 		links = append(links, linkEntry{clean, clean})
-		return mdLinkSentinel + strconv.Itoa(len(links)-1) + "\x00" + trailing
+		return imgLinkMark(clean) + mdLinkSentinel + strconv.Itoa(len(links)-1) + "\x00" + trailing
 	})
 
 	if self != "" {

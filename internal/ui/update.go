@@ -3724,13 +3724,27 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// toggleCollapse flips the fold state of the selected post in the given pane
-// (the messages transcript or the open thread). A folded long message shows a
-// preview plus a "… N more lines" footer; toggling expands it to full and back.
-// The change is recorded in expandedPosts (keyed by post id) and the pane is
-// re-rendered. No-ops when collapsing is disabled, nothing is selected, or the
-// post hasn't landed on the server yet (an optimistic stub has no stable id to
-// key on).
+// toggleCollapse collapses or expands the selected post in the given pane (the
+// messages transcript or the open thread) — everything about it that can fold: a
+// long body, and the inline thumbnails of any image it carries.
+//
+// The two have mirrored defaults — a long body arrives folded, a thumbnail arrives
+// shown — so they are tracked in mirrored sets (expandedPosts, thumbsCollapsed) and
+// what one z press means depends on which of them the post has:
+//
+//   - No image: exactly as before. z expands the folded body, z again re-folds it.
+//   - An image: the post starts collapsible, so the first z *collapses* — the
+//     thumbnails go, and a long body folds back with them — and the second expands
+//     both. The image is the thing the eye is drawn to, so it decides the direction.
+//
+// Collapsing a post is not merely visual: its thumbnails stop being fetched,
+// animated and held in terminal memory (see releaseThumbs and thumbKeysInRows), so
+// a channel of GIFs can be quietened one message at a time.
+//
+// No-ops when nothing is selected, or the post hasn't landed on the server yet (an
+// optimistic stub has no stable id to key on). Body collapsing can be switched off
+// (collapse_long_messages: 0) — thumbnails still collapse, since that hides an image
+// rather than text.
 func (m Model) toggleCollapse(pane focus) (tea.Model, tea.Cmd) {
 	var p *model.Post
 	if pane == focusThread {
@@ -3744,7 +3758,8 @@ func (m Model) toggleCollapse(pane focus) (tea.Model, tea.Cmd) {
 		}
 		p = m.posts[m.postIdx]
 	}
-	if m.collapseRows <= 0 {
+	hasThumbs := m.inlineImagesActive() && len(m.postThumbKeys(p)) > 0
+	if m.collapseRows <= 0 && !hasThumbs {
 		m.status = "message collapsing is disabled"
 		return m, nil
 	}
@@ -3755,7 +3770,21 @@ func (m Model) toggleCollapse(pane focus) (tea.Model, tea.Cmd) {
 	if m.expandedPosts == nil {
 		m.expandedPosts = map[string]bool{}
 	}
-	m.expandedPosts[p.Id] = !m.expandedPosts[p.Id]
+	if hasThumbs {
+		if m.thumbsCollapsed == nil {
+			m.thumbsCollapsed = map[string]bool{}
+		}
+		collapsed := !m.thumbsCollapsed[p.Id]
+		m.thumbsCollapsed[p.Id] = collapsed
+		// The body follows the same intent: collapsing the message folds it back,
+		// expanding the message opens it up.
+		m.expandedPosts[p.Id] = !collapsed
+		if collapsed {
+			m.releaseThumbs(p)
+		}
+	} else {
+		m.expandedPosts[p.Id] = !m.expandedPosts[p.Id]
+	}
 	if pane == focusThread {
 		m.renderThread()
 	} else {

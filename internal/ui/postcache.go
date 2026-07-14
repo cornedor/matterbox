@@ -105,6 +105,13 @@ func (m *Model) postLineFingerprint(p *model.Post, width int, isThread, isRoot, 
 	if m.collapseRows > 0 && m.expandedPosts[p.Id] {
 		b.WriteString("|X")
 	}
+	// Collapsing the post's thumbnails changes both the rows it draws and the
+	// chevron on its image indicators, and is independent of the body fold above —
+	// it works even with collapsing disabled, since it hides an image rather than
+	// text.
+	if m.thumbsCollapsed[p.Id] {
+		b.WriteString("|Z")
+	}
 	return b.String()
 }
 
@@ -189,28 +196,53 @@ func markdownFingerprint(p *model.Post) string {
 	return b.String()
 }
 
-// markdownBody returns p's styled (but unwrapped) body, rendering it via
-// renderMarkdown on a miss and memoizing the result. The cache is
-// width-independent, so it stays warm across resizes: the costly styling runs
-// once per message version and a resize only re-wraps. The first render of a
-// post (a miss) still calls renderMarkdown, whose inline() records emoji
-// sightings, so deferring later styling doesn't drop the fetch trigger.
+// markdownBody returns p's styled (but unwrapped) body as the *transcript* draws
+// it: every body-image indicator carrying the post's thumbnail chevron (see
+// imgChevrons), because the transcript is where that thumbnail is drawn. Anywhere
+// a post's text appears without its images — the SQL tab, the info pane, a /me
+// emote — use markdownBodyPlain, which leaves the indicator bare.
 func (m *Model) markdownBody(p *model.Post) string {
-	body := m.markdownBodyRaw(p)
-	// Paint the hovered link's background on the post that owns it. Done here, on
-	// the unwrapped body (where the link is contiguous and the cached normal body
-	// is reused), so the highlight costs one string scan and never pollutes the
-	// cache. postLineFingerprint carries the same hover bit so the wrapped-line
-	// cache serves the highlighted version. See linkclick.go.
+	return m.hovered(m.imgChevrons(m.markdownBodyMarked(p), p), p)
+}
+
+// markdownBodyPlain is the body with no thumbnail chevrons — for the consumers that
+// show a post's text but draw none of its images.
+func (m *Model) markdownBodyPlain(p *model.Post) string {
+	return m.hovered(m.markdownBodyRaw(p), p)
+}
+
+// hovered paints the hovered link's background on the post that owns it. Done on
+// the unwrapped body (where the link is contiguous and the cached normal body is
+// reused), so the highlight costs one string scan and never pollutes the cache.
+// postLineFingerprint carries the same hover bit so the wrapped-line cache serves
+// the highlighted version. See linkclick.go.
+func (m *Model) hovered(body string, p *model.Post) string {
 	if m.hoverLink.url != "" && m.hoverLink.postID == p.Id {
 		return highlightLink(body, m.hoverLink.url, mdLinkHoverStyle)
 	}
 	return body
 }
 
-// markdownBodyRaw is markdownBody without the hover highlight: the cached,
-// width-independent styled body (see the cache notes above).
+// markdownBodyRaw is the styled body without the hover highlight or any chevrons —
+// the plain text of the message (see the cache notes on markdownBodyMarked).
 func (m *Model) markdownBodyRaw(p *model.Post) string {
+	return stripImgMarks(m.markdownBodyMarked(p))
+}
+
+// markdownBodyMarked renders p's styled (but unwrapped) body via renderMarkdown on
+// a miss and memoizes the result. The cache is width-independent, so it stays warm
+// across resizes: the costly styling runs once per message version and a resize only
+// re-wraps. The first render of a post (a miss) still calls renderMarkdown, whose
+// inline() records emoji sightings, so deferring later styling doesn't drop the
+// fetch trigger.
+//
+// What is cached carries the raw body-image markers (imgIndicatorMark), not the
+// chevrons they become: the chevron depends on a collapse state the message text
+// knows nothing about, and baking it in would mean re-running the whole markdown
+// pass on every z press — and holding a separate entry for each consumer. Callers
+// resolve or strip the markers on the way out; none of them may hand this string on
+// unprocessed.
+func (m *Model) markdownBodyMarked(p *model.Post) string {
 	self := ""
 	if m.me != nil {
 		self = m.me.Username

@@ -80,6 +80,15 @@ func thumbPost(fileID string) *model.Post {
 	}
 }
 
+// fileThumbLines draws f as the attachment of a post that owns it — the shape the
+// transcript renders, and the one inlineFileThumbLines needs now that a post can
+// have its thumbnails collapsed (z). These tests never collapse, so the post is
+// just a carrier.
+func fileThumbLines(m *Model, f *model.FileInfo, width int) []string {
+	p := &model.Post{Id: "post1", Metadata: &model.PostMetadata{Files: []*model.FileInfo{f}}}
+	return m.inlineFileThumbLines(p, f, width)
+}
+
 // TestInlineThumbLinesMeasureAsCells is the invariant the whole feature rests on:
 // a thumbnail is rendered as ordinary text lines, and every one of them must
 // measure exactly cols cells wide (plus the 2-cell gutter) to visualWidth — the
@@ -92,7 +101,7 @@ func TestInlineThumbLinesMeasureAsCells(t *testing.T) {
 	const cols, rows = 18, 10
 	readyThumb(m, "f1", rows, cols, 78)
 
-	lines := m.inlineFileThumbLines(thumbPost("f1").Metadata.Files[0], 80)
+	lines := fileThumbLines(m, thumbPost("f1").Metadata.Files[0], 80)
 	if len(lines) != rows {
 		t.Fatalf("got %d thumbnail lines, want %d (one per image row)", len(lines), rows)
 	}
@@ -118,7 +127,7 @@ func TestInlineThumbLinesSurviveWrapBodyLine(t *testing.T) {
 	m := thumbModel()
 	readyThumb(m, "f1", 10, 18, 78)
 
-	for _, l := range m.inlineFileThumbLines(thumbPost("f1").Metadata.Files[0], 80) {
+	for _, l := range fileThumbLines(m, thumbPost("f1").Metadata.Files[0], 80) {
 		if got := wrapBodyLine(l, 80); len(got) != 1 {
 			t.Fatalf("wrapBodyLine split a thumbnail row into %d lines; want 1", len(got))
 		}
@@ -179,7 +188,7 @@ func TestInlineThumbNeedsGraphicsTerminal(t *testing.T) {
 	if m.inlineImagesActive() {
 		t.Fatal("thumbnails must not activate on a terminal without Kitty graphics")
 	}
-	if lines := m.inlineFileThumbLines(thumbPost("f1").Metadata.Files[0], 80); lines != nil {
+	if lines := fileThumbLines(m, thumbPost("f1").Metadata.Files[0], 80); lines != nil {
 		t.Errorf("want no thumbnail rows without graphics support, got %d", len(lines))
 	}
 }
@@ -209,7 +218,7 @@ func TestInlineThumbSightingQueuesFetch(t *testing.T) {
 	m := thumbModel()
 	f := thumbPost("f1").Metadata.Files[0] // 1920×1080 → the height cap, 10 rows
 
-	lines := m.inlineFileThumbLines(f, 80)
+	lines := fileThumbLines(m, f, 80)
 	if len(lines) != inlineThumbRows {
 		t.Fatalf("an unfetched image should hold the %d rows its thumbnail will fill, got %d",
 			inlineThumbRows, len(lines))
@@ -234,14 +243,14 @@ func TestInlineThumbReservedRowsMatchTheImage(t *testing.T) {
 	m := thumbModel()
 	f := thumbPost("f1").Metadata.Files[0]
 
-	reserved := m.inlineFileThumbLines(f, 80)
+	reserved := fileThumbLines(m, f, 80)
 
 	// The real build sizes from the decoded frame; with the same dimensions it must
 	// land on the same cell box the reservation predicted.
 	cols, rows := inlineThumbCells(f.Width, f.Height, inlineThumbBox(80), m.cellPxW, m.cellPxH)
 	readyThumb(m, "f1", rows, cols, inlineThumbBox(80))
 
-	drawn := m.inlineFileThumbLines(f, 80)
+	drawn := fileThumbLines(m, f, 80)
 	if len(drawn) != len(reserved) {
 		t.Errorf("the image landed on %d rows but %d were reserved: the post would jump on load",
 			len(drawn), len(reserved))
@@ -257,7 +266,7 @@ func TestInlineThumbNonImageIgnored(t *testing.T) {
 	m := thumbModel()
 	f := &model.FileInfo{Id: "f2", Name: "spec.pdf", MimeType: "application/pdf"}
 
-	if lines := m.inlineFileThumbLines(f, 80); lines != nil {
+	if lines := fileThumbLines(m, f, 80); lines != nil {
 		t.Errorf("a PDF should not draw or reserve image rows, got %d", len(lines))
 	}
 	if got := takeAllPending(m.inlineImg); len(got) != 0 {
@@ -271,7 +280,7 @@ func TestInlineThumbNarrowPaneFallsBack(t *testing.T) {
 	m := thumbModel()
 	readyThumb(m, "f1", 10, 18, 78)
 
-	if lines := m.inlineFileThumbLines(thumbPost("f1").Metadata.Files[0], 6); lines != nil {
+	if lines := fileThumbLines(m, thumbPost("f1").Metadata.Files[0], 6); lines != nil {
 		t.Errorf("want no thumbnail in a 6-column pane, got %d rows", len(lines))
 	}
 }
@@ -285,13 +294,13 @@ func TestInlineThumbRefitsWhenPaneNarrows(t *testing.T) {
 	f := thumbPost("f1").Metadata.Files[0]
 
 	// Same wide pane: drawn as-is.
-	if lines := m.inlineFileThumbLines(f, 80); len(lines) != 10 {
+	if lines := fileThumbLines(m, f, 80); len(lines) != 10 {
 		t.Fatalf("wide pane should draw the thumbnail, got %d rows", len(lines))
 	}
 	// Pane narrows to 30 cols → box 28 < the thumbnail's 40 cols. It must not be
 	// drawn at its old size (it would wrap and tear); it holds blank space instead
 	// while the re-fit runs.
-	lines := m.inlineFileThumbLines(f, 30)
+	lines := fileThumbLines(m, f, 30)
 	if !blankRows(lines) {
 		t.Errorf("an over-wide thumbnail must not be drawn; want reserved blanks, got %q", lines)
 	}

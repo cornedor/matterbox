@@ -240,6 +240,14 @@ type Model struct {
 	// message folds by default without any bookkeeping. nil until the first
 	// toggle. See collapseBody and toggleCollapse.
 	expandedPosts map[string]bool
+	// thumbsCollapsed records the posts whose inline thumbnails the user has hidden
+	// (keyed by post id) — the mirror image of expandedPosts, because the defaults
+	// are mirrored: a long body folds until you expand it, a thumbnail shows until
+	// you collapse it. Both are driven by the same key (see toggleCollapse), and a
+	// collapsed post's thumbnails are not merely undrawn but unhooked from every
+	// cost they carry: not fetched, not animated, not held in terminal memory (see
+	// thumbKeysInRows and releaseThumbs). nil until the first toggle.
+	thumbsCollapsed map[string]bool
 	// viewGen is bumped on every channel open. A scheduled mark-read tick
 	// captures the generation it was queued under and only fires if it still
 	// matches — so switching (or refocusing) before the dwell elapses drops the

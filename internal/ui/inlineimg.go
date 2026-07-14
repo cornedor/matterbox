@@ -84,6 +84,16 @@ const (
 	// holder, never a wrong row count — see that function for why.
 	nominalBodyImageW = 480
 	nominalBodyImageH = 270
+
+	// thumbOpenChevron / thumbShutChevron prefix an image's indicator — an
+	// attachment's "🖼️ name" line, a body image's "🖼️ alt" or link text — with
+	// whether its thumbnail is showing. The disclosure-triangle idiom: pointing down
+	// at the image, or right at the space it would take. Only ever drawn when a
+	// thumbnail is actually being drawn (see Model.thumbChevron), so with
+	// image_thumbnails off, or on a terminal that can't paint them, the indicator
+	// looks exactly as it always has.
+	thumbOpenChevron = "▾"
+	thumbShutChevron = "▸"
 )
 
 type inlineImgState int
@@ -194,6 +204,11 @@ type inlineImages struct {
 	// needTransmit is the ready-but-not-resident images sight() has seen this
 	// render; the Update wrapper drains it and re-transmits them (flushInlineTransmits).
 	needTransmit map[string]struct{}
+	// release is the images a just-collapsed post asked us to free from terminal
+	// memory (see Model.releaseThumbs). Drained by takeTransmits, which only frees
+	// the ones that are not on screen — the same key can be drawn by another post
+	// that is still expanded.
+	release map[string]struct{}
 	// builtBytes tracks the frameSeqs we are holding, against maxInlineBuiltBytes.
 	builtBytes int
 	// lastScan memoizes the last (viewport offsets, content versions, pending count)
@@ -215,6 +230,7 @@ func newInlineImages(mode string) *inlineImages {
 		pending:      map[string]previewItem{},
 		deferred:     map[string]previewItem{},
 		needTransmit: map[string]struct{}{},
+		release:      map[string]struct{}{},
 	}
 }
 
@@ -576,9 +592,60 @@ func (ii *inlineImages) evictBuiltLocked() (freed []uint32) {
 	return freed
 }
 
+// queueRelease asks for these images to be freed from terminal memory at the end of
+// the event — the post drawing them was just collapsed. Whether each may actually go
+// is decided in takeTransmits, once the render has settled which images are on
+// screen.
+func (ii *inlineImages) queueRelease(keys []string) {
+	if ii == nil || len(keys) == 0 {
+		return
+	}
+	ii.mu.Lock()
+	defer ii.mu.Unlock()
+	for _, key := range keys {
+		ii.release[key] = struct{}{}
+	}
+}
+
+// releaseCollapsedLocked frees the queued images that are no longer on screen,
+// returning their ids for kittyDelete. An image still drawn *somewhere* — the same
+// Giphy URL posted twice, one copy collapsed and one not — is left alone; releasing
+// it would kittyDelete it out from under the placeholder cells still showing it.
+//
+// Only the terminal copy goes. The built frames stay in ii.entries, so expanding the
+// post again costs the re-transmit sight() queues, not a rebuild. Callers hold mu.
+func (ii *inlineImages) releaseCollapsedLocked() (freed []uint32) {
+	for key := range ii.release {
+		delete(ii.release, key)
+		ent := ii.entries[key]
+		if ent == nil || ent.onScreen {
+			continue
+		}
+		// Whatever the state, it is not being drawn: stop it animating, and drop any
+		// re-transmit queued for it (sight() queues a fresh one if it is ever drawn
+		// again). A GIF collapsed mid-play resumes from the frame it stopped on
+		// (frameIdx survives), which is the one that re-transmit carries.
+		//
+		// Its ii.deferred entry, though, stays: that is the note saying this GIF was
+		// built as a still and still owes its animation frames (see buildInlineThumb).
+		// Dropping it would leave a GIF collapsed before those frames were encoded
+		// frozen for the rest of the session — takeDeferredFrames already declines to
+		// build for anything off screen, so there is nothing to suppress here.
+		ent.visible = false
+		delete(ii.needTransmit, key)
+		if ent.state != inlineImgReady || !ent.resident {
+			continue
+		}
+		ent.resident = false
+		freed = append(freed, ent.id)
+	}
+	return freed
+}
+
 // takeTransmits drains the re-transmits sight() queued for ready images the
-// terminal no longer holds, then enforces both caps, returning everything to write
-// out of band in one string: the re-transmit APCs followed by the kittyDeletes.
+// terminal no longer holds, frees the thumbnails of any post just collapsed, then
+// enforces both caps — returning everything to write out of band in one string: the
+// re-transmit APCs followed by the kittyDeletes.
 func (ii *inlineImages) takeTransmits() string {
 	if ii == nil {
 		return ""
@@ -594,6 +661,9 @@ func (ii *inlineImages) takeTransmits() string {
 		}
 		sb.WriteString(ent.frameSeqs[ent.frameIdx])
 		ent.resident = true
+	}
+	for _, id := range ii.releaseCollapsedLocked() {
+		sb.WriteString(kittyDelete(id))
 	}
 	for _, id := range ii.evictResidentLocked() {
 		sb.WriteString(kittyDelete(id))
@@ -842,12 +912,107 @@ func (m *Model) inlineThumbLines(it previewItem, paneWidth int) []string {
 }
 
 // inlineFileThumbLines draws an uploaded image attachment (used by
-// renderAttachments, above the file's own filename line).
-func (m *Model) inlineFileThumbLines(f *model.FileInfo, paneWidth int) []string {
-	if f == nil || !previewableMIME(f.MimeType) {
+// renderAttachments, above the file's own filename line). Nothing while the post's
+// thumbnails are collapsed — and nothing means *nothing*: the image is never
+// sighted, so it is never fetched, never built and never animated (see sight).
+func (m *Model) inlineFileThumbLines(p *model.Post, f *model.FileInfo, paneWidth int) []string {
+	if f == nil || !previewableMIME(f.MimeType) || m.thumbsHidden(p) {
 		return nil
 	}
 	return m.inlineThumbLines(previewItem{file: f, name: f.Name}, paneWidth)
+}
+
+// --- collapsing a post's thumbnails (z) -----------------------------------
+
+// thumbsHidden reports whether the user has collapsed post p's thumbnails. The
+// single question every draw, fetch, animate and evict path asks; a post with no
+// id (an optimistic stub that hasn't landed) can't be collapsed, since there is no
+// stable key to remember it by.
+func (m *Model) thumbsHidden(p *model.Post) bool {
+	return p != nil && p.Id != "" && m.thumbsCollapsed[p.Id]
+}
+
+// thumbChevron is the disclosure chevron for post id's image indicators, or "" when
+// no thumbnail is drawn for this post anyway — thumbnails are off, or the terminal
+// can't paint them — in which case the indicator keeps the plain look it has always
+// had. The chevron is per *post*, not per image: z collapses everything a post
+// draws, so every indicator in it points the same way.
+func (m *Model) thumbChevron(postID string) string {
+	if !m.inlineImagesActive() || postID == "" {
+		return ""
+	}
+	if m.thumbsCollapsed[postID] {
+		return thumbShutChevron
+	}
+	return thumbOpenChevron
+}
+
+// imgChevrons resolves the body-image markers renderInline planted (see
+// imgIndicatorMark) into post p's collapse chevron — the transcript's view of a
+// rendered body, and the only place one is drawn, since the transcript is the only
+// place the thumbnail it describes exists.
+//
+// The Contains gate is what keeps this off the render path's back: a body with no
+// image at all — very nearly all of them — leaves without touching the string.
+func (m *Model) imgChevrons(body string, p *model.Post) string {
+	if !strings.Contains(body, imgIndicatorMark) {
+		return body
+	}
+	var chev string
+	if m.hasBodyThumbnail(p) {
+		chev = m.thumbChevron(p.Id)
+	}
+	if chev == "" {
+		// Marked, but nothing will be drawn under it: thumbnails are off, or the
+		// image isn't one we can decode. Leave the indicator bare rather than
+		// promising a thumbnail that never comes.
+		return stripImgMarks(body)
+	}
+	return strings.ReplaceAll(body, imgIndicatorMark, chev+" ")
+}
+
+// hasBodyThumbnail reports whether the transcript draws a thumbnail for something
+// *in p's body* — as opposed to an uploaded attachment, whose chevron rides on its
+// own filename line in renderAttachments.
+func (m *Model) hasBodyThumbnail(p *model.Post) bool {
+	for _, it := range previewImages(p) {
+		if it.file == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// postThumbKeys is every thumbnail post p draws — what z collapses, and what
+// releaseThumbs frees when it does.
+func (m *Model) postThumbKeys(p *model.Post) []string {
+	items := previewImages(p)
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		if key := thumbKey(it); key != "" {
+			out = append(out, key)
+		}
+	}
+	return out
+}
+
+// releaseThumbs hands back the terminal memory held by the thumbnails of a post the
+// user just collapsed, rather than waiting for the LRU to notice they went cold.
+// The built frames stay in our memory, so expanding again is a re-transmit of a
+// string we already have — not a second decode.
+//
+// The frees are *queued*, not done here: whether an image may be freed depends on
+// whether it is still on screen somewhere else (the same Giphy URL posted twice, one
+// copy collapsed and one not), and that is only known after the render that follows
+// this event. flushInlineTransmits recomputes on-screen and then drains the queue.
+func (m *Model) releaseThumbs(p *model.Post) {
+	if m.inlineImg == nil {
+		return
+	}
+	m.inlineImg.queueRelease(m.postThumbKeys(p))
 }
 
 // inlineBodyImageLines draws every image *linked in the message body* — the
@@ -859,7 +1024,7 @@ func (m *Model) inlineFileThumbLines(f *model.FileInfo, paneWidth int) []string 
 // Appended after the body lines, in the order previewImages enumerates them, so
 // the thumbnail sits directly under the text that links it.
 func (m *Model) inlineBodyImageLines(p *model.Post, width int) []string {
-	if !m.inlineImagesActive() || p == nil {
+	if !m.inlineImagesActive() || p == nil || m.thumbsHidden(p) {
 		return nil
 	}
 	var out []string
@@ -1363,6 +1528,13 @@ func (m *Model) visibleThumbKeys(keys []string) map[string]struct{} {
 // the open thread. It maps the live YOffset back to posts through the row spans
 // captured by renderMessages/renderThread, so it tracks scrolling without a
 // re-render.
+//
+// A post whose thumbnails the user collapsed owns none of them, however visible the
+// post itself is. This one line is what makes collapsing *free* rather than merely
+// invisible: the three questions asked through here are "which images are worth
+// fetching", "which are on screen (so must not be evicted)" and "which animate", and
+// a collapsed post now answers none of them. Its GIF stops ticking, stops holding a
+// slot in terminal memory, and — if it was never built — is never built at all.
 func (m *Model) thumbKeysInRows(keys []string, margin int) map[string]struct{} {
 	if len(keys) == 0 {
 		return nil
@@ -1380,6 +1552,9 @@ func (m *Model) thumbKeysInRows(keys []string, margin int) map[string]struct{} {
 			}
 			if starts[i+1] <= top {
 				continue // entirely scrolled above the viewport
+			}
+			if m.thumbsHidden(p) {
+				continue // collapsed: it draws no thumbnail, so it owns none
 			}
 			for _, key := range keys {
 				if _, done := visible[key]; done {

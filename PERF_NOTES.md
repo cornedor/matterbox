@@ -237,6 +237,30 @@ Because the frames carry the still's own id and cell box, installing them change
 `inlineThumbFramesMsg` joins `imgAnimTickMsg` in `preservesFrame`. The next
 animation tick simply has somewhere to go.
 
+## 11. Collapsing a post (`z`) takes its thumbnails off the budget — ✅ DONE
+
+§7–§10 made a GIF cheap to *scroll past*. What was still unavoidable was a GIF you
+are looking at: on screen, it animates, and animating is the one thing here that
+costs anything per frame. `z` is the manual lever for that — collapse the message
+and its images go quiet.
+
+The trick is that collapsing had to unhook the post from the machinery, not just
+skip drawing it. All three viewport questions — *what is worth fetching*, *what is
+on screen* (so must not be evicted), *what animates* — are answered by
+`thumbKeysInRows` walking the posts in view, and a collapsed post is as in view as
+ever. One `continue` there (`m.thumbsHidden(p)`) answers all three at once:
+
+- **Not animated.** `refreshAnimVisibility` drops it, `advanceImageAnim` stops the
+  loop when it was the last GIF on screen (`TestCollapsedGIFStopsAnimating`).
+- **Not fetched.** A thumbnail collapsed before it arrives is never built — no
+  download, no decode, no ~10ms/frame encode (`TestCollapsedThumbNotFetched`).
+- **Not resident.** `releaseThumbs` → `queueRelease` hands the image's terminal
+  memory straight back (`kittyDelete`) rather than waiting for the LRU, but keeps
+  the built frames, so expanding is a re-transmit of a string we already hold, not
+  a rebuild. The queue is drained in `takeTransmits`, *after* the render has
+  settled what is on screen — the same image may be drawn by another, uncollapsed
+  post (`TestReleaseSparesImageShownElsewhere`).
+
 ## Not a problem (measured, don't re-chase)
 - **Inline-thumbnail animation byte volume.** Re-transmitting a whole PNG per GIF
   frame *looks* alarming at a 10-row placement, but realistic cartoon/video GIF

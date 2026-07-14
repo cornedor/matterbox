@@ -551,7 +551,9 @@ func (m *Model) renderSQLRow(p *model.Post, cols []string, row []any, width int)
 	lines := []string{header}
 
 	if p.Message != "" {
-		lines = appendBodyLines(lines, m.markdownBody(p), width)
+		// Plain: a result row draws no body-image thumbnail (renderAttachments below
+		// covers attachments only), so its image indicators get no chevron.
+		lines = appendBodyLines(lines, m.markdownBodyPlain(p), width)
 	}
 	if att := m.renderAttachments(p, width); att != "" {
 		for _, l := range strings.Split(att, "\n") {
