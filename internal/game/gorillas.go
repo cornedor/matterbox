@@ -20,19 +20,15 @@ const (
 	randomHeight = 120 // building height is newHt + ran(randomHeight)
 	buildingGap  = 2
 
-	gorillaW = 28
-	gorillaH = 25
-	// The sprite is anchored above the roof by these, as PlaceGorillas does.
+	// The gorilla's box is the one GorillaIntro GETs and PlaceGorillas PUTs, and
+	// the ape is drawn inside it — so these offsets are the original's, and every
+	// coordinate PlotShot derives from them can be used unchanged.
+	gorillaW    = gorillaBoxW
+	gorillaH    = gorillaBoxH
 	gorillaXAdj = 14
 	gorillaYAdj = 30
 
 	gravity = 9.8
-
-	// craterR is the original's ScrHeight/50. Small — a hit takes a bite out of
-	// a roof rather than demolishing the block, which is what keeps a match going.
-	craterR = 7
-	// A gorilla dying takes a bigger bite than a banana does.
-	gorillaCraterR = 14
 )
 
 // Building is one tower. Y is the roof; the base is always bottomLine.
@@ -44,9 +40,14 @@ type Building struct {
 // Crater is a bite taken out of the skyline. Craters are the only destructible
 // state, and they are what travels on the wire: a world is fully described by
 // its seed plus its craters, so the buildings themselves are never transmitted.
+//
+// It is an ellipse, not a circle, because every hole in GORILLA.BAS is punched by
+// a CIRCLE statement and QBasic's CIRCLE is an ellipse — see canvas.arc. A
+// banana's crater is a little wider than it is tall; a dead gorilla's is a great
+// deal taller than it is wide.
 type Crater struct {
-	X, Y int16
-	R    uint8
+	X, Y   int16
+	RX, RY uint8
 }
 
 // World is the simulated field: a skyline generated from Seed, the two gorillas
@@ -58,6 +59,15 @@ type World struct {
 	Gorillas  [2]Point
 
 	Craters []Crater
+
+	// SunHit is set when a banana touches the sun, which does not stop it but does
+	// wipe the smile off. Cleared at the start of every shot, as DoShot does.
+	SunHit bool
+
+	// Dead marks a gorilla that has been blown up. It matters only after the last
+	// round of a match, where there is no new city to hide the fact: the loser must
+	// stay in the hole, not get back up out of it.
+	Dead [2]bool
 
 	// solid is the occupancy bitmap every collision and every rendered pixel
 	// reads. Buildings never change and craters only ever get appended, so it is
@@ -144,7 +154,9 @@ func makeSkyline(ran func(int) int) []Building {
 		}
 
 		bh := ran(randomHeight) + newHt
-		bh = min(max(bh, htInc), bottomLine-gorillaH-gorillaYAdj)
+		// Tall enough to matter, but never so tall that the gorilla standing on it
+		// would be pushed off the top of the field.
+		bh = min(max(bh, htInc), bottomLine-gorillaYAdj-5)
 
 		bs = append(bs, Building{
 			X: x, Y: bottomLine - bh, W: bw, H: bh,
@@ -164,7 +176,7 @@ func (w *World) placeGorillas(ran func(int) int) {
 		b := w.Buildings[max(min(bi, last), 0)]
 		w.Gorillas[i] = Point{
 			X: b.X + b.W/2 - gorillaXAdj, // centred on the roof
-			Y: b.Y - gorillaH,            // standing on it
+			Y: b.Y - gorillaYAdj,         // standing on it
 		}
 	}
 }
@@ -204,17 +216,17 @@ func (w *World) ensureSolid() {
 }
 
 func (w *World) carveSolid(c Crater) {
-	r := int(c.R)
+	rx, ry := int(c.RX), int(c.RY)
 	cx, cy := int(c.X), int(c.Y)
-	for y := cy - r; y <= cy+r; y++ {
+	for y := cy - ry; y <= cy+ry; y++ {
 		if y < 0 || y >= FieldH {
 			continue
 		}
-		for x := cx - r; x <= cx+r; x++ {
+		for x := cx - rx; x <= cx+rx; x++ {
 			if x < 0 || x >= FieldW {
 				continue
 			}
-			if dx, dy := x-cx, y-cy; dx*dx+dy*dy <= r*r {
+			if ellipseDist(float64(x-cx), float64(y-cy), float64(rx), float64(ry)) <= 1 {
 				w.solid[y*FieldW+x] = false
 			}
 		}
@@ -223,8 +235,18 @@ func (w *World) carveSolid(c Crater) {
 
 // Carve blows a crater in the world. Callers append through here so the cached
 // bitmap and the wire state can never disagree.
-func (w *World) Carve(x, y, r int) {
-	w.Craters = append(w.Craters, Crater{X: int16(x), Y: int16(y), R: uint8(r)})
+//
+// This is called when an explosion finishes, not when a banana lands: in the
+// original the hole is a side effect of the fireball erasing itself, so the
+// masonry it will eat is still standing — and still visible around the blast —
+// until the animation is over. See explosion.go.
+func (w *World) Carve(x, y int, rx, ry float64) {
+	w.Craters = append(w.Craters, Crater{
+		X:  int16(x),
+		Y:  int16(y),
+		RX: uint8(min(max(rx, 0), 255)),
+		RY: uint8(min(max(ry, 0), 255)),
+	})
 }
 
 // Shot is a banana in flight. It is a closed-form parabola rather than an
@@ -236,22 +258,35 @@ type Shot struct {
 	VX, VY float64
 	Wind   int8
 	T      float64
+
+	// Player is who threw it. Not on the wire — State.Turn already says — but the
+	// renderer needs it to know whose arm is up.
+	Player int
 }
 
 // NewShot launches from a player's gorilla at the given angle (degrees) and
 // power. Player 1 throws to the left, so their angle is mirrored.
+//
+// The banana leaves from the corner of the thrower's box, not its centre:
+// PlotShot starts at StartX and adds Scl(25) for player two, so each ape lobs it
+// from the side it is facing, seven units above its head.
 func (w *World) NewShot(player int, angleDeg, power float64) *Shot {
 	g := w.Gorillas[player]
 	if player == 1 {
 		angleDeg = 180 - angleDeg
 	}
+	x0 := float64(g.X)
+	if player == 1 {
+		x0 += 25
+	}
 	rad := angleDeg / 180 * math.Pi
 	return &Shot{
-		X0:   float64(g.X + gorillaW/2),
-		Y0:   float64(g.Y - 4),
-		VX:   math.Cos(rad) * power,
-		VY:   math.Sin(rad) * power,
-		Wind: w.Wind,
+		X0:     x0,
+		Y0:     float64(g.Y - 7), // StartY - adjust - 3, with adjust = Scl(4)
+		VX:     math.Cos(rad) * power,
+		VY:     math.Sin(rad) * power,
+		Wind:   w.Wind,
+		Player: player,
 	}
 }
 
@@ -276,9 +311,11 @@ const (
 	OffField
 )
 
-// Step advances the banana by dt and reports what it ran into. On HitBuilding or
-// HitGorilla it carves the crater itself, so the world is always consistent with
-// the outcome the caller is handed. hitPlayer is meaningful only for HitGorilla.
+// Step advances the banana by dt and reports what it ran into. hitPlayer is
+// meaningful only for HitGorilla.
+//
+// It does not carve. The crater belongs to the explosion the impact starts, and
+// is cut when that explosion has finished collapsing — see Match.Step.
 //
 // Collision is sampled along the step rather than only at its end: at full power
 // a banana covers tens of pixels per frame and would tunnel straight through a
@@ -305,14 +342,17 @@ func (w *World) Step(s *Shot, dt float64) (out Outcome, hitPlayer int) {
 		if iy < 0 {
 			continue
 		}
+		// The sun is not solid — the banana sails straight through it — but it does
+		// notice.
+		if sunSolid(ix, iy) {
+			w.SunHit = true
+		}
 		if p, ok := w.gorillaAt(ix, iy); ok {
 			s.T += dt * f
-			w.Carve(ix, iy, gorillaCraterR)
 			return HitGorilla, p
 		}
 		if w.Solid(ix, iy) {
 			s.T += dt * f
-			w.Carve(ix, iy, craterR)
 			return HitBuilding, 0
 		}
 	}
@@ -320,12 +360,26 @@ func (w *World) Step(s *Shot, dt float64) (out Outcome, hitPlayer int) {
 	return InFlight, 0
 }
 
-// gorillaAt reports whether (x,y) is inside a gorilla's box, and whose.
+// gorillaAt reports whether (x,y) is on a gorilla, and whose.
+//
+// Against the ape's own pixels, not its bounding box: the original tests POINT
+// against OBJECTCOLOR, so a banana that passes between a gorilla's legs or over
+// its shoulder misses — and the box is a third empty.
 func (w *World) gorillaAt(x, y int) (int, bool) {
 	for i, g := range w.Gorillas {
-		if x >= g.X && x < g.X+gorillaW && y >= g.Y && y < g.Y+gorillaH {
+		if x < g.X || x >= g.X+gorillaW || y < g.Y || y >= g.Y+gorillaH {
+			continue
+		}
+		if gorillaSolid(x-g.X, y-g.Y) {
 			return i, true
 		}
 	}
 	return 0, false
+}
+
+// GorillaCentre is where ExplodeGorilla puts its blast: the ape's chest, wherever
+// the banana actually struck it.
+func (w *World) GorillaCentre(player int) (x, y int) {
+	g := w.Gorillas[player]
+	return g.X + 12, g.Y + 12 // GorillaX + 3.5 * SclX + XAdj, GorillaY + YAdj
 }

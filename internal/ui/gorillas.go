@@ -49,9 +49,6 @@ const (
 	// gorillasDT is simulated seconds per frame.
 	gorillasDT = 0.05
 
-	// The fireball grows over this many frames, then clears.
-	gorillasBoomFrames = 8
-
 	// The ASCII board that other Mattermost clients see, in characters.
 	gorillasBoardCols = 64
 	gorillasBoardRows = 18
@@ -79,7 +76,6 @@ type gorillasState struct {
 	replyID   string // the controller post — the joiner's
 
 	match *game.Match
-	boom  *game.Explosion
 
 	rend       game.Renderer
 	imgID      uint32
@@ -332,7 +328,6 @@ func (m *Model) gorillasFire(angle, power uint8) tea.Cmd {
 func (m *Model) gorillasLaunch(player int, angle, power uint8) tea.Cmd {
 	g := &m.gorillas
 	g.match.Launch(player, angle, power)
-	g.boom = nil
 	g.status = "…"
 	return tea.Batch(m.gorillasPush(), gorillasTickCmd(g.gen))
 }
@@ -343,24 +338,14 @@ func gorillasTickCmd(gen int) tea.Cmd {
 	})
 }
 
-// applyGorillasTick advances the banana one frame: step the rules, stream the new
+// applyGorillasTick advances the world one frame: step the rules, stream the new
 // state, redraw. Host only — the joiner is driven by the host's edits arriving
-// over the websocket, not by a clock of its own.
+// over the websocket, not by a clock of its own, and that now includes the
+// explosion: it is in the state, so both players watch the same frame of it.
 func (m *Model) applyGorillasTick(msg gorillasTickMsg) tea.Cmd {
 	g := &m.gorillas
 	if !g.active || msg.gen != g.gen || g.role != 0 {
 		return nil
-	}
-
-	// The fireball is cosmetic and burns down after the impact that produced it.
-	if g.boom != nil {
-		g.boom.Frame++
-		g.boom.R = g.boom.MaxR * float64(g.boom.Frame) / gorillasBoomFrames
-		if g.boom.Frame >= gorillasBoomFrames {
-			g.boom = nil
-			return tea.Batch(m.gorillasFrameCmd(), m.gorillasPush())
-		}
-		return tea.Batch(m.gorillasFrameCmd(), gorillasTickCmd(g.gen))
 	}
 
 	// shooter is read before Step, because a terminal event flips the turn.
@@ -370,18 +355,16 @@ func (m *Model) applyGorillasTick(msg gorillasTickMsg) tea.Cmd {
 	case game.EvNothing:
 		return nil
 
-	case game.EvFlying:
-		return tea.Batch(m.gorillasFrameCmd(), m.gorillasPush(), gorillasTickCmd(g.gen))
+	case game.EvFlying, game.EvBoom, game.EvDance:
+		// Nothing to say; the picture says it.
 
 	case game.EvMiss:
 		g.status = g.names[shooter] + " missed"
 
 	case game.EvBuilding:
-		g.boom = &game.Explosion{X: ev.X, Y: ev.Y, MaxR: 22}
 		g.status = g.names[shooter] + " hit a building"
 
 	case game.EvRound:
-		g.boom = &game.Explosion{X: ev.X, Y: ev.Y, MaxR: 40}
 		g.status = fmt.Sprintf("%s scores — %d–%d",
 			g.names[ev.Scorer], g.match.State.Scores[0], g.match.State.Scores[1])
 		if ev.Self {
@@ -389,28 +372,29 @@ func (m *Model) applyGorillasTick(msg gorillasTickMsg) tea.Cmd {
 		}
 
 	case game.EvMatch:
-		g.boom = &game.Explosion{X: ev.X, Y: ev.Y, MaxR: 40}
 		g.status = g.names[ev.Scorer] + " wins the match"
 	}
-	// Every terminal event leaves a fireball to burn down and a state worth
-	// streaming, so they all fall through to the same tail.
-	return tea.Batch(m.gorillasFrameCmd(), m.gorillasPush(), gorillasTickCmd(g.gen))
+
+	// Keep the clock running for as long as anything is still moving — a banana in
+	// the air, a fireball that has not finished collapsing, or a winner still
+	// gloating. The last of those frames is what turns the round over, so it has to
+	// be streamed like any other.
+	var next tea.Cmd
+	if g.match.Busy() {
+		next = gorillasTickCmd(g.gen)
+	}
+	return tea.Batch(m.gorillasFrameCmd(), m.gorillasPush(), next)
 }
 
 // gorillasApplyState adopts a state that arrived from the host. Joiner only.
+//
+// The explosion arrives with it, on the frame the host is drawing — so the joiner
+// does not have to infer a fireball from a crater appearing, which it could not
+// do correctly anyway: the crater does not exist until the fireball is out.
 func (m *Model) gorillasApplyState(st *game.State) tea.Cmd {
 	g := &m.gorillas
 	if !g.active || g.role != 1 {
 		return nil
-	}
-
-	// A crater we have not seen before means an impact just happened; the fireball
-	// is derived from it rather than transmitted, so it costs nothing on the wire.
-	prev := g.match.State
-	if st.Seed == prev.Seed && len(st.Craters) > len(prev.Craters) {
-		c := st.Craters[len(st.Craters)-1]
-		r := float64(c.R) * 2.5
-		g.boom = &game.Explosion{X: int(c.X), Y: int(c.Y), MaxR: r, R: r}
 	}
 
 	g.match = game.FromState(st)
@@ -419,7 +403,7 @@ func (m *Model) gorillasApplyState(st *game.State) tea.Cmd {
 	switch {
 	case st.Phase == game.PhaseOver && st.Winner >= 0:
 		g.status = g.names[st.Winner] + " wins the match"
-	case st.Phase == game.PhaseFlight:
+	case st.Phase == game.PhaseFlight, st.Phase == game.PhaseBoom, st.Phase == game.PhaseDance:
 		g.status = "…"
 	case st.Turn == 1:
 		g.status = "your shot"
@@ -466,10 +450,11 @@ func (m *Model) gorillasFrameCmd() tea.Cmd {
 	gen, id := g.gen, g.imgID
 	rows, cols := g.rows, g.cols
 	pxW, pxH := cols*m.cellPxOr(8), rows*m.cellPxHOr(16)
-	rend, world, shot, boom := &g.rend, g.match.World, g.match.Shot, g.boom
+	rend, world := &g.rend, g.match.World
+	shot, boom, dance := g.match.Shot, g.match.Boom, g.match.Dance
 
 	return func() tea.Msg {
-		img := rend.Render(world, shot, boom, pxW, pxH)
+		img := rend.Render(world, shot, boom, dance, pxW, pxH)
 		seq, err := kittyTransmitImage(id, img, rows, cols)
 		return gorillasFrameMsg{gen: gen, seq: seq, err: err}
 	}

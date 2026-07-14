@@ -108,12 +108,12 @@ func TestCarveMakesAHole(t *testing.T) {
 	if !w.Solid(cx, cy) {
 		t.Fatal("test picked a point that was not solid to begin with")
 	}
-	w.Carve(cx, cy, craterR)
+	w.Carve(cx, cy, craterRX, craterRY)
 	if w.Solid(cx, cy) {
 		t.Error("the centre of a fresh crater is still solid")
 	}
 	// Just outside the radius must survive, or craters are eating the whole city.
-	if !w.Solid(cx+craterR+2, cy) && b.W > 2*craterR+4 {
+	if !w.Solid(cx+craterRX+2, cy) && b.W > 2*craterRX+4 {
 		t.Error("a crater removed masonry well outside its radius")
 	}
 }
@@ -125,7 +125,7 @@ func TestWorldRebuildsFromSeedAndCraters(t *testing.T) {
 	orig := NewWorld(7)
 	for i := range 12 {
 		b := orig.Buildings[i%len(orig.Buildings)]
-		orig.Carve(b.X+b.W/2, b.Y+i, craterR)
+		orig.Carve(b.X+b.W/2, b.Y+i, craterRX, craterRY)
 	}
 
 	rebuilt := NewWorld(7)

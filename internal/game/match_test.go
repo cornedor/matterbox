@@ -32,6 +32,36 @@ func aimAt(t *testing.T, seed uint16, shooter, target int) (uint8, uint8) {
 
 const gorillasTestDT = 0.05
 
+// resolve flies a banana until it stops, and returns the event that stopped it.
+//
+// The world has *not* finished changing when this returns: the fireball is still
+// burning, and until it has collapsed there is no crater and the round has not
+// turned over. That is the original's order of events, and settle is what waits
+// for it.
+func resolve(m *Match) Event {
+	var ev Event
+	// The flight budget is MaxFlightTime, and a banana lobbed straight up at full
+	// power uses nearly all of it, so this has to outlast that.
+	for range int(MaxFlightTime/gorillasTestDT) + 50 {
+		if ev = m.Step(gorillasTestDT); ev.Kind != EvFlying {
+			return ev
+		}
+	}
+	return ev
+}
+
+// settle runs out whatever is still animating — the fireball, and then the
+// victory dance a dead gorilla earns the other one. That is what cuts the crater
+// and hands the turn or the round on.
+func settle(m *Match) {
+	for range gorillaBoomFrames + danceFrames + 10 {
+		if m.Boom == nil && m.Dance == nil {
+			return
+		}
+		m.Step(gorillasTestDT)
+	}
+}
+
 // A banana that lands on the other gorilla scores for the shooter, resets the
 // city, and hands the first shot to the player who was hit.
 func TestHitScoresAndStartsANewRound(t *testing.T) {
@@ -43,15 +73,25 @@ func TestHitScoresAndStartsANewRound(t *testing.T) {
 	m.Join("joiner")
 	m.Launch(0, angle, power)
 
-	var ev Event
-	for range 400 {
-		if ev = m.Step(gorillasTestDT); ev.Kind != EvFlying {
-			break
-		}
-	}
+	ev := resolve(m)
 	if ev.Kind != EvRound {
 		t.Fatalf("got %v, want EvRound", ev.Kind)
 	}
+
+	// The point is scored the moment the banana lands, but the city is not: the
+	// blast has to finish collapsing first, and while it does, the old city is
+	// still standing.
+	if m.State.Seed != seed {
+		t.Errorf("the city was replaced while the fireball was still burning")
+	}
+	if m.State.Phase != PhaseBoom {
+		t.Errorf("phase %v during the blast, want PhaseBoom", m.State.Phase)
+	}
+	if m.MyTurn(0) || m.MyTurn(1) {
+		t.Error("a player may fire while a gorilla is exploding")
+	}
+	settle(m)
+
 	if ev.Hit != 1 || ev.Scorer != 0 {
 		t.Fatalf("hit=%d scorer=%d; player 0 shot player 1", ev.Hit, ev.Scorer)
 	}
@@ -86,12 +126,7 @@ func TestSelfHitScoresForTheOpponent(t *testing.T) {
 	m.Join("joiner")
 	m.Launch(0, angle, power)
 
-	var ev Event
-	for range 400 {
-		if ev = m.Step(gorillasTestDT); ev.Kind != EvFlying {
-			break
-		}
-	}
+	ev := resolve(m)
 	if ev.Kind != EvRound {
 		t.Fatalf("got %v, want EvRound", ev.Kind)
 	}
@@ -147,15 +182,11 @@ func TestMissHandsOverTheTurn(t *testing.T) {
 	m.Join("joiner")
 	m.Launch(0, 89, 255) // straight up and far away
 
-	var ev Event
-	for range 500 {
-		if ev = m.Step(gorillasTestDT); ev.Kind != EvFlying {
-			break
-		}
-	}
+	ev := resolve(m)
 	if ev.Kind != EvMiss && ev.Kind != EvBuilding {
 		t.Fatalf("got %v, want a miss or a building hit", ev.Kind)
 	}
+	settle(m) // a building hit leaves a fireball; the turn passes when it is out
 	if m.State.Turn != 1 {
 		t.Errorf("turn %d after player 0 shot; want 1", m.State.Turn)
 	}
@@ -190,11 +221,8 @@ func TestMatchEndsAtWinScore(t *testing.T) {
 		// the turn goes to player 1, so give it back to player 0.
 		m.State.Turn = 0
 		m.Launch(0, angle, power)
-		for range 400 {
-			if last = m.Step(gorillasTestDT); last.Kind != EvFlying {
-				break
-			}
-		}
+		last = resolve(m)
+		settle(m)
 	}
 
 	if m.State.Phase != PhaseOver {
@@ -210,6 +238,170 @@ func TestMatchEndsAtWinScore(t *testing.T) {
 		t.Fatalf("winner has %d points, want %d", m.State.Scores[0], WinScore)
 	}
 	// A finished match is inert.
+	if ev := m.Step(gorillasTestDT); ev.Kind != EvNothing {
+		t.Errorf("a finished match still produced %v", ev.Kind)
+	}
+}
+
+// The crater is cut by the fireball collapsing, not by the banana landing.
+//
+// This is the load-bearing detail of both explosions. In GORILLA.BAS the hole is
+// a side effect of the erase pass that cleans the blast off the screen, so for as
+// long as the blast is burning the masonry it is about to eat is still standing —
+// and still on screen, around it. Carve on impact instead and the skyline opens up
+// a beat before the explosion that is supposed to have destroyed it, which on a
+// gorilla hit is unmissable: its crater is half again wider than its fireball ever
+// gets.
+func TestTheCraterIsCutWhenTheFireballDies(t *testing.T) {
+	m := NewMatch(3)
+	m.Join("joiner")
+	m.Launch(0, 45, 70)
+
+	ev := resolve(m)
+	if ev.Kind != EvBuilding {
+		t.Skipf("this shot did not hit a building (%v); the invariant is tested on the one that does", ev.Kind)
+	}
+	if m.Boom == nil {
+		t.Fatal("a banana hit masonry and nothing is burning")
+	}
+	if len(m.State.Craters) != 0 {
+		t.Fatalf("the crater was cut on impact: %d craters while the fireball is still burning",
+			len(m.State.Craters))
+	}
+	// And the masonry it landed on is still there.
+	if !m.World.Solid(m.Boom.X, m.Boom.Y) {
+		t.Error("the building under the fireball is already gone")
+	}
+
+	settle(m)
+
+	if len(m.State.Craters) != 1 {
+		t.Fatalf("the fireball burned out and left %d craters, want 1", len(m.State.Craters))
+	}
+	c := m.State.Craters[0]
+	if m.World.Solid(int(c.X), int(c.Y)) {
+		t.Error("the fireball burned out and the masonry survived")
+	}
+	if m.State.Phase != PhaseAiming || m.State.Turn != 1 {
+		t.Errorf("the turn did not pass when the blast went out: phase %v turn %d",
+			m.State.Phase, m.State.Turn)
+	}
+}
+
+// A gorilla's crater is the tall ellipse ExplodeGorilla's aspect of -1.57 makes of
+// it, and it is a great deal bigger than a banana's — that is the difference
+// between chipping a roof and taking the top off the building.
+func TestGorillaCraterIsTallAndLarge(t *testing.T) {
+	const seed = 42
+	angle, power := aimAt(t, seed, 0, 1)
+
+	m := NewMatch(seed)
+	m.NextSeed = func() uint16 { return seed } // same city, so the crater survives the round
+	m.Join("joiner")
+	m.Launch(0, angle, power)
+
+	if ev := resolve(m); ev.Kind != EvRound {
+		t.Fatalf("got %v, want EvRound", ev.Kind)
+	}
+	if m.Boom.Kind != BoomGorilla {
+		t.Fatalf("a direct hit lit a %v, want BoomGorilla", m.Boom.Kind)
+	}
+	rx, ry := m.Boom.Crater()
+	if ry <= rx {
+		t.Errorf("the gorilla's crater is %.0f×%.0f; ExplodeGorilla's blast is taller than it is wide", rx, ry)
+	}
+	if rx <= craterRX {
+		t.Errorf("a dead gorilla (%.0f) craters no wider than a banana (%d)", rx, craterRX)
+	}
+}
+
+// The winner dances on the wreckage, and the next city does not go up until they
+// are done. DoShot calls VictoryDance after every round-ending hit — before
+// PlayGame clears the screen — so the celebration happens on the cratered city,
+// not on the fresh one.
+func TestTheWinnerDancesBeforeTheNextCityGoesUp(t *testing.T) {
+	const seed = 42
+	angle, power := aimAt(t, seed, 0, 1)
+
+	m := NewMatch(seed)
+	m.NextSeed = func() uint16 { return 1234 }
+	m.Join("joiner")
+	m.Launch(0, angle, power)
+
+	if ev := resolve(m); ev.Kind != EvRound {
+		t.Fatalf("got %v, want EvRound", ev.Kind)
+	}
+	// Burn the fireball down, but no further.
+	for m.Boom != nil {
+		m.Step(gorillasTestDT)
+	}
+
+	if m.Dance == nil {
+		t.Fatal("the fireball went out and nobody is dancing")
+	}
+	if m.Dance.Player != 0 {
+		t.Errorf("player %d is dancing; player 0 won the round", m.Dance.Player)
+	}
+	if m.State.Phase != PhaseDance {
+		t.Errorf("phase %v while dancing, want PhaseDance", m.State.Phase)
+	}
+	if m.MyTurn(0) || m.MyTurn(1) {
+		t.Error("a player may fire during the victory dance")
+	}
+	if m.State.Seed != seed {
+		t.Error("the next city went up while the winner was still celebrating")
+	}
+	if len(m.State.Craters) != 1 {
+		t.Errorf("the winner is dancing on %d craters; the blast left one", len(m.State.Craters))
+	}
+
+	// The dance alternates the raised arm, which is the whole of it.
+	poses := map[gorillaPose]bool{}
+	for m.Dance != nil {
+		poses[m.Dance.pose()] = true
+		m.Step(gorillasTestDT)
+	}
+	if !poses[leftUp] || !poses[rightUp] {
+		t.Errorf("the ape did not alternate arms: %v", poses)
+	}
+
+	// And only now does the world move on.
+	if m.State.Seed != 1234 || m.State.Phase != PhaseAiming || m.State.Turn != 1 {
+		t.Errorf("the round did not turn over when the dance ended: seed %d phase %v turn %d",
+			m.State.Seed, m.State.Phase, m.State.Turn)
+	}
+}
+
+// A won match dances too — it just has no round to hand on to afterwards, and the
+// loser stays in the hole.
+func TestTheMatchWinnerDancesAndTheLoserStaysDown(t *testing.T) {
+	const seed = 42
+	angle, power := aimAt(t, seed, 0, 1)
+
+	m := NewMatch(seed)
+	m.NextSeed = func() uint16 { return seed }
+	m.Join("joiner")
+	for range WinScore {
+		m.State.Turn = 0
+		m.Launch(0, angle, power)
+		resolve(m)
+		settle(m)
+	}
+
+	if m.State.Phase != PhaseOver || m.State.Winner != 0 {
+		t.Fatalf("match did not end with player 0 winning: phase %v winner %d",
+			m.State.Phase, m.State.Winner)
+	}
+	if m.Dance != nil {
+		t.Error("the winner is still dancing after the match settled")
+	}
+	if !m.World.Dead[1] {
+		t.Error("the loser got back up out of their crater")
+	}
+	if m.World.Dead[0] {
+		t.Error("the winner is dead")
+	}
+	// And a finished match is inert.
 	if ev := m.Step(gorillasTestDT); ev.Kind != EvNothing {
 		t.Errorf("a finished match still produced %v", ev.Kind)
 	}

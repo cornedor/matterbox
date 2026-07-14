@@ -6,27 +6,6 @@ import (
 	"math"
 )
 
-// The palette. Buildings come in the original's three drab blues and greys so
-// the banana and the explosion — the only warm colours on screen — are always
-// the thing your eye goes to.
-var (
-	colSky      = color.RGBA{0x0b, 0x10, 0x26, 0xff}
-	colBuilding = [3]color.RGBA{
-		{0x3a, 0x4a, 0x7a, 0xff},
-		{0x4a, 0x5a, 0x6a, 0xff},
-		{0x5a, 0x4a, 0x6a, 0xff},
-	}
-	colWindowLit  = color.RGBA{0xf7, 0xd9, 0x6b, 0xff}
-	colWindowDark = color.RGBA{0x1e, 0x26, 0x40, 0xff}
-	colGorilla    = [2]color.RGBA{
-		{0x8b, 0x5a, 0x2b, 0xff},
-		{0xa8, 0x6f, 0x3a, 0xff},
-	}
-	colBanana    = color.RGBA{0xff, 0xe0, 0x3a, 0xff}
-	colExplosion = color.RGBA{0xff, 0x6b, 0x1a, 0xff}
-	colSun       = color.RGBA{0xff, 0xd7, 0x2a, 0xff}
-)
-
 // Render draws the world at the given pixel size.
 //
 // The image goes to the terminal through the Kitty graphics protocol, the same
@@ -39,9 +18,11 @@ var (
 //
 // scale maps the fixed FieldW×FieldH simulation space onto whatever pixel box
 // the modal was given, so the simulation never learns what size the terminal is.
-func Render(w *World, s *Shot, boom *Explosion, pxW, pxH int) *image.RGBA {
+// A field unit is one of the original's pixels, and everything below is drawn in
+// those — which is what lets the geometry be lifted from GORILLA.BAS unchanged.
+func Render(w *World, s *Shot, boom *Explosion, dance *Dance, pxW, pxH int) *image.RGBA {
 	var r Renderer
-	return r.Render(w, s, boom, pxW, pxH)
+	return r.Render(w, s, boom, dance, pxW, pxH)
 }
 
 // Renderer holds the frame buffer across frames. A banana in flight is redrawn
@@ -77,7 +58,7 @@ func (r *Renderer) ensureMaps(pxW, pxH int, sx, sy float64) {
 // Render draws the world into the Renderer's buffer and returns it. The result
 // is only valid until the next call — the caller encodes it (to PNG, for the
 // kitty transmit) and does not hold on to it.
-func (r *Renderer) Render(w *World, s *Shot, boom *Explosion, pxW, pxH int) *image.RGBA {
+func (r *Renderer) Render(w *World, s *Shot, boom *Explosion, dance *Dance, pxW, pxH int) *image.RGBA {
 	if r.img == nil || r.img.Rect.Dx() != pxW || r.img.Rect.Dy() != pxH {
 		r.img = image.NewRGBA(image.Rect(0, 0, pxW, pxH))
 	}
@@ -92,7 +73,7 @@ func (r *Renderer) Render(w *World, s *Shot, boom *Explosion, pxW, pxH int) *ima
 		img.Pix[i*4+2] = colSky.B
 		img.Pix[i*4+3] = 0xff
 	}
-	drawSun(img, sx, sy)
+	drawSun(img, w.SunHit, sx, sy)
 
 	// Masonry, straight off the occupancy bitmap — so what is drawn and what a
 	// banana can hit are by construction the same thing, craters included.
@@ -117,17 +98,65 @@ func (r *Renderer) Render(w *World, s *Shot, boom *Explosion, pxW, pxH int) *ima
 		}
 	}
 
+	drawWind(img, w.Wind, sx, sy)
+
+	// An ape has three poses and the game only ever wants one of them at a time:
+	// arms up in triumph, one arm up mid-throw, or nothing much.
+	//
+	// The thrower holds their arm up for the first moments of the flight, then
+	// drops it — PlotShot raises it, plays the throw, rests a tenth of a second and
+	// PUTs the ape back down.
 	for i, g := range w.Gorillas {
-		drawGorilla(img, g, colGorilla[i], sx, sy)
+		if w.Dead[i] {
+			continue
+		}
+		pose := armsDown
+		switch {
+		case dance != nil && dance.Player == i:
+			pose = dance.pose()
+		case s != nil && s.Player == i && s.T < throwPoseTime:
+			pose = throwPose(i)
+		}
+		stampSprite(img, gorillaSprites[pose], g.X, g.Y, gorillaColors, sx, sy)
 	}
+
 	if s != nil {
 		x, y := s.Pos()
-		drawBanana(img, x, y, sx, sy, s.T)
+		drawBanana(img, x, y, s.T, sx, sy)
 	}
 	if boom != nil {
 		drawExplosion(img, boom, sx, sy)
 	}
 	return img
+}
+
+// throwPoseTime is how long the raised arm stays up, in simulated seconds.
+const throwPoseTime = 0.3
+
+// throwPose is PlotShot's: player one throws with GorL, player two with GorR.
+func throwPose(player int) gorillaPose {
+	if player == 0 {
+		return leftUp
+	}
+	return rightUp
+}
+
+// gorillaColors maps the ape's two attributes onto the palette. Colour 0 is the
+// sky, which is how it gets a brow, a nose and a chest.
+var gorillaColors = []color.RGBA{colSky, colGorilla}
+
+// stampSprite paints a prebuilt sprite at a field position, skipping its
+// transparent pixels.
+func stampSprite(img *image.RGBA, c *canvas, fx, fy int, pal []color.RGBA, sx, sy float64) {
+	for y := range c.h {
+		for x := range c.w {
+			v := c.at(x, y)
+			if v == transparent || int(v) >= len(pal) {
+				continue
+			}
+			fillField(img, fx+x, fy+y, pal[v], sx, sy)
+		}
+	}
 }
 
 // buildingColorAt picks the colour of one masonry pixel: the owning building's
@@ -138,17 +167,44 @@ func buildingColorAt(w *World, fx, fy int) color.RGBA {
 	if b == nil {
 		return colBuilding[0]
 	}
-	// Window grid, matching the original's spacing (3×6 panes, 10×15 apart).
-	const wW, wH, gapX, gapY = 3, 6, 10, 15
-	ox, oy := fx-(b.X+3), (bottomLine-3)-fy
-	if ox >= 0 && oy >= 0 && ox%gapX < wW && oy%gapY < wH && fy > b.Y+2 && fx < b.X+b.W-3 {
-		// A quarter of the panes are dark: somebody's gone home.
-		if (fx/gapX*7+fy/gapY*13+int(b.Color))%4 == 0 {
-			return colWindowDark
+	if lit, ok := windowAt(b, fx, fy); ok {
+		if lit {
+			return colWindowLit
 		}
-		return colWindowLit
+		return colWindowDark
 	}
 	return colBuilding[b.Color%3]
+}
+
+// windowAt reports whether a masonry pixel is a window pane, and whether anyone
+// is home.
+//
+// MakeCityScape lays its panes out from the building's *roof* down — `FOR i =
+// BHeight - 3 TO 7 STEP -WDifV` — not up from the ground, so which row the bottom
+// one lands on depends on how tall the building is. Getting that backwards makes
+// every skyline look subtly regular in a way the original's never does.
+func windowAt(b *Building, fx, fy int) (lit, ok bool) {
+	const (
+		paneW, paneH = 3, 6   // LINE (c, y)-(c + WWidth, y + WHeight), BF — corners inclusive
+		gapX, gapY   = 10, 15 // WDifh, WDifV
+		inset        = 3
+	)
+	ox, oy := fx-(b.X+inset), fy-(b.Y+inset)
+	if ox < 0 || oy < 0 || ox%gapX > paneW || oy%gapY > paneH {
+		return false, false
+	}
+	// The column loop stops before it reaches the far wall.
+	if b.X+inset+ox/gapX*gapX >= b.X+b.W-inset {
+		return false, false
+	}
+	// And the row loop stops before it reaches the ground.
+	if b.H-inset-oy/gapY*gapY < 7 {
+		return false, false
+	}
+	// FnRan(4) = 1 leaves a pane dark. Hashed from where it is rather than rolled,
+	// so the city does not strobe at 30fps.
+	h := (fx/gapX)*73 + (fy/gapY)*179 + int(b.Color)*31
+	return h%4 != 0, true
 }
 
 // buildingAtCol finds the building spanning a column, or nil for open sky.
@@ -187,85 +243,58 @@ func (w *World) ensureCols() {
 	}
 }
 
-// drawGorilla stamps the ape: a blocky body with its arms up, which is the pose
-// the 1993 sprite is remembered in.
-func drawGorilla(img *image.RGBA, g Point, c color.RGBA, sx, sy float64) {
-	fill := func(x0, y0, x1, y1 int) {
-		for fy := y0; fy < y1; fy++ {
-			for fx := x0; fx < x1; fx++ {
-				fillField(img, fx, fy, c, sx, sy)
-			}
-		}
-	}
-	x, y := g.X, g.Y
-	fill(x+8, y+0, x+20, y+8)   // head
-	fill(x+6, y+8, x+22, y+18)  // chest
-	fill(x+0, y+2, x+6, y+12)   // left arm, raised
-	fill(x+22, y+2, x+28, y+12) // right arm, raised
-	fill(x+7, y+18, x+12, y+25) // legs
-	fill(x+16, y+18, x+21, y+25)
-	// Eyes, so it reads as a face at small sizes.
-	fillField(img, x+11, y+3, colSky, sx, sy)
-	fillField(img, x+16, y+3, colSky, sx, sy)
-}
-
-// drawBanana draws the banana, spinning as it flies.
-func drawBanana(img *image.RGBA, fx, fy, sx, sy, t float64) {
-	// The original rotates the banana through four poses; a cheap approximation is
-	// to swing a short bar around its centre. It is drawn a little larger than
-	// scale strictly wants — at terminal sizes a pixel-accurate banana is a speck,
-	// and you cannot play a game you cannot see the projectile in.
-	ang := t * 8
-	dx, dy := math.Cos(ang)*4, math.Sin(ang)*4
-	for i := -4; i <= 4; i++ {
-		f := float64(i) / 4
-		x := fx + dx*f
-		y := fy + dy*f
-		for oy := -2; oy <= 2; oy++ {
-			for ox := -2; ox <= 2; ox++ {
-				fillField(img, int(x)+ox, int(y)+oy, colBanana, sx, sy)
+// drawBanana stamps the banana, tumbling as it flies. It is the original's
+// bitmap, at the original's size — six pixels by seven — and it is drawn centred
+// on the point that collides, so what you aim is what hits.
+func drawBanana(img *image.RGBA, fx, fy, t, sx, sy float64) {
+	pose := bananaPoses[bananaRot(t)]
+	h := len(pose)
+	w := len(pose[0])
+	x0 := int(math.Round(fx)) - w/2
+	y0 := int(math.Round(fy)) - h/2
+	for y, row := range pose {
+		for x, c := range row {
+			if c == '#' {
+				fillField(img, x0+x, y0+y, colBanana, sx, sy)
 			}
 		}
 	}
 }
 
-// Explosion is the fireball drawn over an impact. It is purely cosmetic — the
-// crater it corresponds to is already in the world — and it is not transmitted:
-// both clients derive it from the same impact, so it costs nothing on the wire.
-type Explosion struct {
-	X, Y  int
-	R     float64 // current radius, grown by the modal's tick
-	MaxR  float64
-	Frame int
-}
-
-func drawExplosion(img *image.RGBA, e *Explosion, sx, sy float64) {
-	r := int(e.R)
-	for fy := e.Y - r; fy <= e.Y+r; fy++ {
-		for fx := e.X - r; fx <= e.X+r; fx++ {
-			dx, dy := fx-e.X, fy-e.Y
-			d2 := dx*dx + dy*dy
-			if d2 > r*r {
-				continue
-			}
-			// A hot core fading to a ragged rim.
-			c := colExplosion
-			if float64(d2) < float64(r*r)*0.4 {
-				c = colBanana
-			}
-			fillField(img, fx, fy, c, sx, sy)
-		}
+// drawSun stamps the sun, which spends the game beaming and is briefly appalled
+// when a banana goes through it.
+func drawSun(img *image.RGBA, shocked bool, sx, sy float64) {
+	c := sunHappy
+	if shocked {
+		c = sunShocked
 	}
+	stampSprite(img, c, sunCX-sunOriginX, sunCY-sunOriginY, sunColors, sx, sy)
 }
 
-func drawSun(img *image.RGBA, sx, sy float64) {
-	cx, cy, r := FieldW/2, 26, 12
-	for fy := cy - r; fy <= cy+r; fy++ {
-		for fx := cx - r; fx <= cx+r; fx++ {
-			if dx, dy := fx-cx, fy-cy; dx*dx+dy*dy <= r*r {
-				fillField(img, fx, fy, colSun, sx, sy)
-			}
-		}
+// sunColors: the disc and its rays, and the sky the face is punched out of.
+var sunColors = []color.RGBA{colSky, {}, {}, colSun}
+
+// drawWind is MakeCityScape's arrow: a bar along the bottom of the field whose
+// length is the wind and whose head points the way it blows.
+func drawWind(img *image.RGBA, wind int8, sx, sy float64) {
+	if wind == 0 {
+		return
+	}
+	const y = FieldH - 5
+	x0 := FieldW / 2
+	x1 := x0 + int(wind)*3*(FieldW/320) // WindLine = Wind * 3 * (ScrWidth \ 320)
+
+	for x := min(x0, x1); x <= max(x0, x1); x++ {
+		fillField(img, x, y, colExplosion, sx, sy)
+	}
+	head := 2
+	if wind > 0 {
+		head = -2
+	}
+	for i := 0; i <= iabs(head); i++ {
+		d := i * isign(head)
+		fillField(img, x1+d, y-i, colExplosion, sx, sy)
+		fillField(img, x1+d, y+i, colExplosion, sx, sy)
 	}
 }
 

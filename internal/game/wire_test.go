@@ -17,10 +17,13 @@ func sampleState() *State {
 		Winner: -1,
 		Joiner: "abcdefghijklmnopqrstuvwxyz", // a full-length Mattermost id
 		Shot:   &ShotWire{Angle: 137, Power: 88, T: 1234},
+		Boom:   &BoomWire{X: 120, Y: 240, Kind: uint8(BoomGorilla), Frame: 5},
+		Dance:  &DanceWire{Player: 1, Frame: 9},
+		SunHit: true,
 		Craters: []Crater{
-			{X: 0, Y: 0, R: 7},
-			{X: 639, Y: 349, R: 14},
-			{X: 320, Y: 175, R: 255},
+			{X: 0, Y: 0, RX: 7, RY: 5},
+			{X: 639, Y: 349, RX: 48, RY: 75},
+			{X: 320, Y: 175, RX: 255, RY: 255},
 		},
 	}
 }
@@ -188,6 +191,27 @@ func TestSetShotClampsFlightTime(t *testing.T) {
 	}
 }
 
+// Every truncation of a valid payload must be refused, and none may panic.
+//
+// The blob rides in a post, and posts get mangled: a client that eats invisible
+// runes, a copy/paste that stops halfway, a body that hit a length cap. A parser
+// that indexes past the end of a short payload takes the whole TUI down with it,
+// and the input is attacker-supplied in the sense that anyone in the channel can
+// edit a post.
+func TestTruncatedPayloadsAreRejectedNotFatal(t *testing.T) {
+	full := MarshalState(sampleState())
+	for n := range len(full) {
+		st, err := UnmarshalState(full[:n])
+		if err == nil {
+			t.Errorf("a %d-byte payload (of %d) parsed as %+v; it is truncated", n, len(full), st)
+		}
+	}
+	// And the whole thing still parses, so the loop above is not passing vacuously.
+	if _, err := UnmarshalState(full); err != nil {
+		t.Fatalf("the untruncated payload does not parse: %v", err)
+	}
+}
+
 func TestStateRoundTripQuick(t *testing.T) {
 	f := func(seed uint16, wind int8, turn, s0, s1 uint8, nc uint8) bool {
 		st := &State{
@@ -195,7 +219,7 @@ func TestStateRoundTripQuick(t *testing.T) {
 			Turn: turn % 2, Scores: [2]uint8{s0, s1}, Winner: -1,
 		}
 		for i := range int(nc) % (MaxCraters + 1) {
-			st.Craters = append(st.Craters, Crater{X: int16(i * 7), Y: int16(i * 3), R: uint8(i)})
+			st.Craters = append(st.Craters, Crater{X: int16(i * 7), Y: int16(i * 3), RX: uint8(i), RY: uint8(i * 2)})
 		}
 		got, err := UnmarshalState(MarshalState(st))
 		return err == nil && reflect.DeepEqual(got, st)

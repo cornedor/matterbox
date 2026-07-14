@@ -53,7 +53,10 @@ func RenderASCII(w *World, s *Shot, cols, rows int) []string {
 			grid[cy][cx] = c
 		}
 	}
-	for _, g := range w.Gorillas {
+	for i, g := range w.Gorillas {
+		if w.Dead[i] {
+			continue
+		}
 		put(g.X+gorillaW/2, g.Y+gorillaH/2, 'Y') // arms up: the pose everyone remembers
 	}
 	if s != nil {

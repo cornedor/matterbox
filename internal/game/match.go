@@ -17,10 +17,17 @@ type Match struct {
 	State *State
 	World *World
 	Shot  *Shot
+	Boom  *Explosion
+	Dance *Dance
 
 	// NextSeed supplies the city for the next round. Injectable so tests can play
 	// a deterministic match; nil means random.
 	NextSeed func() uint16
+
+	// boomHit is who the fireball killed, remembered across it and across the
+	// victory dance that follows: the round does not actually turn over until both
+	// have finished, and the ape that was flattened shoots first in the next one.
+	boomHit int
 }
 
 // EventKind is what a simulation step produced.
@@ -33,12 +40,20 @@ const (
 	EvFlying
 	// EvMiss: it left the field.
 	EvMiss
-	// EvBuilding: it hit masonry. The crater is already carved.
+	// EvBuilding: it hit masonry, and the fireball is now burning.
 	EvBuilding
-	// EvRound: a gorilla was hit and a fresh city has been generated.
+	// EvRound: a gorilla was hit and the point is scored. The city is not replaced
+	// until the fireball has finished collapsing.
 	EvRound
 	// EvMatch: a gorilla was hit and that was the winning point.
 	EvMatch
+	// EvBoom: a fireball advanced a frame. The caller streams it, so both players
+	// watch the same explosion; when the last one lands the crater is cut and the
+	// world moves on.
+	EvBoom
+	// EvDance: the winner's victory dance advanced a frame. Streamed for the same
+	// reason, and when it ends the next city goes up.
+	EvDance
 )
 
 // Event is the outcome of one Step, with everything the UI needs to narrate it.
@@ -63,7 +78,20 @@ func NewMatch(seed uint16) *Match {
 // a joiner — or a spectator — reconstructs what the host is looking at.
 func FromState(st *State) *Match {
 	w := st.World()
-	return &Match{State: st, World: w, Shot: st.LiveShot(w)}
+	return &Match{
+		State: st,
+		World: w,
+		Shot:  st.LiveShot(w),
+		Boom:  st.LiveBoom(),
+		Dance: st.LiveDance(),
+	}
+}
+
+// Busy reports that the world is still animating and the caller should keep
+// ticking: a banana is up, a fireball has not finished collapsing, or the winner
+// is still celebrating.
+func (m *Match) Busy() bool {
+	return m.Boom != nil || m.Dance != nil || (m.State.Phase == PhaseFlight && m.Shot != nil)
 }
 
 // Join makes userID player two and starts the first round.
@@ -80,14 +108,23 @@ func (m *Match) Join(userID string) {
 // is; Launch trusts them.
 func (m *Match) Launch(player int, angle, power uint8) {
 	m.Shot = m.World.NewShot(player, float64(angle), float64(power))
+	m.World.SunHit = false // DoShot clears it before every shot
+	m.State.SunHit = false
 	m.State.Turn = uint8(player)
 	m.State.Phase = PhaseFlight
 	m.State.SetShot(angle, power, 0)
 }
 
-// Step advances the banana by dt and applies whatever rule its landing triggers.
-// The State it leaves behind is always exactly what should go on the wire next.
+// Step advances the world one frame — the banana if one is up, otherwise the
+// fireball if one is burning — and applies whatever rule that triggers. The State
+// it leaves behind is always exactly what should go on the wire next.
 func (m *Match) Step(dt float64) Event {
+	if m.Boom != nil {
+		return m.stepBoom()
+	}
+	if m.Dance != nil {
+		return m.stepDance()
+	}
 	if m.State.Phase != PhaseFlight || m.Shot == nil {
 		return Event{Kind: EvNothing}
 	}
@@ -104,7 +141,7 @@ func (m *Match) Step(dt float64) Event {
 
 	out, hit := m.World.Step(m.Shot, dt)
 	m.State.SetShot(m.State.Shot.Angle, m.State.Shot.Power, m.Shot.T)
-	m.State.Craters = m.World.Craters
+	m.State.SunHit = m.World.SunHit
 	x, y := m.Shot.Pos()
 
 	switch out {
@@ -116,7 +153,7 @@ func (m *Match) Step(dt float64) Event {
 		return Event{Kind: EvMiss}
 
 	case HitBuilding:
-		m.endShot()
+		m.light(NewExplosion(BoomBanana, int(x), int(y)))
 		return Event{Kind: EvBuilding, X: int(x), Y: int(y)}
 
 	case HitGorilla:
@@ -127,20 +164,95 @@ func (m *Match) Step(dt float64) Event {
 		scorer := 1 - hit
 		m.State.Scores[scorer]++
 
-		ev := Event{Hit: hit, Scorer: scorer, X: int(x), Y: int(y), Self: hit == shooter}
+		// ExplodeGorilla blasts the ape, not the banana: it centres on the chest
+		// wherever the fruit actually landed.
+		bx, by := m.World.GorillaCentre(hit)
+		m.boomHit = hit
+		m.World.Dead[hit] = true
+		m.light(NewExplosion(BoomGorilla, bx, by))
+
+		ev := Event{Hit: hit, Scorer: scorer, X: bx, Y: by, Self: hit == shooter}
 		if m.State.Scores[scorer] >= WinScore {
+			// The match is decided, but the fireball still has to burn: PhaseOver
+			// rather than PhaseBoom, since there is no next round to hold open.
 			m.State.Phase = PhaseOver
 			m.State.Winner = int8(scorer)
-			m.State.Shot = nil
-			m.Shot = nil
 			ev.Kind = EvMatch
 			return ev
 		}
-		m.newRound(hit)
 		ev.Kind = EvRound
 		return ev
 	}
 	return Event{Kind: EvNothing}
+}
+
+// light starts a fireball. The banana is down, nobody may fire, and the world is
+// left exactly as it was — the crater comes later.
+func (m *Match) light(e *Explosion) {
+	m.Shot = nil
+	m.State.Shot = nil
+	m.Boom = e
+	m.State.SetBoom(e)
+	if m.State.Phase != PhaseOver {
+		m.State.Phase = PhaseBoom
+	}
+}
+
+// stepBoom advances the fireball a frame, and when it has finished collapsing
+// cuts the hole it ate and lets the world move on.
+//
+// This is the whole reason PhaseBoom exists. In the original the crater is not a
+// consequence of the impact, it is a consequence of the *animation*: the erase
+// pass that cleans the fireball off the screen takes the masonry with it. So the
+// city stands, whole, for as long as the blast is burning — and only then does
+// the bite appear. Carving on impact instead would open the hole a beat early,
+// which on a gorilla hit is glaring, its crater being far larger than its blast.
+func (m *Match) stepBoom() Event {
+	m.Boom.Frame++
+	if !m.Boom.Done() {
+		m.State.SetBoom(m.Boom)
+		return Event{Kind: EvBoom}
+	}
+
+	boom := m.Boom
+	m.Boom = nil
+	m.State.SetBoom(nil)
+
+	rx, ry := boom.Crater()
+	m.World.Carve(boom.X, boom.Y, rx, ry)
+	m.State.Craters = m.World.Craters
+
+	if boom.Kind != BoomGorilla {
+		m.endShot()
+		return Event{Kind: EvBoom}
+	}
+
+	// A gorilla died, so somebody gets to gloat about it — and they do it here, on
+	// the cratered city, before the next one exists. A won match dances too; it
+	// just has no round to hand on to afterwards.
+	m.Dance = NewDance(1 - m.boomHit)
+	m.State.SetDance(m.Dance)
+	if m.State.Phase != PhaseOver {
+		m.State.Phase = PhaseDance
+	}
+	return Event{Kind: EvBoom}
+}
+
+// stepDance advances the victory dance, and when the winner has finally settled
+// down, puts up the next city.
+func (m *Match) stepDance() Event {
+	m.Dance.Frame++
+	if !m.Dance.Done() {
+		m.State.SetDance(m.Dance)
+		return Event{Kind: EvDance}
+	}
+
+	m.Dance = nil
+	m.State.SetDance(nil)
+	if m.State.Phase != PhaseOver {
+		m.newRound(m.boomHit)
+	}
+	return Event{Kind: EvDance}
 }
 
 const (
@@ -171,10 +283,15 @@ func (m *Match) newRound(hit int) {
 	seed := m.nextSeed()
 	m.World = NewWorld(seed)
 	m.Shot = nil
+	m.Boom = nil
+	m.Dance = nil
 	m.State.Seed = seed
 	m.State.Wind = m.World.Wind
 	m.State.Craters = nil
 	m.State.Shot = nil
+	m.State.Boom = nil
+	m.State.Dance = nil
+	m.State.SunHit = false
 	m.State.Phase = PhaseAiming
 	m.State.Turn = uint8(hit)
 }

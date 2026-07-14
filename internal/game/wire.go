@@ -21,13 +21,16 @@ const (
 	// StateVer / InputVer are bumped on any layout change. A client that sees a
 	// version it does not know ignores the post rather than misreading it — an
 	// old client must never render a new world as garbage.
-	StateVer = 1
+	//
+	// State 2 carries elliptical craters, the explosion in progress, and whether
+	// the sun has been hit.
+	StateVer = 2
 	InputVer = 1
 
 	// idLen is the length of a Mattermost user id.
 	idLen = 26
 
-	// MaxCraters bounds the payload. At 5 bytes each this caps the blob at a few
+	// MaxCraters bounds the payload. At 6 bytes each this caps the blob at a few
 	// hundred bytes, and a match that has cratered the city 60 times is over.
 	MaxCraters = 60
 )
@@ -50,6 +53,13 @@ const (
 	PhaseFlight
 	// PhaseOver: someone won.
 	PhaseOver
+	// PhaseBoom: a fireball is burning down. Nobody may fire, and the world does
+	// not change — the crater is not cut and the next city is not generated —
+	// until it has finished collapsing.
+	PhaseBoom
+	// PhaseDance: the winner of the round is celebrating over the wreckage. Still
+	// nobody's turn, and still the old city.
+	PhaseDance
 )
 
 // State is the whole game, as it travels in the host's post.
@@ -65,12 +75,30 @@ type State struct {
 	// host's id never needs to travel.
 	Joiner string
 
+	// SunHit: the banana went through the sun, and it has not got over it yet.
+	SunHit bool
+
 	// Shot is the banana in flight, present only in PhaseFlight. It travels as
 	// launch parameters plus elapsed time rather than as a position, so a client
 	// can evaluate the arc at any instant it likes — which is what lets it draw a
 	// smooth 60fps banana between two states that arrived 33ms apart, instead of
 	// snapping from one streamed position to the next.
 	Shot *ShotWire
+
+	// Boom is the explosion in progress, present only in PhaseBoom (or in
+	// PhaseOver, while the winning blast burns down).
+	//
+	// It travels rather than being derived, because it cannot be derived: the
+	// crater it will cut does not exist yet, and until it does there is nothing in
+	// the state for a joiner to infer a fireball from. Six bytes buys both players
+	// the same frame of the same explosion.
+	Boom *BoomWire
+
+	// Dance is the victory dance, present only in PhaseDance (or PhaseOver, while
+	// the winner is still at it). Two bytes, for the same reason as Boom: once the
+	// round turns over the state has no memory of who won it, so the dancer cannot
+	// be worked out after the fact.
+	Dance *DanceWire
 
 	Craters []Crater
 }
@@ -81,6 +109,19 @@ type ShotWire struct {
 	Angle uint8  // degrees, 0–180
 	Power uint8  // 0–255
 	T     uint16 // centiseconds since launch
+}
+
+// BoomWire is an Explosion on the wire.
+type BoomWire struct {
+	X, Y  int16
+	Kind  uint8
+	Frame uint8
+}
+
+// DanceWire is a Dance on the wire.
+type DanceWire struct {
+	Player uint8
+	Frame  uint8
 }
 
 // Input is the joiner's payload, in their own thread reply.
@@ -95,10 +136,10 @@ type Input struct {
 
 // MarshalState renders the state for the invisible blob.
 func MarshalState(s *State) []byte {
-	b := make([]byte, 0, 12+idLen+4+len(s.Craters)*5)
+	b := make([]byte, 0, 16+idLen+6+len(s.Craters)*6)
 	b = append(b, StateVer)
 	b = binary.LittleEndian.AppendUint16(b, s.Seed)
-	b = append(b, byte(s.Wind), byte(s.Phase), s.Turn, s.Scores[0], s.Scores[1], byte(s.Winner))
+	b = append(b, byte(s.Wind), byte(s.Phase), s.Turn, s.Scores[0], s.Scores[1], byte(s.Winner), boolByte(s.SunHit))
 
 	// The joiner id is fixed-width and zero-padded: a length prefix would buy 25
 	// bytes on a payload that is already small, at the cost of another way to
@@ -114,21 +155,47 @@ func MarshalState(s *State) []byte {
 		b = append(b, 0)
 	}
 
+	if s.Boom != nil {
+		b = append(b, 1)
+		b = binary.LittleEndian.AppendUint16(b, uint16(s.Boom.X))
+		b = binary.LittleEndian.AppendUint16(b, uint16(s.Boom.Y))
+		b = append(b, s.Boom.Kind, s.Boom.Frame)
+	} else {
+		b = append(b, 0)
+	}
+
+	if s.Dance != nil {
+		b = append(b, 1, s.Dance.Player, s.Dance.Frame)
+	} else {
+		b = append(b, 0)
+	}
+
 	n := min(len(s.Craters), MaxCraters)
 	b = append(b, byte(n))
 	for _, c := range s.Craters[:n] {
 		b = binary.LittleEndian.AppendUint16(b, uint16(c.X))
 		b = binary.LittleEndian.AppendUint16(b, uint16(c.Y))
-		b = append(b, c.R)
+		b = append(b, c.RX, c.RY)
 	}
 	return b
+}
+
+func boolByte(v bool) byte {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 // UnmarshalState parses a state payload. It is strict: anything it does not
 // fully understand is an error, never a partially-populated state, because a
 // half-read world would render as a plausible-looking lie.
 func UnmarshalState(b []byte) (*State, error) {
-	const head = 8 + idLen + 1 // version..winner, id, shot flag
+	// Everything up to and including the shot flag: ten fixed bytes (version
+	// through sunhit), the id, and the flag itself. This must count the flag, not
+	// just the bytes before it — a payload one byte short of it would otherwise
+	// pass the check and then be read off the end.
+	const head = 10 + idLen + 1
 	if len(b) < head {
 		return nil, ErrShortPayload
 	}
@@ -142,8 +209,9 @@ func UnmarshalState(b []byte) (*State, error) {
 		Turn:   b[5],
 		Scores: [2]uint8{b[6], b[7]},
 		Winner: int8(b[8]),
+		SunHit: b[9] == 1,
 	}
-	p := 9
+	p := 10
 	s.Joiner = string(trimZeros(b[p : p+idLen]))
 	p += idLen
 
@@ -164,12 +232,43 @@ func UnmarshalState(b []byte) (*State, error) {
 	if len(b) < p+1 {
 		return nil, ErrShortPayload
 	}
+	hasBoom := b[p] == 1
+	p++
+	if hasBoom {
+		if len(b) < p+6 {
+			return nil, ErrShortPayload
+		}
+		s.Boom = &BoomWire{
+			X:     int16(binary.LittleEndian.Uint16(b[p : p+2])),
+			Y:     int16(binary.LittleEndian.Uint16(b[p+2 : p+4])),
+			Kind:  b[p+4],
+			Frame: b[p+5],
+		}
+		p += 6
+	}
+
+	if len(b) < p+1 {
+		return nil, ErrShortPayload
+	}
+	hasDance := b[p] == 1
+	p++
+	if hasDance {
+		if len(b) < p+2 {
+			return nil, ErrShortPayload
+		}
+		s.Dance = &DanceWire{Player: b[p], Frame: b[p+1]}
+		p += 2
+	}
+
+	if len(b) < p+1 {
+		return nil, ErrShortPayload
+	}
 	n := int(b[p])
 	p++
 	if n > MaxCraters {
 		return nil, ErrTooManyCraters
 	}
-	if len(b) < p+n*5 {
+	if len(b) < p+n*6 {
 		return nil, ErrShortPayload
 	}
 	if n == 0 {
@@ -177,11 +276,12 @@ func UnmarshalState(b []byte) (*State, error) {
 	}
 	s.Craters = make([]Crater, n)
 	for i := range n {
-		off := p + i*5
+		off := p + i*6
 		s.Craters[i] = Crater{
-			X: int16(binary.LittleEndian.Uint16(b[off : off+2])),
-			Y: int16(binary.LittleEndian.Uint16(b[off+2 : off+4])),
-			R: b[off+4],
+			X:  int16(binary.LittleEndian.Uint16(b[off : off+2])),
+			Y:  int16(binary.LittleEndian.Uint16(b[off+2 : off+4])),
+			RX: b[off+4],
+			RY: b[off+5],
 		}
 	}
 	return s, nil
@@ -216,7 +316,59 @@ func trimZeros(b []byte) []byte {
 func (s *State) World() *World {
 	w := NewWorld(s.Seed)
 	w.Craters = append(w.Craters, s.Craters...)
+	w.SunHit = s.SunHit
+	// A won match leaves a loser in a crater, and they must stay in it. Derived
+	// from the winner rather than transmitted: it is the same fact twice.
+	if s.Winner >= 0 {
+		w.Dead[1-s.Winner] = true
+	}
 	return w
+}
+
+// LiveBoom rebuilds the fireball, on the frame the state says it has reached.
+// Returns nil when nothing is burning.
+func (s *State) LiveBoom() *Explosion {
+	if s.Boom == nil {
+		return nil
+	}
+	return &Explosion{
+		X:     int(s.Boom.X),
+		Y:     int(s.Boom.Y),
+		Kind:  ExplosionKind(s.Boom.Kind),
+		Frame: int(s.Boom.Frame),
+	}
+}
+
+// SetBoom records the fireball currently burning.
+func (s *State) SetBoom(e *Explosion) {
+	if e == nil {
+		s.Boom = nil
+		return
+	}
+	s.Boom = &BoomWire{
+		X:     int16(e.X),
+		Y:     int16(e.Y),
+		Kind:  uint8(e.Kind),
+		Frame: uint8(min(e.Frame, 255)),
+	}
+}
+
+// LiveDance rebuilds the victory dance, on the frame the state says it has
+// reached. Returns nil when nobody is dancing.
+func (s *State) LiveDance() *Dance {
+	if s.Dance == nil {
+		return nil
+	}
+	return &Dance{Player: int(s.Dance.Player), Frame: int(s.Dance.Frame)}
+}
+
+// SetDance records the dance in progress.
+func (s *State) SetDance(d *Dance) {
+	if d == nil {
+		s.Dance = nil
+		return
+	}
+	s.Dance = &DanceWire{Player: uint8(d.Player), Frame: uint8(min(d.Frame, 255))}
 }
 
 // LiveShot rebuilds the in-flight banana, positioned at the time the state says
