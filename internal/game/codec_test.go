@@ -8,6 +8,10 @@ import (
 	"unicode/utf8"
 )
 
+// The generic byte<->selector machinery is exercised in internal/hidden; these
+// tests pin the game channel's behaviour through the game-scoped wrappers, in
+// realistic post bodies.
+
 // allBytes is the payload the live round-trip probe uses too: every byte value,
 // so a server that mangles any single one of the 256 selectors is caught.
 func allBytes() []byte {
@@ -26,43 +30,6 @@ func TestEncodeDecodeAllByteValues(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("round-trip corrupted the payload:\n got %v\nwant %v", got, want)
-	}
-}
-
-// Every selector must map to a distinct byte and back. A collision here would
-// silently corrupt game state rather than fail loudly.
-func TestByteRuneMappingIsBijective(t *testing.T) {
-	seen := make(map[rune]byte, 256)
-	for i := range 256 {
-		b := byte(i)
-		r := encodeByte(b)
-		if prev, dup := seen[r]; dup {
-			t.Fatalf("bytes %#x and %#x both encode to %U", prev, b, r)
-		}
-		seen[r] = b
-		back, ok := decodeRune(r)
-		if !ok || back != b {
-			t.Fatalf("decodeRune(%U) = %#x, %v; want %#x, true", r, back, ok, b)
-		}
-	}
-	if len(seen) != 256 {
-		t.Fatalf("got %d distinct runes, want 256", len(seen))
-	}
-}
-
-// The blob must be invisible: every rune it emits has to come from one of the
-// two variation-selector blocks, never a printable character.
-func TestEncodeEmitsOnlySelectors(t *testing.T) {
-	for _, r := range Encode(allBytes()) {
-		if !isPayloadRune(r) {
-			t.Fatalf("Encode emitted a non-selector rune %U", r)
-		}
-	}
-}
-
-func TestEncodeIsValidUTF8(t *testing.T) {
-	if s := Encode(allBytes()); !utf8.ValidString(s) {
-		t.Fatal("Encode produced invalid UTF-8; it would not survive a JSON round-trip")
 	}
 }
 
@@ -107,27 +74,11 @@ func TestDecodeRejectsMagicOnly(t *testing.T) {
 	}
 }
 
-// Mattermost may reflow a body around the blob. Wherever the run ends up, and
-// whatever else sits nearby, the payload must still come back.
-func TestDecodeFindsPayloadAfterAnEarlierRun(t *testing.T) {
-	want := []byte{1, 2, 3}
-	// A decoy run that is not ours (no magic) precedes the real one.
-	decoy := string(encodeByte(0x07)) + string(encodeByte(0x08))
-	got, ok := Decode("a" + decoy + "b" + Encode(want) + "c")
-	if !ok || !bytes.Equal(got, want) {
-		t.Fatalf("got %v, %v; want %v, true", got, ok, want)
-	}
-}
-
 func TestStripRemovesTheBlobAndNothingElse(t *testing.T) {
 	visible := "\U0001F4A3 Gorillas\n```\nboard\n```\n"
 	if got := Strip(visible + Encode(allBytes())); got != visible {
 		t.Fatalf("Strip left residue:\n got %q\nwant %q", got, visible)
 	}
-	// Strip must be a no-op on a body that carries no blob, including one whose
-	// emoji ends in a bare U+FE0F... which Strip does remove, since it cannot
-	// tell that selector apart from a payload byte. Pin the behaviour so the
-	// message pane never surprises us.
 	if got := Strip("plain ❤️"); got != "plain ❤" {
 		t.Fatalf("Strip(%q) = %q", "plain ❤️", got)
 	}
