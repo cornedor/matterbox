@@ -57,7 +57,7 @@ type State struct {
 	Seed   uint16
 	Wind   int8
 	Phase  Phase
-	Turn   uint8    // 0 = host, 1 = joiner
+	Turn   uint8 // 0 = host, 1 = joiner
 	Scores [2]uint8
 	Winner int8 // -1 while nobody has won
 

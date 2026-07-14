@@ -66,6 +66,10 @@ type World struct {
 	// a frame, which is not a thing to do 30 times a second.
 	solid  []bool
 	solidN int // craters already baked into solid
+
+	// cols indexes column → building (-1 for sky), so the renderer can colour a
+	// masonry pixel without scanning the building list for every one of them.
+	cols []int16
 }
 
 // Point is a field coordinate. (Not image.Point: the simulation is pure and has
