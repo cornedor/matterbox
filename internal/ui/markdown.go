@@ -64,7 +64,15 @@ var (
 	mdItalicUnderscoreRe = regexp.MustCompile(`\b_([^_\s][^_]*?)_\b`)
 	mdImageRe            = regexp.MustCompile(`!\[([^\]]*)\]\(([^)\s]+)\)`)
 	mdLinkRe             = regexp.MustCompile(`\[([^\]]+)\]\(([^)\s]+)\)`)
-	mdURLRe              = regexp.MustCompile(`https?://[^\s<>\x00]+`)
+	// The class excludes the Unicode TAG block (U+E0000–U+E007F): those are the
+	// zero-width runes that bracket text-effect spans (see effSentinelBase). A
+	// bare URL at the tail of a \shimmer{…} or /rainbow span is immediately
+	// followed by the span's end sentinel; without this exclusion the greedy match
+	// swallows that sentinel into the link's OSC 8 destination, which both hides
+	// the span's close from resolveEffects (the effect then bleeds down the whole
+	// pane) and leaves a leftover empty style that trips the "don't break a post"
+	// guard, silently dropping every effect on the message.
+	mdURLRe = regexp.MustCompile(`https?://[^\s<>\x00\x{E0000}-\x{E007F}]+`)
 )
 
 const (

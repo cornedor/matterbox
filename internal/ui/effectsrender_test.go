@@ -424,6 +424,39 @@ func TestEffectAroundMarkdownIsKept(t *testing.T) {
 	}
 }
 
+// A span ending at a bare URL is the common case (`/rainbow …link`): the end
+// sentinel sits immediately after the URL. The bare-URL matcher must not swallow
+// that zero-width rune into the link's OSC 8 destination — if it does, the span's
+// close vanishes into an escape sequence resolveEffects skips whole, so the effect
+// paints every following line for the rest of the pane ("it never stops"), and the
+// leftover empty style trips the guard, silently dropping the effect instead.
+func TestEffectEndingAtURLClosesAndStaysClickable(t *testing.T) {
+	// The real report: a whole-message rainbow whose text ends in two MR links.
+	visible := "review pls? https://git.example.com/a/-/merge_requests/1715 https://git.example.com/a/-/merge_requests/1718"
+	body := renderMarkdownEffects(wholeMessageEffect(effects.Rainbow, visible), nil, nil, "")
+
+	if !hasEffectSentinel(body) {
+		t.Fatal("the effect was dropped: a URL-terminated span must still render")
+	}
+	// The span must close: paint this post's lines followed by a plain line and
+	// check the effect's truecolour does not leak onto the follow-up.
+	lines := appendBodyLines(nil, body, 60)
+	follow := appendBodyLines(nil, renderMarkdown("later message", nil, nil, ""), 60)
+	out := resolveEffects(append(append([]string{}, lines...), follow...), effectStaticPhase, 0)
+	for _, l := range out[len(lines):] {
+		if strings.Contains(l, "\x1b[38;2;") {
+			t.Fatalf("the effect bled past its own post onto: %q", showEsc(l))
+		}
+	}
+	// The link stays clickable: its OSC 8 destination is the clean URL, with no
+	// invisible sentinel smuggled in.
+	if !strings.Contains(body, "\x1b]8;;https://git.example.com/a/-/merge_requests/1718\x1b\\") {
+		t.Errorf("the URL's OSC 8 destination was altered:\n%q", showEsc(body))
+	}
+}
+
+func showEsc(s string) string { return strings.ReplaceAll(s, "\x1b", "^[") }
+
 // The sentinels must survive renderMarkdown untouched, or the whole pipeline
 // breaks: the injected runes have to reach the wrap stage intact.
 func TestSentinelsSurviveRenderMarkdown(t *testing.T) {
