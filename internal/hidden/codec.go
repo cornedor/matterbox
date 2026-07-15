@@ -65,7 +65,7 @@ func IsPayloadRune(r rune) bool {
 }
 
 // PayloadByte reports the byte r carries, or ok=false if r is not one of ours.
-// It exists for debug views (`matterbox game-debug`) that walk a post body rune
+// It exists for debug views (`matterbox decode`) that walk a post body rune
 // by rune: the encoding's whole purpose is that nothing on screen reveals it, so
 // a debug view is the only way anyone ever sees where the blob sits.
 func PayloadByte(r rune) (byte, bool) { return decodeRune(r) }

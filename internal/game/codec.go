@@ -3,7 +3,7 @@
 // smuggled through a Mattermost post body, one byte per Unicode variation
 // selector — is generic and lives in internal/hidden. This file pins the game's
 // channel magic and re-exports the codec under a stable, game-scoped API so game
-// code and `matterbox game-debug` don't reach across packages.
+// code and `matterbox decode` don't reach across packages.
 package game
 
 import "matterbox/internal/hidden"
@@ -25,5 +25,5 @@ func Decode(msg string) ([]byte, bool) { return hidden.Decode(Magic, msg) }
 func Strip(msg string) string { return hidden.Strip(msg) }
 
 // PayloadByte reports the byte r carries, or ok=false if r is not a payload
-// rune. Used by `matterbox game-debug` to walk a post body rune by rune.
+// rune. Used by `matterbox decode` to walk a post body rune by rune.
 func PayloadByte(r rune) (byte, bool) { return hidden.PayloadByte(r) }
