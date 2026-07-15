@@ -20,7 +20,7 @@ func TestGorillasBodyRoundTripsTheState(t *testing.T) {
 		m.Step(0.05)
 	}
 
-	body := gorillasBody(m, [2]string{"corne", "bob"})
+	body := gorillasBody(m, [2]string{"alice", "bob"})
 
 	payload, ok := game.Decode(body)
 	if !ok {
@@ -47,10 +47,10 @@ func TestGorillasBodyRoundTripsTheState(t *testing.T) {
 func TestGorillasBodyIsReadableToOtherClients(t *testing.T) {
 	m := game.NewMatch(1)
 	m.Join("someone")
-	body := gorillasBody(m, [2]string{"corne", "bob"})
+	body := gorillasBody(m, [2]string{"alice", "bob"})
 
 	visible := game.Strip(body)
-	for _, want := range []string{"Gorillas", "corne", "bob", "wind", "```"} {
+	for _, want := range []string{"Gorillas", "alice", "bob", "wind", "```"} {
 		if !strings.Contains(visible, want) {
 			t.Errorf("the visible body is missing %q:\n%s", want, visible)
 		}
@@ -67,7 +67,7 @@ func TestGorillasBodyIsReadableToOtherClients(t *testing.T) {
 // A game still in its lobby has to advertise how to join it, or nobody will.
 func TestLobbyBodyAdvertisesTheJoinReaction(t *testing.T) {
 	m := game.NewMatch(1)
-	body := game.Strip(gorillasBody(m, [2]string{"corne", "…"}))
+	body := game.Strip(gorillasBody(m, [2]string{"alice", "…"}))
 	if !strings.Contains(body, gorillasJoinEmoji) {
 		t.Errorf("a lobby post does not say how to join:\n%s", body)
 	}

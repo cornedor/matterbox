@@ -53,7 +53,7 @@ func TestDecodeIgnoresEmojiVariationSelector(t *testing.T) {
 // not derail the scan.
 func TestDecodeInsideARealPostBody(t *testing.T) {
 	want := []byte{0x00, 0xFF, 0x10, 0x0F, 0x42}
-	body := "\U0001F4A3 Gorillas — @corne vs @bob\n" +
+	body := "\U0001F4A3 Gorillas — @alice vs @bob\n" +
 		"```\n  _|_|_   O   _|_|_\n```\n" +
 		Encode(want) +
 		"\ntrailing text\n"
