@@ -45,6 +45,14 @@ const (
 // effStart returns the start sentinel that encodes effect id.
 func effStart(id byte) rune { return effSentinelBase + rune(id) }
 
+// effectGeometric reports whether an effect moves runes around the screen rather
+// than just recolouring them. A geometric span is left uncoloured by
+// resolveEffects and its sentinels are handed on to resolveEffects's second pass
+// (resolveGeometry), which does the moving. scroll marquees its letters sideways.
+func effectGeometric(id byte) bool {
+	return id == effects.Scroll
+}
+
 // effectStaticPhase is the resting frame: the phase a Model starts at, before
 // the ticker arms. 0.5 places the shimmer band mid-span so a still frame shows
 // the gradient rather than the band's fully-exited edge. Tests paint at this
@@ -417,17 +425,27 @@ func resolveEffects(lines []string, phase float64, chrome int) []string {
 			r, size := utf8.DecodeRuneInString(l[i:])
 			switch {
 			case r == effSentinelEnd:
+				geo := false
 				if len(stack) > 0 {
+					geo = effectGeometric(stack[len(stack)-1].id)
 					stack = stack[:len(stack)-1]
 				}
-				b.WriteString("\x1b[0m")
+				if geo {
+					b.WriteRune(r) // hand the geometric span's close to the geometry pass
+				} else {
+					b.WriteString("\x1b[0m")
+				}
 			case r > effSentinelBase && r < effSentinelEnd:
 				n := 0
 				if spanSeq < len(lens) {
 					n = lens[spanSeq]
 				}
 				spanSeq++
-				stack = append(stack, frame{id: byte(r - effSentinelBase), n: n})
+				id := byte(r - effSentinelBase)
+				stack = append(stack, frame{id: id, n: n})
+				if effectGeometric(id) {
+					b.WriteRune(r) // hand the geometric span's open to the geometry pass
+				}
 			case len(stack) == 0:
 				b.WriteRune(r)
 			case r == kitty.Placeholder || unicode.Is(unicode.Mn, r):
@@ -446,9 +464,15 @@ func resolveEffects(lines []string, phase float64, chrome int) []string {
 				// Merge every open effect, outer→inner, so nested effects compose:
 				// the innermost colour wins but an outer \underline{} still underlines
 				// the coloured run. (Only the top used to paint, so an attribute on an
-				// outer span was lost the moment a colour opened inside it.)
+				// outer span was lost the moment a colour opened inside it.) A geometric
+				// span (scroll) adds no colour — the geometry pass moves the rune instead
+				// — but a colour nested inside one still paints, so the moved glyph
+				// carries it.
 				var v effectVisual
 				for k := range stack {
+					if effectGeometric(stack[k].id) {
+						continue
+					}
 					v = v.merge(effectVisualAt(stack[k].id, stack[k].pos, stack[k].n, phase))
 				}
 				b.WriteString(v.ansi())
@@ -672,8 +696,10 @@ func rgb8(c color.Color) (uint8, uint8, uint8) {
 // /command token and a \shimmer{} span are the same thing; rainbow cycles hue
 // along the span; pulse, glow and warn breathe uniformly; ok, bad and whisper
 // are steady single colours (their result is phase-independent, which is what
-// effectAnimated keys on). The composer's static preview reads from here too, so
-// it can't drift from what gets sent.
+// effectAnimated keys on). Scroll is geometric — the message pane marquees its
+// letters, not their colour — so here it yields only a steady hint tint for the
+// composer preview and picker. The composer's static preview reads from here too,
+// so it can't drift from what gets sent.
 func effectColor(id byte, pos, n int, phase float64) color.Color {
 	if id == effects.Shimmer {
 		return editor.ShimmerColor(pos, n, phase)
@@ -684,6 +710,12 @@ func effectColor(id byte, pos, n int, phase float64) color.Color {
 	switch id {
 	case effects.Rainbow:
 		h, s, v = 0.06*x+phase, 0.85, 1.0
+	case effects.Scroll:
+		// Scroll is geometric — the message pane marquees the letters, it does not
+		// colour them (see effectGeometric / resolveGeometry). This steady magenta
+		// is only a hint: the composer preview and the "\" picker can't animate
+		// geometry, so they show the body in a still tint that reads as "this moves."
+		h, s, v = 0.85, 0.85, 0.95
 	case effects.Pulse:
 		h, s = 0.02, 0.75
 		v = 0.45 + 0.55*breath
@@ -716,7 +748,7 @@ func effectColor(id byte, pos, n int, phase float64) color.Color {
 // effect whose case there reads phase must be listed here.
 func effectAnimated(id byte) bool {
 	switch id {
-	case effects.Shimmer, effects.Rainbow, effects.Pulse, effects.Glow, effects.Warn:
+	case effects.Shimmer, effects.Rainbow, effects.Scroll, effects.Pulse, effects.Glow, effects.Warn:
 		return true
 	default:
 		return false // ok, bad, whisper — one steady colour

@@ -49,6 +49,10 @@ const (
 	Underline byte = 9
 	Spoiler   byte = 10
 	Copy      byte = 11
+	// And one that moves: scroll slides a span's letters sideways like a marquee.
+	// (Id 12 was a withdrawn "wave" effect; it is intentionally skipped, never
+	// reused — ids are stable wire values.)
+	Scroll byte = 13
 )
 
 // MagicEffects tags the hidden payload that carries effect spans, distinct from
@@ -71,6 +75,7 @@ var idByName = map[string]byte{
 	"underline": Underline,
 	"spoiler":   Spoiler,
 	"copy":      Copy,
+	"scroll":    Scroll,
 }
 
 var nameByID = map[byte]string{
@@ -85,6 +90,7 @@ var nameByID = map[byte]string{
 	Underline: "underline",
 	Spoiler:   "spoiler",
 	Copy:      "copy",
+	Scroll:    "scroll",
 }
 
 // Name returns an effect's directive name, or "" if id is not recognised.
@@ -105,6 +111,7 @@ func All() []Effect {
 	return []Effect{
 		{Shimmer, "shimmer", "a bright band sweeps across the text"},
 		{Rainbow, "rainbow", "hue cycles along the text"},
+		{Scroll, "scroll", "the letters scroll sideways, like a marquee"},
 		{Pulse, "pulse", "the text breathes, bright to dim"},
 		{Glow, "glow", "a soft warm halo, breathing"},
 		{Warn, "warn", "amber, gently breathing — a caution that catches the eye"},

@@ -176,5 +176,8 @@ func (m *Model) paintEffects(s string, chrome int) string {
 	if !m.effectsAnim.onScreen {
 		return s
 	}
-	return strings.Join(resolveEffects(strings.Split(s, "\n"), m.effectsAnim.phase, chrome), "\n")
+	lines := strings.Split(s, "\n")
+	lines = resolveEffects(lines, m.effectsAnim.phase, chrome)  // recolour; hands geometric spans on
+	lines = resolveGeometry(lines, m.effectsAnim.phase, chrome) // move: the scroll marquee
+	return strings.Join(lines, "\n")
 }

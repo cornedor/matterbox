@@ -81,8 +81,8 @@ func isEffectNameRune(r rune) bool {
 }
 
 // effectMatches ranks the effects whose name starts with query. A bare backslash
-// (empty query) lists them all. Prefix-only: the set is four items, so fuzzy
-// matching would offer nothing but false hits on ordinary prose — every `\` in a
+// (empty query) lists them all. Prefix-only: the set is a small, fixed list, so
+// fuzzy matching would offer nothing but false hits on ordinary prose — every `\` in a
 // code snippet would otherwise pop a menu.
 func effectMatches(query string) []effects.Effect {
 	var out []effects.Effect
