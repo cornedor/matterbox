@@ -32,6 +32,26 @@ func equalSpans(a, b []Span) bool {
 	return true
 }
 
+// Every effect the picker offers must round-trip through the name/id maps and be
+// Known — the guard that catches a new effect added to All() but forgotten in
+// idByName or nameByID, which would parse as literal text instead.
+func TestAllConsistent(t *testing.T) {
+	for _, e := range All() {
+		if !Known(e.Name) {
+			t.Errorf("%q is offered by All() but is not Known", e.Name)
+		}
+		if idByName[e.Name] != e.ID {
+			t.Errorf("%q: idByName = %d, All() ID = %d", e.Name, idByName[e.Name], e.ID)
+		}
+		if Name(e.ID) != e.Name {
+			t.Errorf("id %d: Name = %q, All() name = %q", e.ID, Name(e.ID), e.Name)
+		}
+		if e.Desc == "" {
+			t.Errorf("%q has no description for the picker", e.Name)
+		}
+	}
+}
+
 func TestParse(t *testing.T) {
 	cases := []struct {
 		name    string

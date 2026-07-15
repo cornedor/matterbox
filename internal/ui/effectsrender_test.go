@@ -1,12 +1,14 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/ansi/kitty"
+	"github.com/mattermost/mattermost/server/public/model"
 
 	"matterbox/internal/effects"
 	"matterbox/internal/viewport"
@@ -63,6 +65,187 @@ func TestResolveEffectsStripsSentinelsAndPreservesWidth(t *testing.T) {
 	}
 	if !strings.Contains(out[0], "\x1b[38;2;") {
 		t.Fatal("expected a truecolor SGR in the coloured output")
+	}
+}
+
+// The semantic effects paint a single steady colour: whichever phase the loop
+// happens to be at, a \whisper{} or \ok{} span looks the same, so it never drives
+// the frame ticker (effectAnimated keys on exactly this). A \warn{} span, by
+// contrast, breathes — its colour must differ between two phases.
+func TestSemanticEffectsColour(t *testing.T) {
+	paint := func(id byte, phase float64) string {
+		marked := "x " + string(effStart(id)) + "hi" + string(effSentinelEnd) + " y"
+		return resolveEffects([]string{marked}, phase, 0)[0]
+	}
+	for _, id := range []byte{effects.Ok, effects.Bad, effects.Whisper} {
+		if !strings.Contains(paint(id, 0), "\x1b[38;2;") {
+			t.Errorf("effect %d painted no colour", id)
+		}
+		if effectAnimated(id) {
+			t.Errorf("effect %d is a steady colour but reports as animated", id)
+		}
+		if a, b := paint(id, 0), paint(id, 0.5); a != b {
+			t.Errorf("effect %d changed with phase (static expected): %q vs %q", id, a, b)
+		}
+	}
+	if !effectAnimated(effects.Warn) {
+		t.Error("warn should be animated")
+	}
+	// 0.25 and 0.75 are the breath's peak and trough (phases 0 and 0.5 share sin=0).
+	if a, b := paint(effects.Warn, 0.25), paint(effects.Warn, 0.75); a == b {
+		t.Error("warn did not change between phases")
+	}
+}
+
+// \underline{} composes with a colour rather than being overridden by it: a
+// \bad{\underline{x}} rune is painted red AND underlined, on the same escape.
+func TestUnderlineComposesWithColour(t *testing.T) {
+	marked := string(effStart(effects.Bad)) + string(effStart(effects.Underline)) +
+		"x" + string(effSentinelEnd) + string(effSentinelEnd)
+	out := resolveEffects([]string{marked}, effectStaticPhase, 0)[0]
+	if !strings.Contains(out, "\x1b[4;38;2;") {
+		t.Fatalf("expected underline + colour on one rune, got %q", out)
+	}
+}
+
+// \spoiler{} paints each rune's foreground and background the same colour — an
+// opaque bar whatever the terminal background — but leaves the underlying text
+// intact, so selecting/copying it still yields the words (reveal-by-copy).
+func TestSpoilerPaintsOpaqueBlock(t *testing.T) {
+	marked := string(effStart(effects.Spoiler)) + "secret" + string(effSentinelEnd)
+	out := resolveEffects([]string{marked}, effectStaticPhase, 0)[0]
+
+	r, g, b := rgb8(spoilerBlock)
+	fg := fmt.Sprintf("38;2;%d;%d;%d", r, g, b)
+	bg := fmt.Sprintf("48;2;%d;%d;%d", r, g, b)
+	if !strings.Contains(out, fg) || !strings.Contains(out, bg) {
+		t.Fatalf("spoiler should paint fg and bg the same; got %q", out)
+	}
+	if plain := ansi.Strip(out); plain != "secret" {
+		t.Fatalf("spoiler must keep the real text for copy; got %q", plain)
+	}
+	if effectAnimated(effects.Spoiler) {
+		t.Error("spoiler is static and must not drive the frame ticker")
+	}
+}
+
+// A \copy{} span is baked into the rendered body as a click-to-copy OSC 8 link
+// whose payload decodes back to the chip's text; the effect sentinels survive
+// inside it so the chip is still painted.
+func TestCopyChipBecomesLink(t *testing.T) {
+	body := renderMarkdownEffects(compileEffects("grab \\copy{ID-42} now"), nil, nil, "")
+	want := copyURLScheme + encodeCopyPayload("ID-42")
+	if !strings.Contains(body, "\x1b]8;;"+want) {
+		t.Fatalf("copy span did not become a copy link; body = %q", body)
+	}
+	if !strings.ContainsRune(body, effStart(effects.Copy)) {
+		t.Error("copy sentinel was consumed; the chip would not be painted")
+	}
+	if text, ok := decodeCopyPayload(encodeCopyPayload("a b\tc")); !ok || text != "a b\tc" {
+		t.Errorf("copy payload did not round-trip: %q, ok=%v", text, ok)
+	}
+}
+
+// The copy link must be resolvable by the same hit-test that opens ordinary
+// links: a click landing on the chip's columns returns the copy URL. This is the
+// reason the link is baked into the body (which the hit-test reads) and not added
+// at paint time. "grab " is 5 columns, so the chip covers columns 5..9.
+func TestCopyLinkIsHitTestable(t *testing.T) {
+	body := renderMarkdownEffects(compileEffects("grab \\copy{ID-42} now"), nil, nil, "")
+	url, ok := linkAtDisplayCol(body, 7) // a column inside "ID-42"
+	if !ok || !strings.HasPrefix(url, copyURLScheme) {
+		t.Fatalf("click on the chip did not resolve to a copy link: url=%q ok=%v", url, ok)
+	}
+	if text, _ := decodeCopyPayload(strings.TrimPrefix(url, copyURLScheme)); text != "ID-42" {
+		t.Errorf("copy link payload = %q; want ID-42", text)
+	}
+	// A column outside the chip is not the copy link.
+	if url, ok := linkAtDisplayCol(body, 1); ok && strings.HasPrefix(url, copyURLScheme) {
+		t.Error("a click on plain text resolved to the copy link")
+	}
+}
+
+// The copy chip renders a leading icon, and the icon is not part of what gets
+// copied.
+func TestCopyChipHasIcon(t *testing.T) {
+	body := renderMarkdownEffects(compileEffects("\\copy{tok}"), nil, nil, "")
+	if !strings.Contains(body, copyGlyph) {
+		t.Error("copy chip rendered without its icon")
+	}
+	want := copyURLScheme + encodeCopyPayload("tok") // payload excludes the icon
+	if !strings.Contains(body, want) {
+		t.Errorf("copy payload changed by the icon; body=%q", body)
+	}
+}
+
+// Each \spoiler{} becomes an indexed hover link but keeps its block sentinel, so
+// it's hidden until the pointer lands on it.
+func TestSpoilerBecomesIndexedHoverLink(t *testing.T) {
+	body := renderMarkdownEffects(compileEffects("\\spoiler{one} and \\spoiler{two}"), nil, nil, "")
+	for _, idx := range []string{"0", "1"} {
+		if !strings.Contains(body, "\x1b]8;;"+spoilerURLScheme+idx) {
+			t.Errorf("missing spoiler hover link %s; body=%q", idx, body)
+		}
+	}
+	if n := strings.Count(body, string(effStart(effects.Spoiler))); n != 2 {
+		t.Errorf("both spoilers should still carry a block sentinel, got %d", n)
+	}
+}
+
+// Hovering a spoiler lifts only that one's block — its text shows, the others stay
+// hidden — and moving off restores it. End to end through the paint.
+func TestRevealSpoilerShowsHoveredText(t *testing.T) {
+	body := renderMarkdownEffects(compileEffects("a \\spoiler{first} b \\spoiler{second} c"), nil, nil, "")
+	r, g, b := rgb8(spoilerBlock)
+	block := fmt.Sprintf("48;2;%d;%d;%d", r, g, b)
+
+	paint := func(s string) string {
+		return strings.Join(resolveEffects(appendBodyLines(nil, s, 80), effectStaticPhase, 0), "\n")
+	}
+	// Un-hovered: both are blocks.
+	if out := paint(body); strings.Count(out, block) == 0 {
+		t.Fatal("un-hovered spoilers should paint a block background")
+	}
+	// Hover the second spoiler (index 1): "second" shows, "first" stays a block.
+	revealed := revealSpoiler(body, spoilerURLScheme+"1")
+	out := paint(revealed)
+	if !strings.Contains(ansi.Strip(out), "second") {
+		t.Fatalf("hovered spoiler text not revealed: %q", ansi.Strip(out))
+	}
+	if !strings.Contains(out, block) {
+		t.Error("the other spoiler should still be a block")
+	}
+	// It is precisely one block that was lifted.
+	if before, after := strings.Count(body, string(effStart(effects.Spoiler))), strings.Count(revealed, string(effStart(effects.Spoiler))); before-after != 1 {
+		t.Errorf("expected exactly one spoiler lifted, got %d→%d", before, after)
+	}
+}
+
+// hovered() routes a spoiler hover to a reveal (not the link-highlight path).
+func TestHoveredRevealsSpoiler(t *testing.T) {
+	body := renderMarkdownEffects(compileEffects("x \\spoiler{secret} y"), nil, nil, "")
+	m := &Model{}
+	p := &model.Post{Id: "p1"}
+
+	if got := m.hovered(body, p); got != body {
+		t.Error("with nothing hovered, the body must be unchanged")
+	}
+	m.hoverLink = hoverLink{postID: "p1", url: spoilerURLScheme + "0"}
+	if got := m.hovered(body, p); strings.ContainsRune(got, effStart(effects.Spoiler)) {
+		t.Error("hovering the spoiler should have lifted its block sentinel")
+	}
+}
+
+// Clicking a copy chip copies its text instead of opening anything: the copy
+// scheme is intercepted before the non-web link warning modal.
+func TestCopyLinkClickCopiesNotOpens(t *testing.T) {
+	m := &Model{}
+	_, cmd := m.activateLink(copyURLScheme + encodeCopyPayload("ID-42"))
+	if m.linkConfirm.active {
+		t.Fatal("a copy click raised the open-link warning modal")
+	}
+	if cmd == nil {
+		t.Fatal("a copy click produced no clipboard command")
 	}
 }
 

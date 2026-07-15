@@ -184,7 +184,7 @@ func effectSample(id byte, s string) string {
 	rs := []rune(s)
 	var b strings.Builder
 	for i, r := range rs {
-		b.WriteString(effectColorSGR(id, i, len(rs), effectStaticPhase))
+		b.WriteString(effectHintVisual(id, i, len(rs), effectStaticPhase).ansi())
 		b.WriteRune(r)
 	}
 	b.WriteString("\x1b[0m")

@@ -1,13 +1,16 @@
 package ui
 
 import (
+	"encoding/base64"
 	"fmt"
 	"image/color"
 	"math"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/ansi/kitty"
 
 	"matterbox/internal/editor"
@@ -97,7 +100,206 @@ func renderMarkdownEffects(raw string, ei *emojiImages, mr mrInlineFn, self stri
 	if stripEffectSentinels(out) != plain {
 		return plain // a span straddles a markdown token: drop the effects, keep the text
 	}
-	return out
+	// A \copy{} span becomes a click-to-copy OSC 8 hyperlink. It is baked in here,
+	// once, rather than at paint time: the click hit-test reads this rendered body
+	// (via the viewport), not the per-frame recolour, so the link has to live in
+	// the body itself. It is phase-independent, so caching it is correct.
+	return injectActionLinks(out)
+}
+
+// The internal OSC 8 URL schemes that make an effect span a mouse target. They
+// are not real schemes: activateLink intercepts them before the open-link
+// machinery (see openTarget). Copy carries the base64 of its text; spoiler
+// carries its index within the post, so a hover can reveal exactly the one the
+// pointer is over (revealSpoiler).
+const (
+	copyURLScheme    = "matterbox-copy:"
+	spoilerURLScheme = "matterbox-spoiler:"
+)
+
+// copyGlyph is the little chip icon that marks a \copy{} span as clickable.
+const copyGlyph = "⧉"
+
+// encodeCopyPayload / decodeCopyPayload round-trip the chip's text through the
+// OSC 8 URL. Base64 keeps arbitrary text — spaces, punctuation, control bytes —
+// out of the escape sequence's own syntax.
+func encodeCopyPayload(text string) string {
+	return base64.StdEncoding.EncodeToString([]byte(text))
+}
+
+func decodeCopyPayload(enc string) (string, bool) {
+	b, err := base64.StdEncoding.DecodeString(enc)
+	if err != nil {
+		return "", false
+	}
+	return string(b), true
+}
+
+// injectActionLinks wraps every \copy{} and \spoiler{} span in the rendered body
+// in an OSC 8 hyperlink, so the mouse can act on it: the same hit-test that opens
+// ordinary links resolves it (see linkAt / hoverLinkAt). The span's effect
+// sentinels stay inside the link, so resolveEffects still paints it — only a
+// zero-width wrapper (and, for copy, a leading chip icon) is added.
+//
+// It runs on the unwrapped body, where each span is contiguous, and tracks the
+// sentinel nesting so a span that itself contains effects closes at the right
+// brace. A body with neither kind of span is returned untouched.
+func injectActionLinks(s string) string {
+	if !strings.ContainsRune(s, effStart(effects.Copy)) &&
+		!strings.ContainsRune(s, effStart(effects.Spoiler)) {
+		return s
+	}
+	base := &strings.Builder{}
+	base.Grow(len(s) + 48)
+	// A frame per open sentinel. An action frame (copy or spoiler) owns a buffer
+	// that captures its whole rendered body (sentinels and all); writes go to the
+	// innermost such buffer, or to base when none is open, so an action span's
+	// bytes are held back until its close, when they're wrapped in the hyperlink.
+	type frame struct {
+		id      byte
+		buf     *strings.Builder // non-nil for an action span
+		spoiler int              // this span's spoiler index, when id == Spoiler
+	}
+	var stack []frame
+	spoilers := 0
+	cur := func() *strings.Builder {
+		for k := len(stack) - 1; k >= 0; k-- {
+			if stack[k].buf != nil {
+				return stack[k].buf
+			}
+		}
+		return base
+	}
+	for i := 0; i < len(s); {
+		if s[i] == 0x1b { // an escape (SGR, an inner OSC 8 link): copy it through
+			j := escSeqEnd(s, i)
+			cur().WriteString(s[i:j])
+			i = j
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		switch {
+		case r > effSentinelBase && r < effSentinelEnd: // a span opens
+			f := frame{id: byte(r - effSentinelBase)}
+			switch f.id {
+			case effects.Copy:
+				f.buf = &strings.Builder{}
+			case effects.Spoiler:
+				f.buf = &strings.Builder{}
+				f.spoiler = spoilers
+				spoilers++
+			}
+			stack = append(stack, f)
+			cur().WriteRune(r) // START goes inside its own action buffer, if any
+		case r == effSentinelEnd: // a span closes
+			if n := len(stack); n > 0 {
+				f := stack[n-1]
+				stack = stack[:n-1]
+				if f.buf != nil {
+					f.buf.WriteRune(r)
+					cur().WriteString(actionLink(f.id, f.spoiler, f.buf.String()))
+				} else {
+					cur().WriteRune(r)
+				}
+			}
+		default:
+			cur().WriteRune(r)
+		}
+		i += size
+	}
+	// Any action frame still open is unbalanced; flush its raw bytes so nothing is
+	// swallowed (Parse would not have produced such a span, but never lose text).
+	for _, f := range stack {
+		if f.buf != nil {
+			base.WriteString(f.buf.String())
+		}
+	}
+	return base.String()
+}
+
+// actionLink wraps a copy/spoiler span's rendered body in its OSC 8 hyperlink.
+// Copy carries the base64 of its plain text and gains a leading chip icon (styled
+// like the chip, kept out of the payload); spoiler carries its per-post index so
+// revealSpoiler can lift the block from exactly the one being hovered.
+func actionLink(id byte, spoilerIdx int, body string) string {
+	switch id {
+	case effects.Copy:
+		payload := ansi.Strip(stripEffectSentinels(body))
+		icon := effectVisualAt(effects.Copy, 0, 1, 0).ansi() + copyGlyph + "\x1b[0m "
+		return osc8Link(copyURLScheme+encodeCopyPayload(payload), icon+body)
+	case effects.Spoiler:
+		return osc8Link(spoilerURLScheme+strconv.Itoa(spoilerIdx), body)
+	default:
+		return body
+	}
+}
+
+// revealSpoiler lifts the block from the spoiler the pointer is over, so its text
+// shows while hovered. url is spoilerURLScheme + index; the index-th spoiler span
+// in body (by opening order, matching injectActionLinks) has its own effect
+// sentinels dropped, so resolveEffects paints it as ordinary text — while every
+// other spoiler, and any effect nested inside this one, is untouched. The OSC 8
+// wrapper stays, so the pointer keeps resting on it and the reveal holds.
+func revealSpoiler(body, url string) string {
+	idxStr, ok := strings.CutPrefix(url, spoilerURLScheme)
+	if !ok {
+		return body
+	}
+	want, err := strconv.Atoi(idxStr)
+	if err != nil {
+		return body
+	}
+	spoilerStart := effStart(effects.Spoiler)
+	var b strings.Builder
+	b.Grow(len(body))
+	seen := -1     // spoiler spans opened so far
+	depth := 0     // current sentinel nesting depth
+	skipDepth := 0 // depth at which the wanted spoiler opened; 0 = not inside it
+	for i := 0; i < len(body); {
+		if body[i] == 0x1b {
+			j := escSeqEnd(body, i)
+			b.WriteString(body[i:j])
+			i = j
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(body[i:])
+		write := true
+		switch {
+		case r > effSentinelBase && r < effSentinelEnd: // a span opens
+			depth++
+			if r == spoilerStart {
+				seen++
+				if seen == want {
+					skipDepth = depth
+					write = false // drop the wanted spoiler's START
+				}
+			}
+		case r == effSentinelEnd: // a span closes
+			if skipDepth != 0 && depth == skipDepth {
+				skipDepth = 0
+				write = false // drop the matching END
+			}
+			depth--
+		}
+		if write {
+			b.WriteRune(r)
+		}
+		i += size
+	}
+	return b.String()
+}
+
+// actionHoverHint is the footer text for a hovered copy/spoiler link — a friendly
+// label rather than the internal URL a plain link would show. ok is false for an
+// ordinary link, which keeps its "↗ url".
+func actionHoverHint(url string) (string, bool) {
+	switch {
+	case strings.HasPrefix(url, copyURLScheme):
+		return copyGlyph + " click to copy", true
+	case strings.HasPrefix(url, spoilerURLScheme):
+		return "spoiler — hidden until you hover it", true
+	}
+	return "", false
 }
 
 // injectEffectSentinels brackets each span of visible with start/end sentinels.
@@ -241,8 +443,15 @@ func resolveEffects(lines []string, phase float64, chrome int) []string {
 					stack[k].pos++
 				}
 			default:
-				top := stack[len(stack)-1]
-				b.WriteString(effectColorSGR(top.id, top.pos, top.n, phase))
+				// Merge every open effect, outer→inner, so nested effects compose:
+				// the innermost colour wins but an outer \underline{} still underlines
+				// the coloured run. (Only the top used to paint, so an attribute on an
+				// outer span was lost the moment a colour opened inside it.)
+				var v effectVisual
+				for k := range stack {
+					v = v.merge(effectVisualAt(stack[k].id, stack[k].pos, stack[k].n, phase))
+				}
+				b.WriteString(v.ansi())
 				b.WriteRune(r)
 				for k := range stack { // every open span advances one rune
 					stack[k].pos++
@@ -350,38 +559,149 @@ func effectSpanLengths(lines []string, chrome int) []int {
 	return lens
 }
 
-// effectColorSGR returns the truecolor foreground SGR for the rune at position
-// pos within a span of n runes, at animation phase (in [0,1)). Empty for an
-// unknown effect, which leaves the rune's existing colour alone.
-func effectColorSGR(id byte, pos, n int, phase float64) string {
-	c := effectColor(id, pos, n, phase)
-	if c == nil {
+// effectVisual is everything an effect contributes to a rune: an optional
+// foreground/background colour, SGR attribute flags, and — for the copy chip — a
+// note that the span is a click target (resolved into an OSC 8 hyperlink at
+// render time, not here). A stack of these merges outer→inner so nested effects
+// compose. It is the one description every consumer derives from: the painter
+// (ansi), the composer preview and the picker sample.
+type effectVisual struct {
+	fg, bg   color.Color // nil = leave the rune's existing colour
+	attr     effectAttr
+	copyLink bool
+}
+
+// effectAttr is a set of SGR attributes an effect can add on top of its colour.
+type effectAttr uint8
+
+const (
+	attrUnderline effectAttr = 1 << iota
+	attrStrike
+)
+
+// merge layers o on top of v (o is the inner, more specific effect): a colour o
+// sets wins, attributes accumulate. Used to fold the active-effect stack into one
+// style per rune.
+func (v effectVisual) merge(o effectVisual) effectVisual {
+	if o.fg != nil {
+		v.fg = o.fg
+	}
+	if o.bg != nil {
+		v.bg = o.bg
+	}
+	v.attr |= o.attr
+	v.copyLink = v.copyLink || o.copyLink
+	return v
+}
+
+// ansi is the SGR sequence that paints a rune in this style, or "" for the empty
+// style (which leaves the rune untouched). It never carries the copy hyperlink —
+// that is an OSC 8 wrapper injected once at render time (injectCopyLinks), not a
+// per-rune escape.
+func (v effectVisual) ansi() string {
+	var codes []string
+	if v.attr&attrUnderline != 0 {
+		codes = append(codes, "4")
+	}
+	if v.attr&attrStrike != 0 {
+		codes = append(codes, "9")
+	}
+	if v.fg != nil {
+		r, g, b := rgb8(v.fg)
+		codes = append(codes, fmt.Sprintf("38;2;%d;%d;%d", r, g, b))
+	}
+	if v.bg != nil {
+		r, g, b := rgb8(v.bg)
+		codes = append(codes, fmt.Sprintf("48;2;%d;%d;%d", r, g, b))
+	}
+	if len(codes) == 0 {
 		return ""
 	}
-	return rgbSGR(c)
+	return "\x1b[" + strings.Join(codes, ";") + "m"
+}
+
+// The colours the non-gradient effects paint with. Spoiler paints fg and bg the
+// same, so its runes are an opaque bar whatever the terminal background — the text
+// is there (copy still yields it) but unreadable until revealed. spoilerHint is
+// the legible stand-in the composer and picker show instead of that bar.
+var (
+	spoilerBlock = color.RGBA{R: 0x64, G: 0x64, B: 0x64, A: 0xff}
+	spoilerHint  = color.RGBA{R: 0x96, G: 0x96, B: 0x96, A: 0xff}
+	copyChip     = color.RGBA{R: 0x56, G: 0xb6, B: 0xde, A: 0xff} // link-cyan
+)
+
+// effectVisualAt is how an effect paints the rune at position pos within a span
+// of n runes, at animation phase — the message-pane truth. The colour effects
+// defer to effectColor; the rest add attributes or a background block.
+func effectVisualAt(id byte, pos, n int, phase float64) effectVisual {
+	switch id {
+	case effects.Underline:
+		return effectVisual{attr: attrUnderline}
+	case effects.Spoiler:
+		return effectVisual{fg: spoilerBlock, bg: spoilerBlock}
+	case effects.Copy:
+		return effectVisual{fg: copyChip, attr: attrUnderline, copyLink: true}
+	default:
+		return effectVisual{fg: effectColor(id, pos, n, phase)}
+	}
+}
+
+// effectHintVisual is how an effect shows itself where it must stay legible — the
+// composer preview and the "\" picker — rather than perform. It matches the
+// message look except that spoiler, which would be an unreadable block, becomes a
+// struck-through grey ("this will be redacted"), and the copy chip drops its
+// hyperlink (nothing to click in a preview).
+func effectHintVisual(id byte, pos, n int, phase float64) effectVisual {
+	if id == effects.Spoiler {
+		return effectVisual{fg: spoilerHint, attr: attrStrike}
+	}
+	v := effectVisualAt(id, pos, n, phase)
+	v.copyLink = false
+	return v
+}
+
+// rgb8 is a color.Color's 8-bit RGB components.
+func rgb8(c color.Color) (uint8, uint8, uint8) {
+	r, g, b, _ := c.RGBA() // 16-bit per channel
+	return uint8(r >> 8), uint8(g >> 8), uint8(b >> 8)
 }
 
 // effectColor is the colour an effect paints the rune at position pos within a
 // span of n runes, at animation phase (in [0,1)), or nil if id is unknown.
 // Shimmer reuses the composer's command gradient (editor.ShimmerColor) so a
 // /command token and a \shimmer{} span are the same thing; rainbow cycles hue
-// along the span; pulse and glow breathe uniformly. The composer's static
-// preview reads from here too, so it can't drift from what gets sent.
+// along the span; pulse, glow and warn breathe uniformly; ok, bad and whisper
+// are steady single colours (their result is phase-independent, which is what
+// effectAnimated keys on). The composer's static preview reads from here too, so
+// it can't drift from what gets sent.
 func effectColor(id byte, pos, n int, phase float64) color.Color {
 	if id == effects.Shimmer {
 		return editor.ShimmerColor(pos, n, phase)
 	}
 	var h, s, v float64
 	x := float64(pos)
+	breath := 0.5 + 0.5*math.Sin(2*math.Pi*phase) // 0..1, one calm cycle per loop
 	switch id {
 	case effects.Rainbow:
 		h, s, v = 0.06*x+phase, 0.85, 1.0
 	case effects.Pulse:
 		h, s = 0.02, 0.75
-		v = 0.45 + 0.55*(0.5+0.5*math.Sin(2*math.Pi*phase))
+		v = 0.45 + 0.55*breath
 	case effects.Glow:
 		h, s = 0.12, 0.80
-		v = 0.70 + 0.30*(0.5+0.5*math.Sin(2*math.Pi*phase))
+		v = 0.70 + 0.30*breath
+	case effects.Warn:
+		// Amber that breathes: enough movement to pull the eye to a caution,
+		// never so much it strobes. The other three below hold still — a status
+		// or an aside should read as itself, not perform.
+		h, s = 0.09, 0.95
+		v = 0.72 + 0.28*breath
+	case effects.Ok:
+		h, s, v = 0.34, 0.70, 0.85 // a calm, confident green
+	case effects.Bad:
+		h, s, v = 0.00, 0.80, 0.95 // a clear, alarming red
+	case effects.Whisper:
+		h, s, v = 0.00, 0.00, 0.45 // a faint grey — present, but stood back
 	default:
 		return nil
 	}
@@ -389,13 +709,19 @@ func effectColor(id byte, pos, n int, phase float64) color.Color {
 	return color.RGBA{R: r, G: g, B: b, A: 0xff}
 }
 
-// rgbSGR renders a color.Color as a truecolor foreground SGR.
-func rgbSGR(c color.Color) string {
-	cr, cg, cb, _ := c.RGBA() // 16-bit per channel
-	return sgr(uint8(cr>>8), uint8(cg>>8), uint8(cb>>8))
+// effectAnimated reports whether an effect's colour depends on the animation
+// phase. It is the frame ticker's gate (see effectsanim.go): a post carrying
+// only static effects — a status colour, a quiet aside — is painted once and
+// never keeps the 90ms loop running. Keep this in step with effectColor: an
+// effect whose case there reads phase must be listed here.
+func effectAnimated(id byte) bool {
+	switch id {
+	case effects.Shimmer, effects.Rainbow, effects.Pulse, effects.Glow, effects.Warn:
+		return true
+	default:
+		return false // ok, bad, whisper — one steady colour
+	}
 }
-
-func sgr(r, g, b uint8) string { return fmt.Sprintf("\x1b[38;2;%d;%d;%dm", r, g, b) }
 
 func clamp01(x float64) float64 {
 	if x < 0 {

@@ -59,25 +59,33 @@ func hasEffectPayload(msg string) bool {
 	return strings.Contains(msg, effectsMagicPrefix)
 }
 
-// refreshEffectsVisibility recomputes whether any post carrying text effects is
-// inside a viewport right now, and returns it. Cheap enough for the per-event
-// kicker: it looks only at the posts the row index says are on screen, and tests
-// each with a substring search.
+// refreshEffectsVisibility recomputes what is on screen and returns whether an
+// *animated* effect is among it — the frame ticker's gate. As a side effect it
+// sets m.effectsAnim.onScreen, which paintEffects reads: painting (which also
+// strips the sentinels) has to happen for every visible effect, animated or not,
+// while the ticker only needs to run for the ones that move. A channel showing
+// nothing but static effects paints once per event and never ticks.
+//
+// Cheap enough for the per-event kicker: it looks only at the posts the row index
+// says are on screen, tests each with a substring search, and decodes a payload
+// only for the few posts that carry one.
 func (m *Model) refreshEffectsVisibility() bool {
-	on := effectsVisibleIn(m.posts, m.msgRowStarts, m.msgsView.YOffset(), m.msgsView.Height())
-	if !on && m.threadOpen {
-		on = effectsVisibleIn(m.threadPosts, m.threadRowStarts, m.threadView.YOffset(), m.threadView.Height())
+	any, animated := effectsVisibleIn(m.posts, m.msgRowStarts, m.msgsView.YOffset(), m.msgsView.Height())
+	if m.threadOpen && (!any || !animated) {
+		a2, an2 := effectsVisibleIn(m.threadPosts, m.threadRowStarts, m.threadView.YOffset(), m.threadView.Height())
+		any, animated = any || a2, animated || an2
 	}
-	m.effectsAnim.onScreen = on
-	return on
+	m.effectsAnim.onScreen = any
+	return animated
 }
 
-// effectsVisibleIn reports whether any post whose rows intersect the window
-// [top, top+height) carries effects. Mirrors the emoji scan's row arithmetic
-// (see viewportVisibleAnimatedEmoji).
-func effectsVisibleIn(posts []*model.Post, starts []int, top, height int) bool {
+// effectsVisibleIn reports, for the posts whose rows intersect the window
+// [top, top+height), whether any carries effects at all (anyEffect, the paint
+// gate) and whether any carries an *animated* one (animated, the ticker gate).
+// Mirrors the emoji scan's row arithmetic (see viewportVisibleAnimatedEmoji).
+func effectsVisibleIn(posts []*model.Post, starts []int, top, height int) (anyEffect, animated bool) {
 	if height <= 0 || len(starts) != len(posts)+1 {
-		return false
+		return false, false
 	}
 	bot := top + height
 	for i, p := range posts {
@@ -87,7 +95,27 @@ func effectsVisibleIn(posts []*model.Post, starts []int, top, height int) bool {
 		if starts[i+1] <= top {
 			continue // entirely scrolled above the viewport
 		}
-		if p != nil && hasEffectPayload(p.Message) {
+		if p == nil || !hasEffectPayload(p.Message) {
+			continue
+		}
+		anyEffect = true
+		if spansHaveAnimated(p.Message) {
+			return true, true // both gates satisfied; nothing more to learn
+		}
+	}
+	return anyEffect, animated
+}
+
+// spansHaveAnimated reports whether a post's effect payload carries any span
+// whose effect moves. Only called for posts hasEffectPayload already passed, so
+// the decode is paid by the handful of effect posts on screen, not every post.
+func spansHaveAnimated(msg string) bool {
+	spans, ok := decodeEffectSpans(msg)
+	if !ok {
+		return false
+	}
+	for _, s := range spans {
+		if effectAnimated(s.ID) {
 			return true
 		}
 	}
@@ -95,11 +123,12 @@ func effectsVisibleIn(posts []*model.Post, starts []int, top, height int) bool {
 }
 
 // maybeStartEffectsAnim refreshes the viewport gate and arms the frame loop when
-// an effect has come on screen and the loop isn't already running. Batched from
-// Update after every event, mirroring maybeStartImageAnim. The refresh runs
-// unconditionally (not just when the loop is stopped) so that scrolling an effect
-// into view repaints it on that very event, rather than staying unpainted until
-// the next tick.
+// an *animated* effect has come on screen and the loop isn't already running.
+// Batched from Update after every event, mirroring maybeStartImageAnim. The
+// refresh runs unconditionally (not just when the loop is stopped) so that
+// scrolling an effect into view repaints it on that very event — including a
+// static effect, which sets onScreen without ever arming the loop — rather than
+// staying unpainted until the next tick.
 func (m *Model) maybeStartEffectsAnim() tea.Cmd {
 	if !m.refreshEffectsVisibility() || m.effectsAnim.active {
 		return nil

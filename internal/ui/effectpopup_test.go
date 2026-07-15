@@ -41,8 +41,8 @@ func TestEffectPopupBareBackslashListsAll(t *testing.T) {
 	m := composerAt(t, "\\", 1)
 	m.updateEffectPopup()
 
-	if !m.effectPopup.active || len(m.effectPopup.items) != 4 {
-		t.Fatalf("a bare backslash should list all four effects, got %+v", m.effectPopup.items)
+	if !m.effectPopup.active || len(m.effectPopup.items) != len(effects.All()) {
+		t.Fatalf("a bare backslash should list every effect, got %+v", m.effectPopup.items)
 	}
 }
 

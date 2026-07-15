@@ -51,15 +51,44 @@ func TestEffectsVisibleIn(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := effectsVisibleIn(posts, starts, tt.top, tt.height); got != tt.want {
-				t.Errorf("effectsVisibleIn(top=%d, h=%d) = %v; want %v", tt.top, tt.height, got, tt.want)
+			// The effect here is shimmer (animated), so both gates track want.
+			if any, animated := effectsVisibleIn(posts, starts, tt.top, tt.height); any != tt.want || animated != tt.want {
+				t.Errorf("effectsVisibleIn(top=%d, h=%d) = (any %v, animated %v); want both %v", tt.top, tt.height, any, animated, tt.want)
 			}
 		})
 	}
 
 	// A mismatched row index must not panic or guess.
-	if effectsVisibleIn(posts, []int{0}, 0, 10) {
+	if any, _ := effectsVisibleIn(posts, []int{0}, 0, 10); any {
 		t.Error("a stale row index should report nothing visible")
+	}
+}
+
+// A static effect (a status colour, a quiet aside) is visible for painting — its
+// sentinels still have to be resolved away — but it must not report as animated,
+// or it would keep the 90ms frame loop running for a colour that never moves.
+func TestEffectsVisibleStaticPaintsButDoesNotAnimate(t *testing.T) {
+	posts := []*model.Post{effectPost("a", "shipped \\ok{green} and \\whisper{quietly}")}
+	starts := []int{0, 10}
+
+	any, animated := effectsVisibleIn(posts, starts, 0, 10)
+	if !any {
+		t.Error("a static effect on screen should still paint (any=false)")
+	}
+	if animated {
+		t.Error("a purely static effect must not arm the animation loop")
+	}
+
+	// The loop must not arm for it, yet onScreen must be set so paintEffects runs.
+	m := &Model{}
+	m.posts = posts
+	m.msgRowStarts = starts
+	m.msgsView.SetHeight(10)
+	if cmd := m.maybeStartEffectsAnim(); cmd != nil || m.effectsAnim.active {
+		t.Error("the frame loop armed for a purely static effect")
+	}
+	if !m.effectsAnim.onScreen {
+		t.Error("onScreen was not set, so the static effect would never be painted")
 	}
 }
 

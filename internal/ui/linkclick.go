@@ -51,6 +51,25 @@ func (m Model) activateLink(url string) (tea.Model, tea.Cmd) {
 // browser tab. Used by both the mouse click (activateLink) and the keyboard `o`
 // / open-picker paths (openpicker.go).
 func (m *Model) openTarget(o openable) tea.Cmd {
+	// A \copy{} chip is an OSC 8 link whose "URL" is our own copy scheme; clicking
+	// it copies the text rather than opening anything (see injectCopyLinks). Handle
+	// it before any real-URL policy — it must never reach the browser or the
+	// non-web warning modal.
+	if o.file == nil {
+		if enc, ok := strings.CutPrefix(o.url, copyURLScheme); ok {
+			text, ok := decodeCopyPayload(enc)
+			if !ok {
+				m.status = "couldn't decode the copy target"
+				return nil
+			}
+			return m.copyText(text, "text")
+		}
+		// A spoiler reveals while hovered; a click opens nothing (but must still be
+		// swallowed here so it never reaches the browser or the warning modal).
+		if strings.HasPrefix(o.url, spoilerURLScheme) {
+			return nil
+		}
+	}
 	if o.file == nil {
 		if postID, ok := m.parsePermalinkPostID(o.url); ok {
 			url := o.url

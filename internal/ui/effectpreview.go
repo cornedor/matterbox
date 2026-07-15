@@ -58,11 +58,34 @@ func (m *Model) effectDecorations() []editor.Decoration {
 	for _, r := range regions {
 		style := dim
 		if r.Body {
-			style = lipgloss.NewStyle().Foreground(effectPreviewColor(r.ID))
+			style = effectPreviewStyle(r.ID)
 		}
 		decos = append(decos, editor.Decoration{Start: r.Start, End: r.End, Style: style})
 	}
 	return decos
+}
+
+// effectPreviewStyle is the lipgloss style the composer paints an effect's body
+// with — the legible hint form (effectHintVisual), so underline shows underlined,
+// spoiler shows a struck-through grey rather than an unreadable block, and copy
+// shows its chip colour. Built from the same source the message pane uses, so the
+// preview can't drift from the send.
+func effectPreviewStyle(id byte) lipgloss.Style {
+	v := effectHintVisual(id, 0, 1, effectStaticPhase)
+	s := lipgloss.NewStyle()
+	if v.fg != nil {
+		s = s.Foreground(v.fg)
+	}
+	if v.bg != nil {
+		s = s.Background(v.bg)
+	}
+	if v.attr&attrUnderline != 0 {
+		s = s.Underline(true)
+	}
+	if v.attr&attrStrike != 0 {
+		s = s.Strikethrough(true)
+	}
+	return s
 }
 
 // effectPreviewColor is the single colour that stands in for an effect in the

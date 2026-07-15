@@ -217,10 +217,16 @@ func (m *Model) markdownBodyPlain(p *model.Post) string {
 // postLineFingerprint carries the same hover bit so the wrapped-line cache serves
 // the highlighted version. See linkclick.go.
 func (m *Model) hovered(body string, p *model.Post) string {
-	if m.hoverLink.url != "" && m.hoverLink.postID == p.Id {
-		return highlightLink(body, m.hoverLink.url, mdLinkHoverStyle)
+	if m.hoverLink.url == "" || m.hoverLink.postID != p.Id {
+		return body
 	}
-	return body
+	// A hovered \spoiler{} reveals rather than highlights: its block is lifted so
+	// the text shows while the pointer rests on it (see revealSpoiler). Copy chips
+	// and ordinary links take the usual hover background.
+	if strings.HasPrefix(m.hoverLink.url, spoilerURLScheme) {
+		return revealSpoiler(body, m.hoverLink.url)
+	}
+	return highlightLink(body, m.hoverLink.url, mdLinkHoverStyle)
 }
 
 // markdownBodyRaw is the styled body without the hover highlight or any chevrons —

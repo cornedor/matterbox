@@ -30,12 +30,25 @@ import (
 	"strings"
 )
 
-// The recognised effects. IDs are stable wire values (see the package doc).
+// The recognised effects. IDs are stable wire values (see the package doc):
+// never renumber one, only append.
 const (
 	Shimmer byte = 1
 	Rainbow byte = 2
 	Pulse   byte = 3
 	Glow    byte = 4
+	// The rest say something rather than just sparkle — a status, a caution, an
+	// aside — filling in the tone Mattermost's markdown has no word for.
+	Warn    byte = 5
+	Ok      byte = 6
+	Bad     byte = 7
+	Whisper byte = 8
+	// And a few that do something: underline (the emphasis markdown lacks),
+	// spoiler (hidden under a block until revealed) and copy (a click-to-copy
+	// chip). These carry no animation; copy is also a hit target, not just paint.
+	Underline byte = 9
+	Spoiler   byte = 10
+	Copy      byte = 11
 )
 
 // MagicEffects tags the hidden payload that carries effect spans, distinct from
@@ -47,17 +60,31 @@ const MagicEffects = "MBF1"
 const payloadVersion = 1
 
 var idByName = map[string]byte{
-	"shimmer": Shimmer,
-	"rainbow": Rainbow,
-	"pulse":   Pulse,
-	"glow":    Glow,
+	"shimmer":   Shimmer,
+	"rainbow":   Rainbow,
+	"pulse":     Pulse,
+	"glow":      Glow,
+	"warn":      Warn,
+	"ok":        Ok,
+	"bad":       Bad,
+	"whisper":   Whisper,
+	"underline": Underline,
+	"spoiler":   Spoiler,
+	"copy":      Copy,
 }
 
 var nameByID = map[byte]string{
-	Shimmer: "shimmer",
-	Rainbow: "rainbow",
-	Pulse:   "pulse",
-	Glow:    "glow",
+	Shimmer:   "shimmer",
+	Rainbow:   "rainbow",
+	Pulse:     "pulse",
+	Glow:      "glow",
+	Warn:      "warn",
+	Ok:        "ok",
+	Bad:       "bad",
+	Whisper:   "whisper",
+	Underline: "underline",
+	Spoiler:   "spoiler",
+	Copy:      "copy",
 }
 
 // Name returns an effect's directive name, or "" if id is not recognised.
@@ -80,6 +107,13 @@ func All() []Effect {
 		{Rainbow, "rainbow", "hue cycles along the text"},
 		{Pulse, "pulse", "the text breathes, bright to dim"},
 		{Glow, "glow", "a soft warm halo, breathing"},
+		{Warn, "warn", "amber, gently breathing — a caution that catches the eye"},
+		{Ok, "ok", "steady green — done, good, go ahead"},
+		{Bad, "bad", "steady red — broken, stop, don't"},
+		{Whisper, "whisper", "dimmed grey — an aside, said quietly"},
+		{Underline, "underline", "underlined — the emphasis markdown leaves out"},
+		{Spoiler, "spoiler", "hidden under a block until you select or click it"},
+		{Copy, "copy", "a chip that copies its text to your clipboard on click"},
 	}
 }
 

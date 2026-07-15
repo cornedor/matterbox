@@ -2243,11 +2243,15 @@ func (m *Model) renderFooter() string {
 	// Hovering a link shows where it goes, taking over the status slot for as long
 	// as the pointer rests on it (truncated so a long URL can't crowd out the help).
 	if m.hoverLink.url != "" {
-		hint := m.width / 2
-		if hint < 24 {
-			hint = 24
+		if label, ok := actionHoverHint(m.hoverLink.url); ok {
+			right = label // a copy chip / spoiler shows a friendly label, not its internal URL
+		} else {
+			hint := m.width / 2
+			if hint < 24 {
+				hint = 24
+			}
+			right = "↗ " + truncate(m.hoverLink.url, hint)
 		}
-		right = "↗ " + truncate(m.hoverLink.url, hint)
 	}
 	// When the cursor rests on an underlined mistake (and nothing more urgent
 	// holds the slot), surface its label + top suggestion with the alt+g cue.
