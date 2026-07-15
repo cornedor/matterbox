@@ -213,8 +213,9 @@ func (m *Model) animatingPost(postID string) bool {
 		return false
 	}
 	// A running Gorillas game rewrites its world post ~30 times a second, and the
-	// joiner's client would otherwise persist every one of those frames.
-	if m.gorillasPost(postID) {
+	// joiner's client would otherwise persist every one of those frames. Achtung,
+	// die Kurve does the same with its own world post.
+	if m.gorillasPost(postID) || m.kurvePost(postID) {
 		return true
 	}
 	if m.typing.active && postID == m.typing.postID {

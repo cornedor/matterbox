@@ -115,6 +115,16 @@ func builtinCommands() []switcherCommand {
 			run:  runGorillasSolo,
 		},
 		{
+			name: "Achtung, die Kurve",
+			desc: "race snaking curves against up to five others — last one alive wins — inside a post",
+			run:  runKurve,
+		},
+		{
+			name: "Achtung, die Kurve (hotseat)",
+			desc: "steer both curves yourself — the post still streams, so others can watch",
+			run:  runKurveSolo,
+		},
+		{
 			name:           "Bouncing ball",
 			desc:           "animate a ball inside a code-block box (socket test)",
 			argPrompt:      "duration(s) fps: ",

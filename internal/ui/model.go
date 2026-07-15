@@ -375,6 +375,9 @@ type Model struct {
 	// gorillas is the open Gorillas game, if any. See gorillas.go.
 	gorillas gorillasState
 
+	// kurve is the open "Achtung, die Kurve" game, if any. See kurve.go.
+	kurve kurveState
+
 	// typingIndicator drives the animated three-dot cue on the composer
 	// separator when someone else is typing in the open channel. Unlike
 	// `typing` above, it's fed by inbound `typing` WebSocket events, not a

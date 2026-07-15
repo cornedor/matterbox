@@ -13,13 +13,15 @@ import (
 
 	"matterbox/internal/effects"
 	"matterbox/internal/game"
+	"matterbox/internal/game/kurve"
 	"matterbox/internal/hidden"
 )
 
 // decode is the window into the invisible half of a matterbox post. Several
-// features smuggle a payload through a post body — the Gorillas game (MBG1) and
-// text effects (MBF1) so far — carried as a run of Unicode variation selectors
-// that render as nothing (see internal/hidden). The whole point of that
+// features smuggle a payload through a post body — the Gorillas game (MBG1),
+// Achtung die Kurve (MBK1) and text effects (MBF1) so far — carried as a run of
+// Unicode variation selectors that render as nothing (see internal/hidden). The
+// whole point of that
 // transport is that the state is unreadable in any client, so when one of these
 // features misbehaves there is otherwise no way to look at what a post actually
 // carries.
@@ -41,9 +43,10 @@ func newDecodeCmd() *cobra.Command {
 		Aliases: []string{"game-debug"},
 		Short:   "Decode the hidden payload smuggled in a post body",
 		Long: "Decode the invisible payload matterbox smuggles through a post body.\n\n" +
-			"More than one feature rides the same transport — the Gorillas game and text\n" +
-			"effects, so far — so this reports whichever channel a body actually carries\n" +
-			"and decodes it: a game world, a controller input, or a set of effect spans.\n\n" +
+			"More than one feature rides the same transport — the Gorillas game, Achtung\n" +
+			"die Kurve, and text effects, so far — so this reports whichever channel a body\n" +
+			"actually carries and decodes it: a game world, a controller input, or a set of\n" +
+			"effect spans.\n\n" +
 			"Paste the post body on stdin (end with ctrl-D), pass it as an argument, or\n" +
 			"use --post <id> to fetch it from the server — which is the reliable route if\n" +
 			"the client you copied from ate the invisible runes.",
@@ -201,6 +204,7 @@ type channel struct {
 // unrecognised smear of bytes.
 var channels = []channel{
 	{game.Magic, "gorillas", decodeGame},
+	{kurve.Magic, "achtung die kurve", decodeKurve},
 	{effects.MagicEffects, "text effects", decodeEffects},
 }
 
@@ -436,6 +440,100 @@ func printState(out io.Writer, st *game.State, cols, rows int) {
 		for _, line := range game.RenderASCII(w, shot, cols, rows) {
 			fmt.Fprintln(out, "  "+line)
 		}
+	}
+}
+
+// decodeKurve explains an MBK1 payload: either a controller input (the joiner's
+// post) or a full game state (the host's). An input is 3 bytes and a state is
+// dozens, so the two are never confusable by length.
+func decodeKurve(out io.Writer, payload []byte, _ string, opts decodeOpts) error {
+	if len(payload) == len(kurve.MarshalInput(&kurve.Input{})) {
+		in, err := kurve.UnmarshalInput(payload)
+		if err != nil {
+			return fmt.Errorf("input: %w", err)
+		}
+		fmt.Fprintln(out, "\nkind     input (the joiner's controller post)")
+		fmt.Fprintf(out, "steer    %s\n", kurveDir(in.Dir))
+		fmt.Fprintf(out, "seq      %d\n", in.Seq)
+		return nil
+	}
+
+	st, err := kurve.UnmarshalState(payload)
+	if err != nil {
+		return fmt.Errorf("state: %w", err)
+	}
+	printKurveState(out, st, opts.cols, opts.rows)
+	return nil
+}
+
+func printKurveState(out io.Writer, st *kurve.State, cols, rows int) {
+	fmt.Fprintln(out, "\nkind     state (the host's post)")
+	fmt.Fprintf(out, "seed     %d\n", st.Seed)
+	fmt.Fprintf(out, "phase    %s\n", kurvePhaseName(st.Phase))
+	fmt.Fprintf(out, "tick     %d\n", st.Tick)
+	fmt.Fprintf(out, "players  %d\n", len(st.Scores))
+
+	var scores strings.Builder
+	for i, s := range st.Scores {
+		if i > 0 {
+			scores.WriteString(" · ")
+		}
+		fmt.Fprintf(&scores, "P%d %d", i, s)
+	}
+	fmt.Fprintf(out, "scores   %s (first to %d)\n", scores.String(), kurve.WinScore)
+
+	if st.Winner >= 0 {
+		fmt.Fprintf(out, "winner   P%d\n", st.Winner)
+	} else {
+		fmt.Fprintln(out, "winner   none yet")
+	}
+	if len(st.Joiners) == 0 {
+		fmt.Fprintln(out, "joiners  — (host alone in the lobby)")
+	} else {
+		for i, j := range st.Joiners {
+			fmt.Fprintf(out, "joiner   P%d %s\n", i+1, j)
+		}
+	}
+	for i, d := range st.Deaths {
+		if d == 0xFFFF {
+			fmt.Fprintf(out, "curve %d  alive · %d steering changes\n", i, len(st.Turns[i]))
+		} else {
+			fmt.Fprintf(out, "curve %d  crashed at tick %d · %d steering changes\n", i, d, len(st.Turns[i]))
+		}
+	}
+
+	if cols > 0 && rows > 0 {
+		fmt.Fprintln(out, "\nboard")
+		for _, line := range kurve.RenderASCII(kurve.FromState(st).Sim, cols, rows) {
+			fmt.Fprintln(out, "  "+line)
+		}
+	}
+}
+
+func kurvePhaseName(p kurve.Phase) string {
+	switch p {
+	case kurve.PhaseLobby:
+		return "lobby (waiting for players)"
+	case kurve.PhaseCountdown:
+		return "countdown (get ready)"
+	case kurve.PhaseRun:
+		return "run (the curves are moving)"
+	case kurve.PhaseRoundOver:
+		return "round over (holding before the next arena)"
+	case kurve.PhaseOver:
+		return "over"
+	}
+	return fmt.Sprintf("unknown (%d)", p)
+}
+
+func kurveDir(d kurve.Dir) string {
+	switch d {
+	case kurve.Left:
+		return "left"
+	case kurve.Right:
+		return "right"
+	default:
+		return "straight"
 	}
 }
 

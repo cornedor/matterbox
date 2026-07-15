@@ -58,7 +58,7 @@ func (m *Model) inModal() bool {
 		m.openPickerActive() || m.codePickerActive() || m.pollDialog.open || m.historyMode ||
 		m.summary.active() || m.switcherMode || m.keysSheetMode || m.preview.active ||
 		m.createChan != nil || m.chanEdit != nil || m.chanConfirm != nil || m.joinChan != nil ||
-		m.gorillas.active
+		m.gorillas.active || m.kurve.active
 }
 
 // popupOpenInComposer mirrors handleKey's popupOpen guard: the @-mention /

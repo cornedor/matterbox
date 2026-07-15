@@ -462,6 +462,9 @@ func (m *Model) applyReactionEvent(ev *model.WebSocketEvent, added bool) tea.Cmd
 		if cmd := m.gorillasReaction(&r); cmd != nil {
 			return cmd
 		}
+		if cmd := m.kurveReaction(&r); cmd != nil {
+			return cmd
+		}
 	} else {
 		m.removeLocalReaction(r.PostId, r.UserId, r.EmojiName)
 	}

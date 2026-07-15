@@ -160,7 +160,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.postLineCache = nil
 		m.renderAllPanes()
 		// A resize while the image preview or a game is open re-fits + re-transmits it.
-		return m, tea.Batch(m.resizePreview(), m.resizeGorillas())
+		return m, tea.Batch(m.resizePreview(), m.resizeGorillas(), m.resizeKurve())
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
@@ -1083,6 +1083,15 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.applyGorillasTick(msg)
 	case gorillasFrameMsg:
 		return m, m.applyGorillasFrame(msg)
+
+	case kurvePostedMsg:
+		return m, m.applyKurvePosted(msg)
+	case kurveJoinedMsg:
+		return m, m.applyKurveJoined(msg)
+	case kurveTickMsg:
+		return m, m.applyKurveTick(msg)
+	case kurveFrameMsg:
+		return m, m.applyKurveFrame(msg)
 	case ballStartedMsg:
 		return m, m.applyBallStarted(msg)
 
@@ -1233,6 +1242,9 @@ func (m *Model) applyPosted(ev *model.WebSocketEvent) tea.Cmd {
 		if cmd := m.gorillasWSPosted(p); cmd != nil {
 			return cmd
 		}
+		if cmd := m.kurveWSPosted(p); cmd != nil {
+			return cmd
+		}
 	}
 	if p == nil {
 		// Fall back to refetch if we can't parse and it's the current
@@ -1374,6 +1386,9 @@ func (m *Model) applyPostEdited(ev *model.WebSocketEvent) tea.Cmd {
 	}
 	m.invalidatePostLines(p.Id)
 	if cmd := m.gorillasWSEdited(p); cmd != nil {
+		return cmd
+	}
+	if cmd := m.kurveWSEdited(p); cmd != nil {
 		return cmd
 	}
 	// Skip persisting frames of a live animation (typing / bouncing
@@ -1850,6 +1865,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// An open game is fully modal: it is a game, and every key belongs to it.
 	if m.gorillas.active {
 		return m.handleGorillasKey(msg)
+	}
+	if m.kurve.active {
+		return m.handleKurveKey(msg)
 	}
 	// Delete-confirmation modal is fully modal: y/enter performs the
 	// delete, n/esc cancels. Anything else is ignored.
