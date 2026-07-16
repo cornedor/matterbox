@@ -1638,7 +1638,8 @@ func (m *Model) renderChannelsPane(height int) string {
 		if _, ok := m.dmCustomStatus(ch); ok {
 			mark = " " + customStatusStyle.Render(customDot)
 		}
-		labelText := truncate(m.channelLabel(ch), channelsWidth-4-lipgloss.Width(badgeText)-lipgloss.Width(mark))
+		labelBudget := channelsWidth - 4 - lipgloss.Width(badgeText) - lipgloss.Width(mark)
+		labelText := truncate(m.channelLabel(ch), labelBudget)
 		switch {
 		case mentionN > 0:
 			suffix = mentionStyle.Render(labelText) + mark + badgeStyle.Render(badgeText)
@@ -1647,6 +1648,15 @@ func (m *Model) renderChannelsPane(height int) string {
 		default:
 			suffix = labelText + mark
 		}
+		// A display name carrying text effects paints them — statically, colours
+		// baked into this cached render (see resolveStaticLine) — but only on a
+		// plain row: mention/unread colouring above and the selected/hover bars
+		// below all show the plain name, so state styling keeps its meaning.
+		// The sentinels are zero-width, so the truncation budget is unchanged.
+		fxSuffix := suffix
+		if mentionN == 0 && unreadN == 0 && hasEffectPayload(ch.DisplayName) {
+			fxSuffix = resolveStaticLine(truncate(m.channelLabelFX(ch), labelBudget)) + mark
+		}
 		// Presence dot in the left gutter (DMs only): filled+coloured when
 		// active, grey hollow when offline. The dot is 1 cell, so the
 		// two-column gutter and the truncation math above are unaffected.
@@ -1654,7 +1664,7 @@ func (m *Model) renderChannelsPane(height int) string {
 		if glyph, st, ok := m.dmStatusDot(ch, statusDot, statusHollowDot); ok {
 			gutter = st.Render(glyph) + " "
 		}
-		row := gutter + suffix
+		row := gutter + fxSuffix
 		// The sidebar isn't focusable; always mark the current channel so the
 		// user can see where ctrl-nav (and the open transcript) is pointing.
 		// The "> " cursor overlays the presence dot on the selected row. A
@@ -1663,7 +1673,7 @@ func (m *Model) renderChannelsPane(height int) string {
 		case i == m.channelIdx:
 			row = selectedRow.Width(channelsWidth - 2).Render("> " + suffix)
 		case m.hover.zone == hitChannel && m.hover.idx == i:
-			row = hoverRowStyle.Width(channelsWidth - 2).Render(row)
+			row = hoverRowStyle.Width(channelsWidth - 2).Render(gutter + suffix)
 		}
 		rows = append(rows, row)
 	}
@@ -1704,7 +1714,10 @@ func (m *Model) renderMessagesPane(height, width int) string {
 	titleRendered := ""
 	if ch := m.findChannel(m.openChannelID); ch != nil {
 		title = m.channelLabel(ch)
-		titleRendered = titleStyle.Render(title)
+		// The name's own effects resolve statically here — a steady colour, not
+		// an animation (see resolveStaticLine); the header appended below keeps
+		// its sentinels and animates through the per-frame paint pass.
+		titleRendered = titleStyle.Render(resolveStaticLine(m.channelLabelFX(ch)))
 		// Presence dot after the username (the larger glyph reads better
 		// here), then the full custom status (emoji + text) when set.
 		if glyph, st, ok := m.dmStatusDot(ch, headerStatusDot, headerHollowDot); ok {

@@ -178,6 +178,36 @@ func TestEditChannelHeaderEffects(t *testing.T) {
 	}
 }
 
+// TestEditChannelNameEffects: the display name makes the same effects
+// round-trip the header does — markup shown in the form, compiled wire form in
+// the patch, untouched form sends nothing.
+func TestEditChannelNameEffects(t *testing.T) {
+	m := editChanTestModel()
+	m.channels["t1"][0].DisplayName = compileEffects("\\rainbow{General}")
+
+	m.openEditChannel("c1", ceDisplayName)
+	if got := m.chanEdit.inputs[ceDisplayName].Value(); got != "\\rainbow{General}" {
+		t.Fatalf("prefill = %q, want the decompiled markup", got)
+	}
+
+	patch, _, msg := m.chanEdit.patch()
+	if msg != "" || patch != nil {
+		t.Fatalf("untouched form built patch %+v (err %q); want none", patch, msg)
+	}
+
+	m.chanEdit.inputs[ceDisplayName].SetValue("\\ok{Shipping}")
+	patch, _, msg = m.chanEdit.patch()
+	if msg != "" || patch == nil || patch.DisplayName == nil {
+		t.Fatalf("patch = %+v (err %q), want a display-name patch", patch, msg)
+	}
+	if *patch.DisplayName != compileEffects("\\ok{Shipping}") {
+		t.Errorf("DisplayName = %q, want the compiled wire form", *patch.DisplayName)
+	}
+	if hidden.Strip(*patch.DisplayName) != "Shipping" {
+		t.Errorf("visible name = %q, want the markup gone", hidden.Strip(*patch.DisplayName))
+	}
+}
+
 // TestEditChannelNoChangesCloses: submitting an untouched form is a no-op, not
 // an empty PATCH.
 func TestEditChannelNoChangesCloses(t *testing.T) {

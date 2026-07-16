@@ -120,7 +120,9 @@ func (m *Model) openEditChannel(channelID string, row int) tea.Cmd {
 		ti.CursorEnd()
 		return ti
 	}
-	st.inputs[ceDisplayName] = newInput(c.DisplayName, "Marketing", model.ChannelDisplayNameMaxRunes)
+	// Like the header below, the display name may carry a text-effects payload;
+	// the form shows the markup that produced it.
+	st.inputs[ceDisplayName] = newInput(decompileEffects(c.DisplayName), "Marketing", model.ChannelDisplayNameMaxRunes)
 	st.inputs[ceURL] = newInput(c.Name, "marketing", model.ChannelNameMaxLength)
 	st.inputs[cePurpose] = newInput(c.Purpose, "What is this channel for?", model.ChannelPurposeMaxRunes)
 	// The header may carry a text-effects payload; show the markup that produced
@@ -192,13 +194,13 @@ type channelPatchedMsg struct {
 // model.Channel.IsValid, as the create form does; permissions and duplicate
 // slugs are the server's call and come back through the error row.
 func (st *channelEditState) patch() (patch *model.ChannelPatch, row int, errMsg string) {
-	display := strings.TrimSpace(st.inputs[ceDisplayName].Value())
+	// Effect markup in the display name and header compiles to the wire form
+	// (visible text + invisible payload), so other clients see the clean text —
+	// the same treatment a message gets on send. The length checks run on the
+	// compiled values: those are the strings the server counts.
+	display := compileEffects(strings.TrimSpace(st.inputs[ceDisplayName].Value()))
 	name := strings.TrimSpace(st.inputs[ceURL].Value())
 	purpose := strings.TrimSpace(st.inputs[cePurpose].Value())
-	// Effect markup in the header compiles to the wire form (visible text + an
-	// invisible payload), so other clients see the clean text — the same
-	// treatment a message gets on send. The length check runs on the compiled
-	// value: that is the string the server counts.
 	header := compileEffects(strings.TrimSpace(st.inputs[ceHeader].Value()))
 
 	switch {

@@ -360,6 +360,48 @@ func headerTitleInline(raw string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
+// nameEffectAllowed reports whether an effect makes sense inside a channel
+// name. The interactive and geometric ones don't: a copy chip and a spoiler
+// bar want a mouse target the sidebar rows don't offer, and a scroll marquee
+// in a channel list would be chaos. Their spans render as plain text.
+func nameEffectAllowed(id byte) bool {
+	switch id {
+	case effects.Copy, effects.Spoiler, effects.Scroll:
+		return false
+	}
+	return true
+}
+
+// nameEffectSentinels is a channel name as the styled renders want it: the
+// visible text with the allowed effect spans marked as sentinels, the payload
+// stripped. A name with no payload passes through untouched.
+func nameEffectSentinels(raw string) string {
+	spans, ok := decodeEffectSpans(raw)
+	if !ok || len(spans) == 0 {
+		return hidden.Strip(raw)
+	}
+	kept := make([]effects.Span, 0, len(spans))
+	for _, s := range spans {
+		if nameEffectAllowed(s.ID) {
+			kept = append(kept, s)
+		}
+	}
+	return injectEffectSentinels(hidden.Strip(raw), kept)
+}
+
+// resolveStaticLine paints one line's effect sentinels at the resting phase and
+// returns it, colours baked in. Channel names resolve through here rather than
+// the per-frame paint pass: they live in fingerprint-cached renders (the
+// sidebar, the memoized title) in too many places to repaint per frame, so a
+// name's effect is a steady colour — rainbow a fixed gradient, ok a calm green
+// — never an animation. A line with no sentinels comes back as-is.
+func resolveStaticLine(s string) string {
+	if !hasEffectSentinel(s) {
+		return s
+	}
+	return resolveEffects([]string{closeEffectSpans(s)}, effectStaticPhase, 0)[0]
+}
+
 // closeEffectSpans appends the end sentinels a right-truncation cut off, so a
 // clipped line stays balanced: resolveEffects carries its span stack across
 // lines (that is how a soft-wrapped span keeps one gradient), and a title line

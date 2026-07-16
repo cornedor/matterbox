@@ -21,6 +21,7 @@ import (
 	"matterbox/internal/editor"
 	"matterbox/internal/embed"
 	"matterbox/internal/gitlab"
+	"matterbox/internal/hidden"
 	"matterbox/internal/jira"
 	"matterbox/internal/languagetool"
 	"matterbox/internal/mm"
@@ -2668,13 +2669,33 @@ func (m *Model) channelLabel(c *model.Channel) string {
 		return "@?"
 	case model.ChannelTypeGroup:
 		if c.DisplayName != "" {
-			return "·" + c.DisplayName
+			return "·" + hidden.Strip(c.DisplayName)
 		}
 		return "·group"
 	case model.ChannelTypePrivate:
 		return "🔒" + displayChannel(c)
 	default:
 		return "#" + displayChannel(c)
+	}
+}
+
+// channelLabelFX is channelLabel with the name's effect spans marked as
+// sentinels, for the two renders that show them — the sidebar rows and the
+// messages-pane title (resolved statically there; see resolveStaticLine). It
+// only differs from channelLabel for a channel whose display name carries an
+// effects payload; DMs never do (their labels are usernames).
+func (m *Model) channelLabelFX(c *model.Channel) string {
+	if c.Type == model.ChannelTypeDirect || !hasEffectPayload(c.DisplayName) {
+		return m.channelLabel(c)
+	}
+	marked := nameEffectSentinels(c.DisplayName)
+	switch c.Type {
+	case model.ChannelTypeGroup:
+		return "·" + marked
+	case model.ChannelTypePrivate:
+		return "🔒" + marked
+	default:
+		return "#" + marked
 	}
 }
 
@@ -2941,7 +2962,11 @@ func displayTeam(t *model.Team) string {
 
 func displayChannel(c *model.Channel) string {
 	if c.DisplayName != "" {
-		return c.DisplayName
+		// A renamed channel can carry a text-effects payload in its display
+		// name; every plain-text consumer (filter, switcher, breadcrumbs,
+		// palette entries) wants only the visible runes. The styled render is
+		// channelLabelFX's job.
+		return hidden.Strip(c.DisplayName)
 	}
 	return c.Name
 }

@@ -235,6 +235,11 @@ func (m *Model) channelsFingerprint(vis []*model.Channel, off, listH, innerH int
 		}
 		b.WriteByte(':')
 		b.WriteString(m.channelLabel(ch))
+		b.WriteByte(':')
+		// The raw display name too: channelLabel strips any effects payload, so
+		// an effect-only rename (same visible name, different colours) would
+		// otherwise fingerprint identically and leave a stale row.
+		b.WriteString(ch.DisplayName)
 		b.WriteByte('\x1e')
 	}
 	return b.String()
