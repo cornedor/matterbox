@@ -62,8 +62,12 @@ var (
 	// surrounding text, so adjacent spans like "_a_ _b_" both still match.
 	mdBoldUnderscoreRe   = regexp.MustCompile(`\b__([^_]+?)__\b`)
 	mdItalicUnderscoreRe = regexp.MustCompile(`\b_([^_\s][^_]*?)_\b`)
-	mdImageRe            = regexp.MustCompile(`!\[([^\]]*)\]\(([^)\s]+)\)`)
-	mdLinkRe             = regexp.MustCompile(`\[([^\]]+)\]\(([^)\s]+)\)`)
+	// Links/images accept an optional CommonMark title — [text](url "title")
+	// or 'title' — which other Mattermost clients emit when pasting URLs. The
+	// title group is non-capturing so text/url stay sub[1]/sub[2]; the title
+	// itself is tooltip-only on the web and is simply dropped here.
+	mdImageRe = regexp.MustCompile(`!\[([^\]]*)\]\(([^)\s]+)(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'))?\)`)
+	mdLinkRe  = regexp.MustCompile(`\[([^\]]+)\]\(([^)\s]+)(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'))?\)`)
 	// The class excludes the Unicode TAG block (U+E0000–U+E007F): those are the
 	// zero-width runes that bracket text-effect spans (see effSentinelBase). A
 	// bare URL at the tail of a \shimmer{…} or /rainbow span is immediately

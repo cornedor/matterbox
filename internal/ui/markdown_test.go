@@ -38,6 +38,25 @@ func TestRenderInlineMarkdownLink(t *testing.T) {
 	}
 }
 
+// A link with a CommonMark title — [text](url "title") — must render like a
+// plain link: title dropped, URL as the hyperlink target. Other Mattermost
+// clients emit this form when pasting URLs (title == the URL itself).
+func TestRenderInlineMarkdownLinkWithTitle(t *testing.T) {
+	url := "https://app.example.com/#/spaces/1/stories/0?lang=nl"
+	for _, msg := range []string{
+		`[click here](` + url + ` "` + url + `")`,
+		`[click here](` + url + ` 'a title')`,
+	} {
+		got := renderInline(msg, nil, nil, "")
+		if !strings.Contains(got, osc8Open+url+"\x1b\\") {
+			t.Fatalf("URL not used as hyperlink target for %q: %q", msg, got)
+		}
+		if plain := ansi.Strip(got); plain != "click here" {
+			t.Fatalf("link should show its text only for %q, got %q", msg, plain)
+		}
+	}
+}
+
 func TestRenderInlineTrailingPunctuation(t *testing.T) {
 	got := renderInline("look at https://example.com/a.", nil, nil, "")
 	// The period must fall outside the hyperlink target.
