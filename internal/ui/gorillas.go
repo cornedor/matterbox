@@ -46,6 +46,17 @@ const (
 	// internal/mm), so this sits just inside what the wire can actually carry.
 	gorillasFrameDelay = 33 * time.Millisecond
 
+	// gorillasHeartbeat re-broadcasts the settled state while the host is parked
+	// waiting for a shot. The turn hand-off is a single post edit, and the joiner
+	// rebuilds whose turn it is entirely from those edits with no resync of its own
+	// — so if the one edit that flips the turn is dropped (Mattermost does not
+	// promise every post_edited in a rapid flight burst reaches every client), the
+	// joiner deadlocks: it never learns it is up, its keys are swallowed by the
+	// not-my-turn guard, and it cannot fire while the host waits forever. A slow
+	// re-push of the resting state lets a joiner that missed the hand-off recover
+	// within an interval, at the cost of one idle edit every couple of seconds.
+	gorillasHeartbeat = 2 * time.Second
+
 	// gorillasDT is simulated seconds per frame.
 	gorillasDT = 0.05
 
@@ -114,6 +125,9 @@ type (
 	}
 	// gorillasTickMsg advances the simulation one frame.
 	gorillasTickMsg struct{ gen int }
+	// gorillasHeartbeatMsg re-broadcasts the resting state so a joiner that dropped
+	// the turn hand-off edit can catch up.
+	gorillasHeartbeatMsg struct{ gen int }
 	// gorillasFrameMsg carries an encoded kitty frame back from the render Cmd.
 	gorillasFrameMsg struct {
 		gen int
@@ -179,6 +193,7 @@ func (m *Model) startGorillas(solo bool) tea.Cmd {
 			return gorillasPostedMsg{gen: gen, post: p, err: err}
 		},
 		m.gorillasFrameCmd(),
+		gorillasHeartbeatCmd(gen),
 	)
 }
 
@@ -336,6 +351,38 @@ func gorillasTickCmd(gen int) tea.Cmd {
 	return tea.Tick(gorillasFrameDelay, func(time.Time) tea.Msg {
 		return gorillasTickMsg{gen: gen}
 	})
+}
+
+func gorillasHeartbeatCmd(gen int) tea.Cmd {
+	return tea.Tick(gorillasHeartbeat, func(time.Time) tea.Msg {
+		return gorillasHeartbeatMsg{gen: gen}
+	})
+}
+
+// applyGorillasHeartbeat re-pushes the resting state to the world post so a joiner
+// that dropped the edit handing it the turn recovers. Host only, and it edits
+// nothing while a banana is in the air — the flight stream is already keeping the
+// joiner in sync — or in hotseat, where there is no second client to resync. The
+// loop self-terminates the moment any of those stop holding, when the game closes,
+// or when the gen is bumped.
+func (m *Model) applyGorillasHeartbeat(msg gorillasHeartbeatMsg) tea.Cmd {
+	g := &m.gorillas
+	if !g.active || msg.gen != g.gen || g.role != 0 || g.solo {
+		return nil
+	}
+	var push tea.Cmd
+	if g.restingInAiming() {
+		push = m.gorillasPush()
+	}
+	return tea.Batch(push, gorillasHeartbeatCmd(g.gen))
+}
+
+// restingInAiming reports that the world is at rest waiting for a shot: it is the
+// resting state the heartbeat re-broadcasts. Guarded on Busy so a heartbeat that
+// fires mid-flight stays quiet — the flight stream is already keeping the joiner in
+// sync, and splicing a stale frame into it would only jar the picture.
+func (g *gorillasState) restingInAiming() bool {
+	return g.match != nil && !g.match.Busy() && g.match.State.Phase == game.PhaseAiming
 }
 
 // applyGorillasTick advances the world one frame: step the rules, stream the new

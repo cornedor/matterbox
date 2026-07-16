@@ -164,6 +164,57 @@ func TestSizeGorillasIsFourThree(t *testing.T) {
 	}
 }
 
+// The turn hand-off is a single post edit and the joiner has no resync of its
+// own, so a dropped edit strands it — it never learns it is up and cannot fire.
+// The host's heartbeat is the recovery: while parked in aiming it re-broadcasts
+// the resting state, but it must stay quiet mid-flight (the flight stream is
+// already carrying the joiner) and must never run for a joiner or in hotseat.
+func TestGorillasHeartbeatRepushesOnlyAtRest(t *testing.T) {
+	mk := func() *game.Match {
+		m := game.NewMatch(4242)
+		m.Join("joinerjoinerjoinerjoinerxx")
+		return m
+	}
+
+	// Parked in aiming: exactly when a stranded joiner needs the resync.
+	if g := (&gorillasState{match: mk()}); !g.restingInAiming() {
+		t.Error("a host parked in aiming should re-push the resting state")
+	}
+
+	// Mid-flight: the frame stream owns the wire; a heartbeat push would splice a
+	// stale frame into it.
+	flying := mk()
+	flying.Launch(0, 45, 90)
+	flying.Step(gorillasDT)
+	if (&gorillasState{match: flying}).restingInAiming() {
+		t.Error("a heartbeat fired mid-flight must not re-push")
+	}
+
+	// A finished match has nothing to hand off.
+	over := mk()
+	over.State.Phase = game.PhaseOver
+	if (&gorillasState{match: over}).restingInAiming() {
+		t.Error("a decided match must not keep re-pushing")
+	}
+
+	// The loop is host-only and never runs in hotseat: those are the cases where
+	// no second client exists to resync, so the whole batch collapses to nil.
+	m := &Model{}
+	m.gorillas = gorillasState{active: true, role: 0, match: mk()}
+	gen := m.gorillas.gen
+	if m.applyGorillasHeartbeat(gorillasHeartbeatMsg{gen: gen + 1}) != nil {
+		t.Error("a stale-gen heartbeat should die, not re-arm")
+	}
+	m.gorillas.role = 1
+	if m.applyGorillasHeartbeat(gorillasHeartbeatMsg{gen: gen}) != nil {
+		t.Error("the joiner must not run a heartbeat")
+	}
+	m.gorillas.role, m.gorillas.solo = 0, true
+	if m.applyGorillasHeartbeat(gorillasHeartbeatMsg{gen: gen}) != nil {
+		t.Error("hotseat has no second client to resync")
+	}
+}
+
 // A post is only a game post while the game is open — the persistence guard keys
 // off it, and a stale true would silently stop caching an ordinary post.
 func TestGorillasPostOnlyMatchesTheOpenGame(t *testing.T) {

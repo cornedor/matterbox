@@ -1081,6 +1081,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.applyGorillasJoined(msg)
 	case gorillasTickMsg:
 		return m, m.applyGorillasTick(msg)
+	case gorillasHeartbeatMsg:
+		return m, m.applyGorillasHeartbeat(msg)
 	case gorillasFrameMsg:
 		return m, m.applyGorillasFrame(msg)
 
