@@ -202,12 +202,11 @@ func gatherUnread(ctx context.Context, client *mm.Client, chByID map[string]*mod
 		if !includeMuted && mb.IsChannelMuted() {
 			continue
 		}
-		// Root counters, not the legacy non-root ones: collapsed reply
-		// threads (Mattermost's default) freezes TotalMsgCount/MsgCount so
-		// their difference stays ~0 even with real unread. The root counts
-		// are what the server and sidebar treat as authoritative.
-		unread := int(ch.TotalMsgCountRoot - mb.MsgCountRoot)
-		mention := int(mb.MentionCountRoot)
+		// Combine root and all-posts counters (see mm.UnreadCounts): the
+		// root family alone misses thread replies, which hid channels whose
+		// only unread was a reply — matterbox shows replies inline, so
+		// those are genuinely unread here.
+		unread, mention := mm.UnreadCounts(ch, &mb.ChannelMember)
 		if unread <= 0 && mention <= 0 {
 			continue
 		}

@@ -1435,20 +1435,18 @@ func (m *Model) applyUnreadFromMembers() {
 		if !ok {
 			continue
 		}
-		// Use the *root* counters. This server (like modern Mattermost
-		// defaults) runs collapsed reply threads, which freezes the legacy
-		// non-root TotalMsgCount/MsgCount — they track each other and so
-		// TotalMsgCount-MsgCount stays ~0 even with genuine unread, hiding
-		// every channel. The root counters are the live ones the Mattermost
-		// sidebar itself uses, so they match what the user sees there.
-		unread := ch.TotalMsgCountRoot - mb.MsgCountRoot
+		// Combine root and all-posts counters (see mm.UnreadCounts): the
+		// root family alone misses thread replies, which hid channels whose
+		// only unread was a reply — matterbox shows replies inline, so
+		// those are genuinely unread here.
+		unread, mentions := mm.UnreadCounts(ch, &mb.ChannelMember)
 		if unread > 0 {
-			m.unread[mb.ChannelId] = int(unread)
+			m.unread[mb.ChannelId] = unread
 		} else {
 			delete(m.unread, mb.ChannelId)
 		}
-		if mb.MentionCountRoot > 0 {
-			m.mentions[mb.ChannelId] = int(mb.MentionCountRoot)
+		if mentions > 0 {
+			m.mentions[mb.ChannelId] = mentions
 		} else {
 			delete(m.mentions, mb.ChannelId)
 		}

@@ -916,11 +916,12 @@ func (e *Engine) catchUp(ctx context.Context) {
 		if isDM && !e.opts.NotifyDMs {
 			continue
 		}
+		unread, mention := mm.UnreadCounts(ch, &mb.ChannelMember)
 		if isDM {
-			if int(ch.TotalMsgCountRoot-mb.MsgCountRoot) <= 0 {
+			if unread <= 0 {
 				continue
 			}
-		} else if mb.MentionCountRoot == 0 {
+		} else if mention == 0 {
 			continue
 		}
 		var pl *model.PostList

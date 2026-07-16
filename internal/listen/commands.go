@@ -9,6 +9,7 @@ import (
 
 	"github.com/mattermost/mattermost/server/public/model"
 
+	"matterbox/internal/mm"
 	"matterbox/internal/telegram"
 )
 
@@ -104,8 +105,7 @@ func (e *Engine) cmdUnread(ctx context.Context) {
 		if ch == nil {
 			continue
 		}
-		unread := int(ch.TotalMsgCountRoot - mb.MsgCountRoot)
-		mention := int(mb.MentionCountRoot)
+		unread, mention := mm.UnreadCounts(ch, &mb.ChannelMember)
 		if unread <= 0 && mention <= 0 {
 			continue
 		}
@@ -164,8 +164,7 @@ func (e *Engine) cmdDigest(ctx context.Context) {
 		if ch == nil {
 			continue
 		}
-		unread := int(ch.TotalMsgCountRoot - mb.MsgCountRoot)
-		mention := int(mb.MentionCountRoot)
+		unread, mention := mm.UnreadCounts(ch, &mb.ChannelMember)
 		if unread <= 0 && mention <= 0 {
 			continue
 		}
