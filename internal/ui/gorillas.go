@@ -128,6 +128,13 @@ type (
 	// gorillasHeartbeatMsg re-broadcasts the resting state so a joiner that dropped
 	// the turn hand-off edit can catch up.
 	gorillasHeartbeatMsg struct{ gen int }
+	// gorillasResumedMsg carries the reopened game's thread back, so a player who
+	// stepped away can re-attach to the joiner's controller post.
+	gorillasResumedMsg struct {
+		gen    int
+		thread *model.PostList
+		err    error
+	}
 	// gorillasFrameMsg carries an encoded kitty frame back from the render Cmd.
 	gorillasFrameMsg struct {
 		gen int
@@ -297,6 +304,118 @@ func (m *Model) applyGorillasJoined(msg gorillasJoinedMsg) tea.Cmd {
 	m.gorillas.replyID = msg.post.Id
 	m.gorillas.status = "waiting for the host…"
 	return nil
+}
+
+// gorillasResume steps a player back into a game they had closed. The world post
+// held the whole match the entire time, so this rebuilds it from that post's state
+// and re-establishes the wire — as the host (the post's author) or the joiner
+// (State.Joiner), whichever this client was. The seq counters live only in the
+// controller post, so they are recovered from the thread in applyGorillasResumed.
+func (m *Model) gorillasResume(post *model.Post, st *game.State, role int) tea.Cmd {
+	if m.emojiImg == nil || !m.emojiImg.active() {
+		m.status = "gorillas: needs a terminal with Kitty graphics support"
+		return nil
+	}
+	names := [2]string{m.gorillasName(post.UserId), "…"}
+	if st.Joiner != "" {
+		names[1] = m.gorillasName(st.Joiner)
+	}
+	m.gorillas = gorillasState{
+		active:    true,
+		gen:       m.gorillas.gen + 1,
+		role:      role,
+		channelID: post.ChannelId,
+		postID:    post.Id,
+		match:     game.FromState(st),
+		imgID:     m.emojiImg.allocID(),
+		names:     names,
+	}
+	m.gorillas.status = m.gorillas.resumeStatus()
+	m.sizeGorillas()
+	m.status = "gorillas: rejoined"
+
+	gen := m.gorillas.gen
+	client, ctx := m.client, m.ctx
+	rootID := post.Id
+	cmds := []tea.Cmd{
+		m.gorillasFrameCmd(),
+		func() tea.Msg {
+			pl, err := client.Thread(ctx, rootID)
+			return gorillasResumedMsg{gen: gen, thread: pl, err: err}
+		},
+	}
+	if role == 0 {
+		// Re-broadcast at once and keep the heartbeat going, so a joiner still parked
+		// on the old state catches up without waiting for the next shot.
+		cmds = append(cmds, m.gorillasPush(), gorillasHeartbeatCmd(gen))
+	}
+	return tea.Batch(cmds...)
+}
+
+// applyGorillasResumed re-attaches to the joiner's controller post after a resume,
+// so the seq counters line up with the shots already fired: the host must not
+// re-launch a shot it already saw, and the joiner's next shot must continue the
+// count. The host also needs the controller's id to route its edits at all
+// (gorillasWSEdited keys on it), which is why a failed thread fetch is fatal here.
+func (m *Model) applyGorillasResumed(msg gorillasResumedMsg) tea.Cmd {
+	g := &m.gorillas
+	if !g.active || msg.gen != g.gen {
+		return nil
+	}
+	if msg.err != nil {
+		m.status = "gorillas: " + msg.err.Error()
+		return m.closeGorillas()
+	}
+	ctrl, in := gorillasControllerInThread(msg.thread, g.match.State.Joiner)
+	if ctrl == nil {
+		return nil // still in the lobby, or the joiner has not replied yet
+	}
+	g.replyID = ctrl.Id
+	if g.role == 0 {
+		g.lastSeq = in.Seq // a shot already made must not fire again on our return
+	} else {
+		g.seq = in.Seq // our next shot continues the count
+	}
+	return nil
+}
+
+// gorillasControllerInThread finds the joiner's controller reply in a fetched
+// thread, returning it and the input it currently holds.
+func gorillasControllerInThread(pl *model.PostList, joiner string) (*model.Post, *game.Input) {
+	if pl == nil || joiner == "" {
+		return nil, nil
+	}
+	for _, p := range pl.Posts {
+		if p == nil || p.DeleteAt != 0 || p.UserId != joiner {
+			continue
+		}
+		payload, ok := game.Decode(p.Message)
+		if !ok {
+			continue
+		}
+		if in, err := game.UnmarshalInput(payload); err == nil {
+			return p, in
+		}
+	}
+	return nil, nil
+}
+
+// resumeStatus is the footer line for a game just reopened, phrased for the player
+// who reopened it.
+func (g *gorillasState) resumeStatus() string {
+	st := g.match.State
+	switch {
+	case st.Phase == game.PhaseLobby:
+		return "waiting for someone to react :" + gorillasJoinEmoji + ": to join"
+	case st.Phase == game.PhaseOver && st.Winner >= 0:
+		return g.names[st.Winner] + " wins the match"
+	case st.Phase != game.PhaseAiming:
+		return "…" // a banana or a fireball is mid-air; the picture says it
+	case int(st.Turn) == g.role:
+		return "your shot"
+	default:
+		return "waiting for " + g.names[1-g.role]
+	}
 }
 
 // gorillasAcceptJoin is the host's side of the handshake: someone reacted, so

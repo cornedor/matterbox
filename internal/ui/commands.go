@@ -125,6 +125,11 @@ func builtinCommands() []switcherCommand {
 			run:  runKurveSolo,
 		},
 		{
+			name: "Rejoin game",
+			desc: "step back into a Gorillas or Kurve game you closed, as the player you were",
+			run:  runRejoin,
+		},
+		{
 			name:           "Bouncing ball",
 			desc:           "animate a ball inside a code-block box (socket test)",
 			argPrompt:      "duration(s) fps: ",

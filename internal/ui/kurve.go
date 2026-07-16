@@ -144,6 +144,13 @@ type (
 	}
 	// kurveTickMsg advances the simulation one tick.
 	kurveTickMsg struct{ gen int }
+	// kurveResumedMsg carries a reopened game's thread back, so a player who stepped
+	// away can re-attach to the controller posts.
+	kurveResumedMsg struct {
+		gen    int
+		thread *model.PostList
+		err    error
+	}
 	// kurveFrameMsg carries an encoded kitty frame back from the render Cmd.
 	kurveFrameMsg struct {
 		gen int
@@ -320,6 +327,166 @@ func (m *Model) applyKurveJoined(msg kurveJoinedMsg) tea.Cmd {
 	m.kurve.replyID = msg.post.Id
 	m.kurve.status = "waiting for the host…"
 	return nil
+}
+
+// kurveResume steps a player back into a game they had closed. The world post
+// carries the whole match — seed, scores, and every steering log — so this
+// rebuilds it with FromState and re-establishes the wire, as the host (the post's
+// author) or a joiner (found in State.Joiners). Because the host is the sole clock,
+// a host that left froze the match; resuming restarts the ticks and the curves move
+// again. Controller re-attachment happens in applyKurveResumed once the thread is
+// in.
+func (m *Model) kurveResume(post *model.Post, st *kurve.State, role int) tea.Cmd {
+	if m.emojiImg == nil || !m.emojiImg.active() {
+		m.status = "kurve: needs a terminal with Kitty graphics support"
+		return nil
+	}
+	match := kurve.FromState(st)
+	names := []string{m.kurveName(post.UserId)}
+	me := 0
+	players := map[string]*kurvePlayer{}
+	for j, id := range st.Joiners {
+		names = append(names, m.kurveName(id))
+		if id == m.me.Id {
+			me = j + 1
+		}
+		players[id] = &kurvePlayer{idx: j + 1}
+	}
+
+	m.kurve = kurveState{
+		active:    true,
+		gen:       m.kurve.gen + 1,
+		role:      role,
+		channelID: post.ChannelId,
+		postID:    post.Id,
+		match:     match,
+		imgID:     m.emojiImg.allocID(),
+		me:        me,
+		names:     names,
+	}
+	if role == 0 {
+		// The registry maps each joiner's id to their curve; the host needs it to
+		// route controller edits, and it is rebuilt from the roster on the wire.
+		m.kurve.players = players
+	}
+	m.kurve.status = m.kurveResumeStatus()
+	m.sizeKurve()
+	m.status = "kurve: rejoined"
+
+	gen := m.kurve.gen
+	client, ctx := m.client, m.ctx
+	rootID := post.Id
+	cmds := []tea.Cmd{
+		m.kurveFrameCmd(),
+		func() tea.Msg {
+			pl, err := client.Thread(ctx, rootID)
+			return kurveResumedMsg{gen: gen, thread: pl, err: err}
+		},
+	}
+	if role == 0 {
+		cmds = append(cmds, m.kurvePush())
+		if match.Busy() {
+			// The clock stopped when the host left; restart it so the curves move.
+			cmds = append(cmds, kurveTickCmd(gen))
+		}
+	}
+	return tea.Batch(cmds...)
+}
+
+// applyKurveResumed re-attaches to the controller posts after a resume. For a
+// joiner that is their own post, so their steer count continues; for the host it is
+// every joiner's, so a re-delivered edit is dropped and each curve holds the
+// direction it was last steered. Unlike Gorillas the host routes inputs by thread
+// root and author, not by post id, so a missing controller here is not fatal — the
+// re-attach only tightens dedup and restores held directions.
+func (m *Model) applyKurveResumed(msg kurveResumedMsg) tea.Cmd {
+	g := &m.kurve
+	if !g.active || msg.gen != g.gen {
+		return nil
+	}
+	if msg.err != nil {
+		m.status = "kurve: " + msg.err.Error()
+		return nil
+	}
+	if g.role == 1 {
+		if ctrl, in := kurveControllerInThread(msg.thread, m.me.Id); ctrl != nil {
+			g.replyID = ctrl.Id
+			g.seq = in.Seq
+		}
+		return nil
+	}
+	if msg.thread == nil {
+		return nil
+	}
+	for _, p := range msg.thread.Posts {
+		if p == nil || p.DeleteAt != 0 {
+			continue
+		}
+		pl := g.players[p.UserId]
+		if pl == nil {
+			continue
+		}
+		payload, ok := kurve.Decode(p.Message)
+		if !ok {
+			continue
+		}
+		in, err := kurve.UnmarshalInput(payload)
+		if err != nil {
+			continue
+		}
+		pl.replyID = p.Id
+		pl.lastSeq = in.Seq
+		g.match.Steer(pl.idx, in.Dir) // honour the direction they hold right now
+	}
+	return nil
+}
+
+// kurveControllerInThread finds a controller reply authored by owner in a fetched
+// thread, with the input it currently holds.
+func kurveControllerInThread(pl *model.PostList, owner string) (*model.Post, *kurve.Input) {
+	if pl == nil || owner == "" {
+		return nil, nil
+	}
+	for _, p := range pl.Posts {
+		if p == nil || p.DeleteAt != 0 || p.UserId != owner {
+			continue
+		}
+		payload, ok := kurve.Decode(p.Message)
+		if !ok {
+			continue
+		}
+		if in, err := kurve.UnmarshalInput(payload); err == nil {
+			return p, in
+		}
+	}
+	return nil, nil
+}
+
+// kurveResumeStatus is the footer line for a game just reopened, phrased for the
+// player who reopened it.
+func (m *Model) kurveResumeStatus() string {
+	g := &m.kurve
+	st := g.match
+	switch {
+	case st.Phase == kurve.PhaseOver && st.Winner >= 0:
+		return g.scorerName(int(st.Winner)) + " wins the match"
+	case st.Phase == kurve.PhaseLobby && g.role == 0 && st.PlayerCount() > 1:
+		return fmt.Sprintf("%d players — press enter to start", st.PlayerCount())
+	case st.Phase == kurve.PhaseLobby && g.role == 0:
+		return "waiting for someone to react :" + kurveJoinEmoji + ": to join"
+	case st.Phase == kurve.PhaseLobby:
+		return "waiting for the host to start…"
+	case st.Phase == kurve.PhaseCountdown:
+		return "get ready…"
+	case st.Phase == kurve.PhaseRoundOver:
+		return "round over"
+	default: // PhaseRun
+		idx := g.myIndex()
+		if idx >= 0 && idx < len(st.Sim.Curves) && st.Sim.Curves[idx].Dead {
+			return "you crashed — watching…"
+		}
+		return "steer!"
+	}
 }
 
 // kurveRegister seats a joiner: it assigns them the next curve index, records the

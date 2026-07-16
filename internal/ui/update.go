@@ -1083,6 +1083,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.applyGorillasTick(msg)
 	case gorillasHeartbeatMsg:
 		return m, m.applyGorillasHeartbeat(msg)
+	case gorillasResumedMsg:
+		return m, m.applyGorillasResumed(msg)
 	case gorillasFrameMsg:
 		return m, m.applyGorillasFrame(msg)
 
@@ -1092,6 +1094,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.applyKurveJoined(msg)
 	case kurveTickMsg:
 		return m, m.applyKurveTick(msg)
+	case kurveResumedMsg:
+		return m, m.applyKurveResumed(msg)
 	case kurveFrameMsg:
 		return m, m.applyKurveFrame(msg)
 	case ballStartedMsg:
