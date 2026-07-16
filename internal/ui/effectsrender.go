@@ -350,6 +350,44 @@ func injectEffectSentinels(visible string, spans []effects.Span) string {
 	return b.String()
 }
 
+// headerTitleInline is a channel header as the messages-pane title line shows
+// it: one line of the visible text with effect sentinels injected, so the same
+// paintEffects pass that colours the message rows colours the header too. Any
+// payload is stripped (ours after injecting its spans, a foreign one outright)
+// and newlines fold to spaces — the title is a single row.
+func headerTitleInline(raw string) string {
+	s := hidden.Strip(effectsPreprocess(raw))
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// closeEffectSpans appends the end sentinels a right-truncation cut off, so a
+// clipped line stays balanced: resolveEffects carries its span stack across
+// lines (that is how a soft-wrapped span keeps one gradient), and a title line
+// left with an open span would paint every message row below it.
+func closeEffectSpans(l string) string {
+	depth := 0
+	for i := 0; i < len(l); {
+		if l[i] == 0x1b {
+			i = escSeqEnd(l, i)
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(l[i:])
+		switch {
+		case r == effSentinelEnd:
+			if depth > 0 {
+				depth--
+			}
+		case r > effSentinelBase && r < effSentinelEnd:
+			depth++
+		}
+		i += size
+	}
+	if depth == 0 {
+		return l
+	}
+	return l + strings.Repeat(string(effSentinelEnd), depth)
+}
+
 // hasEffectSentinel reports whether s carries any effect sentinel — the fast
 // path so resolveEffects is a no-op on the overwhelming majority of posts.
 func hasEffectSentinel(s string) bool {

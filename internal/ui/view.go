@@ -42,7 +42,10 @@ var (
 	dateSepColor = lipgloss.Color("240") // dim grey — the (more subtle) date divider
 
 	titleStyle = lipgloss.NewStyle().Bold(true)
-	userStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("4")).Bold(true)
+	// titleHeaderStyle dims the channel header text shown after the channel name
+	// on the messages-pane title line.
+	titleHeaderStyle = lipgloss.NewStyle().Foreground(dimColor)
+	userStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("4")).Bold(true)
 	timeStyle  = lipgloss.NewStyle().Foreground(dimColor)
 	// meMarkerStyle paints the leading "*" of a /me emote line ("* alice waves").
 	meMarkerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("5")).Bold(true)
@@ -1715,6 +1718,13 @@ func (m *Model) renderMessagesPane(height, width int) string {
 				titleRendered += " " + cs.Text
 			}
 		}
+		// The channel header rides the title line, dimmed, after the name and
+		// status — with its effect spans marked as sentinels, so the paint pass
+		// that colours the message rows (paintEffects on the upper box) animates
+		// a \rainbow{…} header for free.
+		if h := headerTitleInline(ch.Header); h != "" {
+			titleRendered += " " + titleHeaderStyle.Render("· "+h)
+		}
 	}
 	if titleRendered == "" {
 		titleRendered = titleStyle.Render(title)
@@ -1761,8 +1771,10 @@ func (m *Model) renderMessagesPane(height, width int) string {
 	showScrollbar := totalRows > m.msgsView.Height() && scrollPct < 1.0
 
 	// Clamp the header to the pane's inner width so a long custom status can't
-	// wrap to a second row (which would offset the scrollbar's row math).
-	titleLine := ansi.Truncate(titleRendered, width-2, "…")
+	// wrap to a second row (which would offset the scrollbar's row math). The
+	// truncation can cut an effect span's end sentinel off; re-close it, or the
+	// open span would bleed its colour into every message row below the title.
+	titleLine := closeEffectSpans(ansi.Truncate(titleRendered, width-2, "…"))
 
 	// The pane frame lights up only while the message list itself is the active
 	// reading target. Focusing the composer (or the attachment chips inside this
@@ -1807,8 +1819,10 @@ func (m *Model) renderMessagesPane(height, width int) string {
 		// uncached render.
 		lowerH = innerH
 		// Painted before the box here (the border isn't on these lines yet), so no
-		// chrome to skip — unlike the cached upper box above.
-		lowerParts = append(lowerParts, titleLine, m.paintEffects(m.msgsView.View(), 0))
+		// chrome to skip — unlike the cached upper box above. The title line is
+		// painted separately: its spans are balanced (closeEffectSpans), so the
+		// two calls can't leak state into each other.
+		lowerParts = append(lowerParts, m.paintEffects(titleLine, 0), m.paintEffects(m.msgsView.View(), 0))
 	}
 	if popup != "" {
 		lowerParts = append(lowerParts, popup)

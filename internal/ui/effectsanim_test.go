@@ -15,6 +15,16 @@ func effectPost(id, src string) *model.Post {
 	return &model.Post{Id: id, Message: compileEffects(src)}
 }
 
+// channelTabModel is a bare Model parked on a real team tab — where the
+// messages pane, the thing the visibility gate watches, actually renders. (A
+// zero teamIdx would land on the synthetic Feed tab, which shows no effects
+// and short-circuits the gate.)
+func channelTabModel() *Model {
+	m := &Model{teams: []*model.Team{{Id: "t1"}}}
+	m.teamIdx = m.firstTeamTabIdx()
+	return m
+}
+
 func TestHasEffectPayload(t *testing.T) {
 	if !hasEffectPayload(compileEffects("gg \\shimmer{well played}")) {
 		t.Error("a post with an effect was not detected")
@@ -80,7 +90,7 @@ func TestEffectsVisibleStaticPaintsButDoesNotAnimate(t *testing.T) {
 	}
 
 	// The loop must not arm for it, yet onScreen must be set so paintEffects runs.
-	m := &Model{}
+	m := channelTabModel()
 	m.posts = posts
 	m.msgRowStarts = starts
 	m.msgsView.SetHeight(10)
@@ -89,6 +99,50 @@ func TestEffectsVisibleStaticPaintsButDoesNotAnimate(t *testing.T) {
 	}
 	if !m.effectsAnim.onScreen {
 		t.Error("onScreen was not set, so the static effect would never be painted")
+	}
+}
+
+// The open channel's header is on screen for as long as the channel is: an
+// effects header must paint (and animate, when it moves) with no posts carrying
+// effects at all.
+func TestHeaderEffectsCountAsOnScreen(t *testing.T) {
+	newModel := func(header string) *Model {
+		m := channelTabModel()
+		m.channels = map[string][]*model.Channel{
+			"t1": {{Id: "c1", TeamId: "t1", Type: model.ChannelTypeOpen, Header: compileEffects(header)}},
+		}
+		m.openChannelID = "c1"
+		m.msgsView.SetHeight(10)
+		return m
+	}
+
+	m := newModel("\\rainbow{welcome}")
+	if !m.refreshEffectsVisibility() {
+		t.Error("an animated header did not open the ticker gate")
+	}
+	if !m.effectsAnim.onScreen {
+		t.Error("an animated header was not counted as on screen")
+	}
+
+	m = newModel("\\ok{stable}")
+	if m.refreshEffectsVisibility() {
+		t.Error("a static header must not keep the frame loop running")
+	}
+	if !m.effectsAnim.onScreen {
+		t.Error("a static header still has to be painted")
+	}
+
+	m = newModel("plain header")
+	if m.refreshEffectsVisibility() || m.effectsAnim.onScreen {
+		t.Error("a plain header reported effects on screen")
+	}
+
+	// The Search tab renders neither the messages pane nor its title line, so
+	// an animated header (or post) must not keep the frame loop ticking there.
+	m = newModel("\\rainbow{welcome}")
+	m.teamIdx = 1 // Feed(0), Search(1) — no DMs and no SQL in this fixture
+	if m.refreshEffectsVisibility() || m.effectsAnim.onScreen {
+		t.Error("a hidden pane's header kept the effects gate open on the Search tab")
 	}
 }
 
@@ -111,7 +165,7 @@ func TestEffectsTickSelfStops(t *testing.T) {
 
 // ...and re-arms (advancing the phase) once one is.
 func TestEffectsTickAdvancesPhaseWhenVisible(t *testing.T) {
-	m := &Model{}
+	m := channelTabModel()
 	m.posts = []*model.Post{effectPost("a", "\\shimmer{hi}")}
 	m.msgRowStarts = []int{0, 5}
 	m.msgsView.SetHeight(10)
@@ -136,7 +190,7 @@ func TestEffectsTickAdvancesPhaseWhenVisible(t *testing.T) {
 
 // The phase wraps into [0,1) rather than growing without bound.
 func TestEffectsPhaseWraps(t *testing.T) {
-	m := &Model{}
+	m := channelTabModel()
 	m.posts = []*model.Post{effectPost("a", "\\shimmer{hi}")}
 	m.msgRowStarts = []int{0, 5}
 	m.msgsView.SetHeight(10)

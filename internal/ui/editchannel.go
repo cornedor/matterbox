@@ -123,7 +123,9 @@ func (m *Model) openEditChannel(channelID string, row int) tea.Cmd {
 	st.inputs[ceDisplayName] = newInput(c.DisplayName, "Marketing", model.ChannelDisplayNameMaxRunes)
 	st.inputs[ceURL] = newInput(c.Name, "marketing", model.ChannelNameMaxLength)
 	st.inputs[cePurpose] = newInput(c.Purpose, "What is this channel for?", model.ChannelPurposeMaxRunes)
-	st.inputs[ceHeader] = newInput(c.Header, "Shown next to the channel name", model.ChannelHeaderMaxRunes)
+	// The header may carry a text-effects payload; show the markup that produced
+	// it (\rainbow{…}), the same way editing a post does (see decompileEffects).
+	st.inputs[ceHeader] = newInput(decompileEffects(c.Header), "Shown next to the channel name", model.ChannelHeaderMaxRunes)
 
 	m.chanEdit = st
 	return st.inputs[st.row].Focus()
@@ -193,7 +195,11 @@ func (st *channelEditState) patch() (patch *model.ChannelPatch, row int, errMsg 
 	display := strings.TrimSpace(st.inputs[ceDisplayName].Value())
 	name := strings.TrimSpace(st.inputs[ceURL].Value())
 	purpose := strings.TrimSpace(st.inputs[cePurpose].Value())
-	header := strings.TrimSpace(st.inputs[ceHeader].Value())
+	// Effect markup in the header compiles to the wire form (visible text + an
+	// invisible payload), so other clients see the clean text — the same
+	// treatment a message gets on send. The length check runs on the compiled
+	// value: that is the string the server counts.
+	header := compileEffects(strings.TrimSpace(st.inputs[ceHeader].Value()))
 
 	switch {
 	case display == "":

@@ -7,6 +7,8 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/hidden"
 )
 
 // editChanTestModel is a Model with one team holding an open channel with every
@@ -139,6 +141,40 @@ func TestEditChannelPatchesOnlyChangedFields(t *testing.T) {
 	}
 	if patch.DisplayName != nil || patch.Name != nil || patch.Header != nil {
 		t.Errorf("patch carries untouched fields: %+v", patch)
+	}
+}
+
+// TestEditChannelHeaderEffects: effect markup in the header compiles to the
+// wire form on save (clean visible text + invisible payload, so other clients
+// see plain text), and the form re-opens showing the markup that produced it —
+// the same round-trip a message edit makes.
+func TestEditChannelHeaderEffects(t *testing.T) {
+	m := editChanTestModel()
+	m.channels["t1"][0].Header = compileEffects("\\rainbow{welcome}")
+
+	m.openEditChannel("c1", ceHeader)
+	if got := m.chanEdit.inputs[ceHeader].Value(); got != "\\rainbow{welcome}" {
+		t.Fatalf("prefill = %q, want the decompiled markup", got)
+	}
+
+	// Untouched form: the recompiled markup matches the stored wire form byte
+	// for byte, so no patch is built.
+	patch, _, msg := m.chanEdit.patch()
+	if msg != "" || patch != nil {
+		t.Fatalf("untouched form built patch %+v (err %q); want none", patch, msg)
+	}
+
+	// An edited header goes to the wire compiled.
+	m.chanEdit.inputs[ceHeader].SetValue("\\shimmer{ship day}")
+	patch, _, msg = m.chanEdit.patch()
+	if msg != "" || patch == nil || patch.Header == nil {
+		t.Fatalf("patch = %+v (err %q), want a header patch", patch, msg)
+	}
+	if *patch.Header != compileEffects("\\shimmer{ship day}") {
+		t.Errorf("Header = %q, want the compiled wire form", *patch.Header)
+	}
+	if hidden.Strip(*patch.Header) != "ship day" {
+		t.Errorf("visible header = %q, want the markup gone", hidden.Strip(*patch.Header))
 	}
 }
 

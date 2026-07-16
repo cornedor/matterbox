@@ -70,10 +70,35 @@ func hasEffectPayload(msg string) bool {
 // says are on screen, tests each with a substring search, and decodes a payload
 // only for the few posts that carry one.
 func (m *Model) refreshEffectsVisibility() bool {
+	// The Search / Feed / SQL tabs never render the message, thread or info
+	// panes (see viewContent), so nothing carrying effects is on screen there —
+	// the posts viewport and the open channel's header only *look* visible from
+	// their state. Without this the ticker would keep painting a hidden pane.
+	// Switching back re-arms on that very keypress (maybeStartEffectsAnim runs
+	// per event).
+	if m.onSearchTab() || m.onFeedTab() || m.onSQLTab() {
+		m.effectsAnim.onScreen = false
+		return false
+	}
 	any, animated := effectsVisibleIn(m.posts, m.msgRowStarts, m.msgsView.YOffset(), m.msgsView.Height())
 	if m.threadOpen && (!any || !animated) {
 		a2, an2 := effectsVisibleIn(m.threadPosts, m.threadRowStarts, m.threadView.YOffset(), m.threadView.Height())
 		any, animated = any || a2, animated || an2
+	}
+	// The open channel's header rides the always-visible title line (and the
+	// info panel when raised), so it counts as on screen for as long as the
+	// channel is open — no row arithmetic to do.
+	if !any || !animated {
+		if ch := m.findChannel(m.openChannelID); ch != nil && hasEffectPayload(ch.Header) {
+			any = true
+			animated = animated || spansHaveAnimated(ch.Header)
+		}
+	}
+	if m.infoOpen && m.infoChannelID != m.openChannelID && (!any || !animated) {
+		if ch := m.findChannel(m.infoChannelID); ch != nil && hasEffectPayload(ch.Header) {
+			any = true
+			animated = animated || spansHaveAnimated(ch.Header)
+		}
 	}
 	m.effectsAnim.onScreen = any
 	return animated

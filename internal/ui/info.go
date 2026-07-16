@@ -371,7 +371,10 @@ func (m *Model) infoMainContent(c *model.Channel, width int) ([]string, []infoTa
 	}
 	if strings.TrimSpace(c.Header) != "" {
 		section("Header")
-		addMarkdown(expandTables(renderMarkdown(c.Header, m.emojiImg, nil, self), width))
+		// Through the effects-aware renderer: a header can carry \rainbow{…}
+		// spans, which renderInfoPane's paint pass then colours (see
+		// renderMarkdownEffects — a header without effects takes the plain path).
+		addMarkdown(expandTables(renderMarkdownEffects(c.Header, m.emojiImg, nil, self), width))
 	}
 
 	// Members — each is a focusable target that opens a DM with that person,
@@ -1042,7 +1045,9 @@ func (m *Model) renderInfoPane(height, width int) string {
 	total, pct := m.infoScrollGeom()
 	showScrollbar := total > m.infoView.Height() && pct < 1.0
 
-	content := lipgloss.JoinVertical(lipgloss.Left, titleStyle.Render(m.infoPaneTitle(width)), m.infoView.View())
+	// Effects in the header section are painted on the bare viewport rows,
+	// before the box adds its border (chrome 0) — mirroring the thread pane.
+	content := lipgloss.JoinVertical(lipgloss.Left, titleStyle.Render(m.infoPaneTitle(width)), m.paintEffects(m.infoView.View(), 0))
 
 	borderColor := dimColor
 	if m.focus == focusInfo {
