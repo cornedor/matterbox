@@ -455,17 +455,24 @@ func (ii *inlineImages) takeDeferredFrames() []thumbFramesJob {
 			continue
 		}
 		delete(ii.deferred, key)
-		out = append(out, thumbFramesJob{key: key, item: it, id: ent.id, box: ent.box})
+		out = append(out, thumbFramesJob{key: key, item: it, id: ent.id, box: ent.box, rows: ent.rows, cols: ent.cols})
 	}
 	return out
 }
 
 // markFramesBuilt fills in the animation frames of a GIF that was built as a still,
 // leaving everything else about the entry — its id, its placement, the placeholder
-// on screen — exactly as it was. The frames all target the same id as the still, so
-// there is nothing to re-transmit and nothing to re-render: the next animation tick
-// simply has somewhere to go. The caller need not even arm the loop, since the
-// per-event kicker (maybeStartImageAnim) sees the entry become animated.
+// on screen — exactly as it was. The manual-path frames all target the same id as
+// the still, so there is nothing to re-transmit and nothing to re-render: the next
+// animation tick simply has somewhere to go. The caller need not even arm the loop,
+// since the per-event kicker (maybeStartImageAnim) sees the entry become animated.
+//
+// With b.native set (animations.native_gif_protocol), there is no tick to wait for:
+// b.native is the Kitty native-animation setup for every frame but the still already
+// on screen (see encodeInlineThumbNative), and it is folded onto the end of the
+// still's own transmit so a later re-transmit-after-eviction (see sight/takeTransmits)
+// resends the whole thing, not just the still. The caller (handleInlineThumbFrames)
+// is the one that actually sends b.native out of band — this only installs it.
 //
 // It is a no-op unless this is still the entry the frames were built for. A re-fit
 // at a new pane width rebuilds under a fresh id and evictBuiltLocked can drop the
@@ -480,7 +487,17 @@ func (ii *inlineImages) markFramesBuilt(b builtThumbFrames) bool {
 	defer ii.mu.Unlock()
 	ent := ii.entries[b.key]
 	if ent == nil || ent.state != inlineImgReady || ent.id != b.id ||
-		ent.rows != b.rows || ent.cols != b.cols || len(b.seqs) <= 1 {
+		ent.rows != b.rows || ent.cols != b.cols {
+		return false
+	}
+	if b.native != "" {
+		ii.builtBytes -= ent.builtSize()
+		ent.frameSeqs = []string{ent.frameSeqs[0] + b.native}
+		ent.delays = nil
+		ii.builtBytes += ent.builtSize()
+		return true
+	}
+	if len(b.seqs) <= 1 {
 		return false
 	}
 	ii.builtBytes -= ent.builtSize()
@@ -1060,23 +1077,31 @@ type readyInlineImg struct {
 
 // thumbFramesJob is one deferred GIF whose frames are now worth encoding, and
 // everything the background build needs to slot them into the still that is already
-// on screen: the same terminal id, and the same box it was fitted to.
+// on screen: the same terminal id, and the same box it was fitted to. rows/cols is
+// that box in cells — the still's already-committed placement — which the native
+// path (encodeInlineThumbNative) fits every later frame to directly, with no need
+// to recompute it from box the way the legacy path does.
 type thumbFramesJob struct {
-	key  string
-	item previewItem
-	id   uint32
-	box  int
+	key        string
+	item       previewItem
+	id         uint32
+	box        int
+	rows, cols int
 }
 
 // builtThumbFrames is the outcome of one such build. rows/cols come back with it so
 // markFramesBuilt can refuse anything that would land on a different cell box than
-// the still it is completing.
+// the still it is completing. Exactly one of native or (seqs, delays) is set: native
+// is the Kitty native-animation setup for frames[1:] (animations.native_gif_protocol
+// — see encodeInlineThumbNative); seqs/delays is the legacy manual-path per-frame
+// transmit sequences, one for every frame including the still.
 type builtThumbFrames struct {
 	key        string
 	id         uint32
 	rows, cols int
 	seqs       []string
 	delays     []time.Duration
+	native     string
 }
 
 // inlineThumbFramesMsg carries finished GIF frames back to the main goroutine.
@@ -1273,6 +1298,22 @@ func (m *Model) buildVisibleThumbFrames() tea.Cmd {
 	}
 }
 
+// encodeInlineThumbNative builds the Kitty native-animation setup for a GIF
+// thumbnail whose still (frame 0) is already transmitted and on screen: fit every
+// remaining frame to the still's own rows×cols box — matching it exactly is what a
+// native a=f frame needs, since it paints over the canvas the root already
+// established — then append them and start the terminal-driven loop
+// (buildNativeAnimSetup). Unlike encodeInlineThumb, this never re-sends frame 0:
+// it is already resident, so the only bytes transmitted are the ones the terminal
+// doesn't have yet.
+func (m Model) encodeInlineThumbNative(id uint32, frames []image.Image, delays []time.Duration, rows, cols int) (string, error) {
+	fitted := make([]image.Image, len(frames))
+	for i, fr := range frames {
+		fitted[i] = fitFrameToCells(fr, cols, rows, m.cellPxW, m.cellPxH)
+	}
+	return buildNativeAnimSetup(&kittyPNG, id, fitted, delays)
+}
+
 // loadInlineThumbFrames re-reads and fully decodes each job's GIF, encoding every
 // frame under the id of the still already on screen. Runs on a background goroutine.
 //
@@ -1290,6 +1331,14 @@ func (m Model) loadInlineThumbFrames(jobs []thumbFramesJob) tea.Msg {
 		frames, delays, err := decodeImageFrames(raw, true)
 		if err != nil || len(frames) <= 1 {
 			continue // a single-frame GIF: the still we built is the whole image
+		}
+		if m.nativeGIFAnim {
+			setup, err := m.encodeInlineThumbNative(j.id, frames, delays, j.rows, j.cols)
+			if err != nil {
+				continue
+			}
+			built = append(built, builtThumbFrames{key: j.key, id: j.id, rows: j.rows, cols: j.cols, native: setup})
+			continue
 		}
 		r, err := m.encodeInlineThumb(j.id, frames, j.box)
 		if err != nil {
@@ -1309,13 +1358,24 @@ func (m Model) loadInlineThumbFrames(jobs []thumbFramesJob) tea.Msg {
 // handleInlineThumbFrames installs finished GIF frames. Nothing on screen changes —
 // the frames carry the still's own id and cell box, so the placeholder cells and the
 // post's cached lines are all still correct — which is why this neither invalidates
-// nor re-renders anything. The Update wrapper's maybeStartImageAnim sees the entry
-// become animated on this same event and starts the loop.
+// nor re-renders anything.
+//
+// For the manual path the Update wrapper's maybeStartImageAnim sees the entry become
+// animated on this same event and starts the tick loop. A native-animation setup has
+// no tick to wait for — nothing else will ever send it — so any b.native that
+// markFramesBuilt actually installed is written out of band right here, once; the
+// terminal takes it from there.
 func (m Model) handleInlineThumbFrames(msg inlineThumbFramesMsg) (Model, tea.Cmd) {
+	var raw strings.Builder
 	for _, b := range msg.built {
-		m.inlineImg.markFramesBuilt(b)
+		if m.inlineImg.markFramesBuilt(b) && b.native != "" {
+			raw.WriteString(b.native)
+		}
 	}
-	return m, nil
+	if raw.Len() == 0 {
+		return m, nil
+	}
+	return m, tea.Raw(raw.String())
 }
 
 // readThumbBytes returns the bytes to build a thumbnail from.

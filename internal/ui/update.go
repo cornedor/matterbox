@@ -273,6 +273,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case emojiImagesFetchedMsg:
 		return m.handleEmojiImagesFetched(msg)
 
+	case emojiNativeSetupMsg:
+		return m.handleEmojiNativeSetup(msg)
+
 	case inlineImagesFetchedMsg:
 		return m.handleInlineImagesFetched(msg)
 
@@ -293,6 +296,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case previewReencodedMsg:
 		return m.handlePreviewReencoded(msg)
+
+	case previewNativeSetupMsg:
+		return m.handlePreviewNativeSetup(msg)
 
 	case previewTickMsg:
 		return m.handlePreviewTick(msg)

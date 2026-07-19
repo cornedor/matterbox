@@ -517,6 +517,19 @@ type AnimationsConfig struct {
 	// costs nothing once they're off screen. Pointer so an absent key defaults to
 	// true; an explicit false shows the first frame only.
 	InlineImages *bool `yaml:"inline_images"`
+
+	// NativeGIFProtocol switches every animated-GIF surface above — custom
+	// emoji, inline thumbnails, and the image-preview modal — from client-side
+	// re-transmission on a timer to the Kitty graphics protocol's native
+	// animation frames (a=f to upload frames, a=a to run the loop): every frame
+	// is uploaded once and the terminal itself times and loops the animation,
+	// so nothing needs a running Cmd for that image again until it's freed.
+	// Plain bool (not a pointer) because false is the wanted default: it is
+	// experimental, depends on animation-frame support beyond the base
+	// graphics protocol most Kitty-class terminals implement, and a terminal
+	// that only does the bare minimum could show a frozen or blank image
+	// instead of falling back — so it needs an explicit opt-in.
+	NativeGIFProtocol bool `yaml:"native_gif_protocol"`
 }
 
 // KeybindingsConfig holds optional keymap tweaks. Defaults in fillDefaults.
@@ -1126,6 +1139,14 @@ func writeConfig(p string, cfg *Config) error {
 		"#             space-to-preview modal; inline_images (default true) animates\n" +
 		"#             GIF thumbnails in the transcript, but only while they're on\n" +
 		"#             screen. false freezes any of them on frame one.\n" +
+		"#             native_gif_protocol (default false, experimental) plays all of\n" +
+		"#             the above via the Kitty graphics protocol's native animation\n" +
+		"#             frames instead of client-side re-transmission on a timer, so\n" +
+		"#             the terminal times and loops the frames itself. Needs\n" +
+		"#             animation-frame support beyond what most Kitty-class terminals\n" +
+		"#             implement; a terminal that doesn't support it may show a\n" +
+		"#             frozen or blank image instead of falling back, which is why\n" +
+		"#             this needs an explicit opt-in.\n" +
 		"# giphy:      expand a pasted Giphy link into an inline image. The link is\n" +
 		"#             turned into ![alt](url) instantly (offline, from its id);\n" +
 		"#             with api_key set (https://developers.giphy.com, or the\n" +

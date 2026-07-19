@@ -784,6 +784,21 @@ type readyEmoji struct {
 	placeholder string
 	frameSeqs   []string
 	delays      []time.Duration
+
+	// nativeSetup is the Kitty native-animation follow-up for a multi-frame
+	// result built with animations.native_gif_protocol on: every frame but the
+	// root, plus the terminal-driven loop (buildNativeAnimSetup). It is sent as
+	// its own message one event *after* the root is installed and displayed
+	// (see emojiNativeSetupMsg) rather than bundled into the same install —
+	// bundling root+every frame+start into one large transmit at install time
+	// made Kitty warn "missing image for virtual placement, ignoring
+	// image_id=…": the terminal's own repaint can fire before it has finished
+	// parsing a multi-megabyte blob, including the small root transmit at its
+	// very front. Splitting them, with the setup arriving at least one
+	// bubbletea event later, gives the root time to actually resolve first —
+	// the same margin inline thumbnails already have for free, since their
+	// still and their later frames are built in genuinely separate events.
+	nativeSetup string
 }
 
 // emojiImagesFetchedMsg is the result of a background image batch. ready maps
@@ -894,17 +909,39 @@ func (m Model) loadEmojiImages(names []string) tea.Msg {
 
 // buildReadyEmoji decodes raw emoji bytes into frames (all of them for an
 // animated GIF when animations are on, else just the first) and prebuilds the
-// id, placeholder, and one transmit APC per frame. Runs on the fetch goroutine,
-// so every PNG encode stays off the render loop.
+// id, placeholder, and the transmit sequence(s) that display it. Runs on the
+// fetch goroutine, so every PNG encode stays off the render loop.
+//
+// With animations.native_gif_protocol on, a multi-frame result's root frame is
+// built and transmitted exactly like a still (frameSeqs has one entry, delays
+// is nil — indistinguishable, to every reader of emojiImgEntry, from a still
+// image, so advanceFrame/hasVisibleAnimated never touch it and no ticking Cmd
+// is ever scheduled for it), and the Kitty native-animation follow-up (every
+// remaining frame + the terminal-driven loop) is returned separately as
+// nativeSetup — see its doc comment for why it must not be bundled into this
+// same install.
 func (m Model) buildReadyEmoji(raw []byte) (readyEmoji, error) {
 	frames, delays, err := decodeImageFrames(raw, m.emojiImg.animationsEnabled())
 	if err != nil {
 		return readyEmoji{}, err
 	}
 	id := m.emojiImg.allocID()
+	placeholder := kittyPlaceholder(id, emojiPlaceholderRows, emojiPlaceholderCols)
+	rootSeq, err := kittyTransmitImage(id, frames[0], emojiPlaceholderRows, emojiPlaceholderCols)
+	if err != nil {
+		return readyEmoji{}, err
+	}
+	if m.nativeGIFAnim && len(frames) > 1 {
+		setup, err := buildNativeAnimSetup(&kittyPNG, id, frames, delays)
+		if err != nil {
+			return readyEmoji{}, err
+		}
+		return readyEmoji{id: id, placeholder: placeholder, frameSeqs: []string{rootSeq}, nativeSetup: setup}, nil
+	}
 	seqs := make([]string, len(frames))
-	for i, f := range frames {
-		seq, err := kittyTransmitImage(id, f, emojiPlaceholderRows, emojiPlaceholderCols)
+	seqs[0] = rootSeq
+	for i := 1; i < len(frames); i++ {
+		seq, err := kittyTransmitImage(id, frames[i], emojiPlaceholderRows, emojiPlaceholderCols)
 		if err != nil {
 			return readyEmoji{}, err
 		}
@@ -912,7 +949,7 @@ func (m Model) buildReadyEmoji(raw []byte) (readyEmoji, error) {
 	}
 	return readyEmoji{
 		id:          id,
-		placeholder: kittyPlaceholder(id, emojiPlaceholderRows, emojiPlaceholderCols),
+		placeholder: placeholder,
 		frameSeqs:   seqs,
 		delays:      delays,
 	}, nil
@@ -924,6 +961,12 @@ func (m Model) buildReadyEmoji(raw []byte) (readyEmoji, error) {
 // emoji are invalidated and re-rendered, and each emoji's first frame is sent
 // raw (out of band) so its placeholders resolve. If any installed emoji is
 // animated, the animation tick is armed (once — imgAnimating guards it).
+//
+// A ready emoji's nativeSetup (animations.native_gif_protocol) is deliberately
+// *not* sent here alongside the root — see readyEmoji.nativeSetup — but handed
+// to deliverEmojiNativeSetup, a Cmd whose result arrives as its own message at
+// least one event later, once the root above has had a chance to actually
+// reach the terminal and resolve.
 func (m Model) handleEmojiImagesFetched(msg emojiImagesFetchedMsg) (Model, tea.Cmd) {
 	if m.emojiImg == nil {
 		return m, nil
@@ -931,6 +974,7 @@ func (m Model) handleEmojiImagesFetched(msg emojiImagesFetchedMsg) (Model, tea.C
 	var transmit strings.Builder
 	readyNames := make(map[string]struct{}, len(msg.ready))
 	animated := false
+	var nativeSetups map[string]string
 	for name, re := range msg.ready {
 		if len(re.frameSeqs) == 0 {
 			m.emojiImg.markFailed(name)
@@ -941,6 +985,12 @@ func (m Model) handleEmojiImagesFetched(msg emojiImagesFetchedMsg) (Model, tea.C
 		readyNames[name] = struct{}{}
 		if len(re.frameSeqs) > 1 {
 			animated = true
+		}
+		if re.nativeSetup != "" {
+			if nativeSetups == nil {
+				nativeSetups = make(map[string]string, len(msg.ready))
+			}
+			nativeSetups[name] = re.nativeSetup
 		}
 	}
 	m.emojiImg.markFailed(msg.failed...)
@@ -961,10 +1011,68 @@ func (m Model) handleEmojiImagesFetched(msg emojiImagesFetchedMsg) (Model, tea.C
 		m.imgAnimating = true
 		cmds = append(cmds, imgAnimTickCmd(0))
 	}
+	if len(nativeSetups) > 0 {
+		cmds = append(cmds, deliverEmojiNativeSetup(nativeSetups))
+	}
 	if len(cmds) == 0 {
 		return m, nil
 	}
 	return m, tea.Batch(cmds...)
+}
+
+// emojiNativeSetupMsg carries the Kitty native-animation follow-up for one or
+// more emoji that were installed as stills an event ago — see
+// readyEmoji.nativeSetup and deliverEmojiNativeSetup.
+type emojiNativeSetupMsg struct {
+	setups map[string]string // shortcode -> append-frames+start blob
+}
+
+// deliverEmojiNativeSetup hands back setups as a message on the *next* trip
+// through the event loop rather than sending it here — a plain Cmd already
+// runs asynchronously and its result is only processed in a later iteration,
+// which is exactly the gap that lets the just-installed root actually reach
+// the terminal before this larger follow-up starts competing for its
+// attention. See readyEmoji.nativeSetup for why that gap matters.
+func deliverEmojiNativeSetup(setups map[string]string) tea.Cmd {
+	return func() tea.Msg { return emojiNativeSetupMsg{setups: setups} }
+}
+
+// handleEmojiNativeSetup sends the Kitty native-animation follow-up for emoji
+// whose root was installed and displayed one event ago: fold it onto the
+// entry (so a later full re-transmit — there isn't one for emoji today, but
+// nothing rules one out — carries the complete animation, not just the root)
+// and transmit it. Silently drops a setup whose entry has since moved on
+// (failed, or rebuilt under a different id).
+func (m Model) handleEmojiNativeSetup(msg emojiNativeSetupMsg) (Model, tea.Cmd) {
+	if m.emojiImg == nil {
+		return m, nil
+	}
+	var raw strings.Builder
+	for name, setup := range msg.setups {
+		if m.emojiImg.foldNativeSetup(name, setup) {
+			raw.WriteString(setup)
+		}
+	}
+	if raw.Len() == 0 {
+		return m, nil
+	}
+	return m, tea.Raw(raw.String())
+}
+
+// foldNativeSetup appends a Kitty native-animation follow-up onto the still
+// already installed for name, so the entry's one transmit sequence carries the
+// complete animation from here on. Returns false (dropping the setup) if the
+// entry isn't still exactly the single-frame still it was built for — it
+// failed, or was rebuilt under a different id in between.
+func (e *emojiImages) foldNativeSetup(name, setup string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	ent := e.entries[name]
+	if ent == nil || ent.state != emojiReady || len(ent.frameSeqs) != 1 {
+		return false
+	}
+	ent.frameSeqs[0] += setup
+	return true
 }
 
 // invalidatePostsForEmoji drops the cached rendered lines of every on-screen

@@ -267,6 +267,11 @@
           "type": "boolean",
           "description": "Animate GIF attachments drawn as inline thumbnails (default true), and only while they are on screen. No effect unless image_thumbnails is auto. false shows the first frame only.",
           "default": true
+        },
+        "native_gif_protocol": {
+          "type": "boolean",
+          "description": "Experimental (default false): play custom emoji, inline thumbnails, and the preview modal via the Kitty graphics protocol's native animation frames (a=f/a=a) instead of client-side re-transmission on a timer, so the terminal itself times and loops the frames. Needs animation-frame support beyond the base graphics protocol most Kitty-class terminals implement.",
+          "default": false
         }
       }
     },
