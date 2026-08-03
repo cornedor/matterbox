@@ -430,6 +430,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setMembers(msg.members)
 		m.membersLoaded = true
 		m.applyUnreadFromMembers()
+		// Startup lands here before the feed exists. A reconnect resync doesn't:
+		// the badges just moved, so an already-built feed would keep showing the
+		// pre-disconnect set until the user rebuilt it by hand.
+		if m.feed.built {
+			return m, m.buildFeed()
+		}
 		return m, nil
 
 	case postsLoadedMsg:
@@ -752,12 +758,21 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case wsConnectedMsg:
 		m.ws = msg.ws
+		// A non-zero retry count means this connect follows a drop, so we were
+		// deaf for a while and have to re-check what changed (see
+		// resyncAfterReconnect). The clean first connect needs nothing — the
+		// startup fetches are already in flight.
+		resync := m.wsRetry > 0
 		m.wsRetry = 0
 		if strings.HasPrefix(m.status, "websocket") || strings.HasPrefix(m.status, "reconnecting") {
 			m.status = ""
 		}
 		// Resync presence after a (re)connect — a one-off fetch, no new tick.
-		return m, tea.Batch(waitWSEvent(m.ws), m.fetchStatuses())
+		cmds := []tea.Cmd{waitWSEvent(m.ws), m.fetchStatuses()}
+		if resync {
+			cmds = append(cmds, m.resyncAfterReconnect()...)
+		}
+		return m, tea.Batch(cmds...)
 
 	case wsEventMsg:
 		cmd := m.handleWSEvent(msg.ev)

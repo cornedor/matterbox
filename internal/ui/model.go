@@ -1381,6 +1381,39 @@ func (m Model) connectWS() tea.Cmd {
 	}
 }
 
+// resyncAfterReconnect re-checks server state after the WebSocket comes back
+// up. Nothing replays the events that fired while we were deaf, so everything
+// driven purely by live events has silently missed whatever landed in the gap:
+// the unread/mention badges (bumped per `posted` event) undercount, and the
+// open transcript is short of posts.
+//
+// Refetching the channel members rebuilds unread/mentions/muted and the
+// LastViewedAt read boundary from server truth, so counts that went *down*
+// while we were away (channels read on another client) are corrected too. The
+// open channel gets the same fetchRecent + syncChannelDeletions reconcile a
+// warm open performs, which merges missed posts into the visible slice and
+// surfaces messages deleted meanwhile — and re-marks it viewed, since the user
+// is looking at it.
+func (m *Model) resyncAfterReconnect() []tea.Cmd {
+	var cmds []tea.Cmd
+	if m.me != nil {
+		cmds = append(cmds, m.fetchChannelMembers(m.me.Id))
+	}
+	if id := m.openChannelID; id != "" {
+		cmds = append(cmds, m.fetchRecent(id))
+		// Snapshot the deletion watermark here on the UI goroutine, before
+		// fetchRecent's persists can push it past a missed deletion — same
+		// ordering requirement as the warm-open path in openChannelLoadCmd.
+		if m.store != nil {
+			deletionSince, _ := m.store.MaxUpdateAt(id)
+			if c := m.syncChannelDeletions(id, deletionSince); c != nil {
+				cmds = append(cmds, c)
+			}
+		}
+	}
+	return cmds
+}
+
 func (m Model) fetchChannelMembers(userID string) tea.Cmd {
 	return func() tea.Msg {
 		ms, err := m.client.ChannelMembers(m.ctx, userID)
@@ -1438,9 +1471,18 @@ func (m *Model) applyUnreadFromMembers() {
 			chByID[c.Id] = c
 		}
 	}
-	var current string
-	if vis := m.visibleChannels(); m.channelIdx < len(vis) {
-		current = vis[m.channelIdx].Id
+	// The open conversation keeps its zero badge: it was cleared when opened,
+	// and the server's counters can still lag the ViewChannel we sent. That's
+	// m.openChannelID, not the sidebar cursor — the two diverge the moment the
+	// user moves the cursor without opening, which is the common state by the
+	// time a reconnect re-runs this. Before anything is open (startup, where
+	// members can land ahead of the first fetchPosts) fall back to the cursor,
+	// which is the channel about to be opened.
+	current := m.openChannelID
+	if current == "" {
+		if vis := m.visibleChannels(); m.channelIdx < len(vis) {
+			current = vis[m.channelIdx].Id
+		}
 	}
 	for _, mb := range m.members {
 		if mb.ChannelId == current {
