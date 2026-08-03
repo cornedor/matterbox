@@ -105,7 +105,7 @@ type previewState struct {
 	seqs []string
 
 	// native records whether this preview's animation (if any) is running via the
-	// Kitty native-animation frames (animations.native_gif_protocol) rather than the
+	// Kitty native-animation frames (animations.native_animation) rather than the
 	// per-frame re-transmit tick below. Sticky for the life of one loaded image —
 	// cyclePreview/loadPreviewImage decide it afresh for whatever comes next.
 	native bool
@@ -121,6 +121,26 @@ type previewState struct {
 	// already carries animation frames at the old size — an interaction the
 	// protocol doesn't spell out.
 	id uint32
+
+	// --- streaming video playback (space on a video attachment) ---------------
+	// When streaming is set, this preview is a video played incrementally rather
+	// than decoded whole: stream is the live decoder, and instead of the fixed
+	// frames/seqs slices above, frames flow through streamBuf. A decode-ahead Cmd
+	// keeps streamBuf topped up while the tick plays and evicts from its front, so
+	// a long clip starts fast and never holds more than streamBufferFrames at once.
+	// Plays once and stops on the last frame (streamDone). See the streaming
+	// player below and video.go. Nil/false for images and GIFs.
+	streaming bool
+	stream    videoStream
+	// streamBuf is the FIFO of decoded, pre-encoded frames waiting to be shown;
+	// the tick pops the front. streamEOF means the decoder is exhausted (streamBuf
+	// is then all that's left); streamFetching means a decode-ahead Cmd is in
+	// flight (so we don't launch a second); streamDone means playback reached the
+	// end and the last frame is held.
+	streamBuf      []streamFrame
+	streamEOF      bool
+	streamFetching bool
+	streamDone     bool
 }
 
 // previewImageLoadedMsg carries a finished background decode. gen guards against
@@ -189,7 +209,12 @@ func previewableMIME(mime string) bool {
 // ![](…) links a GIF picker posts, plus any bare/linked URL whose path looks
 // like an image. Reuses collectOpenables so the extraction + dedup matches what
 // `o` opens. URLs are previewable only if their extension is one stdlib decodes.
-func previewImages(p *model.Post) []previewItem {
+//
+// allowVideo also admits short-clip video attachments (mp4/webm/…), which only
+// this session's Model can decide (needs the video build + native_animation on);
+// callers pass m.videoPlayable(). It is a plain bool, not derived here, so
+// previewImages stays a pure function the tests can drive without a Model.
+func previewImages(p *model.Post, allowVideo bool) []previewItem {
 	if p == nil {
 		return nil
 	}
@@ -197,7 +222,7 @@ func previewImages(p *model.Post) []previewItem {
 	for _, o := range collectOpenables(p) {
 		switch {
 		case o.file != nil:
-			if previewableMIME(o.file.MimeType) {
+			if previewableMIME(o.file.MimeType) || (allowVideo && isVideoAttachment(o.file)) {
 				out = append(out, previewItem{file: o.file, name: o.file.Name})
 			}
 		case isPreviewableImageURL(o.url):
@@ -226,7 +251,7 @@ func isPreviewableImageURL(raw string) bool {
 // p (←/→ cycle the rest). No image → a status hint; no terminal graphics → a
 // hint to use `o`, since we render Kitty-only.
 func (m Model) openImagePreview(p *model.Post) (tea.Model, tea.Cmd) {
-	items := previewImages(p)
+	items := previewImages(p, m.videoPlayable())
 	if len(items) == 0 {
 		m.status = "no image to preview on this message"
 		return m, nil
@@ -253,7 +278,7 @@ func (m Model) openPreviewItems(items []previewItem, start int) (tea.Model, tea.
 	id := m.emojiImg.allocID()
 	m.preview = previewState{active: true, items: items, idx: start, loading: true, id: id}
 	m.previewGen++
-	return m, m.loadPreviewImage(m.previewGen, id, items[start])
+	return m, m.loadPreviewItem(m.previewGen, id, items[start])
 }
 
 // loadPreviewImage fetches (reusing the on-disk cache), decodes, sizes, and
@@ -267,12 +292,12 @@ func (m Model) loadPreviewImage(gen int, id uint32, it previewItem) tea.Cmd {
 		if err != nil {
 			return previewImageLoadedMsg{gen: gen, err: err}
 		}
-		frames, delays, derr := decodeImageFrames(data, m.animatePreview)
+		frames, delays, derr := m.decodePreviewFrames(data, m.animatePreview)
 		if derr != nil {
 			return previewImageLoadedMsg{gen: gen, err: fmt.Errorf("decode image: %w", derr)}
 		}
 		cols, rows := m.computePreviewCells(frames[0].Bounds())
-		native := m.nativeGIFAnim && len(frames) > 1
+		native := m.nativeAnim && len(frames) > 1
 		var seqs []string
 		var nativeSetup string
 		var eerr error
@@ -362,7 +387,7 @@ func (m Model) usePreviewRendition(f *model.FileInfo) bool {
 	if f == nil || !f.HasPreviewImage {
 		return false
 	}
-	if m.animatePreview && f.MimeType == "image/gif" {
+	if m.animatePreview && (f.MimeType == "image/gif" || (videoBuild && isVideoAttachment(f))) {
 		return false
 	}
 	return true
@@ -620,6 +645,7 @@ func (m Model) cyclePreview(delta int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	free := m.freePreviewID()
+	m.teardownPreviewStream() // free the old video decoder (unless a Cmd holds it)
 	n := len(m.preview.items)
 	m.preview.idx = ((m.preview.idx+delta)%n + n) % n
 	m.preview.loading = true
@@ -630,16 +656,23 @@ func (m Model) cyclePreview(delta int) (tea.Model, tea.Cmd) {
 	m.preview.seqs = nil
 	m.preview.frameIdx = 0
 	m.preview.frameStart = time.Time{}
+	m.preview.streaming = false
+	m.preview.stream = nil
+	m.preview.streamBuf = nil
+	m.preview.streamEOF = false
+	m.preview.streamFetching = false
+	m.preview.streamDone = false
 	id := m.emojiImg.allocID()
 	m.preview.id = id
-	m.previewGen++ // also drops any in-flight animation tick for the old image
-	return m, tea.Batch(free, m.loadPreviewImage(m.previewGen, id, m.preview.items[m.preview.idx]))
+	m.previewGen++ // also drops any in-flight animation tick/chunk for the old image
+	return m, tea.Batch(free, m.loadPreviewItem(m.previewGen, id, m.preview.items[m.preview.idx]))
 }
 
 // closeImagePreview tears down the modal and frees the image id from terminal
 // memory. previewGen is bumped so any in-flight load is ignored on arrival.
 func (m *Model) closeImagePreview() tea.Cmd {
 	cmd := m.freePreviewID()
+	m.teardownPreviewStream() // free the video decoder (unless a Cmd holds it — see teardown)
 	m.preview = previewState{}
 	m.previewGen++
 	return cmd
@@ -683,7 +716,13 @@ func (m Model) handlePreviewKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // the re-fitted pixels arrive via previewReencodedMsg. Encoding stays off the UI
 // goroutine, so even a large image doesn't stall a resize.
 func (m *Model) resizePreview() tea.Cmd {
-	if !m.preview.active || len(m.preview.frames) == 0 || m.preview.id == 0 {
+	if !m.preview.active || m.preview.id == 0 {
+		return nil
+	}
+	if m.preview.streaming {
+		return m.resizePreviewStream()
+	}
+	if len(m.preview.frames) == 0 {
 		return nil
 	}
 	m.sizePreview()

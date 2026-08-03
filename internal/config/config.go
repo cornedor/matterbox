@@ -518,18 +518,31 @@ type AnimationsConfig struct {
 	// true; an explicit false shows the first frame only.
 	InlineImages *bool `yaml:"inline_images"`
 
-	// NativeGIFProtocol switches every animated-GIF surface above — custom
-	// emoji, inline thumbnails, and the image-preview modal — from client-side
+	// NativeAnimation switches every animated surface above — custom emoji,
+	// inline thumbnails, and the image-preview modal — from client-side
 	// re-transmission on a timer to the Kitty graphics protocol's native
 	// animation frames (a=f to upload frames, a=a to run the loop): every frame
 	// is uploaded once and the terminal itself times and loops the animation,
 	// so nothing needs a running Cmd for that image again until it's freed.
+	// It also unlocks *video* (mp4/webm/mov/animated-webp): inline thumbnails as
+	// short looping previews, and the space-to-preview modal streams the whole
+	// clip (decode-ahead, plays once, holds the last frame). Only in a binary
+	// built with the `video` tag (cgo + libav; see internal/ui/video_libav.go) —
+	// without that tag video keeps its 🎬 icon regardless of this flag.
+	//
 	// Plain bool (not a pointer) because false is the wanted default: it is
 	// experimental, depends on animation-frame support beyond the base
 	// graphics protocol most Kitty-class terminals implement, and a terminal
 	// that only does the bare minimum could show a frozen or blank image
 	// instead of falling back — so it needs an explicit opt-in.
-	NativeGIFProtocol bool `yaml:"native_gif_protocol"`
+	NativeAnimation bool `yaml:"native_animation"`
+
+	// NativeGIFProtocol is the former name for NativeAnimation, kept as a
+	// deprecated read-alias so configs written before the rename keep working.
+	// A pointer so we can tell the key apart from an absent one and migrate it
+	// (fillDefaults folds a non-nil value into NativeAnimation, then clears this
+	// so a rewrite drops the stale key); omitempty so it is never emitted anew.
+	NativeGIFProtocol *bool `yaml:"native_gif_protocol,omitempty"`
 }
 
 // KeybindingsConfig holds optional keymap tweaks. Defaults in fillDefaults.
@@ -836,7 +849,7 @@ func Load() (*Config, error) {
 	// and rewrite the file once so the discovered model + prompt show up as
 	// editable defaults. Best-effort: a failed rewrite only means the file
 	// keeps working off in-memory defaults.
-	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.CollapseLongMessages == nil || cfg.CollapsePreviewLines == nil || cfg.DownloadDir == "" || cfg.SQLTab == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.ImageThumbnails == "" || cfg.CodeTheme == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Animations.InlineImages == nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.TwoWay == nil || cfg.Listen.NotifyDMs == nil || cfg.Listen.NotifyDelaySeconds == nil
+	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.CollapseLongMessages == nil || cfg.CollapsePreviewLines == nil || cfg.DownloadDir == "" || cfg.SQLTab == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.ImageThumbnails == "" || cfg.CodeTheme == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Animations.InlineImages == nil || cfg.Animations.NativeGIFProtocol != nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.TwoWay == nil || cfg.Listen.NotifyDMs == nil || cfg.Listen.NotifyDelaySeconds == nil
 	cfg.fillDefaults()
 	if addDefaults {
 		if werr := writeConfig(p, cfg); werr != nil {
@@ -976,6 +989,13 @@ func (c *Config) fillDefaults() {
 		t := true
 		c.Animations.InlineImages = &t
 	}
+	// Migrate the pre-rename native_gif_protocol key into native_animation, then
+	// drop it so a rewrite persists the new name only. A value the user actually
+	// set on the new key wins over the alias.
+	if !c.Animations.NativeAnimation && c.Animations.NativeGIFProtocol != nil {
+		c.Animations.NativeAnimation = *c.Animations.NativeGIFProtocol
+	}
+	c.Animations.NativeGIFProtocol = nil
 	if c.Giphy.Rendition == "" {
 		c.Giphy.Rendition = defaultGiphyRendition
 	}
@@ -1139,14 +1159,16 @@ func writeConfig(p string, cfg *Config) error {
 		"#             space-to-preview modal; inline_images (default true) animates\n" +
 		"#             GIF thumbnails in the transcript, but only while they're on\n" +
 		"#             screen. false freezes any of them on frame one.\n" +
-		"#             native_gif_protocol (default false, experimental) plays all of\n" +
+		"#             native_animation (default false, experimental) plays all of\n" +
 		"#             the above via the Kitty graphics protocol's native animation\n" +
 		"#             frames instead of client-side re-transmission on a timer, so\n" +
 		"#             the terminal times and loops the frames itself. Needs\n" +
 		"#             animation-frame support beyond what most Kitty-class terminals\n" +
 		"#             implement; a terminal that doesn't support it may show a\n" +
 		"#             frozen or blank image instead of falling back, which is why\n" +
-		"#             this needs an explicit opt-in.\n" +
+		"#             this needs an explicit opt-in. In a binary built with the\n" +
+		"#             `video` tag it also plays mp4/webm/mov/webp video (space\n" +
+		"#             streams the whole clip). (Was native_gif_protocol; still read.)\n" +
 		"# giphy:      expand a pasted Giphy link into an inline image. The link is\n" +
 		"#             turned into ![alt](url) instantly (offline, from its id);\n" +
 		"#             with api_key set (https://developers.giphy.com, or the\n" +

@@ -817,14 +817,14 @@ func (m Model) previewInfoMedia() (tea.Model, tea.Cmd) {
 		m.status = "no attachment selected"
 		return m, nil
 	}
-	if !previewableMIME(f.MimeType) {
+	if !m.filePreviewable(f) {
 		m.status = "no preview for " + normalizeFilename(f.Name) + " — press o to open"
 		return m, nil
 	}
 	var items []previewItem
 	start := 0
 	for _, cand := range m.infoMedia {
-		if !previewableMIME(cand.MimeType) {
+		if !m.filePreviewable(cand) {
 			continue
 		}
 		if cand.Id == f.Id {

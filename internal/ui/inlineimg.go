@@ -467,7 +467,7 @@ func (ii *inlineImages) takeDeferredFrames() []thumbFramesJob {
 // animation tick simply has somewhere to go. The caller need not even arm the loop,
 // since the per-event kicker (maybeStartImageAnim) sees the entry become animated.
 //
-// With b.native set (animations.native_gif_protocol), there is no tick to wait for:
+// With b.native set (animations.native_animation), there is no tick to wait for:
 // b.native is the Kitty native-animation setup for every frame but the still already
 // on screen (see encodeInlineThumbNative), and it is folded onto the end of the
 // still's own transmit so a later re-transmit-after-eviction (see sight/takeTransmits)
@@ -933,7 +933,7 @@ func (m *Model) inlineThumbLines(it previewItem, paneWidth int) []string {
 // thumbnails are collapsed — and nothing means *nothing*: the image is never
 // sighted, so it is never fetched, never built and never animated (see sight).
 func (m *Model) inlineFileThumbLines(p *model.Post, f *model.FileInfo, paneWidth int) []string {
-	if f == nil || !previewableMIME(f.MimeType) || m.thumbsHidden(p) {
+	if !m.filePreviewable(f) || m.thumbsHidden(p) {
 		return nil
 	}
 	return m.inlineThumbLines(previewItem{file: f, name: f.Name}, paneWidth)
@@ -992,7 +992,7 @@ func (m *Model) imgChevrons(body string, p *model.Post) string {
 // *in p's body* — as opposed to an uploaded attachment, whose chevron rides on its
 // own filename line in renderAttachments.
 func (m *Model) hasBodyThumbnail(p *model.Post) bool {
-	for _, it := range previewImages(p) {
+	for _, it := range previewImages(p, m.videoPlayable()) {
 		if it.file == nil {
 			return true
 		}
@@ -1003,7 +1003,7 @@ func (m *Model) hasBodyThumbnail(p *model.Post) bool {
 // postThumbKeys is every thumbnail post p draws — what z collapses, and what
 // releaseThumbs frees when it does.
 func (m *Model) postThumbKeys(p *model.Post) []string {
-	items := previewImages(p)
+	items := previewImages(p, m.videoPlayable())
 	if len(items) == 0 {
 		return nil
 	}
@@ -1045,7 +1045,7 @@ func (m *Model) inlineBodyImageLines(p *model.Post, width int) []string {
 		return nil
 	}
 	var out []string
-	for _, it := range previewImages(p) {
+	for _, it := range previewImages(p, m.videoPlayable()) {
 		if it.file != nil {
 			continue // an attachment: renderAttachments draws it, above its chip
 		}
@@ -1092,7 +1092,7 @@ type thumbFramesJob struct {
 // builtThumbFrames is the outcome of one such build. rows/cols come back with it so
 // markFramesBuilt can refuse anything that would land on a different cell box than
 // the still it is completing. Exactly one of native or (seqs, delays) is set: native
-// is the Kitty native-animation setup for frames[1:] (animations.native_gif_protocol
+// is the Kitty native-animation setup for frames[1:] (animations.native_animation
 // — see encodeInlineThumbNative); seqs/delays is the legacy manual-path per-frame
 // transmit sequences, one for every frame including the still.
 type builtThumbFrames struct {
@@ -1218,9 +1218,12 @@ func (m Model) buildInlineThumb(it previewItem, box int) (readyInlineImg, error)
 	}
 	// Animate any GIF, whether it arrived as an attachment or a body link — a
 	// Giphy link is the latter, and a frozen Giphy would be a strange thing to ship.
-	// The bytes are sniffed, so a mislabelled MIME can't fool it either way.
-	if m.animateInline && isGIF(raw) {
-		first, err := decodeFirstGIFFrame(raw)
+	// Short-clip video (video build + native on) takes the same deferred shape: a
+	// still poster now, the rest of the frames built in buildVisibleThumbFrames if
+	// and when the thumbnail comes on screen. The bytes are sniffed, so a
+	// mislabelled MIME can't fool it either way.
+	if m.animateInline && (isGIF(raw) || (videoBuild && looksLikeVideo(raw))) {
+		first, err := firstAnimatedFrame(raw)
 		if err != nil {
 			return readyInlineImg{}, decodeFailure{err}
 		}
@@ -1332,7 +1335,7 @@ func (m Model) loadInlineThumbFrames(jobs []thumbFramesJob) tea.Msg {
 		if err != nil || len(frames) <= 1 {
 			continue // a single-frame GIF: the still we built is the whole image
 		}
-		if m.nativeGIFAnim {
+		if m.nativeAnim {
 			setup, err := m.encodeInlineThumbNative(j.id, frames, delays, j.rows, j.cols)
 			if err != nil {
 				continue
@@ -1399,7 +1402,11 @@ func (m Model) readThumbBytes(it previewItem) ([]byte, error) {
 		return m.readOrDownloadURL(path, it.url)
 	}
 	f := it.file
-	animating := m.animateInline && f.MimeType == "image/gif"
+	// An animated GIF's server rendition is a single flattened frame, and a
+	// video's is a poster still, so anything we mean to animate needs the
+	// original bytes, not the preview. (Still thumbnails happily use the
+	// lighter rendition.)
+	animating := m.animateInline && (f.MimeType == "image/gif" || (videoBuild && isVideoAttachment(f)))
 	if !animating && f.HasPreviewImage {
 		if data, err := m.readOrDownloadFilePreview(f); err == nil && len(data) > 0 {
 			return data, nil

@@ -236,7 +236,17 @@ func isGIF(b []byte) bool {
 // per-frame delays; otherwise (a still image, a single-frame GIF, or animation
 // disabled) it returns one frame and a nil delay slice. Anything stdlib can't
 // decode is an error. Shared by the custom-emoji and image-preview paths.
+//
+// Video containers (mp4/webm/mov/…) route to decodeVideoFrames, which only does
+// real work in a `video`-tagged build (cgo + libav; the stub returns an error).
+// videoBuild is a compile-time constant, so a default build drops this branch
+// entirely and never links libav. Bytes only ever reach here as video when a
+// gate upstream already accepted the file (see filePreviewable), so the branch
+// is dead in practice for the non-video build regardless.
 func decodeImageFrames(raw []byte, animate bool) (frames []image.Image, delays []time.Duration, err error) {
+	if videoBuild && looksLikeVideo(raw) {
+		return decodeVideoFrames(raw, animate, thumbVideoProfile)
+	}
 	if animate && isGIF(raw) {
 		if g, derr := gif.DecodeAll(bytes.NewReader(raw)); derr == nil && len(g.Image) > 1 {
 			return compositeGIF(g)
@@ -280,6 +290,25 @@ func decodeFirstGIFFrame(raw []byte) (image.Image, error) {
 	canvas := image.NewRGBA(bounds)
 	draw.Draw(canvas, src.Bounds(), src, src.Bounds().Min, draw.Over)
 	return canvas, nil
+}
+
+// firstAnimatedFrame decodes just the poster (first) frame of something the
+// deferred-thumbnail path is about to animate — a GIF via the cheap
+// single-descriptor decode above, or a video via libav (its first kept frame).
+// The rest of the frames are built later by loadInlineThumbFrames, so this only
+// needs to land the still on the exact cell box the full decode will reuse.
+func firstAnimatedFrame(raw []byte) (image.Image, error) {
+	if videoBuild && looksLikeVideo(raw) {
+		frames, _, err := decodeVideoFrames(raw, false, thumbVideoProfile)
+		if err != nil {
+			return nil, err
+		}
+		if len(frames) == 0 {
+			return nil, fmt.Errorf("video: no frames")
+		}
+		return frames[0], nil
+	}
+	return decodeFirstGIFFrame(raw)
 }
 
 // compositeGIF flattens an animated GIF into one fully-painted RGBA frame per
@@ -786,7 +815,7 @@ type readyEmoji struct {
 	delays      []time.Duration
 
 	// nativeSetup is the Kitty native-animation follow-up for a multi-frame
-	// result built with animations.native_gif_protocol on: every frame but the
+	// result built with animations.native_animation on: every frame but the
 	// root, plus the terminal-driven loop (buildNativeAnimSetup). It is sent as
 	// its own message one event *after* the root is installed and displayed
 	// (see emojiNativeSetupMsg) rather than bundled into the same install —
@@ -912,7 +941,7 @@ func (m Model) loadEmojiImages(names []string) tea.Msg {
 // id, placeholder, and the transmit sequence(s) that display it. Runs on the
 // fetch goroutine, so every PNG encode stays off the render loop.
 //
-// With animations.native_gif_protocol on, a multi-frame result's root frame is
+// With animations.native_animation on, a multi-frame result's root frame is
 // built and transmitted exactly like a still (frameSeqs has one entry, delays
 // is nil — indistinguishable, to every reader of emojiImgEntry, from a still
 // image, so advanceFrame/hasVisibleAnimated never touch it and no ticking Cmd
@@ -931,7 +960,7 @@ func (m Model) buildReadyEmoji(raw []byte) (readyEmoji, error) {
 	if err != nil {
 		return readyEmoji{}, err
 	}
-	if m.nativeGIFAnim && len(frames) > 1 {
+	if m.nativeAnim && len(frames) > 1 {
 		setup, err := buildNativeAnimSetup(&kittyPNG, id, frames, delays)
 		if err != nil {
 			return readyEmoji{}, err
@@ -962,7 +991,7 @@ func (m Model) buildReadyEmoji(raw []byte) (readyEmoji, error) {
 // raw (out of band) so its placeholders resolve. If any installed emoji is
 // animated, the animation tick is armed (once — imgAnimating guards it).
 //
-// A ready emoji's nativeSetup (animations.native_gif_protocol) is deliberately
+// A ready emoji's nativeSetup (animations.native_animation) is deliberately
 // *not* sent here alongside the root — see readyEmoji.nativeSetup — but handed
 // to deliverEmojiNativeSetup, a Cmd whose result arrives as its own message at
 // least one event later, once the root above has had a chance to actually

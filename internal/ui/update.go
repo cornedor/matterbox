@@ -327,6 +327,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case previewTickMsg:
 		return m.handlePreviewTick(msg)
 
+	case streamOpenedMsg:
+		return m.handleStreamOpened(msg)
+
+	case streamChunkMsg:
+		return m.handleStreamChunk(msg)
+
+	case previewStreamTickMsg:
+		return m.handleStreamTick(msg)
+
+	case streamReencodeMsg:
+		return m.handleStreamReencode(msg)
+
 	case meLoadedMsg:
 		m.me = msg.user
 		m.status = "loading teams & channels…"

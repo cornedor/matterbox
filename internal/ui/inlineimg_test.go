@@ -491,7 +491,7 @@ func TestInlineBodyImageMatchesPreviewItems(t *testing.T) {
 	m := thumbModel()
 	p := giphyPost()
 
-	items := previewImages(p)
+	items := previewImages(p, false)
 	if len(items) != 1 || items[0].url != giphyURL {
 		t.Fatalf("precondition: space-to-preview should offer the Giphy URL, got %v", items)
 	}

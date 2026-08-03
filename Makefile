@@ -16,6 +16,18 @@
 # (TAGS=demoaudio); drop it with `make build TAGS=` to lose that dependency.
 # Raw `go build`/`go run` outside make stay tag-free, so they work without
 # pkg-config — the soundtrack just plays silently there.
+#
+# Optional VIDEO playback (mp4/webm/mov/webp when animations.native_animation is
+# on — inline thumbnails as short looping previews, the space preview streaming
+# the whole clip) is gated behind the `video` tag, which pulls in cgo + libav via
+# go-astiav. Opt in with
+#   make build TAGS=demoaudio,video      (needs CGO_ENABLED=1, on by default here)
+# It needs the ffmpeg dev libraries — pkg-config must find libavformat,
+# libavcodec, libavutil and libswscale (Fedora: ffmpeg-devel/ffmpeg-free-devel;
+# Debian/Ubuntu: libav*-dev). Without the tag, video files keep their 🎬 icon and
+# no libav is linked. NB: `go mod tidy` prunes go-astiav (nothing imports it
+# without the tag) — re-add it with `go get github.com/asticode/go-astiav` if you
+# run tidy.
 
 BINARY := matterbox
 PKG    := .

@@ -13,7 +13,7 @@ import (
 	"github.com/charmbracelet/x/ansi/kitty"
 )
 
-// Kitty's native animation frames (behind animations.native_gif_protocol,
+// Kitty's native animation frames (behind animations.native_animation,
 // default off) — an alternative to the manual scheme every other file in this
 // package uses (encode every frame once, then re-transmit whichever one is due
 // on a client-side timer; see emojiimg.go's advanceFrame and its counterparts

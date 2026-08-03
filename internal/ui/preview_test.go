@@ -55,7 +55,7 @@ func TestPreviewableMIME(t *testing.T) {
 
 func TestPreviewImagesAttachmentFilter(t *testing.T) {
 	p := imagePost("image/png", "application/pdf", "image/gif")
-	got := previewImages(p)
+	got := previewImages(p, false)
 	if len(got) != 2 {
 		t.Fatalf("previewImages returned %d items, want 2 (png+gif, pdf dropped)", len(got))
 	}
@@ -64,10 +64,10 @@ func TestPreviewImagesAttachmentFilter(t *testing.T) {
 			t.Errorf("attachment item has no file: %+v", it)
 		}
 	}
-	if previewImages(nil) != nil {
-		t.Error("previewImages(nil) should be nil")
+	if previewImages(nil, false) != nil {
+		t.Error("previewImages(nil, false) should be nil")
 	}
-	if previewImages(&model.Post{}) != nil {
+	if previewImages(&model.Post{}, false) != nil {
 		t.Error("previewImages on an empty post should be nil")
 	}
 }
@@ -218,7 +218,7 @@ func TestHandlePreviewLoadedTransmits(t *testing.T) {
 	}
 	// id is allocated at open time; the background load supplies the pre-built
 	// transmit sequence and placement size.
-	m.preview = previewState{active: true, items: previewImages(imagePost("image/png")), loading: true, id: 7}
+	m.preview = previewState{active: true, items: previewImages(imagePost("image/png"), false), loading: true, id: 7}
 	m.previewGen = 1
 
 	img := image.NewRGBA(image.Rect(0, 0, 64, 48))
@@ -274,7 +274,7 @@ func twoFrames() ([]image.Image, []time.Duration) {
 // image (single frame) does not.
 func TestHandlePreviewLoadedAnimatedArmsTick(t *testing.T) {
 	m := Model{width: 100, height: 40, emojiImg: activeEmojiImages(), animatePreview: true}
-	m.preview = previewState{active: true, items: previewImages(imagePost("image/gif")), loading: true}
+	m.preview = previewState{active: true, items: previewImages(imagePost("image/gif"), false), loading: true}
 	m.previewGen = 1
 
 	frames, delays := twoFrames()
@@ -298,7 +298,7 @@ func TestHandlePreviewLoadedAnimatedArmsTick(t *testing.T) {
 
 	// Still image: one frame, no tick armed (frameStart stays zero).
 	still := Model{width: 100, height: 40, emojiImg: activeEmojiImages(), animatePreview: true}
-	still.preview = previewState{active: true, items: previewImages(imagePost("image/png")), loading: true, id: 3}
+	still.preview = previewState{active: true, items: previewImages(imagePost("image/png"), false), loading: true, id: 3}
 	still.previewGen = 1
 	smm, _ := still.handlePreviewLoaded(previewImageLoadedMsg{
 		gen: 1, frames: []image.Image{frames[0]}, seqs: []string{"a"}, cols: 8, rows: 4,
@@ -401,7 +401,7 @@ func TestHandlePreviewReencoded(t *testing.T) {
 func TestHandlePreviewKeyClose(t *testing.T) {
 	for _, key := range []string{"space", "esc", "q"} {
 		m := Model{keys: newKeyMap("ctrl"), emojiImg: activeEmojiImages()}
-		m.preview = previewState{active: true, items: previewImages(imagePost("image/png")), id: 7}
+		m.preview = previewState{active: true, items: previewImages(imagePost("image/png"), false), id: 7}
 		m.previewGen = 1
 		mm, _ := m.handlePreviewKey(prevKey(key))
 		if mm.(Model).preview.active {
@@ -412,7 +412,7 @@ func TestHandlePreviewKeyClose(t *testing.T) {
 
 func TestHandlePreviewKeyCycle(t *testing.T) {
 	m := Model{keys: newKeyMap("ctrl"), emojiImg: activeEmojiImages()}
-	m.preview = previewState{active: true, items: previewImages(imagePost("image/png", "image/gif")), idx: 0}
+	m.preview = previewState{active: true, items: previewImages(imagePost("image/png", "image/gif"), false), idx: 0}
 	m.previewGen = 1
 
 	mm, cmd := m.handlePreviewKey(prevKey("right"))
@@ -432,7 +432,7 @@ func TestHandlePreviewKeyCycle(t *testing.T) {
 
 func TestCyclePreviewSingleImageNoop(t *testing.T) {
 	m := Model{emojiImg: activeEmojiImages()}
-	m.preview = previewState{active: true, items: previewImages(imagePost("image/png")), idx: 0}
+	m.preview = previewState{active: true, items: previewImages(imagePost("image/png"), false), idx: 0}
 	mm, cmd := m.cyclePreview(1)
 	if mm.(Model).preview.idx != 0 || cmd != nil {
 		t.Error("cycling a single-image preview should be a no-op")
@@ -453,7 +453,7 @@ func TestPreviewKeyConfigurable(t *testing.T) {
 		t.Fatalf("preview_image override not applied: Preview.Keys() = %v", got)
 	}
 	m := Model{keys: km, emojiImg: activeEmojiImages()}
-	m.preview = previewState{active: true, items: previewImages(imagePost("image/png")), id: 3}
+	m.preview = previewState{active: true, items: previewImages(imagePost("image/png"), false), id: 3}
 	m.previewGen = 1
 	if mm, _ := m.handlePreviewKey(prevKey("p")); mm.(Model).preview.active {
 		t.Error("the rebound preview key should close the modal")
@@ -494,7 +494,7 @@ func TestPreviewImagesFindsBodyURL(t *testing.T) {
 		Id:      "p1",
 		Message: "haha ![Cat Fun GIF by Black Roses Playing Cards](https://media2.giphy.com/media/GRk3GLfzduq1NtfGt5/200.gif?cid=2475d0be&rid=200.gif&ct=g) lol",
 	}
-	got := previewImages(p)
+	got := previewImages(p, false)
 	if len(got) != 1 {
 		t.Fatalf("previewImages = %d items, want 1", len(got))
 	}
@@ -506,7 +506,7 @@ func TestPreviewImagesFindsBodyURL(t *testing.T) {
 	}
 
 	// A non-image link in the body is not previewable.
-	if n := len(previewImages(&model.Post{Id: "p2", Message: "see https://example.com/page"})); n != 0 {
+	if n := len(previewImages(&model.Post{Id: "p2", Message: "see https://example.com/page"}, false)); n != 0 {
 		t.Errorf("previewImages on a non-image link = %d items, want 0", n)
 	}
 }

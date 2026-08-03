@@ -756,14 +756,15 @@ type Model struct {
 	// animateInline snapshots animations.inline_images: when false, a GIF drawn
 	// as an inline thumbnail shows its first frame only. See inlineimg.go.
 	animateInline bool
-	// nativeGIFAnim snapshots animations.native_gif_protocol (experimental, off
-	// by default): true routes every animated-GIF surface — custom emoji,
-	// inline thumbnails, and the image-preview modal — through the Kitty
-	// graphics protocol's native animation frames (a=f/a=a) instead of
-	// client-side re-transmission on a timer. Once transmitted, the terminal
-	// itself times and loops the frames, so nothing needs a running Cmd for
-	// that image again until it's freed. See kittyanim.go.
-	nativeGIFAnim bool
+	// nativeAnim snapshots animations.native_animation (experimental, off by
+	// default): true routes every animated surface — custom emoji, inline
+	// thumbnails, and the image-preview modal — through the Kitty graphics
+	// protocol's native animation frames (a=f/a=a) instead of client-side
+	// re-transmission on a timer. Once transmitted, the terminal itself times
+	// and loops the frames, so nothing needs a running Cmd for that image again
+	// until it's freed. In a `video`-tagged build it also gates short-clip video
+	// (see videoDecodeEnabled / decodeVideoFrames). See kittyanim.go.
+	nativeAnim bool
 
 	// giphyAPIKey / giphyRendition configure pasted-Giphy-link expansion. The
 	// key (empty = offline-only) enables the background title upgrade; the
@@ -995,7 +996,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	animatePreview := true
 	thumbMode := "off" // mirrors config: opt-in, so an upgrade doesn't change how images render
 	animateInline := true
-	nativeGIFAnim := false
+	nativeAnim := false
 	var giphyAPIKey string
 	giphyRendition := "fixed_height"             // mirrors config.defaultGiphyRendition
 	downloadDir := expandUserPath("~/Downloads") // mirrors config.defaultDownloadDir
@@ -1066,7 +1067,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		if cfg.Animations.InlineImages != nil {
 			animateInline = *cfg.Animations.InlineImages
 		}
-		nativeGIFAnim = cfg.Animations.NativeGIFProtocol
+		nativeAnim = cfg.Animations.NativeAnimation
 		giphyAPIKey = cfg.Giphy.APIKey
 		if cfg.Giphy.Rendition != "" {
 			giphyRendition = cfg.Giphy.Rendition
@@ -1247,7 +1248,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		inlineImg:           newInlineImages(thumbMode),
 		animatePreview:      animatePreview,
 		animateInline:       animateInline,
-		nativeGIFAnim:       nativeGIFAnim,
+		nativeAnim:          nativeAnim,
 		giphyAPIKey:         giphyAPIKey,
 		giphyRendition:      giphyRendition,
 		downloadDir:         downloadDir,
