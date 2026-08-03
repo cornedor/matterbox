@@ -458,6 +458,16 @@ func (m *Model) resolveUnreadDivider() {
 	}
 }
 
+// selBarWanted reports whether `pane` (focusMessages or focusThread) should be
+// drawing the selection bar right now. The bar is the only on-screen answer to
+// "which message will this keystroke act on", so it belongs to the pane keys
+// actually reach — anywhere else it misleads. It also drops while a mouse text
+// selection is being drawn in that pane: the bar shifts a header line by two
+// cells, which would skew the cell→content mapping the drag relies on.
+func (m *Model) selBarWanted(pane focus) bool {
+	return m.focus == pane && !(m.textSel.active && m.textSel.pane == pane)
+}
+
 func (m *Model) renderMessages() {
 	// New content generation: invalidates the messages scroll-geometry cache
 	// (see scrollcache.go). Bump unconditionally — every path below resets the
@@ -465,6 +475,7 @@ func (m *Model) renderMessages() {
 	m.msgsContentVer++
 	m.refreshTailBehind()
 	if len(m.posts) == 0 {
+		m.msgsBarDrawn = false
 		m.msgsView.SetContent(lipgloss.NewStyle().Foreground(dimColor).Render("no messages"))
 		m.msgRowStarts = nil
 		m.refreshAnimVisibility() // nothing on screen → stop any animation
@@ -478,11 +489,8 @@ func (m *Model) renderMessages() {
 		m.postIdx = 0
 	}
 
-	// Only show the selection bar when the messages pane is focused —
-	// otherwise the bar would mislead about what keys would act on. Drop it
-	// while a text selection is being drawn here: the bar shifts a header line
-	// by two cells, which would skew the cell→content mapping the drag relies on.
-	decorate := m.focus == focusMessages && !(m.textSel.active && m.textSel.pane == focusMessages)
+	decorate := m.selBarWanted(focusMessages)
+	m.msgsBarDrawn = decorate
 	bar := selectedBarStyle.Render("▎")
 	width := m.msgsView.Width()
 	var allLines []string
@@ -611,17 +619,20 @@ func (m *Model) renderMessages() {
 // focused row.
 func (m *Model) renderThread() {
 	if !m.threadOpen {
+		m.threadBarDrawn = false
 		return
 	}
 	// New content generation: invalidates the thread scroll-geometry cache.
 	m.threadContentVer++
 	if m.threadLoading && len(m.threadPosts) == 0 {
+		m.threadBarDrawn = false
 		m.threadView.SetContent(lipgloss.NewStyle().Foreground(dimColor).Render("loading…"))
 		m.threadRowStarts = nil
 		m.refreshAnimVisibility()
 		return
 	}
 	if len(m.threadPosts) == 0 {
+		m.threadBarDrawn = false
 		m.threadView.SetContent(lipgloss.NewStyle().Foreground(dimColor).Render("no messages"))
 		m.threadRowStarts = nil
 		m.refreshAnimVisibility()
@@ -633,7 +644,8 @@ func (m *Model) renderThread() {
 	if m.threadIdx < 0 {
 		m.threadIdx = 0
 	}
-	decorate := m.focus == focusThread && !(m.textSel.active && m.textSel.pane == focusThread)
+	decorate := m.selBarWanted(focusThread)
+	m.threadBarDrawn = decorate
 	bar := selectedBarStyle.Render("▎")
 	width := m.threadView.Width()
 	var allLines []string

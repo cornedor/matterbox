@@ -66,7 +66,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// forgetting to blur/focus it. Every event funnels through here, so this is
 	// the one place the invariant is guaranteed (see syncComposerFocus).
 	nm.syncComposerFocus()
+	// Same shape for the transcript panes: a focus change that skipped one of
+	// their renders would leave its selection bar on screen (see
+	// syncSelBarFocus).
+	nm.syncSelBarFocus()
 	return nm, cmd
+}
+
+// syncSelBarFocus repaints a transcript pane whose selection bar no longer
+// matches where focus is. The bar is drawn into the viewport content, not by
+// View(), so a handler that moves focus between the messages and thread panes
+// without re-rendering *both* leaves the pane it left still marking a selected
+// message — two indicators on screen, only one of which a keystroke would act
+// on (clicking a thread reply while the messages pane was focused did exactly
+// that). Checking the rendered state against selBarWanted on every event means
+// no future focus-changing path has to remember, which is the same guarantee
+// syncComposerFocus gives the composer cursor. It's a no-op unless a pane is
+// actually stale, so it costs nothing on the ordinary keystroke.
+func (m *Model) syncSelBarFocus() {
+	if m.msgsBarDrawn != m.selBarWanted(focusMessages) {
+		m.renderMessages()
+	}
+	if m.threadBarDrawn != m.selBarWanted(focusThread) {
+		m.renderThread()
+	}
 }
 
 // syncComposerFocus reconciles the composer's bubble-level focus with m.focus,
@@ -3269,12 +3292,32 @@ func (m *Model) applyPendingWheel() {
 	m.wheelPending = 0
 }
 
+// selStillVisible reports whether the selected item's whole visual span sits
+// inside the window [off, off+h) — i.e. the user can still see the selection
+// bar on it, and re-anchoring elsewhere would move the target out from under
+// the indicator.
+func selStillVisible(rowStarts []int, idx, off, h int) bool {
+	if h <= 0 || idx < 0 || idx+1 >= len(rowStarts) {
+		return false
+	}
+	return rowStarts[idx] >= off && rowStarts[idx+1] <= off+h
+}
+
 // syncMsgSelToViewport moves the message selection to the first post still
 // visible at the top of the viewport. Called when a keypress ends mouse
 // free-scroll so the key acts on an on-screen post and the view doesn't jump
 // back to the pre-scroll selection.
+//
+// A selection the wheel left fully on screen is kept as-is: its bar is still
+// drawn on it, so re-anchoring to the top post would silently retarget the very
+// keystroke that triggered this (edit, react, open-thread) at a message the
+// user never selected. Nothing jumps either — a fully visible selection needs
+// no scrolling to satisfy renderMessages' keep-visible rule.
 func (m *Model) syncMsgSelToViewport() {
 	off := m.msgFreeOffset
+	if selStillVisible(m.msgRowStarts, m.postIdx, off, m.msgsView.Height()) {
+		return
+	}
 	for i := 0; i+1 < len(m.msgRowStarts); i++ {
 		if m.msgRowStarts[i+1] > off {
 			m.postIdx = i
@@ -3286,6 +3329,9 @@ func (m *Model) syncMsgSelToViewport() {
 // syncThreadSelToViewport is the thread-pane mirror of syncMsgSelToViewport.
 func (m *Model) syncThreadSelToViewport() {
 	off := m.threadFreeOffset
+	if selStillVisible(m.threadRowStarts, m.threadIdx, off, m.threadView.Height()) {
+		return
+	}
 	for i := 0; i+1 < len(m.threadRowStarts); i++ {
 		if m.threadRowStarts[i+1] > off {
 			m.threadIdx = i
