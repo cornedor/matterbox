@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 	"testing"
@@ -221,6 +222,59 @@ func TestSelBarSkipsDividers(t *testing.T) {
 			t.Errorf("divider line %d carries the selection bar: %q", i, plain)
 		}
 	}
+}
+
+// TestSelBarDividerRowSelectsPostBelow: a divider introduces the post under it,
+// so clicking the "new messages" rule must select the first unread message —
+// not the last read one above it, which is what a row table that put the rule
+// in the previous post's span would resolve to.
+func TestSelBarDividerRowSelectsPostBelow(t *testing.T) {
+	const day = 24 * 60 * 60 * 1000
+	// Tall enough to scroll in both directions: 30 same-day posts, the first
+	// message of a later day (which is also the first unread, so it carries
+	// both rules), then 30 more that day.
+	target := 30
+	posts := append(shortPosts(target), &model.Post{Id: "b", CreateAt: 3 * day, UserId: "u", Message: "first unread"})
+	for i := 0; i < 30; i++ {
+		posts = append(posts, &model.Post{Id: fmt.Sprintf("t%d", i), CreateAt: 3*day + int64(i+1)*1000, UserId: "u", Message: "after"})
+	}
+	m := pagingModel(posts, 0)
+	m.showDateSeparators = true
+	m.unreadDividerID = "b"
+	m.renderMessages()
+
+	lines := strings.Split(m.msgsView.GetContent(), "\n")
+	rules := 0
+	for row, ln := range lines {
+		if !strings.Contains(ansi.Strip(ln), "─") {
+			continue
+		}
+		rules++
+		// A rule and the line under it belong to the same post: the rule
+		// introduces it, rather than trailing the post above.
+		if got, below := postAtVisualRow(m.msgRowStarts, row), postAtVisualRow(m.msgRowStarts, row+1); got != below {
+			t.Errorf("rule row %d resolves to post %d but the line under it to %d", row, got, below)
+		}
+	}
+	if rules != 3 { // opening date rule, tomorrow's date rule, unread rule
+		t.Fatalf("want 3 rules, got %d:\n%s", rules, m.msgsView.GetContent())
+	}
+	if got := postAtVisualRow(m.msgRowStarts, m.msgRowStarts[target]); got != target {
+		t.Errorf("head of the boundary post's span resolves to post %d, want %d", got, target)
+	}
+
+	// Selecting that post keeps its rules on screen when it top-anchors, since
+	// they are part of its span.
+	m.postIdx = target
+	m.anchorMsgSelTop = true
+	m.renderMessages()
+	if got := m.msgsView.YOffset(); got != m.msgRowStarts[target] {
+		t.Errorf("top-anchored selection at YOffset %d, want %d (the head of its span)", got, m.msgRowStarts[target])
+	}
+	if !strings.Contains(ansi.Strip(strings.Split(m.msgsView.View(), "\n")[0]), "─") {
+		t.Error("top-anchored post doesn't show its rule on the first visible row")
+	}
+	wantBarOn(t, &m, focusMessages, target, "post under two rules")
 }
 
 // TestSelBarGeometryIsSelfConsistent: msgRowStarts must describe the content as
@@ -543,6 +597,66 @@ func TestSelBarSyncCostsNothingWhenSettled(t *testing.T) {
 		if m.threadContentVer != threadVer {
 			t.Errorf("focus %v: thread pane re-rendered on a settled event", f)
 		}
+	}
+}
+
+// TestSelBarHiddenWhileFilterOwnsKeys: the channel filter (f) is a captive
+// overlay — it swallows every keystroke without moving m.focus off the
+// transcript. While it's open no message action is reachable, so the bar (and
+// the bright pane frame that agrees with it) must stand down, and both must
+// come back when the filter closes.
+func TestSelBarHiddenWhileFilterOwnsKeys(t *testing.T) {
+	m := pagingModel(shortPosts(4), 2)
+	m.keys = newKeyMap("ctrl")
+	m.renderMessages()
+	wantBarOn(t, &m, focusMessages, 2, "before the filter")
+	if !m.paneOwnsKeys(focusMessages) {
+		t.Fatal("messages pane should own keys before the filter opens")
+	}
+
+	m.filterMode = true
+	out, _ := m.Update(inertMsg{})
+	m = out.(Model)
+	wantBarOn(t, &m, focusMessages, -1, "while the filter owns keys")
+	if m.paneOwnsKeys(focusMessages) {
+		t.Error("messages pane still claims the keys while the filter is open")
+	}
+
+	m.filterMode = false
+	out, _ = m.Update(inertMsg{})
+	m = out.(Model)
+	wantBarOn(t, &m, focusMessages, 2, "after the filter closed")
+}
+
+// TestPollHintTracksKeyOwnership: a poll's "1-4 to vote" hint is the same kind
+// of claim as the bar and must vanish with it when the filter takes the keys.
+// It deliberately does *not* follow the bar's text-selection rule: those keys
+// still work mid-drag (the keypress drops the selection first), and pulling the
+// hint row out would slide the content under the pointer.
+func TestPollHintTracksKeyOwnership(t *testing.T) {
+	poll := unmarshalPost(t, rawActivePoll)
+	m := pagingModel([]*model.Post{{Id: "a", CreateAt: 100, UserId: "u", Message: "hi"}, poll}, 1)
+	m.keys = newKeyMap("ctrl")
+	m.renderMessages()
+	hint := func() bool { return strings.Contains(ansi.Strip(m.msgsView.GetContent()), "1-9 vote") }
+	if !hint() {
+		t.Fatalf("no poll hint on the selected poll:\n%s", m.msgsView.GetContent())
+	}
+
+	m.filterMode = true
+	out, _ := m.Update(inertMsg{})
+	m = out.(Model)
+	if hint() {
+		t.Error("poll still advertises its keys while the filter owns them")
+	}
+
+	m.filterMode = false
+	m.textSel = textSel{pane: focusMessages, active: true, anchorLine: 1, headLine: 1, headCol: 4}
+	out, _ = m.Update(inertMsg{})
+	m = out.(Model)
+	wantBarOn(t, &m, focusMessages, -1, "text selection suppresses the bar")
+	if !hint() {
+		t.Error("poll hint dropped during a text drag; its keys still work there")
 	}
 }
 

@@ -423,13 +423,13 @@ type Model struct {
 	lastChannelByTeam map[string]string
 
 	focus focus
-	// msgsBarDrawn / threadBarDrawn record whether the last render of each
-	// pane actually drew the selection bar, so syncSelBarFocus can spot a bar
-	// left over from a focus that has since moved on. See syncSelBarFocus.
-	msgsBarDrawn   bool
-	threadBarDrawn bool
-	width          int
-	height         int
+	// msgsClaim / threadClaim are the key-ownership state each pane's content
+	// was last rendered against, so syncSelBarFocus can spot a pane still
+	// advertising keys it no longer has. See keyClaim / paneClaim.
+	msgsClaim   keyClaim
+	threadClaim keyClaim
+	width       int
+	height      int
 	// cellPxW/cellPxH are the terminal's character-cell size in pixels, learned
 	// from a startup XTWINOPS query (see requestCellSize / the uv.CellSizeEvent
 	// handler). Zero until the terminal answers (or if it never does). The

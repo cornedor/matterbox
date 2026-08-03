@@ -73,21 +73,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return nm, cmd
 }
 
-// syncSelBarFocus repaints a transcript pane whose selection bar no longer
-// matches where focus is. The bar is drawn into the viewport content, not by
-// View(), so a handler that moves focus between the messages and thread panes
-// without re-rendering *both* leaves the pane it left still marking a selected
-// message — two indicators on screen, only one of which a keystroke would act
-// on (clicking a thread reply while the messages pane was focused did exactly
-// that). Checking the rendered state against selBarWanted on every event means
-// no future focus-changing path has to remember, which is the same guarantee
+// syncSelBarFocus repaints a transcript pane whose rendered content still
+// claims keys it no longer has. Those claims — the selection bar, a poll's key
+// hints — are baked into the viewport content rather than drawn by View(), so a
+// handler that moves focus between the messages and thread panes without
+// re-rendering *both* leaves the pane it left still marking a selected message:
+// two indicators on screen, only one of which a keystroke would act on
+// (clicking a thread reply while the messages pane was focused did exactly
+// that). Comparing each pane's recorded claim against the live one on every
+// event means no future focus-changing path has to remember, the same guarantee
 // syncComposerFocus gives the composer cursor. It's a no-op unless a pane is
 // actually stale, so it costs nothing on the ordinary keystroke.
 func (m *Model) syncSelBarFocus() {
-	if m.msgsBarDrawn != m.selBarWanted(focusMessages) {
+	if m.msgsClaim != m.paneClaim(focusMessages) {
 		m.renderMessages()
 	}
-	if m.threadBarDrawn != m.selBarWanted(focusThread) {
+	if m.threadClaim != m.paneClaim(focusThread) {
 		m.renderThread()
 	}
 }

@@ -101,11 +101,11 @@ func TestDateDividerBetweenDays(t *testing.T) {
 		t.Fatalf("want 2 date rules (top + day boundary), got %d:\n%s", len(rules), content)
 	}
 	lines := strings.Split(content, "\n")
-	// The second rule sits in the gap directly above post c (index 2);
-	// msgRowStarts[2] still points at c's real first line, one row below it.
+	// The second rule opens post c's row span (index 2): a rule introduces the
+	// post under it, so msgRowStarts[2] is the rule's own row.
 	boundary := rules[1]
-	if got := m.msgRowStarts[2]; got != boundary+1 {
-		t.Errorf("day rule not directly above first post of day 2: rule row %d, post c starts at %d", boundary, got)
+	if got := m.msgRowStarts[2]; got != boundary {
+		t.Errorf("day rule not at the head of day 2's first post: rule row %d, post c starts at %d", boundary, got)
 	}
 	if want := formatDividerDate(posts[2].CreateAt); !strings.Contains(lines[boundary], want) {
 		t.Errorf("boundary rule %q missing label %q", lines[boundary], want)
@@ -147,8 +147,11 @@ func TestDateDividerBreaksGrouping(t *testing.T) {
 	m.renderMessages()
 
 	lines := strings.Split(m.msgsView.GetContent(), "\n")
-	start := m.msgRowStarts[1] // post b's first rendered row
-	if !strings.Contains(lines[start], "bob") {
-		t.Errorf("post b should keep its header under the date rule, got %q", lines[start])
+	start := m.msgRowStarts[1] // post b's span opens with its date rule
+	if !strings.Contains(lines[start], "─") {
+		t.Fatalf("post b's span should open with the date rule, got %q", lines[start])
+	}
+	if !strings.Contains(lines[start+1], "bob") {
+		t.Errorf("post b should keep its header under the date rule, got %q", lines[start+1])
 	}
 }

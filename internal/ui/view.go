@@ -458,24 +458,45 @@ func (m *Model) resolveUnreadDivider() {
 	}
 }
 
-// selBarWanted reports whether `pane` (focusMessages or focusThread) should be
-// drawing the selection bar right now. The bar is the only on-screen answer to
-// "which message will this keystroke act on", so it belongs to the pane keys
-// actually reach — anywhere else it misleads. It also drops while a mouse text
-// selection is being drawn in that pane: the bar shifts a header line by two
-// cells, which would skew the cell→content mapping the drag relies on.
-func (m *Model) selBarWanted(pane focus) bool {
-	return m.focus == pane && !(m.textSel.active && m.textSel.pane == pane)
+// keyClaim is everything a rendered transcript pane asserts about its keys.
+// owns is whether keystrokes currently land there at all — what the bright pane
+// frame and a poll's key hints promise. bar is the same minus one carve-out,
+// and drives the selection bar. Each render records the claim it drew (see
+// syncSelBarFocus), so a claim left over from a focus that has moved on can be
+// spotted and repainted.
+type keyClaim struct{ owns, bar bool }
+
+// paneClaim computes what `pane` (focusMessages or focusThread) may currently
+// claim. Focus alone doesn't decide it: the channel filter (f) is a captive
+// overlay that swallows every key while it's open without moving m.focus off
+// the transcript, so during it none of the pane's own actions are reachable.
+// The bar additionally stands down while a mouse text selection is being drawn
+// in that pane — it shifts a header line by two cells, which would skew the
+// cell→content mapping the drag relies on.
+func (m *Model) paneClaim(pane focus) keyClaim {
+	owns := m.focus == pane && !m.filterMode
+	return keyClaim{owns: owns, bar: owns && !(m.textSel.active && m.textSel.pane == pane)}
 }
+
+// paneOwnsKeys reports whether keystrokes currently reach `pane`.
+func (m *Model) paneOwnsKeys(pane focus) bool { return m.paneClaim(pane).owns }
+
+// selBarWanted reports whether `pane` should be drawing the selection bar — the
+// only on-screen answer to "which message will this keystroke act on", so it
+// belongs to the pane keys actually reach and nowhere else.
+func (m *Model) selBarWanted(pane focus) bool { return m.paneClaim(pane).bar }
 
 func (m *Model) renderMessages() {
 	// New content generation: invalidates the messages scroll-geometry cache
 	// (see scrollcache.go). Bump unconditionally — every path below resets the
 	// viewport content.
 	m.msgsContentVer++
+	// Record the claim this render is about to bake into the content, before
+	// the early returns — an empty pane claims nothing visually, but storing
+	// the live value is what keeps syncSelBarFocus from repainting it forever.
+	m.msgsClaim = m.paneClaim(focusMessages)
 	m.refreshTailBehind()
 	if len(m.posts) == 0 {
-		m.msgsBarDrawn = false
 		m.msgsView.SetContent(lipgloss.NewStyle().Foreground(dimColor).Render("no messages"))
 		m.msgRowStarts = nil
 		m.refreshAnimVisibility() // nothing on screen → stop any animation
@@ -489,8 +510,7 @@ func (m *Model) renderMessages() {
 		m.postIdx = 0
 	}
 
-	decorate := m.selBarWanted(focusMessages)
-	m.msgsBarDrawn = decorate
+	decorate := m.msgsClaim.bar
 	bar := selectedBarStyle.Render("▎")
 	width := m.msgsView.Width()
 	var allLines []string
@@ -507,33 +527,34 @@ func (m *Model) renderMessages() {
 		if i > 0 {
 			prev = m.posts[i-1]
 		}
+		// A divider introduces the post under it, so the post's row span starts
+		// at the divider: a click on the "new messages" rule selects the first
+		// unread message rather than the last read one above it, and landing on
+		// a post top-anchored keeps its rule on screen.
+		rowStarts[i] = visAcc
 		// Insert a subtle date separator above the first message of each local
 		// day. Drawn inline (unlike the frozen unread divider) by comparing
-		// adjacent posts' local dates; the extra row lives in the gap before the
-		// post so rowStarts still points at the post's real first line. A post
-		// that opens a new day also keeps its own header, so a grouped
-		// continuation line never renders bare beneath the rule.
+		// adjacent posts' local dates. A post that opens a new day also keeps
+		// its own header, so a grouped continuation line never renders bare
+		// beneath the rule.
 		crossDay := m.showDateSeparators && crossesLocalDay(prev, p)
 		if crossDay {
 			allLines = append(allLines, dateDivider(width, p.CreateAt))
 			visAcc++
 		}
-		// Insert the "new messages" divider above its frozen anchor post. The
-		// extra row lives in the gap before the post, so rowStarts still points
-		// at the post's real first line.
+		// Insert the "new messages" divider above its frozen anchor post.
 		if !dividerDrawn && p.Id != "" && p.Id == m.unreadDividerID {
 			allLines = append(allLines, unreadDivider(width))
 			visAcc++
 			dividerDrawn = true
 		}
-		rowStarts[i] = visAcc
 		grouped := m.groupWithPrev(p, prev, false)
 		if crossDay {
 			grouped = false
 		}
 		chunk, rows := m.renderPostLines(p, grouped)
 		if i == m.postIdx {
-			selVisStart = visAcc
+			selVisStart = rowStarts[i]
 			if decorate {
 				// Don't mutate the cached slice; copy before decorating.
 				decorated := make([]string, len(chunk))
@@ -552,7 +573,10 @@ func (m *Model) renderMessages() {
 				// undecorated row count.
 				rows = postVisualRows(chunk, width)
 			}
-			selVisRows = rows
+			// Any divider rows drawn above sit inside this post's span (see
+			// rowStarts), so they count toward the height the scroll anchoring
+			// below works with — visAcc hasn't taken the chunk itself yet.
+			selVisRows = visAcc - rowStarts[i] + rows
 		}
 		allLines = append(allLines, chunk...)
 		visAcc += rows
@@ -618,21 +642,21 @@ func (m *Model) renderMessages() {
 // posts, mirroring renderMessages' selection-bar behaviour for the
 // focused row.
 func (m *Model) renderThread() {
+	// As in renderMessages: record the claim first, so the early returns below
+	// leave syncSelBarFocus with nothing to reconcile.
+	m.threadClaim = m.paneClaim(focusThread)
 	if !m.threadOpen {
-		m.threadBarDrawn = false
 		return
 	}
 	// New content generation: invalidates the thread scroll-geometry cache.
 	m.threadContentVer++
 	if m.threadLoading && len(m.threadPosts) == 0 {
-		m.threadBarDrawn = false
 		m.threadView.SetContent(lipgloss.NewStyle().Foreground(dimColor).Render("loading…"))
 		m.threadRowStarts = nil
 		m.refreshAnimVisibility()
 		return
 	}
 	if len(m.threadPosts) == 0 {
-		m.threadBarDrawn = false
 		m.threadView.SetContent(lipgloss.NewStyle().Foreground(dimColor).Render("no messages"))
 		m.threadRowStarts = nil
 		m.refreshAnimVisibility()
@@ -644,8 +668,7 @@ func (m *Model) renderThread() {
 	if m.threadIdx < 0 {
 		m.threadIdx = 0
 	}
-	decorate := m.selBarWanted(focusThread)
-	m.threadBarDrawn = decorate
+	decorate := m.threadClaim.bar
 	bar := selectedBarStyle.Render("▎")
 	width := m.threadView.Width()
 	var allLines []string
@@ -1060,7 +1083,7 @@ func (m *Model) renderThreadPostLines(p *model.Post, isRoot, grouped bool) ([]st
 		// See renderPostLines: body-linked images draw under the text that links them.
 		lines = append(lines, m.inlineBodyImageLines(p, width)...)
 		if poll {
-			selected := m.focus == focusThread && m.threadIdx >= 0 && m.threadIdx < len(m.threadPosts) && m.threadPosts[m.threadIdx] == p
+			selected := m.paneOwnsKeys(focusThread) && m.threadIdx >= 0 && m.threadIdx < len(m.threadPosts) && m.threadPosts[m.threadIdx] == p
 			for _, l := range m.renderPoll(p, width, selected) {
 				lines = append(lines, wrapBodyLine(l, width)...)
 			}
@@ -1191,7 +1214,12 @@ func (m *Model) renderPostLines(p *model.Post, grouped bool) ([]string, int) {
 		// each above its own filename line.
 		lines = append(lines, m.inlineBodyImageLines(p, width)...)
 		if poll {
-			selected := m.focus == focusMessages && m.postIdx >= 0 && m.postIdx < len(m.posts) && m.posts[m.postIdx] == p
+			// Deliberately paneOwnsKeys and not selBarWanted: an active mouse
+			// text selection hides the bar for drag-geometry reasons, but the
+			// poll's keys do still work (a keypress drops the selection first),
+			// and dropping the hint row mid-drag would slide the content out
+			// from under the pointer.
+			selected := m.paneOwnsKeys(focusMessages) && m.postIdx >= 0 && m.postIdx < len(m.posts) && m.posts[m.postIdx] == p
 			for _, l := range m.renderPoll(p, width, selected) {
 				lines = append(lines, wrapBodyLine(l, width)...)
 			}
@@ -1805,7 +1833,7 @@ func (m *Model) renderMessagesPane(height, width int) string {
 	// reading target. Focusing the composer (or the attachment chips inside this
 	// box) deliberately dims the frame so the reading area visibly blurs — the
 	// composer's own top rule / the chip highlight carry the focus instead.
-	highlighted := m.focus == focusMessages
+	highlighted := m.paneOwnsKeys(focusMessages)
 	borderColor := dimColor
 	if highlighted {
 		borderColor = focusedColor
@@ -2038,7 +2066,7 @@ func (m *Model) renderThreadPane(height, width int) string {
 	// thread transcript has focus; composing a reply (or touching its attachment
 	// chips) dims it so the reading area blurs and the composer rule stands out.
 	borderColor := dimColor
-	if m.focus == focusThread {
+	if m.paneOwnsKeys(focusThread) {
 		borderColor = focusedColor
 	}
 

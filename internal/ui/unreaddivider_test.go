@@ -55,10 +55,13 @@ func TestUnreadDividerAboveFirstUnread(t *testing.T) {
 	if !strings.Contains(lines[div], "─") {
 		t.Errorf("divider row is not a rule: %q", lines[div])
 	}
-	// It sits in the gap right before post b (index 1); rowStarts[1] still
-	// points at b's real first line, one row below the divider.
-	if got := m.msgRowStarts[1]; got != div+1 {
-		t.Errorf("divider not directly above first unread post: divider row %d, post b starts at %d", div, got)
+	// It opens post b's row span (index 1): the rule introduces the first unread
+	// post, so a click on it lands there rather than on the last read post.
+	if got := m.msgRowStarts[1]; got != div {
+		t.Errorf("divider not at the head of the first unread post: divider row %d, post b starts at %d", div, got)
+	}
+	if strings.Contains(lines[div+1], "─") {
+		t.Errorf("post b's own first line should follow the rule, got another rule: %q", lines[div+1])
 	}
 	// Row accounting stays consistent: the final rowStart equals the line count.
 	if total := m.msgRowStarts[len(m.msgRowStarts)-1]; total != len(lines) {
@@ -121,7 +124,7 @@ func TestUnreadDividerFrozenAfterSend(t *testing.T) {
 	if div == -1 {
 		t.Fatalf("divider vanished after sending a message")
 	}
-	if got := m.msgRowStarts[1]; got != div+1 || got != bStart {
-		t.Errorf("divider moved after send: now above row %d (post b at %d, was %d)", div, got, bStart)
+	if got := m.msgRowStarts[1]; got != div || got != bStart {
+		t.Errorf("divider moved after send: now at row %d (post b at %d, was %d)", div, got, bStart)
 	}
 }
