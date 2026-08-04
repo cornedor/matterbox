@@ -353,6 +353,7 @@ var keyContexts = []keyContext{
 			return []key.Binding{
 				m.keys.Up, m.keys.Down, m.keys.InputUp, m.keys.InputDown,
 				m.keys.Home, m.keys.End, m.keys.OpenChannel, m.keys.MarkRead, m.keys.Refresh,
+				m.keys.FeedMuted,
 			}
 		},
 	},

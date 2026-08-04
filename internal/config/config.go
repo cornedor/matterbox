@@ -111,6 +111,13 @@ type Config struct {
 	// an absent key defaults to false — the tab is hidden — while an explicit
 	// `sql_tab: true` shows it. See internal/ui/sqltab.go.
 	SQLTab *bool `yaml:"sql_tab"`
+	// FeedShowMuted lets muted channels into the unread feed (and its tab
+	// badge), which otherwise leaves them out — muting a channel opts it out of
+	// the "things to read" list. Pointer so an absent key defaults to false;
+	// `feed_show_muted: true` starts the feed with them shown. This is only the
+	// startup state: M on the Feed tab flips it for the session. See
+	// internal/ui/feed.go.
+	FeedShowMuted *bool `yaml:"feed_show_muted"`
 	// Keybindings holds optional keymap tweaks. See internal/ui.
 	Keybindings KeybindingsConfig `yaml:"keybindings"`
 	// EmojiImages controls whether custom (server) emoji render as real
@@ -1097,6 +1104,10 @@ func writeConfig(p string, cfg *Config) error {
 		"# sql_tab:    show the read-only SQL tab — a query editor over your local\n" +
 		"#             message cache whose rows render as chat messages (default\n" +
 		"#             false, hidden). Set true to add it to the tab strip.\n" +
+		"# feed_show_muted: include muted channels in the unread feed and its tab\n" +
+		"#             badge (default false — muting opts a channel out of the\n" +
+		"#             feed). This only sets the startup state; M on the Feed tab\n" +
+		"#             toggles it for the session.\n" +
 		"# keybindings: nav_modifier sets the modifier for arrow-key team/channel\n" +
 		"#             navigation: ctrl (default), alt, shift, super (the ⌘/Windows\n" +
 		"#             key; also \"cmd\"), meta, hyper, or none. On macOS ctrl+arrows\n" +

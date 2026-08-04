@@ -64,6 +64,11 @@ type feedState struct {
 	err     string
 	seq     int // bumps on every build; stale feedLoadedMsg are dropped
 
+	// showMuted lets muted channels into the feed (and the tab badge), which
+	// otherwise leave them out. Seeded from config.FeedShowMuted and flipped
+	// for the session by the toggle key (M) or the "> Feed: …" command.
+	showMuted bool
+
 	// Empty-state splash animation. wavePhase advances each frame to drift
 	// the water; waveActive guards against running more than one tick loop.
 	// Both only matter while the feed has no entries (see feedart.go).
@@ -88,13 +93,14 @@ type feedState struct {
 }
 
 // newFeedState constructs the viewport used by the Feed tab. Called once
-// at startup from New().
-func newFeedState() feedState {
+// at startup from New(). showMuted is the config's starting answer to "do
+// muted channels belong in the feed?"; M flips it for the session.
+func newFeedState(showMuted bool) feedState {
 	vp := viewport.New()
 	vp.SoftWrap = true
 	// Seed a short initial idle so the first gull appears soon after the splash
 	// is first viewed, then settles into the rare random cadence.
-	return feedState{view: vp, birdWait: int(birdGapFirst / feedWaveInterval)}
+	return feedState{view: vp, showMuted: showMuted, birdWait: int(birdGapFirst / feedWaveInterval)}
 }
 
 // feedTarget is a snapshot of one unread channel taken on the UI
@@ -142,11 +148,32 @@ func (m Model) lastViewedByChannel() map[string]int64 {
 
 // channelMuted reports whether the given channel is muted for the current
 // user, per the cached channel-member notify props (mark_unread == mention).
-// Muted channels are deliberately kept out of the unread feed. The lookup is
-// O(1) against the mutedChannels set setMembers maintains; a nil set (no
-// members loaded yet) reports nothing muted.
+// The lookup is O(1) against the mutedChannels set setMembers maintains; a nil
+// set (no members loaded yet) reports nothing muted.
 func (m *Model) channelMuted(channelID string) bool {
 	return m.mutedChannels[channelID]
+}
+
+// feedExcludes reports whether the feed (and its tab badge) should leave the
+// channel out: muted channels are opted out of the "things to read" list,
+// unless the user asked to see them (feed_show_muted / the M toggle). Every
+// place that decides what belongs in the feed goes through here so the build,
+// the live-post path and the badge can't disagree.
+func (m *Model) feedExcludes(channelID string) bool {
+	return m.channelMuted(channelID) && !m.feed.showMuted
+}
+
+// toggleFeedMuted flips whether muted channels appear in the feed and rebuilds
+// it, so both directions (letting them in, throwing them out) are one code
+// path. The choice lasts the session; feed_show_muted sets the startup state.
+func (m *Model) toggleFeedMuted() tea.Cmd {
+	m.feed.showMuted = !m.feed.showMuted
+	if m.feed.showMuted {
+		m.status = "feed: showing muted channels"
+	} else {
+		m.status = "feed: hiding muted channels"
+	}
+	return m.buildFeed()
 }
 
 // setMembers installs a fresh channel-member snapshot and rebuilds the derived
@@ -169,17 +196,18 @@ func (m *Model) rebuildMutedChannels() {
 }
 
 // feedBadgeCounts returns the number of distinct channels with unread
-// messages and with mentions for the Feed tab badge. Muted channels are
-// skipped to match buildFeed: they keep their unread/mention counts for the
-// sidebar, but the feed is the "things to read" list they're opted out of.
+// messages and with mentions for the Feed tab badge. Excluded channels are
+// skipped to match buildFeed, so the badge always counts exactly what the feed
+// would show: muted channels keep their unread/mention counts for the sidebar
+// but stay out of both, unless feed.showMuted lets them in.
 func (m *Model) feedBadgeCounts() (unread, mention int) {
 	for id, n := range m.unread {
-		if n > 0 && !m.channelMuted(id) {
+		if n > 0 && !m.feedExcludes(id) {
 			unread++
 		}
 	}
 	for id, n := range m.mentions {
-		if n > 0 && !m.channelMuted(id) {
+		if n > 0 && !m.feedExcludes(id) {
 			mention++
 		}
 	}
@@ -190,7 +218,8 @@ func (m *Model) feedBadgeCounts() (unread, mention int) {
 // that fetches each channel's unread posts. Bumps the seq so any earlier
 // in-flight build is ignored when it lands. Muted channels are skipped —
 // they still carry an unread count, but the feed is the "things to read"
-// list and muted channels are explicitly opted out of that.
+// list and muted channels are explicitly opted out of that — unless
+// feed.showMuted (M / feed_show_muted) asks for them.
 func (m *Model) buildFeed() tea.Cmd {
 	m.feed.seq++
 	m.feed.loading = true
@@ -201,7 +230,7 @@ func (m *Model) buildFeed() tea.Cmd {
 	chans := m.unreadChannels()
 	targets := make([]feedTarget, 0, len(chans))
 	for _, c := range chans {
-		if m.channelMuted(c.Id) {
+		if m.feedExcludes(c.Id) {
 			continue
 		}
 		targets = append(targets, feedTarget{
@@ -386,6 +415,13 @@ func (m Model) applyFeedResults(msg feedLoadedMsg) (tea.Model, tea.Cmd) {
 	}
 	entries := msg.entries
 	sort.SliceStable(entries, func(i, j int) bool {
+		// Muted channels sink below everything else: they're shown on request,
+		// but a chatty muted channel must not push the channels you actually
+		// follow off the top of the feed.
+		qi, qj := m.channelMuted(entries[i].channelID), m.channelMuted(entries[j].channelID)
+		if qi != qj {
+			return qj
+		}
 		mi, mj := m.mentions[entries[i].channelID] > 0, m.mentions[entries[j].channelID] > 0
 		if mi != mj {
 			return mi
@@ -452,6 +488,8 @@ func (m Model) handleFeedKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.markFeedEntryRead()
 	case key.Matches(msg, m.keys.Refresh):
 		return m, m.buildFeed()
+	case key.Matches(msg, m.keys.FeedMuted):
+		return m, m.toggleFeedMuted()
 	case key.Matches(msg, m.keys.Tab):
 		return m.cycleFocus(1)
 	case key.Matches(msg, m.keys.ShiftTab):
@@ -526,8 +564,9 @@ func (m *Model) feedAppendPosted(p *model.Post) {
 		return
 	}
 	// Muted channels are excluded from the feed (see buildFeed), so a live
-	// post in one must not slip a fresh bubble in either.
-	if m.channelMuted(p.ChannelId) {
+	// post in one must not slip a fresh bubble in either — unless the user is
+	// showing muted channels, in which case it belongs like any other.
+	if m.feedExcludes(p.ChannelId) {
 		return
 	}
 	for i := range m.feed.entries {
@@ -562,9 +601,16 @@ func (m *Model) feedAppendPosted(p *model.Post) {
 		unread:    []*model.Post{p},
 		mention:   m.mentions[p.ChannelId] > 0,
 	}
-	m.feed.entries = append([]feedEntry{entry}, m.feed.entries...)
-	if len(m.feed.entries) > 1 && m.feed.idx >= 0 {
-		m.feed.idx++ // keep the previously-selected bubble selected
+	if m.channelMuted(p.ChannelId) {
+		// Muted channels sort last (see applyFeedResults), so a live post in one
+		// joins at the bottom rather than jumping the queue. The selection index
+		// is untouched — nothing shifted under it.
+		m.feed.entries = append(m.feed.entries, entry)
+	} else {
+		m.feed.entries = append([]feedEntry{entry}, m.feed.entries...)
+		if len(m.feed.entries) > 1 && m.feed.idx >= 0 {
+			m.feed.idx++ // keep the previously-selected bubble selected
+		}
 	}
 	if m.onFeedTab() {
 		m.renderFeedResults()
@@ -727,6 +773,11 @@ func (m Model) renderFeedBubble(outerW int, e feedEntry, selected bool) string {
 	if ch := m.findChannel(e.channelID); ch != nil {
 		header = m.channelBreadcrumb(ch)
 	}
+	if m.channelMuted(e.channelID) {
+		// Only reachable with showMuted on; name why this one is here so a
+		// muted channel isn't mistaken for something that wants attention.
+		header += " · muted"
+	}
 	n := m.unread[e.channelID]
 	if n <= 0 {
 		n = len(e.unread)
@@ -786,6 +837,47 @@ func feedDivider(width int) string {
 	return style.Render(label + strings.Repeat("─", width-lipgloss.Width(label)))
 }
 
+// feedHiddenMuted counts the muted channels with unread messages the feed is
+// currently leaving out, so the header can admit they exist. Zero whenever
+// showMuted is on — nothing is hidden then.
+func (m *Model) feedHiddenMuted() int {
+	if m.feed.showMuted {
+		return 0
+	}
+	n := 0
+	for id, c := range m.unread {
+		if c > 0 && m.channelMuted(id) {
+			n++
+		}
+	}
+	return n
+}
+
+// feedHints builds the title-row key legend from the live bindings, so a
+// rebind (or an unbind) is reflected instead of the hint claiming a key that
+// does nothing. The muted toggle names the direction it would take you in, and
+// carries the hidden count when there is one.
+func (m *Model) feedHints() string {
+	var hints []string
+	add := func(b key.Binding, label string) {
+		if !b.Enabled() || b.Help().Key == "" {
+			return
+		}
+		hints = append(hints, b.Help().Key+" "+label)
+	}
+	if len(m.feed.entries) > 0 {
+		add(m.keys.OpenChannel, "open")
+		add(m.keys.MarkRead, "mark read")
+		add(m.keys.Refresh, "refresh")
+	}
+	if m.feed.showMuted {
+		add(m.keys.FeedMuted, "hide muted")
+	} else if n := m.feedHiddenMuted(); n > 0 {
+		add(m.keys.FeedMuted, "show "+strconv.Itoa(n)+" muted")
+	}
+	return strings.Join(hints, " · ")
+}
+
 // renderFeedPane composes the entire body of the Feed tab: title, a
 // separator rule, then the bubble viewport. Mirrors renderSearchPane
 // without the search input row.
@@ -805,7 +897,11 @@ func (m Model) renderFeedPane(height, width int) string {
 	case m.feed.loading:
 		meta = dim.Render("  refreshing…")
 	case len(m.feed.entries) > 0:
-		meta = dim.Render("  " + plural(len(m.feed.entries), "channel", "channels") + "  ·  enter open · m mark read · r refresh")
+		meta = dim.Render("  " + plural(len(m.feed.entries), "channel", "channels") + "  ·  " + m.feedHints())
+	case m.feedHiddenMuted() > 0:
+		// Nothing to read but muted channels are being held back — say so, and
+		// name the key that lets them in, or the splash is the whole story.
+		meta = dim.Render("  " + m.feedHints())
 	}
 	titleRow := title + meta
 

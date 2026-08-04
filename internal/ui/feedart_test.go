@@ -181,7 +181,7 @@ func TestFeedBirdHeightJitter(t *testing.T) {
 func TestFeedBirdSchedule(t *testing.T) {
 	const w = 80
 	m := &Model{}
-	m.feed = newFeedState()
+	m.feed = newFeedState(false)
 	m.feed.birdWait = 3 // short idle for the test
 
 	for i := 0; i < 3; i++ {
@@ -220,7 +220,7 @@ func TestFeedBirdSchedule(t *testing.T) {
 // is replaced (here, by a refresh going in flight).
 func TestFeedWaveLoopGuard(t *testing.T) {
 	m := &Model{}
-	m.feed = newFeedState()
+	m.feed = newFeedState(false)
 	// teamIdx 0 with no DMs is the Feed tab (see tabAt); empty + not loading
 	// means the splash is on screen, so the loop arms exactly once.
 	if cmd := m.maybeStartFeedWaves(); cmd == nil || !m.feed.waveActive {

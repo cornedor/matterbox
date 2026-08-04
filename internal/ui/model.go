@@ -986,6 +986,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	showCustomStatus := true
 	showDateSeparators := true
 	showSQL := false
+	feedShowMuted := false
 	mouseEnabled := true
 	attachOnDrop := true
 	navModifier := navModifierFromConfig(cfg)
@@ -1041,6 +1042,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		}
 		if cfg.SQLTab != nil {
 			showSQL = *cfg.SQLTab
+		}
+		if cfg.FeedShowMuted != nil {
+			feedShowMuted = *cfg.FeedShowMuted
 		}
 		if cfg.Mouse != nil {
 			mouseEnabled = *cfg.Mouse
@@ -1217,7 +1221,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		vimNav:              vimNav,
 		help:                h,
 		search:              newSearchState(st != nil),
-		feed:                newFeedState(),
+		feed:                newFeedState(feedShowMuted),
 		showSQL:             showSQL,
 		sql:                 newSQLState(st != nil),
 		ltClient:            ltClient,
@@ -1303,7 +1307,7 @@ func (m Model) ShortHelp() []key.Binding {
 	case m.focus == focusSearch:
 		return []key.Binding{k.Up, k.Down, k.ApplyOpen, k.CancelEdit, k.Tab, k.Help, k.Quit}
 	case m.focus == focusFeed:
-		return []key.Binding{k.Up, k.Down, k.OpenChannel, k.MarkRead, k.Refresh, k.Tab, k.NavTeam, k.Help, k.Quit}
+		return []key.Binding{k.Up, k.Down, k.OpenChannel, k.MarkRead, k.Refresh, k.FeedMuted, k.Tab, k.NavTeam, k.Help, k.Quit}
 	case m.focus == focusSQL:
 		return []key.Binding{k.Send, k.NewLine, k.Tab, k.NavTeam, k.Help, k.Quit}
 	case m.focus == focusSQLResults:

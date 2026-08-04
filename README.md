@@ -22,7 +22,8 @@ local LLM.
   local embeddings model (no data leaves your machine). Blended with keyword
   results via hybrid ranking.
 - **Feed tab** — aggregated view of all unread messages across channels and DMs,
-  excluding muted channels.
+  excluding muted channels — press `M` (or set `feed_show_muted: true`) to let
+  them in, sorted below everything else.
 - **Jira integration** — press `v` on a Jira issue link to open a side panel; edit
   Status, Priority, Story points, and Assignee inline without leaving the TUI.
 - **GitLab integration** — press `v` on a GitLab MR link to open a merge-request
