@@ -128,7 +128,7 @@ var (
 	selTextStyle = lipgloss.NewStyle().Reverse(true)
 	// hoverRowStyle is the channel-row hover highlight: a dim background bar,
 	// quieter than the selected row's brighter background.
-	hoverRowStyle = lipgloss.NewStyle().Background(lipgloss.Color("237"))
+	hoverRowStyle = lipgloss.NewStyle().Background(hoverRowBg)
 )
 
 // mouseBlocked reports when mouse interaction should stand down: the feature is

@@ -86,7 +86,7 @@ var (
 	infoSelLinkStyle = mdLinkStyle.Reverse(true)
 	// infoHoverRowStyle backgrounds a member row the pointer rests on, matching
 	// the link hover's background so the panel's two hover affordances read alike.
-	infoHoverRowStyle = lipgloss.NewStyle().Background(lipgloss.Color("238"))
+	infoHoverRowStyle = lipgloss.NewStyle().Background(panelHoverBg)
 )
 
 // openChannelInfo raises the channel-info panel for the open channel. Pressing

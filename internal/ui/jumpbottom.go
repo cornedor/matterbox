@@ -16,12 +16,12 @@ import (
 var (
 	// jumpBottomStyle paints the pill at rest: a raised bar against the
 	// transcript, quiet enough not to compete with the message under it.
-	jumpBottomStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("238"))
+	jumpBottomStyle = lipgloss.NewStyle().Foreground(jumpPillFg).Background(jumpPillBg)
 	// jumpBottomHoverStyle lifts the bar a couple of steps under the pointer —
 	// the same "quieter than a selection" cue a hovered channel row gets. An
 	// accent colour here reads as a state change rather than a hover, and lands
 	// loud on palettes that map the focus colour to a saturated hue.
-	jumpBottomHoverStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("242"))
+	jumpBottomHoverStyle = lipgloss.NewStyle().Foreground(jumpPillFg).Background(jumpPillHoverBg)
 )
 
 // jumpZone is the pill's screen rectangle: columns [x0,x1) on row y. Written by

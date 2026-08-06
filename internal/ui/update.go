@@ -224,6 +224,23 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.PasteMsg:
 		return m.handlePaste(msg)
 
+	case tea.BackgroundColorMsg:
+		// The terminal answered the OSC 11 query from Init (or reported a theme
+		// switch). Styles re-resolve their adaptive colours on the next render,
+		// but the caches hold bytes already styled under the old assumption, so
+		// drop them and repaint.
+		if setLightBackground(!msg.IsDark()) {
+			m.postMarkdownCache = nil
+			m.postLineCache = nil
+			if m.vcache != nil {
+				m.vcache.sidebar = sidebarCache{}
+				m.vcache.msgsUpper = scrollbackCache{}
+				m.vcache.viewValid = false
+			}
+			m.renderAllPanes()
+		}
+		return m, nil
+
 	case tea.ColorProfileMsg:
 		// The truecolor half of the custom-emoji image gate (the id rides in
 		// the foreground, which a non-truecolor profile would quantise away).

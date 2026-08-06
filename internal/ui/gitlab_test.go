@@ -114,7 +114,7 @@ func TestRefPanelLinkIsClickable(t *testing.T) {
 	if hov.hoverLink.url != url || hov.hoverLink.pane != focusRef {
 		t.Fatalf("hover over ref link: hoverLink=%+v, want url=%q pane=focusRef", hov.hoverLink, url)
 	}
-	if !strings.Contains(hov.refView.GetContent(), "48;5;238") {
+	if !strings.Contains(hov.refView.GetContent(), bgSGR(panelHoverBg)) {
 		t.Fatal("hovered ref link not highlighted in the panel content")
 	}
 }

@@ -1331,7 +1331,12 @@ func (m Model) FullHelp() [][]key.Binding {
 }
 
 func (m Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.fetchMe(), m.connectWS(), m.startEmbedder()}
+	// RequestBackgroundColor drives the light/dark half of the palette: the
+	// hover bars, chip fills and jump pill are tints, and a tint only works if
+	// it moves away from the page background (see theme.go). The reply lands as
+	// a tea.BackgroundColorMsg; a terminal that never answers keeps the dark
+	// assumption.
+	cmds := []tea.Cmd{m.fetchMe(), m.connectWS(), m.startEmbedder(), tea.RequestBackgroundColor}
 	if c := m.emojiProbeCmd(); c != nil {
 		cmds = append(cmds, c)
 	}
