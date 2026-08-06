@@ -214,6 +214,13 @@ type Model struct {
 	// marked read (server + badges). Snapshotted from config at New(); 0 means
 	// mark read immediately on open (the original behaviour).
 	markReadDelay time.Duration
+	// termFocused is the terminal's focus, from its focus/blur reports (DECSET
+	// 1004, requested via tea.View.ReportFocus). termFocusKnown records that the
+	// terminal actually sends them: until the first report we know nothing, and
+	// both the mark-read gate and the control socket fall back accordingly. See
+	// focus.go.
+	termFocused    bool
+	termFocusKnown bool
 	// groupWindow is the span within which a message from the same author as
 	// the one above it renders without its own name/time header (a continuation
 	// line). Snapshotted from config at New(); 0 disables grouping so every
@@ -880,6 +887,11 @@ type Model struct {
 }
 
 func New(client *mm.Client, cfg *config.Config) Model {
+	// Launching counts as being here: it seeds the idle clock behind the focus
+	// fallback, so a TUI on a terminal that never reports focus doesn't start
+	// out looking abandoned (see focus.go).
+	lastInputNanos.Store(time.Now().UnixNano())
+
 	ti := textinput.New()
 	ti.Prompt = "f "
 	ti.Placeholder = "filter…"
@@ -1447,13 +1459,36 @@ func (m Model) markChannelViewed(channelID string) tea.Cmd {
 	}
 }
 
+// liveMarkRead is the mark-read decision for a message that just arrived in the
+// channel already on screen: read it only once the open channel's dwell has
+// elapsed (while it's still pending the queued markViewedMsg covers this post
+// too) and only while the terminal has focus — a message that lands in front of
+// a buried window hasn't been seen, and marking it read would tell the server,
+// the other clients and the listen daemon's read-check otherwise. Focus
+// returning catches up (see applyTerminalFocus).
+func (m *Model) liveMarkRead(channelID string) tea.Cmd {
+	if !m.viewSettled || !m.terminalFocused() {
+		return nil
+	}
+	return m.markChannelViewed(channelID)
+}
+
 // scheduleMarkViewed defers marking channelID read until it has been open
 // for m.markReadDelay, so a quick peek doesn't clear unread. It returns a
 // tick carrying the current viewGen; the markViewedMsg handler only acts if
 // that generation (and the open channel) still match when it fires. A
 // non-positive delay means "immediately" — clear the badges now and mark
 // read without a tick (the original behaviour, opt-in via config 0).
+//
+// Nothing is marked read while the terminal is blurred: `matterbox open` from
+// a notification can switch the channel of a TUI you aren't looking at, and
+// bumping LastViewedAt then would tell every other client (and the listen
+// daemon's read-check) you'd read a message you never saw. Focus returning
+// re-arms this — see applyTerminalFocus.
 func (m *Model) scheduleMarkViewed(channelID string) tea.Cmd {
+	if !m.terminalFocused() {
+		return nil
+	}
 	if m.markReadDelay <= 0 {
 		delete(m.unread, channelID)
 		delete(m.mentions, channelID)

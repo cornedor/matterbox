@@ -350,6 +350,13 @@ type RuleMatchConfig struct {
 	HasFile bool `yaml:"has_file,omitempty"`
 	// IsThread, when set, requires a thread reply (true) or a root post (false).
 	IsThread *bool `yaml:"is_thread,omitempty"`
+	// Viewing, when set, requires that you are (true) or are not (false) looking
+	// at the post's channel: a matterbox TUI on this machine has it open and its
+	// terminal has focus. `viewing: false` keeps a desktop-notification rule
+	// quiet about the conversation you're already reading. With no TUI running
+	// — or a daemon on another host — you are viewing nothing, so such a rule
+	// behaves exactly as it did before.
+	Viewing *bool `yaml:"viewing,omitempty"`
 	// Not inverts a nested match: the rule fires only when the post does NOT
 	// satisfy it (e.g. everything in a channel except posts from a bot).
 	Not *RuleMatchConfig `yaml:"not,omitempty"`
@@ -1186,11 +1193,17 @@ func writeConfig(p string, cfg *Config) error {
 		"#             the notification, then checks the server's read state — if any\n" +
 		"#             client marked the channel read during the window the notification\n" +
 		"#             is suppressed (0 = deliver immediately, no read-check).\n" +
+		"#             A notification is always skipped for the conversation you have\n" +
+		"#             open and focused in a matterbox TUI on this machine — you're\n" +
+		"#             already reading it. Rules gate on the same thing with viewing.\n" +
 		"# rules:      per-message automation for `matterbox listen`. Each rule has a\n" +
 		"#             match (conditions, ANDed) and actions (run in order). Match on\n" +
 		"#             channel (display-name glob or id), author, message (RE2 regexp),\n" +
 		"#             mention (you were @named), dm, from_me (your own posts; set\n" +
-		"#             false to skip them), has_file, is_thread; channel and\n" +
+		"#             false to skip them), has_file, is_thread, viewing (the\n" +
+		"#             channel is open + focused in your TUI — `viewing: false`\n" +
+		"#             keeps a desktop-notify rule off the chat you're reading);\n" +
+		"#             channel and\n" +
 		"#             author take a single value or a list (match any), and a nested\n" +
 		"#             not: inverts a sub-match. A frequency: { count, within, by }\n" +
 		"#             block fires the rule only on a burst (count matches within the\n" +

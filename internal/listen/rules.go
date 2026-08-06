@@ -16,6 +16,7 @@ import (
 
 	"github.com/mattermost/mattermost/server/public/model"
 
+	"matterbox/internal/control"
 	"matterbox/internal/mm"
 )
 
@@ -106,6 +107,14 @@ type MatchSpec struct {
 	// IsThread, when non-nil, requires the post be a thread reply (true) or a
 	// root post (false). Nil matches either.
 	IsThread *bool
+	// Viewing, when non-nil, requires that you are (true) or are not (false)
+	// looking at the post's channel right now: a matterbox TUI on this machine
+	// has it open and its terminal has focus. `viewing: false` is what keeps a
+	// desktop-notification rule quiet about the conversation you're already
+	// reading. The daemon asks the TUI over its control socket; no TUI (or a
+	// daemon on another machine) means you aren't viewing anything, so a
+	// `viewing: false` rule keeps firing exactly as it did before.
+	Viewing *bool
 	// Not, when set, inverts a nested match: the rule matches only when the post
 	// does NOT satisfy this sub-match. Lets a rule say "everything in #ops
 	// except from the bots" in one place. Recursive.
@@ -253,6 +262,7 @@ type Match struct {
 	fromMe      *bool
 	hasFile     bool
 	isThread    *bool
+	viewing     *bool
 	not         *Match
 	// freq is the compiled rolling-window gate, applied by the engine after the
 	// field conditions pass (matchPost never reads it — it is stateful and must
@@ -420,6 +430,7 @@ func compileMatch(s MatchSpec) (Match, error) {
 		fromMe:      s.FromMe,
 		hasFile:     s.HasFile,
 		isThread:    s.IsThread,
+		viewing:     s.Viewing,
 	}
 	for _, ch := range s.Channels {
 		if ch == "" {
@@ -910,7 +921,7 @@ func (e *Engine) matches(ev *model.WebSocketEvent, p *model.Post, m Match, state
 	if m.builtin {
 		return isDirectMention(ev, p, meID, meName, e.opts.NotifySelf)
 	}
-	return matchPost(ev, p, m, meID, meName, e.teamName(ev), state, render)
+	return matchPost(ev, p, m, meID, meName, e.teamName(ev), state, render, e.tuiStatus())
 }
 
 // teamName resolves an event's team id to its URL name (slug) for the team
@@ -928,9 +939,11 @@ func (e *Engine) teamName(ev *model.WebSocketEvent) string {
 
 // matchPost evaluates the field conditions of a (non-builtin) match. Pure for
 // testability: every condition it reads comes from the event/post, the reader's
-// id and username for the Mention check, plus the ledger snapshot for `state`
-// conditions.
-func matchPost(ev *model.WebSocketEvent, p *model.Post, m Match, meID, meName, teamName string, state map[string]string, render func(*template.Template) string) bool {
+// id and username for the Mention check, the ledger snapshot for `state`
+// conditions, plus tui — the TUI's answer to "are you looking at this?",
+// resolved once per post by the caller (see Engine.tuiStatus) and passed down
+// so a nested not: evaluates `viewing` against the same reading.
+func matchPost(ev *model.WebSocketEvent, p *model.Post, m Match, meID, meName, teamName string, state map[string]string, render func(*template.Template) string, tui control.Status) bool {
 	isDM := eventStr(ev, "channel_type") == string(model.ChannelTypeDirect)
 	if m.dm != nil && *m.dm != isDM {
 		return false
@@ -976,13 +989,16 @@ func matchPost(ev *model.WebSocketEvent, p *model.Post, m Match, meID, meName, t
 			return false
 		}
 	}
+	if m.viewing != nil && *m.viewing != tui.Viewing(p.ChannelId) {
+		return false
+	}
 	for _, c := range m.state {
 		if !c.eval(state, render) {
 			return false
 		}
 	}
 	// A nested not: matches the whole post only when the sub-match does not.
-	if m.not != nil && matchPost(ev, p, *m.not, meID, meName, teamName, state, render) {
+	if m.not != nil && matchPost(ev, p, *m.not, meID, meName, teamName, state, render, tui) {
 		return false
 	}
 	return true
@@ -1104,17 +1120,26 @@ func (e *Engine) notifyOptsFor(a Action) notifyOpts {
 }
 
 // notifyGate applies the notification policy (skip own messages, muted
-// channels, and quiet hours, and honour notify_dms) before spinning off the
-// delivery. This is the same gate the pre-rules daemon applied inline in
-// handle(); centralising it here means every notify action — default or
-// user-defined — respects the same do-not-disturb settings. An urgent action
-// bypasses the quiet-hours and muted-channel suppression (but not the self / DM
-// gates), so an on-call keyword still pages while you're heads-down.
+// channels, quiet hours, the conversation you're currently reading, and honour
+// notify_dms) before spinning off the delivery. This is the same gate the
+// pre-rules daemon applied inline in handle(); centralising it here means every
+// notify action — default or user-defined — respects the same do-not-disturb
+// settings. An urgent action bypasses the quiet-hours and muted-channel
+// suppression (but not the self / DM gates), so an on-call keyword still pages
+// while you're heads-down.
 func (e *Engine) notifyGate(ctx context.Context, ev *model.WebSocketEvent, p *model.Post, opts notifyOpts) {
 	if e.me != nil && p.UserId == e.me.Id && !e.opts.NotifySelf {
 		return
 	}
 	if eventStr(ev, "channel_type") == string(model.ChannelTypeDirect) && !e.opts.NotifyDMs {
+		return
+	}
+	// You are looking at this conversation right now, in a TUI on this machine:
+	// the message is already on your screen. Urgent doesn't bypass this — like
+	// the post-delay read-check it isn't a preference about being disturbed but
+	// a fact about having seen it.
+	if e.tuiStatus().Viewing(p.ChannelId) {
+		e.log.Printf("channel %s is open and focused in the TUI — notification skipped", p.ChannelId)
 		return
 	}
 	if !opts.urgent {

@@ -1380,6 +1380,12 @@ func humanSize(n int64) string {
 func (m Model) View() tea.View {
 	v := tea.NewView(m.viewContent())
 	v.AltScreen = true
+	// Ask the terminal to report focus/blur (DECSET 1004). Two things ride on
+	// knowing whether you're actually looking: the channel isn't marked read
+	// while the window is buried, and `matterbox listen` skips the desktop
+	// notification for the conversation you're reading. Terminals that don't
+	// support it simply never send the events — see focus.go for that fallback.
+	v.ReportFocus = true
 	// All-motion mouse reporting: the wheel scrolls, clicks switch/select,
 	// drags select text, and the button-less motion events drive the tab /
 	// channel hover highlight. Gated by config because capturing the mouse

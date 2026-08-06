@@ -234,6 +234,11 @@ summarising the surrounding conversation via the chat model first. Two-way mode
 lets you reply from Telegram back into Mattermost. The daemon also accepts `/ask`
 commands from Telegram to run agentic search against your message history.
 
+It stays quiet about whatever you're reading: before notifying it asks the TUI
+on this machine what's on screen, and skips the push if that channel is open in
+a focused window. Rules gate on the same thing with
+[`viewing: false`](docs/rules.md#not-while-youre-reading-it).
+
 Run it under a process supervisor. `make install` drops a disabled service for
 your platform:
 

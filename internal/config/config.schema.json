@@ -497,6 +497,10 @@
           "type": "boolean",
           "description": "When set, require a thread reply (true) or a root post (false)."
         },
+        "viewing": {
+          "type": "boolean",
+          "description": "When set, require that you are (true) or are not (false) looking at the post's channel — a matterbox TUI on this machine has it open and its terminal has focus. `viewing: false` keeps a notification rule quiet about the conversation you're already reading."
+        },
         "not": {
           "description": "Inverts a nested match: the rule fires only when the post does NOT satisfy it.",
           "$ref": "#/definitions/ruleMatch"

@@ -2,15 +2,12 @@ package cli
 
 import (
 	"context"
-	"fmt"
-	"net"
 	"strings"
-	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/spf13/cobra"
 
-	"matterbox/internal/ui"
+	"matterbox/internal/control"
 )
 
 // newOpenCmd builds `matterbox open`, which tells an already-running TUI on
@@ -65,15 +62,9 @@ func runOpen(ctx context.Context, spec string) error {
 // sendControl writes one newline-terminated command to the running TUI's
 // control socket. A failed dial means no TUI is listening here.
 func sendControl(command string) error {
-	path, err := ui.ControlSocketPath()
+	path, err := control.SocketPath()
 	if err != nil {
 		return err
 	}
-	conn, err := net.DialTimeout("unix", path, 2*time.Second)
-	if err != nil {
-		return fmt.Errorf("no running matterbox TUI to drive (control socket %s)", path)
-	}
-	defer conn.Close()
-	_, err = fmt.Fprintln(conn, command)
-	return err
+	return control.Send(path, command)
 }

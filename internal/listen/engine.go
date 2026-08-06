@@ -25,6 +25,7 @@ import (
 
 	"matterbox/internal/aisearch"
 	"matterbox/internal/chat"
+	"matterbox/internal/control"
 	"matterbox/internal/embed"
 	"matterbox/internal/mm"
 	"matterbox/internal/store"
@@ -81,6 +82,13 @@ type Options struct {
 	// Requires TelegramChatID, the only sender the bot obeys.
 	TwoWay bool
 
+	// TUISocket is the control socket of a matterbox TUI on this machine (see
+	// internal/control). The daemon asks it whether you are looking at a
+	// channel before notifying about it, and rules can match on `viewing`.
+	// Empty in New defaults to control.SocketPath(); a daemon running on
+	// another host simply finds nothing there, which reads as "not viewing".
+	TUISocket string
+
 	// Rules are the compiled per-post rules (from the `rules:` config block).
 	// When empty the daemon synthesises a default rule from the Notify*
 	// options that reproduces the legacy mention/DM → Telegram bridge, so an
@@ -129,6 +137,17 @@ type Engine struct {
 	// usesState caches whether any rule matches on the ledger, so a config that
 	// never does pays no per-message state read (see matchState).
 	usesState bool
+
+	// The local TUI's "what am I looking at" answer, behind a short TTL so a
+	// burst of posts costs one round-trip (see tuiStatus). needsTUIStatus is
+	// false for a ruleset that can't act on it — then nothing is ever dialled.
+	// tuiSocket is the control-socket path; empty disables the whole thing.
+	needsTUIStatus bool
+	tuiSocket      string
+	tuiTTL         time.Duration
+	tuiMu          sync.Mutex
+	tuiCached      control.Status
+	tuiAt          time.Time
 
 	// now is the engine's clock, overridable in tests so the frequency window
 	// can be driven deterministically. nil means time.Now (see clock).
@@ -244,6 +263,17 @@ func New(client *mm.Client, st *store.Store, ch *chat.Client, tg *telegram.Clien
 		e.rules = defaultRules(opts)
 	}
 	e.usesState = rulesUseState(e.rules)
+	// The TUI is worth asking about when a rule matches on `viewing`, or when a
+	// rule can notify — the notify gate skips a push for the conversation you're
+	// reading, the same way it skips a muted channel.
+	e.needsTUIStatus = rulesUseViewing(e.rules) || e.hasNotifyRule()
+	e.tuiSocket = opts.TUISocket
+	if e.tuiSocket == "" {
+		if p, err := control.SocketPath(); err == nil {
+			e.tuiSocket = p
+		}
+	}
+	e.tuiTTL = tuiStatusTTL
 	return e
 }
 

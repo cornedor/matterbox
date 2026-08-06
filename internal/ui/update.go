@@ -23,6 +23,7 @@ import (
 // resolveUnknownSenders). The fetch is deduplicated at the client, so
 // firing it after every event is cheap.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	noteActivity(msg)
 	next, cmd := m.update(msg)
 	nm, ok := next.(Model)
 	if !ok {
@@ -70,6 +71,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// their renders would leave its selection bar on screen (see
 	// syncSelBarFocus).
 	nm.syncSelBarFocus()
+	// And the same shape again for what `matterbox listen` reads over the
+	// control socket: publishing here means every path that opens a channel or
+	// switches tabs keeps the "what am I looking at" answer honest, without
+	// each one having to remember (see publishStatus).
+	nm.publishStatus()
 	return nm, cmd
 }
 
@@ -188,6 +194,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
+
+	case tea.FocusMsg:
+		return m, m.applyTerminalFocus(true)
+
+	case tea.BlurMsg:
+		return m, m.applyTerminalFocus(false)
 
 	case tea.MouseWheelMsg:
 		return m.handleMouseWheel(msg)
@@ -740,8 +752,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// channel in the meantime (stale generation / different channel), or if
 		// it's off screen behind a Feed/Search/SQL tab — isCurrentChannel covers
 		// the latter so a dwell armed for a now-backgrounded conversation can't
-		// complete.
-		if msg.gen != m.viewGen || !m.isCurrentChannel(msg.channelID) {
+		// complete. A dwell that ran out after the terminal lost focus is
+		// likewise dropped, leaving viewSettled false so refocusing re-arms it.
+		if msg.gen != m.viewGen || !m.isCurrentChannel(msg.channelID) || !m.terminalFocused() {
 			return m, nil
 		}
 		delete(m.unread, msg.channelID)
@@ -1381,12 +1394,8 @@ func (m *Model) applyPosted(ev *model.WebSocketEvent) tea.Cmd {
 				m.anchorMsgSelBottom = true
 			}
 			m.renderMessages()
-			// Only mark read immediately once the open channel's dwell has
-			// elapsed. While it's still pending, the queued markViewedMsg
-			// will cover this post too, so a freshly-opened channel that
-			// receives a message within the dwell isn't marked read early.
-			if m.viewSettled {
-				cmds = append(cmds, m.markChannelViewed(p.ChannelId))
+			if cmd := m.liveMarkRead(p.ChannelId); cmd != nil {
+				cmds = append(cmds, cmd)
 			}
 			if needsFileInfoFetch(p) {
 				cmds = append(cmds, m.fetchFileInfos(p.Id))
