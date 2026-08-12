@@ -1260,6 +1260,21 @@ func (m *Model) viewportVisibleAnimatedEmoji() map[string]struct{} {
 // what's on screen: renderMessages/renderThread, the animation tick, and the
 // per-event kicker.
 func (m *Model) refreshAnimVisibility() bool {
+	// A popup or another tab has the body: the placeholder cells that display
+	// these images are not in the frame at all, so nothing here is on screen,
+	// whatever the viewport geometry still says. Keep ticking and we'd re-transmit
+	// GIF frames — at the GIF's own frame rate, for as long as the popup is up —
+	// that the terminal has nowhere to paint. The per-event kicker re-arms the
+	// loop the moment the panes are back (maybeStartImageAnim).
+	if m.transcriptHidden() {
+		if m.emojiImg != nil {
+			m.emojiImg.setVisibleAnimated(nil)
+		}
+		if m.inlineImg != nil {
+			m.inlineImg.setVisibleAnimated(nil)
+		}
+		return false
+	}
 	var n int
 	if m.emojiImg != nil {
 		visible := m.viewportVisibleAnimatedEmoji()

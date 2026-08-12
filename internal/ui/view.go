@@ -46,7 +46,7 @@ var (
 	// on the messages-pane title line.
 	titleHeaderStyle = lipgloss.NewStyle().Foreground(dimColor)
 	userStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("4")).Bold(true)
-	timeStyle  = lipgloss.NewStyle().Foreground(dimColor)
+	timeStyle        = lipgloss.NewStyle().Foreground(dimColor)
 	// meMarkerStyle paints the leading "*" of a /me emote line ("* alice waves").
 	meMarkerStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("5")).Bold(true)
 	selectedRow   = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("8"))
@@ -1481,76 +1481,84 @@ func (m *Model) renderViewContent() string {
 		}
 		body = lipgloss.JoinHorizontal(lipgloss.Top, panes...)
 	}
-	if m.switcherMode {
-		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderSwitcher(bodyH))
-	}
-	if m.gorillas.active {
-		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderGorillas(bodyH))
-	}
-	if m.kurve.active {
-		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderKurve(bodyH))
-	}
-	if m.historyMode {
-		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderHistoryPopup())
-	}
-	if m.keysSheetMode {
-		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderKeysSheetPopup())
-	}
-	if m.keyDebugMode {
-		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderKeyDebugPopup())
-	}
-	if m.deleteConfirmPostID != "" {
-		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderDeleteConfirm())
-	}
-	if m.reactionPickerPostID != "" {
-		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderReactionPicker())
-	}
-	if m.jiraPicker.active {
-		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderJiraPicker(bodyH))
-	}
-	if m.jiraPointsActive {
-		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderJiraPointsInput())
-	}
-	if m.jiraCommentActive {
-		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderJiraCommentInput())
-	}
-	if m.glConfirm.active {
-		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderGitLabConfirm())
-	}
-	if m.linkConfirm.active {
-		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderLinkConfirm())
-	}
-	if m.openPickerActive() {
-		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderOpenPicker())
-	}
-	if m.codePickerActive() {
-		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderCodePicker())
-	}
-	if m.pollDialog.open {
-		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderPollDialog())
-	}
-	if m.createChan != nil {
-		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderCreateChannel())
-	}
-	if m.chanEdit != nil {
-		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderEditChannel())
-	}
-	if m.joinChan != nil {
-		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderJoinChannel())
-	}
-	if m.chanConfirm != nil {
-		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderChannelConfirm())
-	}
-	if m.summary.active() {
-		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderSummaryPopup())
-	}
-	if m.preview.active {
-		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, m.renderPreviewPopup())
+	// A full-body overlay replaces everything above it — see bodyOverlays.
+	if ov := m.activeBodyOverlay(); ov != nil {
+		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, ov.render(m, bodyH))
 	}
 
 	tabs := m.renderTeamTabs()
 
 	return lipgloss.JoinVertical(lipgloss.Left, tabs, body, footer)
+}
+
+// bodyOverlay is one full-body popup: the state that puts it up, and how to draw
+// it. Every overlay covers the whole body — the panes (or whichever tab owns the
+// body) are simply not in the frame while one is open.
+type bodyOverlay struct {
+	active func(*Model) bool
+	render func(*Model, int) string // arg: the body height
+}
+
+// bodyOverlays is every full-body popup, in the order they used to be applied as
+// a chain of ifs — the last active one wins, and it is the only one rendered.
+//
+// One table rather than one if per popup so that "is a popup covering the body?"
+// has a single answer: transcriptHidden asks this same list, and the animation
+// gate hangs off it (see refreshAnimVisibility). Two lists would drift, and the
+// symptom of drift is an image being animated into a frame that doesn't show it.
+//
+// Filled in init() rather than as a var initializer only to break an
+// initialization cycle the compiler sees but the program can't have: the
+// renderers below reach — via the command registries — all the way back to
+// renderMessages, and so to transcriptHidden, and so to this table.
+var bodyOverlays []bodyOverlay
+
+func init() {
+	bodyOverlays = []bodyOverlay{
+		{func(m *Model) bool { return m.switcherMode }, func(m *Model, h int) string { return m.renderSwitcher(h) }},
+		{func(m *Model) bool { return m.gorillas.active }, func(m *Model, h int) string { return m.renderGorillas(h) }},
+		{func(m *Model) bool { return m.kurve.active }, func(m *Model, h int) string { return m.renderKurve(h) }},
+		{func(m *Model) bool { return m.historyMode }, func(m *Model, _ int) string { return m.renderHistoryPopup() }},
+		{func(m *Model) bool { return m.keysSheetMode }, func(m *Model, _ int) string { return m.renderKeysSheetPopup() }},
+		{func(m *Model) bool { return m.keyDebugMode }, func(m *Model, _ int) string { return m.renderKeyDebugPopup() }},
+		{func(m *Model) bool { return m.deleteConfirmPostID != "" }, func(m *Model, _ int) string { return m.renderDeleteConfirm() }},
+		{func(m *Model) bool { return m.reactionPickerPostID != "" }, func(m *Model, _ int) string { return m.renderReactionPicker() }},
+		{func(m *Model) bool { return m.jiraPicker.active }, func(m *Model, h int) string { return m.renderJiraPicker(h) }},
+		{func(m *Model) bool { return m.jiraPointsActive }, func(m *Model, _ int) string { return m.renderJiraPointsInput() }},
+		{func(m *Model) bool { return m.jiraCommentActive }, func(m *Model, _ int) string { return m.renderJiraCommentInput() }},
+		{func(m *Model) bool { return m.glConfirm.active }, func(m *Model, _ int) string { return m.renderGitLabConfirm() }},
+		{func(m *Model) bool { return m.linkConfirm.active }, func(m *Model, _ int) string { return m.renderLinkConfirm() }},
+		{(*Model).openPickerActive, func(m *Model, _ int) string { return m.renderOpenPicker() }},
+		{(*Model).codePickerActive, func(m *Model, _ int) string { return m.renderCodePicker() }},
+		{func(m *Model) bool { return m.pollDialog.open }, func(m *Model, _ int) string { return m.renderPollDialog() }},
+		{func(m *Model) bool { return m.createChan != nil }, func(m *Model, _ int) string { return m.renderCreateChannel() }},
+		{func(m *Model) bool { return m.chanEdit != nil }, func(m *Model, _ int) string { return m.renderEditChannel() }},
+		{func(m *Model) bool { return m.joinChan != nil }, func(m *Model, _ int) string { return m.renderJoinChannel() }},
+		{func(m *Model) bool { return m.chanConfirm != nil }, func(m *Model, _ int) string { return m.renderChannelConfirm() }},
+		{func(m *Model) bool { return m.summary.active() }, func(m *Model, _ int) string { return m.renderSummaryPopup() }},
+		{func(m *Model) bool { return m.preview.active }, func(m *Model, _ int) string { return m.renderPreviewPopup() }},
+	}
+}
+
+// activeBodyOverlay returns the popup covering the body — the last active entry,
+// matching the old chain, where each if overwrote the one before it — or nil when
+// the body is the panes themselves.
+func (m *Model) activeBodyOverlay() *bodyOverlay {
+	for i := len(bodyOverlays) - 1; i >= 0; i-- {
+		if bodyOverlays[i].active(m) {
+			return &bodyOverlays[i]
+		}
+	}
+	return nil
+}
+
+// transcriptHidden reports whether this frame shows neither the message pane nor
+// the thread pane: another tab owns the body, or a popup covers it. The viewport
+// geometry can't answer that — it keeps the offsets and row spans of the last
+// transcript render either way — so anything asking "is this post's image on the
+// screen right now" has to consult this too.
+func (m *Model) transcriptHidden() bool {
+	return m.onSearchTab() || m.onFeedTab() || m.onSQLTab() || m.activeBodyOverlay() != nil
 }
 
 // statusGlyph maps a presence string to a glyph + style: the filled glyph in
