@@ -8,6 +8,8 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/viewport"
 )
 
 // readyThumb installs a fake ready thumbnail for fileID at rows×cols, as if it
@@ -34,9 +36,13 @@ func thumbModel() *Model {
 		emojiImg:  newEmojiImages("auto", true),
 		cellPxW:   10,
 		cellPxH:   20,
+		msgsView:  viewport.New(),
 	}
 	m.emojiImg.setProbeOK()
 	m.emojiImg.setColorProfile(true)
+	// Thumbnails are fitted to the model's panes (thumbFitBox), so these tests
+	// need a messages pane; 80 is the width they draw into.
+	m.msgsView.SetWidth(80)
 	return m
 }
 
@@ -85,6 +91,10 @@ func thumbPost(fileID string) *model.Post {
 // have its thumbnails collapsed (z). These tests never collapse, so the post is
 // just a carrier.
 func fileThumbLines(m *Model, f *model.FileInfo, width int) []string {
+	// A thumbnail is fitted to the panes the model has, not to the width handed
+	// to the renderer (see thumbFitBox), so point the messages pane at the width
+	// this call is pretending to draw into.
+	m.msgsView.SetWidth(width)
 	p := &model.Post{Id: "post1", Metadata: &model.PostMetadata{Files: []*model.FileInfo{f}}}
 	return m.inlineFileThumbLines(p, f, width)
 }
