@@ -5,10 +5,13 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -773,17 +776,50 @@ const defaultCollapseLongMessages = 12
 const (
 	defaultAISearchMaxSteps       = 32
 	defaultAISearchTimeoutMinutes = 4
-	defaultAISearchPrompt         = "You are a search agent embedded in a Mattermost chat client. The user describes what they're looking for; you find the actual messages by calling the provided tools, then call finish.\n\n" +
-		"Rules:\n" +
-		"- Always use the tools to find real messages. Never answer from your own knowledge or invent content.\n" +
-		"- search_messages has three modes. mode:\"keyword\" (default) matches exact words — best for specific terms, names, error codes, or IDs. mode:\"semantic\" matches by MEANING from a natural-language 'query' — it finds paraphrases, synonyms, and other languages (this chat mixes Dutch and English), so reach for it when you know the topic but not the exact words people used. mode:\"hybrid\" fuses both. If a keyword search returns 0 or only weak hits, retry the same idea with mode:\"semantic\".\n" +
-		"- Search by TOPIC, not by subject name. A project, team, or channel name (e.g. \"Acme\") usually appears only in the channel title, NOT inside the messages — so never put it in your search terms or 'query'. Use it to find the channel instead: call list_channels, or pass it as the 'channel'/'team' argument.\n" +
-		"- In keyword mode, start broad: put a few topic words and synonyms in 'any_of'. If there are too many matches, NARROW with an 'all_of' term, a 'phrase', or a 'none_of' term. If there are zero, LOOSEN — drop an all_of/phrase term, add synonyms, or switch to mode:\"semantic\". In semantic/hybrid mode, put a short natural-language description in 'query' and rephrase it if the hits are off.\n" +
-		"- If the shown matches look unrelated but the count says there are more, page deeper with 'offset' (10, 20, …) before changing the query.\n" +
-		"- Use read_around on a promising hit (by its mN ref) to confirm context before answering.\n" +
-		"- Keep going until you have solid evidence, but use only a handful of tool calls.\n" +
-		"- When you can answer, call finish with a one- or two-sentence answer that names the channel(s) where the information was found. If you found nothing relevant, say so plainly."
+	// The prompt frames the loop and the stopping rule only; how search_messages
+	// works lives in its tool schema, which the model sees on every round
+	// anyway. Saying it twice cost context the local model doesn't have and let
+	// the two drift apart. Numbered steps, not bullets: a 2-3B model follows an
+	// ordered procedure noticeably better than a rule list.
+	defaultAISearchPrompt = "You are the search agent for a Mattermost chat archive. You answer only from messages you actually find with the tools — never from your own knowledge, and never by inventing content.\n\n" +
+		"Work like this:\n" +
+		"1. Call search_messages. Put a short description of what you want in 'query', and the words people would really have typed in 'terms' — jargon, product and tool names, error text, and the same words in any other language this team writes in.\n" +
+		"2. Read the results. If they answer the question, stop searching.\n" +
+		"3. If they don't, search once more with different 'terms' or a rephrased 'query' — never repeat a call you already made. When you don't know where a topic lives, call list_channels and then search that channel with 'channel' set.\n" +
+		"4. Call read_around on a hit's mN ref only when you need the surrounding conversation to be sure.\n" +
+		"5. Call finish with a one- or two-sentence answer naming the channel(s) the evidence came from. If nothing relevant turned up, say so plainly.\n\n" +
+		"A project, team, or channel name lives in the channel title, not inside the messages — pass it as 'channel'/'team' instead of searching for it.\n" +
+		"Two or three searches should be enough. Prefer answering from what you already found over searching again."
 )
+
+// legacyAISearchPrompts are the SHA-256 hashes of every previously shipped
+// default agent prompt. A config carrying one of these was never edited by the
+// user, so Load silently rolls it forward to the current default instead of
+// leaving the agent driving a tool surface that no longer exists — which is
+// exactly what happened when the tool gained modes and every existing config
+// kept instructing the model to use parameters that had been renamed.
+// Append a hash here whenever defaultAISearchPrompt changes; a prompt that
+// matches nothing in the list is treated as the user's own and left alone.
+var legacyAISearchPrompts = []string{
+	"bf0c4a2d55f8e11e975e1f7d98f7aef297bb35fd031dc12f56369b721b94ce78", // v1: "2-4 strongest keywords"
+	"60495222a3ce68f22858afb03b84e6b9ac623a6fcbe36bf5aeb4a6de5fe5c45d", // v2: OR'd 'queries' array
+	"22add116d02b0653dacf7a519dbdda54a28c2b26e0279c5b921e82fbba1f40e3", // v3: any_of/all_of levers
+	"9f5147154de7dac362cee42543857a67bcbae80d7b2e6b31dc69adb427715705", // v4: keyword/semantic/hybrid modes
+}
+
+// isLegacyAISearchPrompt reports whether s is a verbatim earlier default (and
+// so safe to replace). Compared on the trimmed text, since round-tripping
+// through the YAML block scalar can add or drop a trailing newline.
+func isLegacyAISearchPrompt(s string) bool {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(s)))
+	got := hex.EncodeToString(sum[:])
+	for _, want := range legacyAISearchPrompts {
+		if got == want {
+			return true
+		}
+	}
+	return false
+}
 
 // defaultListenNotifyPrompt frames the notification summary for the
 // `matterbox listen` Telegram bridge. Kept short: the output is a push
@@ -850,7 +886,13 @@ func Load() (*Config, error) {
 	// and rewrite the file once so the discovered model + prompt show up as
 	// editable defaults. Best-effort: a failed rewrite only means the file
 	// keeps working off in-memory defaults.
-	addDefaults := cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.CollapseLongMessages == nil || cfg.CollapsePreviewLines == nil || cfg.DownloadDir == "" || cfg.SQLTab == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.ImageThumbnails == "" || cfg.CodeTheme == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Animations.InlineImages == nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.TwoWay == nil || cfg.Listen.NotifyDMs == nil || cfg.Listen.NotifyDelaySeconds == nil
+	// A config still carrying an earlier shipped agent prompt gets rolled
+	// forward (see legacyAISearchPrompts); a customized one is left alone.
+	stalePrompt := isLegacyAISearchPrompt(cfg.AISearch.Prompt)
+	if stalePrompt {
+		cfg.AISearch.Prompt = ""
+	}
+	addDefaults := stalePrompt || cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.CollapseLongMessages == nil || cfg.CollapsePreviewLines == nil || cfg.DownloadDir == "" || cfg.SQLTab == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.ImageThumbnails == "" || cfg.CodeTheme == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Animations.InlineImages == nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.TwoWay == nil || cfg.Listen.NotifyDMs == nil || cfg.Listen.NotifyDelaySeconds == nil
 	cfg.fillDefaults()
 	if addDefaults {
 		if werr := writeConfig(p, cfg); werr != nil {

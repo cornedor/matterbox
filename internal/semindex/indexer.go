@@ -43,6 +43,26 @@ type Indexer struct {
 	client *embed.Client
 	tag    string // per-vector model identity (see ModelTag)
 	batch  int
+	// share is the percentage of wall-clock the backfill may spend embedding,
+	// 0 or 100 meaning "no pacing". See SetGPUShare.
+	share int
+}
+
+// SetGPUShare paces Backfill so it embeds for at most share percent of the
+// wall-clock, idling for the rest. A backfill otherwise runs the embedding
+// server flat out, and on a machine where the GPU also drives the display that
+// is visible as dropped frames — the model server and the compositor are
+// contending for the same device. share 50 halves throughput and hands back
+// half the GPU; 0 or 100 disables pacing entirely.
+//
+// Pacing is proportional rather than a fixed sleep on purpose: batches vary in
+// how long they take, and a fixed pause would be most of the cycle for a quick
+// batch and a rounding error for a slow one.
+func (ix *Indexer) SetGPUShare(share int) {
+	if ix == nil || share <= 0 || share >= 100 {
+		return
+	}
+	ix.share = share
 }
 
 // New builds an Indexer. model is the configured embedding model id and dim its
@@ -144,6 +164,7 @@ func (ix *Indexer) Backfill(ctx context.Context, progress func(total int)) (int,
 		if err := ctx.Err(); err != nil {
 			return total, err
 		}
+		start := time.Now()
 		n, more, err := ix.RunOnce(ctx)
 		if err != nil {
 			return total, err
@@ -155,6 +176,30 @@ func (ix *Indexer) Backfill(ctx context.Context, progress func(total int)) (int,
 		if !more {
 			return total, nil
 		}
+		if !ix.pause(ctx, time.Since(start)) {
+			return total, ctx.Err()
+		}
+	}
+}
+
+// pause idles for however long the configured GPU share implies after a batch
+// that took worked. Reports false if ctx ended while waiting, so the caller
+// stops rather than starting another batch.
+func (ix *Indexer) pause(ctx context.Context, worked time.Duration) bool {
+	if ix.share <= 0 || ix.share >= 100 || worked <= 0 {
+		return true
+	}
+	idle := time.Duration(float64(worked) * float64(100-ix.share) / float64(ix.share))
+	if idle <= 0 {
+		return true
+	}
+	t := time.NewTimer(idle)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 

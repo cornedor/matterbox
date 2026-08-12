@@ -187,6 +187,7 @@ func Run(ctx context.Context, cfg Config, cat Catalog, messages []Message, ch ch
 		store:       cfg.Store,
 		catalog:     cat,
 		refs:        newHitRefTable(),
+		memo:        newCallMemo(),
 		embedClient: cfg.EmbedClient,
 		embedModel:  cfg.EmbedModel,
 		embedDim:    cfg.EmbedDim,

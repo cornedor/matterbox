@@ -16,14 +16,15 @@ import (
 
 // aiSearchHitsPerCall is how many matches a single search_messages call feeds
 // back to the model. Kept modest so tool results stay cheap in tokens — the
-// per-slot context on the local server is the real budget. Results are
-// relevance-ranked (bm25) across the union of queries, so these are the best
-// matches, not just the newest.
+// per-slot context on the local server is the real budget. Results are the top
+// of the fused ranking, so these are the best matches, not just the newest;
+// 10 rather than 5 because in a known-item eval over the real cache the answer
+// landed outside the top 5 but inside the top 10 often enough to matter.
 const aiSearchHitsPerCall = 10
 
-// aiSearchMaxQueries bounds how many alternative queries one search_messages
-// call may OR together, keeping the FTS expression (and the trace line) sane.
-const aiSearchMaxQueries = 16
+// aiSearchMaxTerms bounds how many keyword terms one search_messages call may
+// OR together, keeping the FTS expression (and the trace line) sane.
+const aiSearchMaxTerms = 16
 
 // aiSearchMaxHits caps how many distinct messages we collect across the whole
 // run to render as bubbles. Stays under searchPageSize so the load-more
@@ -32,10 +33,6 @@ const aiSearchMaxHits = 24
 
 // aiSearchChannelListCap bounds list_channels output rows.
 const aiSearchChannelListCap = 14
-
-// aiBroadMatchHint is the match count above which a search is flagged as
-// "broad" so the model is nudged to narrow rather than read 10 of hundreds.
-const aiBroadMatchHint = 40
 
 // aiReadAroundContext is how many posts on each side of a hit read_around
 // pulls from the cache.
@@ -52,14 +49,14 @@ const contextLines = 2
 // Label() and the result summary with Result().
 type TraceStep struct {
 	tool    string // "search" | "read" | "channels"
-	detail  string // keywords / filter
+	detail  string // the query + its keyword terms / the ref / the channel filter
 	scope   string // channel or team the search was restricted to (optional)
 	filters string // author / date narrowing applied (optional) — e.g. "by alice after 2026-01-01"
 	result  string // human summary of what came back
 }
 
 // Label renders the human-readable description of the tool call (without the
-// result summary), e.g. `search ~storyblok|cms in #frontend by alice`.
+// result summary), e.g. `search the new cms ~storyblok|cms in #frontend by alice`.
 func (s TraceStep) Label() string {
 	switch s.tool {
 	case "search":
@@ -106,28 +103,23 @@ func toolDefs() []tool {
 	return []tool{
 		{Type: "function", Function: functionDef{
 			Name: "search_messages",
-			Description: "Search the local message archive. Pick a 'mode':\n" +
-				"• keyword (default): exact-word full-text search. Best for specific tokens — names, error codes, ticket IDs, URLs, an exact phrase. Drive it with the any_of/all_of/phrase/none_of levers.\n" +
-				"• semantic: matches by MEANING using sentence embeddings, so it finds messages that share NO words with your query — paraphrases, synonyms, and even other languages (e.g. an English query finds Dutch messages). It compares the EMBEDDING of your 'query' against the embedding of every message and returns the closest. Example: query \"payment provider\" surfaces \"paypal\", \"creditcard lukte niet\", \"PSP down\". Use it when you know the TOPIC or idea but not the exact words people used. Put a short natural-language description in 'query'; the keyword levers are ignored.\n" +
-				"• hybrid: runs keyword AND semantic and fuses the rankings — keyword precision plus semantic recall. A strong default when you're unsure which words appear. Needs 'query' (and may also use the keyword levers).\n" +
-				"Results are ranked by relevance and reported with a match count as: ref [Team › #channel] @author (date): text.\n" +
-				"Keyword tuning: start broad with any_of (a post matching ANY term is a hit); if the count is large, NARROW with an all_of term, a phrase, or a none_of term; if 0, LOOSEN (drop a term, add synonyms). Semantic/hybrid tuning: rephrase 'query' or describe it differently; add a synonym; the result is recall-oriented so scan the top hits. " +
-				"If matches look unrelated but more exist, set 'offset' to page into the SAME query (10 = next 10). " +
-				"Do NOT search for a project/team/channel name — it lives in the channel title, not the messages; use 'channel'/'team' or list_channels. Multi-word any_of/all_of/none_of items are exact phrases.",
+			Description: "Search the chat archive. Always searches two ways at once and merges the rankings: by MEANING (your 'query', which matches paraphrases and synonyms, and works across languages — a query in one language finds messages written in another) and by WORD (your 'terms', where a message containing ANY term is a candidate). You do not choose a method; give both and the best matches come back first.\n" +
+				"'query' is a short description of what you want. 'terms' are the words people would actually have typed — including jargon, product names, error text, and the same words in any other language this team writes in. Example: query \"the free gift is missing from the cart\", terms [\"free gift\",\"gift\",\"cart\",\"basket\"].\n" +
+				"Results come back as: ref [Team › #channel] @author (date): text.\n" +
+				"The archive goes back years, so the best-matching message is often an old one. When the question is about a current or recent situation — what someone is doing now, when they are back, whether something is still broken — set sort:\"recent\".\n" +
+				"If the hits are off-target, search again with different terms or a rephrased query — do not repeat the same call. Use 'offset' to page deeper into the same search (10 = next 10).\n" +
+				"Do NOT put a project, team, or channel name in 'query' or 'terms' — it lives in the channel title, not inside messages. Pass it as 'channel'/'team', or find it with list_channels.",
 			Parameters: json.RawMessage(`{"type":"object","properties":{` +
-				`"mode":{"type":"string","enum":["keyword","semantic","hybrid"],"description":"keyword (default): exact words. semantic: by meaning (needs 'query'; finds paraphrases/synonyms/other languages). hybrid: both fused (needs 'query'). Use semantic/hybrid when you know the topic but not the exact wording."},` +
-				`"query":{"type":"string","description":"Natural-language description of what you're looking for, for mode semantic/hybrid, e.g. \"complaints about slow checkout\" or \"the deploy broke and was rolled back\"."},` +
-				`"any_of":{"type":"array","items":{"type":"string"},"description":"KEYWORD mode: topic words + synonyms; a message matching at least one is a hit. The broad starting point, e.g. [\"storyblok\",\"contentful\",\"headless cms\"]."},` +
-				`"all_of":{"type":"array","items":{"type":"string"},"description":"KEYWORD mode: words that must ALL appear. Add one to narrow a broad result, e.g. [\"migration\"]."},` +
-				`"phrase":{"type":"string","description":"KEYWORD mode: an exact phrase that must appear, e.g. \"content management system\"."},` +
-				`"none_of":{"type":"array","items":{"type":"string"},"description":"KEYWORD mode: exclude messages containing any of these words (denoise), e.g. [\"jira\"]."},` +
-				`"channel":{"type":"string","description":"Optional channel name to restrict to (bare name like 'frontend'). Works in every mode."},` +
-				`"team":{"type":"string","description":"Optional team name to restrict to. Works in every mode."},` +
-				`"author":{"type":"string","description":"Optional username to restrict to (the person who wrote the message). Works in every mode."},` +
+				`"query":{"type":"string","description":"Short natural-language description of what you're looking for, e.g. \"complaints about slow checkout\" or \"the deploy broke and was rolled back\"."},` +
+				`"terms":{"type":"array","items":{"type":"string"},"description":"Words likely to appear in the messages themselves, plus synonyms and their equivalents in any other language this team writes in, e.g. [\"checkout\",\"payment\",\"slow\",\"timeout\"]. A multi-word item is matched as an exact phrase."},` +
+				`"channel":{"type":"string","description":"Optional: restrict to one channel (bare name like 'frontend')."},` +
+				`"team":{"type":"string","description":"Optional: restrict to one team."},` +
+				`"author":{"type":"string","description":"Optional: restrict to messages written by this username."},` +
 				`"after":{"type":"string","description":"Optional lower date bound, YYYY-MM-DD (only messages on/after this day)."},` +
 				`"before":{"type":"string","description":"Optional upper date bound, YYYY-MM-DD (only messages before this day)."},` +
-				`"offset":{"type":"integer","description":"Skip this many top results to page deeper into the same query (default 0; use 10, 20, … for further pages)."}` +
-				`}}`),
+				`"sort":{"type":"string","enum":["relevance","recent"],"description":"relevance (default): best match first, from anywhere in the archive's history. recent: the same matches ordered newest first — use it for questions about what is happening now or lately."},` +
+				`"offset":{"type":"integer","description":"Skip this many top results to page deeper into the same search (default 0; use 10, 20, …)."}` +
+				`},"required":["query","terms"]}`),
 		}},
 		{Type: "function", Function: functionDef{
 			Name:        "read_around",
@@ -162,6 +154,7 @@ type Tools struct {
 	store   *store.Store
 	catalog Catalog
 	refs    *hitRefTable
+	memo    *callMemo
 
 	// Semantic-search support for search_messages' mode=semantic|hybrid. nil
 	// embedClient (embeddings unconfigured) makes those modes fall back to
@@ -170,6 +163,26 @@ type Tools struct {
 	embedModel  string
 	embedDim    int
 	ctx         context.Context
+}
+
+// callMemo remembers which tool calls a run has already made, so an identical
+// repeat can be answered from the transcript instead of re-running. A small
+// model that isn't sure what to do next tends to re-issue the call it just
+// made; without this it burns the whole step budget on two or three distinct
+// searches. Shared (pointer) across all tool calls in one run.
+type callMemo struct{ seen map[string]int }
+
+func newCallMemo() *callMemo { return &callMemo{seen: map[string]int{}} }
+
+// mark records one call by signature and reports how many times it had already
+// been made (0 the first time).
+func (m *callMemo) mark(sig string) int {
+	if m == nil {
+		return 0
+	}
+	n := m.seen[sig]
+	m.seen[sig] = n + 1
+	return n
 }
 
 // hitRef is the (channel, post) pair behind a short message ref.
@@ -212,21 +225,25 @@ func (h *hitRefTable) lookup(ref string) (hitRef, bool) {
 // search; only the matched line is shown back to the model.
 func (t Tools) execSearch(args string) (string, TraceStep, []store.SearchHit) {
 	var in struct {
-		Mode    string   `json:"mode"`  // keyword (default) | semantic | hybrid
-		Query   string   `json:"query"` // natural-language query for semantic/hybrid
-		AnyOf   []string `json:"any_of"`
-		AllOf   []string `json:"all_of"`
-		Phrase  string   `json:"phrase"`
-		NoneOf  []string `json:"none_of"`
+		Query   string   `json:"query"` // natural-language description → semantic side
+		Terms   []string `json:"terms"` // literal words → keyword side
 		Channel string   `json:"channel"`
 		Team    string   `json:"team"`
 		Author  string   `json:"author"`
 		After   string   `json:"after"`
 		Before  string   `json:"before"`
+		Sort    string   `json:"sort"` // "relevance" (default) | "recent"
 		Offset  int      `json:"offset"`
-		// Tolerated fallbacks for an older prompt that still emits these.
+		// Tolerated shapes from earlier tool schemas (and from models that
+		// pattern-match on other search APIs), folded into query/terms rather
+		// than dead-ending the call.
+		AnyOf    []string `json:"any_of"`
+		AllOf    []string `json:"all_of"`
+		NoneOf   []string `json:"none_of"`
+		Phrase   string   `json:"phrase"`
 		Queries  []string `json:"queries"`
 		Keywords string   `json:"keywords"`
+		Text     string   `json:"text"`
 	}
 	_ = json.Unmarshal([]byte(args), &in)
 
@@ -238,63 +255,47 @@ func (t Tools) execSearch(args string) (string, TraceStep, []store.SearchHit) {
 		offset = store.MatchCountCap
 	}
 
-	spec := store.SearchSpec{
-		AnyOf:  cleanQueries(in.AnyOf),
-		AllOf:  cleanQueries(in.AllOf),
-		NoneOf: cleanQueries(in.NoneOf),
-	}
-	if p := strings.TrimSpace(in.Phrase); p != "" {
-		spec.Phrases = []string{p}
-	}
-	// Back-compat: an older prompt may still send queries/keywords. Fold them
-	// into any_of so the call still works rather than dead-ending.
-	if len(spec.AnyOf) == 0 && len(spec.AllOf) == 0 && len(spec.Phrases) == 0 {
-		spec.AnyOf = cleanQueries(in.Queries)
-		if len(spec.AnyOf) == 0 && strings.TrimSpace(in.Keywords) != "" {
-			spec.AnyOf = []string{strings.TrimSpace(in.Keywords)}
-		}
-	}
-
-	// Mode picks the ranker: keyword (the structured FTS levers, default),
-	// semantic (embedding cosine over a natural-language query), or hybrid
-	// (both, rank-fused). semantic/hybrid need an embeddings client; without one
-	// they degrade to keyword.
-	mode := strings.ToLower(strings.TrimSpace(in.Mode))
-	if mode != "semantic" && mode != "hybrid" {
-		mode = "keyword"
-	}
-	semantic := mode == "semantic" || mode == "hybrid"
-	var note string
-	if semantic && t.embedClient == nil {
-		note += "(semantic search isn't configured — used keyword instead)\n"
-		mode, semantic = "keyword", false
-	}
-	// Text to embed for semantic/hybrid: the explicit natural-language query, or
-	// a best-effort fallback assembled from the keyword terms.
+	// Fold every accepted spelling into the two inputs that matter.
+	terms := cleanQueries(concatNonEmpty(in.Terms, in.AnyOf, in.AllOf, in.Queries,
+		splitWords(in.Phrase), splitWords(in.Keywords)))
 	qtext := strings.TrimSpace(in.Query)
 	if qtext == "" {
-		qtext = synthesizeQuery(spec)
+		qtext = strings.TrimSpace(in.Text)
+	}
+	if qtext == "" {
+		qtext = strings.Join(terms, " ")
+	}
+	if len(terms) == 0 {
+		// No literal words given: fall back to the query's own content words so
+		// the keyword ranker still contributes something.
+		terms = contentTerms(qtext)
 	}
 
-	detail := summarizeSpec(spec)
-	if semantic {
-		detail = mode + ": " + qtext
+	// Anything but an explicit "recent" keeps the default relevance ordering, so
+	// a model that invents a sort value gets the safe one.
+	order := store.SortRelevance
+	if strings.EqualFold(strings.TrimSpace(in.Sort), "recent") {
+		order = store.SortRecent
+	}
+
+	detail := qtext
+	if len(terms) > 0 {
+		detail += " ~" + strings.Join(terms, "|")
+	}
+	if order == store.SortRecent {
+		detail += " (newest first)"
 	}
 	if offset > 0 {
 		detail += fmt.Sprintf(" @%d", offset)
 	}
 	step := TraceStep{tool: "search", detail: detail}
 
-	hasTerms := len(spec.AnyOf) > 0 || len(spec.AllOf) > 0 || len(spec.Phrases) > 0
-	switch {
-	case semantic && qtext == "":
+	var note string
+	if qtext == "" && len(terms) == 0 {
 		step.result = "no query"
-		return "No query. For mode \"semantic\"/\"hybrid\", put a natural-language description in 'query'.", step, nil
-	case !semantic && !hasTerms:
-		step.result = "no terms"
-		return "No search terms. Provide any_of (broad), all_of (required), and/or a phrase — or set mode:\"semantic\" with a 'query'.", step, nil
+		return "Empty search. Give 'query' (a short description of what you're looking for) and 'terms' (words likely to appear in the messages).", step, nil
 	}
-
+	spec := store.SearchSpec{NoneOf: cleanQueries(in.NoneOf)}
 	scope, requested, matched := t.catalog.resolveScope(in.Team, in.Channel)
 	if requested {
 		step.scope = scopeLabel(in.Team, in.Channel)
@@ -332,31 +333,43 @@ func (t Tools) execSearch(args string) (string, TraceStep, []store.SearchHit) {
 	}
 	step.filters = strings.Join(filters, " ")
 
+	// Checked here, once the trace line is fully built, so a suppressed repeat
+	// still renders the same way in the live trace as the call it duplicates.
+	// The signature covers everything that changes the result set — the label,
+	// the scope, and the filters — so only a truly identical call is dropped.
+	if t.memo.mark(step.Label()+"|"+step.filters) > 0 {
+		step.result = "repeat"
+		return "You already ran this exact search — its results are above. Answer from what you have, or search again with different 'terms' or a rephrased 'query'.", step, nil
+	}
+
 	if t.store == nil {
 		step.result = "no store"
 		return "The local message cache is unavailable, so search can't run.", step, nil
 	}
 
-	var hits []store.SearchHit
-	var total int
-	var err error
-	if semantic {
-		qvec, eerr := t.embedClient.EmbedOne(t.ctx, embed.QueryText(qtext))
+	// One ranking, always: the semantic list (from 'query') and the keyword list
+	// (from 'terms', OR'd so any term is a candidate) fused by RRF. Either side
+	// may be missing — no embeddings configured, or no usable terms — and the
+	// fuse degrades to whichever is left.
+	var qvec []float32
+	if t.embedClient != nil && qtext != "" {
+		v, eerr := t.embedClient.EmbedOne(t.ctx, embed.QueryText(qtext))
 		if eerr != nil {
-			step.result = "embed error"
-			return note + "Semantic search is unavailable (the embeddings server isn't responding). Retry with mode:\"keyword\".", step, nil
+			// Not fatal: the keyword half still works, so say so and carry on
+			// rather than making the model retry a call it can't fix.
+			note += "(the meaning-based half is unavailable — matched on words only)\n"
+		} else {
+			qvec = v
 		}
-		// Hybrid feeds the query to the keyword side too; pure semantic doesn't.
-		kw := ""
-		if mode == "hybrid" {
-			kw = qtext
-		}
-		sc := store.HybridScope{ChannelIDs: spec.ChannelIDs, AuthorIDs: spec.AuthorIDs, After: spec.After, Before: spec.Before}
-		tag := semindex.ModelTag(t.embedModel, t.embedDim)
-		hits, total, err = t.store.SearchHybrid(kw, qvec, tag, sc, aiSearchHitsPerCall, offset, contextLines)
-	} else {
-		hits, total, err = t.store.SearchSpec(spec, aiSearchHitsPerCall, offset, contextLines)
 	}
+	fts := store.OrTerms(terms)
+	if fts == "" && qvec == nil {
+		step.result = "no query"
+		return note + "Nothing to search on. Give 'query' (a short description) and 'terms' (words likely to appear in the messages).", step, nil
+	}
+	sc := store.HybridScope{ChannelIDs: spec.ChannelIDs, AuthorIDs: spec.AuthorIDs, After: spec.After, Before: spec.Before}
+	hits, total, err := t.store.SearchFused(fts, qvec, semindex.ModelTag(t.embedModel, t.embedDim),
+		sc, order, aiSearchHitsPerCall, offset, contextLines)
 	if err != nil {
 		step.result = "error"
 		return "Search failed: " + err.Error(), step, nil
@@ -364,12 +377,9 @@ func (t Tools) execSearch(args string) (string, TraceStep, []store.SearchHit) {
 	step.result = fmt.Sprintf("%d hits", len(hits))
 	if len(hits) == 0 {
 		if offset > 0 {
-			return note + fmt.Sprintf("No more matches past offset %d (%s total). Go back to offset 0, or change the query.", offset, formatCount(total)), step, nil
+			return note + fmt.Sprintf("No more matches past offset %d. Go back to offset 0, or search for something else.", offset), step, nil
 		}
-		if semantic {
-			return note + "0 matches. Rephrase 'query' with different words, or try mode:\"keyword\"/\"hybrid\", or call list_channels to find where the topic lives and search there scoped.", step, nil
-		}
-		return note + "0 matches. Loosen the query: drop an all_of term or the phrase, broaden any_of with more synonyms, switch to mode:\"semantic\", or call list_channels to find where the topic lives and search there scoped.", step, nil
+		return note + "0 matches. Try different 'terms' (synonyms, another language's word for it, a product or error name) or a rephrased 'query'. If you don't know where the topic lives, call list_channels and search that channel.", step, nil
 	}
 
 	// Window currently shown, and whether more pages remain after it.
@@ -378,16 +388,10 @@ func (t Tools) execSearch(args string) (string, TraceStep, []store.SearchHit) {
 
 	var b strings.Builder
 	b.WriteString(note)
-	switch {
-	case semantic:
-		// Semantic results are the closest-by-meaning, already ranked — there's
-		// no meaningful "match count" to be "broad" about (everything has some
-		// similarity), so just present the top window.
-		fmt.Fprintf(&b, "Top semantic matches %d–%d (most similar first):\n", from, to)
-	case total > aiBroadMatchHint && offset == 0:
-		fmt.Fprintf(&b, "%s matches — broad. Narrow with an all_of term, a phrase, or a none_of term, or page on with offset. Showing %d–%d:\n", formatCount(total), from, to)
-	default:
-		fmt.Fprintf(&b, "Showing matches %d–%d of %s (ranked by relevance + recency):\n", from, to, formatCount(total))
+	if order == store.SortRecent {
+		fmt.Fprintf(&b, "Matches %d–%d, newest first:\n", from, to)
+	} else {
+		fmt.Fprintf(&b, "Best matches %d–%d (strongest first):\n", from, to)
 	}
 	for _, h := range hits {
 		if h.Match == nil {
@@ -400,14 +404,6 @@ func (t Tools) execSearch(args string) (string, TraceStep, []store.SearchHit) {
 		fmt.Fprintf(&b, "(more available — pass offset:%d for the next page)", to)
 	}
 	return strings.TrimRight(b.String(), "\n"), step, hits
-}
-
-// formatCount renders a (possibly saturated) match count as "N" or "500+".
-func formatCount(total int) string {
-	if total >= store.MatchCountCap {
-		return fmt.Sprintf("%d+", store.MatchCountCap)
-	}
-	return fmt.Sprintf("%d", total)
 }
 
 // scopeLabel renders the requested search scope for the trace, preferring the
@@ -427,34 +423,47 @@ func scopeLabel(team, channelArg string) string {
 	}
 }
 
-// summarizeSpec renders a SearchSpec as a compact one-liner for the live
-// trace, e.g. `~storyblok|contentful +cms "headless cms" -jira`.
-func summarizeSpec(spec store.SearchSpec) string {
-	var parts []string
-	if len(spec.AnyOf) > 0 {
-		parts = append(parts, "~"+strings.Join(spec.AnyOf, "|"))
+// concatNonEmpty appends every list in order, skipping nils. Used to fold the
+// several accepted spellings of "the words to match" into one list.
+func concatNonEmpty(lists ...[]string) []string {
+	var out []string
+	for _, l := range lists {
+		out = append(out, l...)
 	}
-	for _, a := range spec.AllOf {
-		parts = append(parts, "+"+a)
-	}
-	for _, p := range spec.Phrases {
-		parts = append(parts, `"`+p+`"`)
-	}
-	for _, n := range spec.NoneOf {
-		parts = append(parts, "-"+n)
-	}
-	return strings.Join(parts, " ")
+	return out
 }
 
-// synthesizeQuery builds a natural-language-ish query from a spec's positive FTS
-// terms, for when the model asked for semantic/hybrid mode but didn't supply an
-// explicit 'query'. Order: phrases, then all_of, then any_of.
-func synthesizeQuery(spec store.SearchSpec) string {
-	var parts []string
-	parts = append(parts, spec.Phrases...)
-	parts = append(parts, spec.AllOf...)
-	parts = append(parts, spec.AnyOf...)
-	return strings.TrimSpace(strings.Join(parts, " "))
+// splitWords turns a free-text argument into a one-element list (or none when
+// blank), so a string-shaped alias can join the terms list.
+func splitWords(s string) []string {
+	if s = strings.TrimSpace(s); s == "" {
+		return nil
+	}
+	return []string{s}
+}
+
+// contentTerms derives keyword terms from a natural-language question, for when
+// the model gave a 'query' but no 'terms'. A poor substitute for terms the model
+// picked itself (it can only reuse the asker's words, never the jargon the
+// messages actually use), but far better than leaving the keyword half empty.
+//
+// There is deliberately no stop-word list. Any such list is a bet on which
+// languages the archive is written in, and the words are not even separable
+// across languages — "die", "over" and "van" are ordinary English words as well
+// as grammatical Dutch ones, so dropping them would silently break searches for
+// whoever's archive this is. It isn't needed either: the terms are OR'd and
+// ranked by bm25, which scores a term by how rare it is, so words that appear
+// in most messages contribute almost nothing to the ranking on their own.
+func contentTerms(q string) []string {
+	var out []string
+	for _, f := range strings.Fields(strings.ToLower(q)) {
+		f = strings.Trim(f, ".,?!:;\"'()[]")
+		if len([]rune(f)) < 3 {
+			continue
+		}
+		out = append(out, f)
+	}
+	return cleanQueries(out)
 }
 
 // parseSearchDate parses a YYYY-MM-DD date (local zone) into a unix-ms bound.
@@ -494,7 +503,7 @@ func cleanQueries(qs []string) []string {
 		}
 		seen[key] = struct{}{}
 		out = append(out, q)
-		if len(out) >= aiSearchMaxQueries {
+		if len(out) >= aiSearchMaxTerms {
 			break
 		}
 	}
@@ -556,6 +565,10 @@ func (t Tools) execReadAround(args string) (string, TraceStep) {
 	if !ok {
 		step.result = "unknown ref"
 		return fmt.Sprintf("Unknown message ref %q. Use one of the mN refs shown in search results.", ref), step
+	}
+	if t.memo.mark("read|"+ref) > 0 {
+		step.result = "repeat"
+		return fmt.Sprintf("You already read the context around %s — it's above. Move on: search for something else, or answer from what you have.", ref), step
 	}
 	if t.store == nil {
 		step.result = "no store"

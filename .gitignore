@@ -22,5 +22,16 @@
 # Local project notes, not part of the release
 /PLAN.md
 
+# Retrieval/agent eval harnesses (`go test -tags eval`). These are pinned to one
+# person's real message cache — they name actual post ids, usernames, and client
+# and vendor names — so they stay on the machine that has that data rather than
+# in the repo. Rebuild them against your own cache if you need to measure a
+# ranking, model, or prompt change.
+/internal/store/modeeval_test.go
+/internal/store/dimeval_test.go
+/internal/store/embedcompare_test.go
+/internal/store/vacationeval_test.go
+/internal/aisearch/agenteval_test.go
+
 # Python bytecode cache
 __pycache__/
