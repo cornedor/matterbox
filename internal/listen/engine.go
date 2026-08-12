@@ -12,6 +12,7 @@ package listen
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"path"
@@ -42,6 +43,31 @@ const logBodyCap = 200
 
 // pollTimeoutSec is the Telegram long-poll timeout for getUpdates.
 const pollTimeoutSec = 30
+
+// sessionProbeInterval is how often the daemon calls the REST API while
+// connected, and sessionProbeTimeout bounds one such call.
+//
+// It serves two purposes at once. First it keeps the session alive: Mattermost
+// extends a session's expiry from its last *API* activity (the
+// ExtendSessionLengthWithActivity setting), and WebSocket traffic does not
+// count — so a daemon that only ever reads the socket silently starves its own
+// session to death. That is why the probe is unconditional rather than fired
+// only after a lull: on a busy channel a lull may never come, and the session
+// would expire anyway.
+//
+// Second it detects a session that died regardless (revoked, password change,
+// admin action). Nothing on the socket reveals that: the server keeps sending
+// WebSocket pings to a connection whose session is dead, so the ping watchdog
+// in consume stays fed while no event is ever delivered again. A REST call is
+// the only thing that can tell "quiet" apart from "dead".
+const (
+	sessionProbeInterval = 10 * time.Minute
+	sessionProbeTimeout  = 30 * time.Second
+)
+
+// errSessionExpired reports that the probe got a 401: the token is dead and no
+// amount of reconnecting will help, since the daemon holds it in memory.
+var errSessionExpired = errors.New("mattermost session expired")
 
 // Options tunes the daemon's behaviour. Built from config in the cli layer.
 type Options struct {
@@ -152,6 +178,13 @@ type Engine struct {
 	// now is the engine's clock, overridable in tests so the frequency window
 	// can be driven deterministically. nil means time.Now (see clock).
 	now func() time.Time
+
+	// probe is the session liveness check, overridable in tests. nil means a
+	// real GetMe against the server (see checkSession).
+	probe func(context.Context) error
+	// probeEvery overrides sessionProbeInterval so tests need not wait minutes
+	// for the ticker. 0 means the real interval.
+	probeEvery time.Duration
 
 	wg sync.WaitGroup // tracks in-flight notify + inbound goroutines for shutdown
 
@@ -277,6 +310,40 @@ func New(client *mm.Client, st *store.Store, ch *chat.Client, tg *telegram.Clien
 	return e
 }
 
+// checkSession runs one session liveness check through the engine's
+// overridable probe hook, defaulting to a GetMe against the server. Any
+// authenticated call would do; GetMe is the cheapest that proves the token is
+// still good.
+func (e *Engine) checkSession(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, sessionProbeTimeout)
+	defer cancel()
+	if e.probe != nil {
+		return e.probe(ctx)
+	}
+	_, err := e.client.Me(ctx)
+	return err
+}
+
+// probeSession classifies one probe three ways, which matters because two of
+// them must not be confused: a 401 means the session is genuinely dead and the
+// daemon should stop, while a network or 5xx error means the server is merely
+// unreachable. Treating the latter as expiry would fire a "log in again" alert
+// every time the network hiccups. Returns errSessionExpired only for a 401.
+func (e *Engine) probeSession(ctx context.Context) error {
+	err := e.checkSession(ctx)
+	switch {
+	case err == nil:
+		return nil
+	case ctx.Err() != nil:
+		return nil // shutting down, not a verdict on the session
+	case IsUnauthorized(err):
+		return errSessionExpired
+	default:
+		e.log.Printf("session probe failed (treating as reachability, not auth): %v", err)
+		return nil
+	}
+}
+
 // clock returns the current time through the engine's overridable now hook,
 // defaulting to time.Now. Tests set e.now to drive the frequency window.
 func (e *Engine) clock() time.Time {
@@ -326,8 +393,18 @@ func (e *Engine) Run(ctx context.Context) error {
 		e.log.Printf("connected (%s)", e.opts.ServerURL)
 		go e.refreshMuted(ctx) // pick up mute changes made while we were away
 		e.catchUp(ctx)         // notify mentions that arrived while disconnected
-		e.consume(ctx, wsc)
+		cerr := e.consume(ctx, wsc)
 		wsc.Close()
+		// A dead session never recovers by reconnecting: the token lives in
+		// memory, so every re-dial would present the same expired one — and the
+		// server accepts such a connection and then delivers nothing, which
+		// looks healthy. Alert and exit cleanly instead, so the supervisor
+		// leaves it down until `matterbox login` and a restart.
+		if errors.Is(cerr, errSessionExpired) {
+			e.alertTokenExpired(ctx)
+			e.wg.Wait()
+			return nil
+		}
 		if err := ctx.Err(); err != nil {
 			e.wg.Wait()
 			return err
@@ -349,17 +426,33 @@ func (e *Engine) Run(ctx context.Context) error {
 // client's ping watchdog signals such a death (~65s with no server ping);
 // returning hands control back to Run, which Closes the dead socket (breaking
 // the stuck reader) and reconnects.
-func (e *Engine) consume(ctx context.Context, wsc *model.WebSocketClient) {
+//
+// The ping watchdog only proves the socket is open, though, not that anyone is
+// still authorized on it — hence the probe ticker, which refreshes the session
+// and catches an expiry the socket cannot reveal (see sessionProbeInterval).
+// Returns errSessionExpired for a dead session, nil for an ordinary
+// disconnect or shutdown.
+func (e *Engine) consume(ctx context.Context, wsc *model.WebSocketClient) error {
+	every := e.probeEvery
+	if every <= 0 {
+		every = sessionProbeInterval
+	}
+	probe := time.NewTicker(every)
+	defer probe.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case <-wsc.PingTimeoutChannel:
 			e.log.Printf("websocket ping timeout (no server ping ~65s); treating as disconnect")
-			return
+			return nil
+		case <-probe.C:
+			if err := e.probeSession(ctx); err != nil {
+				return err
+			}
 		case ev, ok := <-wsc.EventChannel:
 			if !ok {
-				return
+				return nil
 			}
 			e.handle(ctx, ev)
 		}
@@ -1144,9 +1237,11 @@ func IsUnauthorized(err error) bool {
 // alertTokenExpired warns (log + Telegram) that the session token is dead and
 // re-login is needed.
 func (e *Engine) alertTokenExpired(ctx context.Context) {
-	e.log.Printf("Mattermost session expired (401) — run `matterbox login` on the host and restart")
+	e.log.Printf("Mattermost session expired (401) — daemon stopping; run `matterbox login` on the host and restart it")
 	if e.tg != nil {
-		e.sendTG(ctx, "⚠️ matterbox: your Mattermost session expired. Run `matterbox login` on the host and restart the daemon.")
+		e.sendTG(ctx, "⚠️ matterbox: your Mattermost session expired, so the listen daemon has stopped "+
+			"(no notifications or rules until it is back). Run `matterbox login` on the host, then "+
+			"`systemctl --user restart matterbox-listen`.")
 	}
 }
 
