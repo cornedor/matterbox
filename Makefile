@@ -25,9 +25,8 @@
 # It needs the ffmpeg dev libraries — pkg-config must find libavformat,
 # libavcodec, libavutil and libswscale (Fedora: ffmpeg-devel/ffmpeg-free-devel;
 # Debian/Ubuntu: libav*-dev). Without the tag, video files keep their 🎬 icon and
-# no libav is linked. NB: `go mod tidy` prunes go-astiav (nothing imports it
-# without the tag) — re-add it with `go get github.com/asticode/go-astiav` if you
-# run tidy.
+# no libav is linked — go-astiav stays in go.mod (tidy reads tagged files too)
+# but is never built, so a tag-free build needs neither cgo nor ffmpeg.
 
 BINARY := matterbox
 PKG    := .

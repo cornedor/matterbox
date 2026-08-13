@@ -1253,7 +1253,7 @@ func (m Model) buildInlineThumb(it previewItem, box int) (readyInlineImg, error)
 	// still poster now, the rest of the frames built in buildVisibleThumbFrames if
 	// and when the thumbnail comes on screen. The bytes are sniffed, so a
 	// mislabelled MIME can't fool it either way.
-	if m.animateInline && (isGIF(raw) || (videoBuild && looksLikeVideo(raw))) {
+	if m.animateInline && (isGIF(raw) || (m.videoPlayable() && looksLikeVideo(raw))) {
 		first, err := firstAnimatedFrame(raw)
 		if err != nil {
 			return readyInlineImg{}, decodeFailure{err}
@@ -1437,7 +1437,7 @@ func (m Model) readThumbBytes(it previewItem) ([]byte, error) {
 	// video's is a poster still, so anything we mean to animate needs the
 	// original bytes, not the preview. (Still thumbnails happily use the
 	// lighter rendition.)
-	animating := m.animateInline && (f.MimeType == "image/gif" || (videoBuild && isVideoAttachment(f)))
+	animating := m.animateInline && (f.MimeType == "image/gif" || (m.videoPlayable() && isVideoAttachment(f)))
 	if !animating && f.HasPreviewImage {
 		if data, err := m.readOrDownloadFilePreview(f); err == nil && len(data) > 0 {
 			return data, nil

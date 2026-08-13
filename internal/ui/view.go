@@ -1321,21 +1321,24 @@ func (m *Model) renderAttachments(p *model.Post, maxWidth int) string {
 		var info, chev string
 		if strings.HasPrefix(f.MimeType, "image/") {
 			icon = "🖼️"
-			if previewableMIME(f.MimeType) {
-				// Only a file we can actually draw gets a chevron: a format we can't
-				// decode (a .webp, an .svg) shows no thumbnail, so there is nothing for
-				// the chevron to describe and z has nothing to hide.
-				if c := m.thumbChevron(p.Id); c != "" {
-					chev = c + " "
-				}
-			}
 			if f.Width > 0 && f.Height > 0 {
 				info = fmt.Sprintf(" (%d×%d, %s)", f.Width, f.Height, humanSize(f.Size))
 			} else {
 				info = " (" + humanSize(f.Size) + ")"
 			}
 		} else {
+			if m.videoPlayable() && isVideoAttachment(f) {
+				icon = "🎬" // a clip we're about to draw a thumbnail for, not a plain file
+			}
 			info = " (" + humanSize(f.Size) + ")"
+		}
+		// Only a file we can actually draw gets a chevron: a format we can't decode
+		// (an .svg, or a video in a build that can't play one) shows no thumbnail,
+		// so there is nothing for the chevron to describe and z has nothing to hide.
+		if m.filePreviewable(f) {
+			if c := m.thumbChevron(p.Id); c != "" {
+				chev = c + " "
+			}
 		}
 		name := normalizeFilename(f.Name)
 		// Reserve room for the two-space gutter, the chevron and icon prefixes,

@@ -387,7 +387,7 @@ func (m Model) usePreviewRendition(f *model.FileInfo) bool {
 	if f == nil || !f.HasPreviewImage {
 		return false
 	}
-	if m.animatePreview && (f.MimeType == "image/gif" || (videoBuild && isVideoAttachment(f))) {
+	if m.animatePreview && (f.MimeType == "image/gif" || (m.videoPlayable() && isVideoAttachment(f))) {
 		return false
 	}
 	return true

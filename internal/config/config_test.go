@@ -151,6 +151,38 @@ func TestNavModifierLegacyMigration(t *testing.T) {
 	}
 }
 
+// TestNativeAnimationLegacyMigration covers the native_gif_protocol →
+// native_animation rename: an old config keeps its setting, the stale key is
+// cleared so a rewrite drops it, and a config that never had the key is left
+// off. Every existing config carries the old key (it was a plain bool, so it was
+// always written out), so this migration runs for effectively every user once.
+func TestNativeAnimationLegacyMigration(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		yaml string
+		want bool
+	}{
+		{"legacy on", "animations:\n  native_gif_protocol: true\n", true},
+		{"legacy off", "animations:\n  native_gif_protocol: false\n", false},
+		{"new key on", "animations:\n  native_animation: true\n", true},
+		{"absent", "animations:\n  custom_emoji: true\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var c Config
+			if err := yaml.Unmarshal([]byte(tc.yaml), &c); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			c.fillDefaults()
+			if c.Animations.NativeAnimation != tc.want {
+				t.Errorf("native_animation = %v, want %v", c.Animations.NativeAnimation, tc.want)
+			}
+			if c.Animations.NativeGIFProtocol != nil {
+				t.Errorf("legacy key not cleared after migration: got %v", *c.Animations.NativeGIFProtocol)
+			}
+		})
+	}
+}
+
 // TestRulesScalarOrList confirms the rules schema accepts channel/author as
 // either a single scalar or a list, decodes the new action fields, and recurses
 // into a not: block — the parts a future change must not break.

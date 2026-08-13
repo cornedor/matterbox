@@ -29,6 +29,13 @@ import (
 // so a 24fps clip isn't slowed to 20fps; it still bounds a pathological delay.
 const previewStreamMinInterval = 8 * time.Millisecond
 
+// previewStreamUnderrunPoll is how often we re-check an empty buffer while the
+// decoder catches up. Deliberately much coarser than the frame floor above:
+// every tick is a full View() re-render, and polling an underrun at the frame
+// rate would spin the render loop at 125Hz for nothing — the wait is for a
+// decode Cmd, not for a frame that's due.
+const previewStreamUnderrunPoll = 25 * time.Millisecond
+
 // previewStreamTickMsg drives streaming playback (distinct from the GIF
 // previewTickMsg so the two paths never cross). gen drops a tick from a preview
 // the user has since cycled or closed.
@@ -239,7 +246,7 @@ func (m *Model) advanceStream() tea.Cmd {
 		}
 		// Underrun: nothing buffered yet. Keep the current frame up, make sure a
 		// chunk is decoding, and poll again shortly.
-		return tea.Batch(m.maybeFetchStream(), previewStreamTickCmd(m.previewGen, 0))
+		return tea.Batch(m.maybeFetchStream(), previewStreamTickCmd(m.previewGen, previewStreamUnderrunPoll))
 	}
 	fr := p.streamBuf[0]
 	p.streamBuf = p.streamBuf[1:]

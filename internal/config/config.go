@@ -1046,8 +1046,9 @@ func (c *Config) fillDefaults() {
 		c.Animations.InlineImages = &t
 	}
 	// Migrate the pre-rename native_gif_protocol key into native_animation, then
-	// drop it so a rewrite persists the new name only. A value the user actually
-	// set on the new key wins over the alias.
+	// drop it so a rewrite persists the new name only. Either key being true wins:
+	// the new one is a plain bool, so an explicit `native_animation: false` is
+	// indistinguishable from an absent one and can't out-vote a legacy true.
 	if !c.Animations.NativeAnimation && c.Animations.NativeGIFProtocol != nil {
 		c.Animations.NativeAnimation = *c.Animations.NativeGIFProtocol
 	}
