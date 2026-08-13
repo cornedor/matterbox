@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/control"
 )
 
 // --- team matcher ---------------------------------------------------------
@@ -41,7 +43,7 @@ func TestMatchPostTeam(t *testing.T) {
 			if c.teamName == "" { // emulate a DM event (no team_id)
 				evt = postedEvent(t, p, map[string]string{"channel_type": "D"})
 			}
-			if got := matchPost(evt, p, m, "", "", c.teamName, nil, nil); got != c.want {
+			if got := matchPost(evt, p, m, "", "", c.teamName, nil, nil, control.Status{}); got != c.want {
 				t.Errorf("matchPost = %v, want %v", got, c.want)
 			}
 		})
@@ -55,11 +57,11 @@ func TestMatchTeamAndChannelANDed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compileMatch: %v", err)
 	}
-	if !matchPost(ev, p, m, "", "", "core", nil, nil) {
+	if !matchPost(ev, p, m, "", "", "core", nil, nil, control.Status{}) {
 		t.Error("team+channel both holding should match")
 	}
 	// Right channel, wrong team → no match (fields are ANDed).
-	if matchPost(ev, p, m, "", "", "other", nil, nil) {
+	if matchPost(ev, p, m, "", "", "other", nil, nil, control.Status{}) {
 		t.Error("wrong team should fail even when the channel matches")
 	}
 }

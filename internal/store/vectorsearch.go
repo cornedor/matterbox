@@ -50,6 +50,41 @@ type HybridScope struct {
 // contextN window, plus the total number of fused candidates (so a caller can
 // tell whether more pages remain).
 func (s *Store) SearchHybrid(queryText string, queryVec []float32, modelTag string, scope HybridScope, limit, offset, contextN int) ([]SearchHit, int, error) {
+	return s.SearchFused(ftsQuery(queryText), queryVec, modelTag, scope, SortRelevance, limit, offset, contextN)
+}
+
+// SortOrder selects how SearchFused orders the candidates it has gathered.
+type SortOrder int
+
+const (
+	// SortRelevance ranks by the fused RRF score, newest first among ties.
+	SortRelevance SortOrder = iota
+	// SortRecent ranks the same candidate set newest-first instead, with the
+	// fused score only breaking ties. Every candidate already matched the query
+	// on one side or the other, so this reads as "the latest messages about
+	// this" — the ordering a question about a current situation ("is X still
+	// broken", "when is Y back") wants, where the best-matching message may be
+	// years old.
+	SortRecent
+)
+
+// OrTerms compiles a list of keyword terms into an FTS5 OR expression suitable
+// for SearchFused's keyword side: a post matching ANY term is a candidate. A
+// multi-word term becomes an exact phrase, a single word a prefix term. Returns
+// "" when nothing usable remains, which SearchFused reads as "no keyword side".
+//
+// This is the recall-oriented counterpart to the implicit AND that ftsQuery
+// builds from free-form text: AND is right for a short query a human typed into
+// a search box, but it collapses to zero matches on a sentence, so anything
+// feeding a natural-language question to the keyword ranker wants this instead.
+func OrTerms(terms []string) string { return orGroup(terms) }
+
+// SearchFused is SearchHybrid with the keyword side given as a ready-made FTS5
+// MATCH expression (build one with OrTerms) rather than compiled from free text,
+// and with a choice of ordering. Everything else — the RRF blend, the scope,
+// paging, the returned total — is identical; see SearchHybrid. An empty fts runs
+// semantic-only, an empty queryVec keyword-only.
+func (s *Store) SearchFused(fts string, queryVec []float32, modelTag string, scope HybridScope, order SortOrder, limit, offset, contextN int) ([]SearchHit, int, error) {
 	if s == nil || limit <= 0 {
 		return nil, 0, nil
 	}
@@ -71,7 +106,7 @@ func (s *Store) SearchHybrid(queryText string, queryVec []float32, modelTag stri
 	if err != nil {
 		return nil, 0, err
 	}
-	ftsOrder, ftsPosts, err := s.keywordRank(ftsQuery(queryText), f, hybridPool)
+	ftsOrder, ftsPosts, err := s.keywordRank(fts, f, hybridPool)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -105,6 +140,12 @@ func (s *Store) SearchHybrid(queryText string, queryVec []float32, modelTag stri
 		cands = append(cands, cand{post: p, score: rrf})
 	}
 	sort.SliceStable(cands, func(a, b int) bool {
+		if order == SortRecent {
+			if cands[a].post.CreateAt != cands[b].post.CreateAt {
+				return cands[a].post.CreateAt > cands[b].post.CreateAt
+			}
+			return cands[a].score > cands[b].score // tie: stronger match first
+		}
 		if cands[a].score != cands[b].score {
 			return cands[a].score > cands[b].score
 		}

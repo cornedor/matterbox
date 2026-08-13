@@ -17,6 +17,7 @@ import (
 
 func newEmbedCmd() *cobra.Command {
 	var batch int
+	var gpuShare int
 	cmd := &cobra.Command{
 		Use:   "embed",
 		Short: "Backfill semantic-search embeddings for cached messages",
@@ -27,18 +28,24 @@ func newEmbedCmd() *cobra.Command {
 			"to grind through history in one go. It only touches the local store and\n" +
 			"the embeddings server — no Mattermost API calls — and is safe to re-run\n" +
 			"or interrupt (each batch is committed as it completes).\n\n" +
-			"Start the embeddings server first (see scripts/llama-embeddings.sh).",
+			"Start the embeddings server first (see scripts/llama-embeddings.sh).\n\n" +
+			"A full backfill runs the embedding server flat out for hours. If the GPU\n" +
+			"also drives your display that shows up as dropped frames, so --gpu-share\n" +
+			"paces the work: --gpu-share 50 embeds for half the wall-clock and idles\n" +
+			"the rest, taking twice as long but leaving the desktop usable.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runEmbed(cmd.Context(), batch, cmd.ErrOrStderr())
+			return runEmbed(cmd.Context(), batch, gpuShare, cmd.ErrOrStderr())
 		},
 	}
 	cmd.Flags().IntVar(&batch, "batch", semindex.DefaultBatch,
 		"posts per embedding request")
+	cmd.Flags().IntVar(&gpuShare, "gpu-share", 100,
+		"percent of wall-clock to spend embedding (100 = flat out, 50 = idle half the time)")
 	return cmd
 }
 
-func runEmbed(ctx context.Context, batch int, out io.Writer) error {
+func runEmbed(ctx context.Context, batch, gpuShare int, out io.Writer) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
@@ -57,6 +64,7 @@ func runEmbed(ctx context.Context, batch int, out io.Writer) error {
 	ec := cfg.Embeddings
 	client := embed.New(ec.Endpoint, ec.APIKey, ec.Model, ec.Dim)
 	ix := semindex.New(st, client, ec.Model, ec.Dim, batch)
+	ix.SetGPUShare(gpuShare)
 
 	// Report current coverage up front so the user knows how much is left.
 	already, _ := st.VectorCount(ix.Tag())

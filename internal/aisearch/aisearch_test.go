@@ -157,7 +157,7 @@ func TestAISearchLoopE2E(t *testing.T) {
 		t.Fatalf("seed posts: %v", err)
 	}
 
-	system := "You are a search agent. Search by topic, not by project name (it lives in the channel title, not the messages). search_messages is keyword search: put topic words and synonyms in 'any_of'; if there are too many matches narrow with 'all_of'/'phrase'/'none_of', if zero then loosen. Then call finish with a short answer naming the channel. Never answer from your own knowledge."
+	system := "You are a search agent. Search by topic, not by project name (it lives in the channel title, not the messages). Call search_messages with a short 'query' describing what you want and the likely literal words in 'terms'. Then call finish with a short answer naming the channel. Never answer from your own knowledge."
 	ch := make(chan Update, 8)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -197,9 +197,10 @@ func TestAISearchLoopE2E(t *testing.T) {
 	}
 }
 
-// TestExecSearch exercises the tool implementations offline (no LLM): the new
-// precision/recall params, the legacy 'queries' fallback, and read_around ref
-// resolution. It seeds a temp store against testCatalog's channels.
+// TestExecSearch exercises the tool implementations offline (no LLM): the
+// query/terms inputs, the tolerated legacy spellings, repeat suppression, and
+// read_around ref resolution. It seeds a temp store against testCatalog's
+// channels.
 func TestExecSearch(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "exec.db"))
 	if err != nil {
@@ -215,38 +216,105 @@ func TestExecSearch(t *testing.T) {
 	if err := st.UpsertMany(posts); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	tools := Tools{store: st, catalog: testCatalog(), refs: newHitRefTable()}
+	newTools := func() Tools {
+		return Tools{store: st, catalog: testCatalog(), refs: newHitRefTable(), memo: newCallMemo()}
+	}
+	tools := newTools()
 
-	t.Run("any_of returns hits", func(t *testing.T) {
-		out, step, hits := tools.execSearch(`{"any_of":["storyblok","cms"]}`)
+	t.Run("terms return hits", func(t *testing.T) {
+		out, step, hits := tools.execSearch(`{"query":"the new cms","terms":["storyblok","cms"]}`)
 		if step.tool != "search" || len(hits) == 0 {
 			t.Fatalf("expected search hits; step=%+v hits=%d out=%q", step, len(hits), out)
 		}
 	})
 
-	t.Run("all_of narrows a broad any_of", func(t *testing.T) {
-		_, _, broad := tools.execSearch(`{"any_of":["storyblok"]}`)
-		_, _, narrow := tools.execSearch(`{"any_of":["storyblok"],"all_of":["onboarding"]}`)
-		if len(narrow) >= len(broad) {
-			t.Errorf("all_of should narrow: broad=%d narrow=%d", len(broad), len(narrow))
+	t.Run("query alone still searches", func(t *testing.T) {
+		// No 'terms': the keyword half falls back to the query's content words,
+		// so the call must not dead-end the way the old schema's did.
+		out, step, hits := newTools().execSearch(`{"query":"storyblok headless cms"}`)
+		if len(hits) == 0 {
+			t.Fatalf("query-only search should work; step=%+v out=%q", step, out)
 		}
 	})
 
-	t.Run("legacy queries param still works", func(t *testing.T) {
-		if _, _, hits := tools.execSearch(`{"queries":["storyblok"]}`); len(hits) == 0 {
-			t.Error("legacy 'queries' should fall back to any_of")
+	t.Run("legacy param spellings still work", func(t *testing.T) {
+		for _, args := range []string{
+			`{"queries":["storyblok"]}`,
+			`{"any_of":["storyblok"]}`,
+			`{"keywords":"storyblok"}`,
+			`{"text":"storyblok"}`,
+		} {
+			if _, _, hits := newTools().execSearch(args); len(hits) == 0 {
+				t.Errorf("%s should still search", args)
+			}
 		}
 	})
 
-	t.Run("no terms gives a helpful message", func(t *testing.T) {
+	t.Run("sort recent reorders and is announced", func(t *testing.T) {
+		// x1 and x2 both match "storyblok"; x2 is the newer of the two.
+		out, step, hits := newTools().execSearch(`{"query":"cms","terms":["storyblok"],"sort":"recent"}`)
+		if len(hits) < 2 {
+			t.Fatalf("need both hits to check ordering; got %d (%q)", len(hits), out)
+		}
+		if hits[0].Match.CreateAt < hits[1].Match.CreateAt {
+			t.Errorf("sort recent should put the newer post first: %d then %d",
+				hits[0].Match.CreateAt, hits[1].Match.CreateAt)
+		}
+		if !strings.Contains(out, "newest first") {
+			t.Errorf("result header should say the order changed: %q", out)
+		}
+		if !strings.Contains(step.Label(), "newest first") {
+			t.Errorf("trace should show the order: %q", step.Label())
+		}
+	})
+
+	t.Run("an unknown sort value falls back to relevance", func(t *testing.T) {
+		out, _, hits := newTools().execSearch(`{"query":"cms","terms":["storyblok"],"sort":"banana"}`)
+		if len(hits) == 0 || strings.Contains(out, "newest first") {
+			t.Errorf("bad sort should behave as relevance: %q", out)
+		}
+	})
+
+	t.Run("empty args give a helpful message", func(t *testing.T) {
 		out, step, hits := tools.execSearch(`{}`)
-		if len(hits) != 0 || step.result != "no terms" || !strings.Contains(out, "any_of") {
+		if len(hits) != 0 || step.result != "no query" || !strings.Contains(out, "terms") {
 			t.Errorf("empty args: out=%q step=%+v hits=%d", out, step, len(hits))
 		}
 	})
 
+	t.Run("an identical repeat is short-circuited", func(t *testing.T) {
+		tl := newTools()
+		if _, step, hits := tl.execSearch(`{"query":"cms","terms":["storyblok"]}`); len(hits) == 0 {
+			t.Fatalf("first call should search; step=%+v", step)
+		}
+		out, step, hits := tl.execSearch(`{"query":"cms","terms":["storyblok"]}`)
+		if step.result != "repeat" || len(hits) != 0 || !strings.Contains(out, "already ran") {
+			t.Errorf("repeat: out=%q step=%+v hits=%d", out, step, len(hits))
+		}
+		// A different search still goes through.
+		if _, step, _ := tl.execSearch(`{"query":"deploys","terms":["pipeline"]}`); step.result == "repeat" {
+			t.Error("a different search must not be treated as a repeat")
+		}
+	})
+
+	t.Run("read_around does not repeat itself", func(t *testing.T) {
+		tl := newTools()
+		_, _, hits := tl.execSearch(`{"query":"cms","terms":["storyblok"]}`)
+		if len(hits) == 0 {
+			t.Fatal("need a hit to get a ref")
+		}
+		ref := tl.refs.byPost[hits[0].Match.Id]
+		if _, step := tl.execReadAround(`{"message":"` + ref + `"}`); step.result == "repeat" {
+			t.Fatal("first read must not be a repeat")
+		}
+		out, step := tl.execReadAround(`{"message":"` + ref + `"}`)
+		if step.result != "repeat" || !strings.Contains(out, "already read") {
+			t.Errorf("second read: out=%q step=%+v", out, step)
+		}
+	})
+
 	t.Run("read_around resolves a ref from a prior search", func(t *testing.T) {
-		_, _, hits := tools.execSearch(`{"any_of":["storyblok"]}`)
+		_, _, hits := newTools().execSearch(`{"query":"cms","terms":["storyblok"]}`)
 		if len(hits) == 0 {
 			t.Fatal("need a hit to get a ref")
 		}
@@ -269,11 +337,11 @@ func TestExecSearch(t *testing.T) {
 
 	t.Run("offset pages and reports the window", func(t *testing.T) {
 		// "storyblok" matches x1 and x2 (2 total); offset 1 shows the second.
-		out, _, hits := tools.execSearch(`{"any_of":["storyblok"],"offset":1}`)
-		if len(hits) != 1 || !strings.Contains(out, "Showing matches 2") {
+		out, _, hits := tools.execSearch(`{"query":"cms","terms":["storyblok"],"offset":1}`)
+		if len(hits) != 1 || !strings.Contains(out, "Best matches 2") {
 			t.Errorf("offset 1: out=%q hits=%d", out, len(hits))
 		}
-		out2, step2, hits2 := tools.execSearch(`{"any_of":["storyblok"],"offset":5}`)
+		out2, step2, hits2 := tools.execSearch(`{"query":"cms","terms":["storyblok"],"offset":5}`)
 		if len(hits2) != 0 || step2.result != "0 hits" || !strings.Contains(out2, "No more matches") {
 			t.Errorf("offset past end: out=%q step=%+v hits=%d", out2, step2, len(hits2))
 		}
@@ -281,10 +349,10 @@ func TestExecSearch(t *testing.T) {
 
 	t.Run("scope label marks team vs channel", func(t *testing.T) {
 		cases := []struct{ args, want string }{
-			{`{"any_of":["storyblok"],"team":"Acme"}`, "Acme"},             // bare name = team
-			{`{"any_of":["storyblok"],"channel":"frontend"}`, "#frontend"}, // # = channel
-			{`{"any_of":["storyblok"],"team":"Acme","channel":"acme-project"}`, "Acme › #acme-project"},
-			{`{"any_of":["storyblok"],"channel":"nonexistent-zzz"}`, "#nonexistent-zzz (no match → all)"},
+			{`{"query":"cms","terms":["storyblok"],"team":"Acme"}`, "Acme"},             // bare name = team
+			{`{"query":"cms","terms":["storyblok"],"channel":"frontend"}`, "#frontend"}, // # = channel
+			{`{"query":"cms","terms":["storyblok"],"team":"Acme","channel":"acme-project"}`, "Acme › #acme-project"},
+			{`{"query":"cms","terms":["storyblok"],"channel":"nonexistent-zzz"}`, "#nonexistent-zzz (no match → all)"},
 		}
 		for _, tc := range cases {
 			_, step, _ := tools.execSearch(tc.args)
@@ -297,18 +365,18 @@ func TestExecSearch(t *testing.T) {
 	t.Run("author and date narrowing show in the trace", func(t *testing.T) {
 		cases := []struct{ args, want string }{
 			// kevin (u1) authored every seeded post → filter applies.
-			{`{"any_of":["storyblok"],"author":"kevin"}`, "by kevin"},
+			{`{"query":"cms","terms":["storyblok"],"author":"kevin"}`, "by kevin"},
 			// A leading @ is tolerated and stripped.
-			{`{"any_of":["storyblok"],"author":"@kevin"}`, "by kevin"},
+			{`{"query":"cms","terms":["storyblok"],"author":"@kevin"}`, "by kevin"},
 			// An unknown author is dropped, but the trace still shows it was tried.
-			{`{"any_of":["storyblok"],"author":"ghost"}`, "by ghost (no match)"},
+			{`{"query":"cms","terms":["storyblok"],"author":"ghost"}`, "by ghost (no match)"},
 			// Dates render as passed, author + dates compose in order.
-			{`{"any_of":["storyblok"],"after":"2020-01-01"}`, "after 2020-01-01"},
-			{`{"any_of":["storyblok"],"author":"kevin","after":"2020-01-01","before":"2030-01-01"}`, "by kevin after 2020-01-01 before 2030-01-01"},
+			{`{"query":"cms","terms":["storyblok"],"after":"2020-01-01"}`, "after 2020-01-01"},
+			{`{"query":"cms","terms":["storyblok"],"author":"kevin","after":"2020-01-01","before":"2030-01-01"}`, "by kevin after 2020-01-01 before 2030-01-01"},
 			// No author/date filter → empty.
-			{`{"any_of":["storyblok"]}`, ""},
+			{`{"query":"cms","terms":["storyblok"]}`, ""},
 			// An unparseable date is silently dropped (not shown).
-			{`{"any_of":["storyblok"],"after":"last tuesday"}`, ""},
+			{`{"query":"cms","terms":["storyblok"],"after":"last tuesday"}`, ""},
 		}
 		for _, tc := range cases {
 			_, step, _ := tools.execSearch(tc.args)

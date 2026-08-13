@@ -435,6 +435,7 @@ func TestHandleEmojiImagesFetchedArmsAnimation(t *testing.T) {
 		m.msgsView = viewport.New()
 		m.msgsView.SetWidth(40)
 		m.msgsView.SetHeight(10)
+		onTeamTab(&m) // the transcript has to be the frame for anything in it to animate
 		return m
 	}
 

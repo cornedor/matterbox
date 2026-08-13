@@ -90,8 +90,9 @@ type keyMap struct {
 	ConfirmNo  key.Binding
 
 	// Feed
-	MarkRead key.Binding
-	Refresh  key.Binding
+	MarkRead  key.Binding
+	Refresh   key.Binding
+	FeedMuted key.Binding
 
 	// Attachments (input + chip strip)
 	Paste        key.Binding
@@ -216,6 +217,7 @@ var actionDefs = []actionDef{
 
 	{id: "mark_read", field: func(k *keyMap) *key.Binding { return &k.MarkRead }, keys: []string{"m"}, desc: "mark read"},
 	{id: "refresh", field: func(k *keyMap) *key.Binding { return &k.Refresh }, keys: []string{"r"}, desc: "refresh"},
+	{id: "feed_toggle_muted", field: func(k *keyMap) *key.Binding { return &k.FeedMuted }, keys: []string{"M"}, desc: "show/hide muted channels"},
 
 	{id: "paste", field: func(k *keyMap) *key.Binding { return &k.Paste }, keys: []string{"ctrl+v"}, desc: "paste"},
 	{id: "attachment_remove", field: func(k *keyMap) *key.Binding { return &k.AttachRemove }, keys: []string{"d", "x"}, desc: "remove"},

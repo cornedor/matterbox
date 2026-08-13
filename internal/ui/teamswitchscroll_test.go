@@ -89,7 +89,7 @@ func teamScrollModel(t *testing.T, byChannel map[string][]*model.Post) Model {
 		input:         ta,
 		filter:        textinput.New(),
 		search:        newSearchState(false),
-		feed:          newFeedState(),
+		feed:          newFeedState(false),
 		showSQL:       true,
 		sql:           newSQLState(false),
 		vcache:        &viewCache{},

@@ -162,6 +162,7 @@ func TestGIFFramesBuiltOnlyWhenOnScreen(t *testing.T) {
 	const nFrames = 12
 	m := thumbModel()
 	m.animateInline = true
+	onTeamTab(m) // the transcript has to be the frame for anything in it to animate
 	seedURLCacheGIF(t, giphyURL, 480, 270, nFrames)
 
 	m.posts = []*model.Post{giphyPost()}

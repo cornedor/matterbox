@@ -161,6 +161,10 @@ func runListen(ctx context.Context, out io.Writer, notifySelf bool) error {
 		opts.AskEndpoint != "" && opts.AskModel != "", cfg.Listen.QuietHours, telegramState(tgClient, cfg.Telegram.ChatID), rulesState(len(rules)))
 
 	eng := listen.New(client, st, chatClient, tgClient, me, opts, logger)
+	// Where the daemon looks for a TUI to ask "are you reading this?" — the one
+	// thing about the viewing gate that isn't visible from the outside when it
+	// silently never matches (wrong machine, wrong config dir).
+	logger.Printf("matterbox listen: tui_socket=%s", eng.TUISocketPath())
 
 	// SIGINT/SIGTERM trigger a graceful shutdown: Run drains in-flight
 	// notifications, then returns ctx.Err().
@@ -221,6 +225,7 @@ func matchSpec(m config.RuleMatchConfig) listen.MatchSpec {
 		FromMe:   m.FromMe,
 		HasFile:  m.HasFile,
 		IsThread: m.IsThread,
+		Viewing:  m.Viewing,
 	}
 	if m.Not != nil {
 		not := matchSpec(*m.Not)

@@ -8,20 +8,15 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"charm.land/lipgloss/v2/compat"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
-// reactionChipBg is a subtle background tint used for the reaction
-// chips. It's adaptive because the user's terminal theme might be dark
-// (where we want a slightly-lighter-than-bg grey) or light (where we
-// want a slightly-darker-than-bg grey). ANSI 238 / 253 sit one step
-// off the typical default backgrounds on each side.
-var reactionChipBg = compat.AdaptiveColor{
-	Light: lipgloss.Color("253"),
-	Dark:  lipgloss.Color("238"),
-}
+// reactionChipBg is the subtle background tint used for the reaction chips: a
+// slightly-lighter-than-bg grey on a dark terminal, a slightly-darker-than-bg
+// one on a light terminal. Which way it goes is decided by the background the
+// terminal reports — see theme.go.
+var reactionChipBg = chipBg
 
 // Powerline filled half-circles. Rendered with the chip's background
 // colour as their foreground and the terminal default as their own

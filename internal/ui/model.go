@@ -214,6 +214,13 @@ type Model struct {
 	// marked read (server + badges). Snapshotted from config at New(); 0 means
 	// mark read immediately on open (the original behaviour).
 	markReadDelay time.Duration
+	// termFocused is the terminal's focus, from its focus/blur reports (DECSET
+	// 1004, requested via tea.View.ReportFocus). termFocusKnown records that the
+	// terminal actually sends them: until the first report we know nothing, and
+	// both the mark-read gate and the control socket fall back accordingly. See
+	// focus.go.
+	termFocused    bool
+	termFocusKnown bool
 	// groupWindow is the span within which a message from the same author as
 	// the one above it renders without its own name/time header (a continuation
 	// line). Snapshotted from config at New(); 0 disables grouping so every
@@ -881,6 +888,11 @@ type Model struct {
 }
 
 func New(client *mm.Client, cfg *config.Config) Model {
+	// Launching counts as being here: it seeds the idle clock behind the focus
+	// fallback, so a TUI on a terminal that never reports focus doesn't start
+	// out looking abandoned (see focus.go).
+	lastInputNanos.Store(time.Now().UnixNano())
+
 	ti := textinput.New()
 	ti.Prompt = "f "
 	ti.Placeholder = "filter…"
@@ -987,6 +999,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	showCustomStatus := true
 	showDateSeparators := true
 	showSQL := false
+	feedShowMuted := false
 	mouseEnabled := true
 	attachOnDrop := true
 	navModifier := navModifierFromConfig(cfg)
@@ -1042,6 +1055,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		}
 		if cfg.SQLTab != nil {
 			showSQL = *cfg.SQLTab
+		}
+		if cfg.FeedShowMuted != nil {
+			feedShowMuted = *cfg.FeedShowMuted
 		}
 		if cfg.Mouse != nil {
 			mouseEnabled = *cfg.Mouse
@@ -1218,7 +1234,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		vimNav:              vimNav,
 		help:                h,
 		search:              newSearchState(st != nil),
-		feed:                newFeedState(),
+		feed:                newFeedState(feedShowMuted),
 		showSQL:             showSQL,
 		sql:                 newSQLState(st != nil),
 		ltClient:            ltClient,
@@ -1304,7 +1320,7 @@ func (m Model) ShortHelp() []key.Binding {
 	case m.focus == focusSearch:
 		return []key.Binding{k.Up, k.Down, k.ApplyOpen, k.CancelEdit, k.Tab, k.Help, k.Quit}
 	case m.focus == focusFeed:
-		return []key.Binding{k.Up, k.Down, k.OpenChannel, k.MarkRead, k.Refresh, k.Tab, k.NavTeam, k.Help, k.Quit}
+		return []key.Binding{k.Up, k.Down, k.OpenChannel, k.MarkRead, k.Refresh, k.FeedMuted, k.Tab, k.NavTeam, k.Help, k.Quit}
 	case m.focus == focusSQL:
 		return []key.Binding{k.Send, k.NewLine, k.Tab, k.NavTeam, k.Help, k.Quit}
 	case m.focus == focusSQLResults:
@@ -1328,7 +1344,12 @@ func (m Model) FullHelp() [][]key.Binding {
 }
 
 func (m Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{m.fetchMe(), m.connectWS(), m.startEmbedder()}
+	// RequestBackgroundColor drives the light/dark half of the palette: the
+	// hover bars, chip fills and jump pill are tints, and a tint only works if
+	// it moves away from the page background (see theme.go). The reply lands as
+	// a tea.BackgroundColorMsg; a terminal that never answers keeps the dark
+	// assumption.
+	cmds := []tea.Cmd{m.fetchMe(), m.connectWS(), m.startEmbedder(), tea.RequestBackgroundColor}
 	if c := m.emojiProbeCmd(); c != nil {
 		cmds = append(cmds, c)
 	}
@@ -1382,6 +1403,39 @@ func (m Model) connectWS() tea.Cmd {
 	}
 }
 
+// resyncAfterReconnect re-checks server state after the WebSocket comes back
+// up. Nothing replays the events that fired while we were deaf, so everything
+// driven purely by live events has silently missed whatever landed in the gap:
+// the unread/mention badges (bumped per `posted` event) undercount, and the
+// open transcript is short of posts.
+//
+// Refetching the channel members rebuilds unread/mentions/muted and the
+// LastViewedAt read boundary from server truth, so counts that went *down*
+// while we were away (channels read on another client) are corrected too. The
+// open channel gets the same fetchRecent + syncChannelDeletions reconcile a
+// warm open performs, which merges missed posts into the visible slice and
+// surfaces messages deleted meanwhile — and re-marks it viewed, since the user
+// is looking at it.
+func (m *Model) resyncAfterReconnect() []tea.Cmd {
+	var cmds []tea.Cmd
+	if m.me != nil {
+		cmds = append(cmds, m.fetchChannelMembers(m.me.Id))
+	}
+	if id := m.openChannelID; id != "" {
+		cmds = append(cmds, m.fetchRecent(id))
+		// Snapshot the deletion watermark here on the UI goroutine, before
+		// fetchRecent's persists can push it past a missed deletion — same
+		// ordering requirement as the warm-open path in openChannelLoadCmd.
+		if m.store != nil {
+			deletionSince, _ := m.store.MaxUpdateAt(id)
+			if c := m.syncChannelDeletions(id, deletionSince); c != nil {
+				cmds = append(cmds, c)
+			}
+		}
+	}
+	return cmds
+}
+
 func (m Model) fetchChannelMembers(userID string) tea.Cmd {
 	return func() tea.Msg {
 		ms, err := m.client.ChannelMembers(m.ctx, userID)
@@ -1406,13 +1460,36 @@ func (m Model) markChannelViewed(channelID string) tea.Cmd {
 	}
 }
 
+// liveMarkRead is the mark-read decision for a message that just arrived in the
+// channel already on screen: read it only once the open channel's dwell has
+// elapsed (while it's still pending the queued markViewedMsg covers this post
+// too) and only while the terminal has focus — a message that lands in front of
+// a buried window hasn't been seen, and marking it read would tell the server,
+// the other clients and the listen daemon's read-check otherwise. Focus
+// returning catches up (see applyTerminalFocus).
+func (m *Model) liveMarkRead(channelID string) tea.Cmd {
+	if !m.viewSettled || !m.terminalFocused() {
+		return nil
+	}
+	return m.markChannelViewed(channelID)
+}
+
 // scheduleMarkViewed defers marking channelID read until it has been open
 // for m.markReadDelay, so a quick peek doesn't clear unread. It returns a
 // tick carrying the current viewGen; the markViewedMsg handler only acts if
 // that generation (and the open channel) still match when it fires. A
 // non-positive delay means "immediately" — clear the badges now and mark
 // read without a tick (the original behaviour, opt-in via config 0).
+//
+// Nothing is marked read while the terminal is blurred: `matterbox open` from
+// a notification can switch the channel of a TUI you aren't looking at, and
+// bumping LastViewedAt then would tell every other client (and the listen
+// daemon's read-check) you'd read a message you never saw. Focus returning
+// re-arms this — see applyTerminalFocus.
 func (m *Model) scheduleMarkViewed(channelID string) tea.Cmd {
+	if !m.terminalFocused() {
+		return nil
+	}
 	if m.markReadDelay <= 0 {
 		delete(m.unread, channelID)
 		delete(m.mentions, channelID)
@@ -1439,9 +1516,18 @@ func (m *Model) applyUnreadFromMembers() {
 			chByID[c.Id] = c
 		}
 	}
-	var current string
-	if vis := m.visibleChannels(); m.channelIdx < len(vis) {
-		current = vis[m.channelIdx].Id
+	// The open conversation keeps its zero badge: it was cleared when opened,
+	// and the server's counters can still lag the ViewChannel we sent. That's
+	// m.openChannelID, not the sidebar cursor — the two diverge the moment the
+	// user moves the cursor without opening, which is the common state by the
+	// time a reconnect re-runs this. Before anything is open (startup, where
+	// members can land ahead of the first fetchPosts) fall back to the cursor,
+	// which is the channel about to be opened.
+	current := m.openChannelID
+	if current == "" {
+		if vis := m.visibleChannels(); m.channelIdx < len(vis) {
+			current = vis[m.channelIdx].Id
+		}
 	}
 	for _, mb := range m.members {
 		if mb.ChannelId == current {

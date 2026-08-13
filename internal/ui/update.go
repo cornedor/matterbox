@@ -23,6 +23,7 @@ import (
 // resolveUnknownSenders). The fetch is deduplicated at the client, so
 // firing it after every event is cheap.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	noteActivity(msg)
 	next, cmd := m.update(msg)
 	nm, ok := next.(Model)
 	if !ok {
@@ -70,6 +71,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// their renders would leave its selection bar on screen (see
 	// syncSelBarFocus).
 	nm.syncSelBarFocus()
+	// And the same shape again for what `matterbox listen` reads over the
+	// control socket: publishing here means every path that opens a channel or
+	// switches tabs keeps the "what am I looking at" answer honest, without
+	// each one having to remember (see publishStatus).
+	nm.publishStatus()
 	return nm, cmd
 }
 
@@ -189,6 +195,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 
+	case tea.FocusMsg:
+		return m, m.applyTerminalFocus(true)
+
+	case tea.BlurMsg:
+		return m, m.applyTerminalFocus(false)
+
 	case tea.MouseWheelMsg:
 		return m.handleMouseWheel(msg)
 
@@ -223,6 +235,23 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.PasteMsg:
 		return m.handlePaste(msg)
+
+	case tea.BackgroundColorMsg:
+		// The terminal answered the OSC 11 query from Init (or reported a theme
+		// switch). Styles re-resolve their adaptive colours on the next render,
+		// but the caches hold bytes already styled under the old assumption, so
+		// drop them and repaint.
+		if setLightBackground(!msg.IsDark()) {
+			m.postMarkdownCache = nil
+			m.postLineCache = nil
+			if m.vcache != nil {
+				m.vcache.sidebar = sidebarCache{}
+				m.vcache.msgsUpper = scrollbackCache{}
+				m.vcache.viewValid = false
+			}
+			m.renderAllPanes()
+		}
+		return m, nil
 
 	case tea.ColorProfileMsg:
 		// The truecolor half of the custom-emoji image gate (the id rides in
@@ -442,6 +471,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.setMembers(msg.members)
 		m.membersLoaded = true
 		m.applyUnreadFromMembers()
+		// Startup lands here before the feed exists. A reconnect resync doesn't:
+		// the badges just moved, so an already-built feed would keep showing the
+		// pre-disconnect set until the user rebuilt it by hand.
+		if m.feed.built {
+			return m, m.buildFeed()
+		}
 		return m, nil
 
 	case postsLoadedMsg:
@@ -729,8 +764,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// channel in the meantime (stale generation / different channel), or if
 		// it's off screen behind a Feed/Search/SQL tab — isCurrentChannel covers
 		// the latter so a dwell armed for a now-backgrounded conversation can't
-		// complete.
-		if msg.gen != m.viewGen || !m.isCurrentChannel(msg.channelID) {
+		// complete. A dwell that ran out after the terminal lost focus is
+		// likewise dropped, leaving viewSettled false so refocusing re-arms it.
+		if msg.gen != m.viewGen || !m.isCurrentChannel(msg.channelID) || !m.terminalFocused() {
 			return m, nil
 		}
 		delete(m.unread, msg.channelID)
@@ -764,12 +800,21 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case wsConnectedMsg:
 		m.ws = msg.ws
+		// A non-zero retry count means this connect follows a drop, so we were
+		// deaf for a while and have to re-check what changed (see
+		// resyncAfterReconnect). The clean first connect needs nothing — the
+		// startup fetches are already in flight.
+		resync := m.wsRetry > 0
 		m.wsRetry = 0
 		if strings.HasPrefix(m.status, "websocket") || strings.HasPrefix(m.status, "reconnecting") {
 			m.status = ""
 		}
 		// Resync presence after a (re)connect — a one-off fetch, no new tick.
-		return m, tea.Batch(waitWSEvent(m.ws), m.fetchStatuses())
+		cmds := []tea.Cmd{waitWSEvent(m.ws), m.fetchStatuses()}
+		if resync {
+			cmds = append(cmds, m.resyncAfterReconnect()...)
+		}
+		return m, tea.Batch(cmds...)
 
 	case wsEventMsg:
 		cmd := m.handleWSEvent(msg.ev)
@@ -1361,12 +1406,8 @@ func (m *Model) applyPosted(ev *model.WebSocketEvent) tea.Cmd {
 				m.anchorMsgSelBottom = true
 			}
 			m.renderMessages()
-			// Only mark read immediately once the open channel's dwell has
-			// elapsed. While it's still pending, the queued markViewedMsg
-			// will cover this post too, so a freshly-opened channel that
-			// receives a message within the dwell isn't marked read early.
-			if m.viewSettled {
-				cmds = append(cmds, m.markChannelViewed(p.ChannelId))
+			if cmd := m.liveMarkRead(p.ChannelId); cmd != nil {
+				cmds = append(cmds, cmd)
 			}
 			if needsFileInfoFetch(p) {
 				cmds = append(cmds, m.fetchFileInfos(p.Id))

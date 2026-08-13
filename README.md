@@ -22,7 +22,8 @@ local LLM.
   local embeddings model (no data leaves your machine). Blended with keyword
   results via hybrid ranking.
 - **Feed tab** — aggregated view of all unread messages across channels and DMs,
-  excluding muted channels.
+  excluding muted channels — press `M` (or set `feed_show_muted: true`) to let
+  them in, sorted below everything else.
 - **Jira integration** — press `v` on a Jira issue link to open a side panel; edit
   Status, Priority, Story points, and Assignee inline without leaving the TUI.
 - **GitLab integration** — press `v` on a GitLab MR link to open a merge-request
@@ -232,6 +233,11 @@ When configured, it also bridges your @mentions and DMs to Telegram, optionally
 summarising the surrounding conversation via the chat model first. Two-way mode
 lets you reply from Telegram back into Mattermost. The daemon also accepts `/ask`
 commands from Telegram to run agentic search against your message history.
+
+It stays quiet about whatever you're reading: before notifying it asks the TUI
+on this machine what's on screen, and skips the push if that channel is open in
+a focused window. Rules gate on the same thing with
+[`viewing: false`](docs/rules.md#not-while-youre-reading-it).
 
 Run it under a process supervisor. `make install` drops a disabled service for
 your platform:

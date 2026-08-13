@@ -377,6 +377,27 @@ func (m Model) muteCommand() (switcherCommand, bool) {
 	}, true
 }
 
+// feedMutedCommand returns the "show/hide muted channels in the feed" toggle,
+// plus whether it applies — it only does on the Feed tab, where it has
+// something to change. Mirrors the M key; the label states the direction.
+func (m Model) feedMutedCommand() (switcherCommand, bool) {
+	if !m.onFeedTab() {
+		return switcherCommand{}, false
+	}
+	if m.feed.showMuted {
+		return switcherCommand{
+			name: "Feed: hide muted channels",
+			desc: "drop muted channels back out of the unread feed",
+			run:  func(m *Model, _ string) tea.Cmd { return m.toggleFeedMuted() },
+		}, true
+	}
+	return switcherCommand{
+		name: "Feed: show muted channels",
+		desc: "include unread messages from muted channels in the feed",
+		run:  func(m *Model, _ string) tea.Cmd { return m.toggleFeedMuted() },
+	}, true
+}
+
 // runSetMuted returns a runner that mutes/unmutes the given channel for the
 // current user. The cached member flips optimistically so the feed filter and
 // the command label update immediately; the server patch follows async.
@@ -468,6 +489,9 @@ func (m Model) allCommands() []switcherCommand {
 	var contextual []switcherCommand
 	if mute, ok := m.muteCommand(); ok {
 		contextual = append(contextual, mute)
+	}
+	if feedMuted, ok := m.feedMutedCommand(); ok {
+		contextual = append(contextual, feedMuted)
 	}
 	if add, ok := m.addMembersCommand(); ok {
 		contextual = append(contextual, add)

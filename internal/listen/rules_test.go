@@ -14,6 +14,8 @@ import (
 	"testing"
 
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/control"
 )
 
 func ptrBool(b bool) *bool { return &b }
@@ -74,7 +76,7 @@ func TestMatchPost(t *testing.T) {
 				t.Fatalf("compileMatch: %v", err)
 			}
 			p, ev := channelPost(c.msg, c.data)
-			if got := matchPost(ev, p, m, meID, meName, "", nil, nil); got != c.want {
+			if got := matchPost(ev, p, m, meID, meName, "", nil, nil, control.Status{}); got != c.want {
 				t.Errorf("matchPost = %v, want %v", got, c.want)
 			}
 		})
@@ -86,27 +88,27 @@ func TestMatchPostDMAndThreadAndFile(t *testing.T) {
 
 	dm := &model.Post{Id: "p", ChannelId: "d1", UserId: "u-bob", Message: "hey"}
 	dmEv := postedEvent(t, dm, map[string]string{"channel_type": "D", "sender_name": "@bob"})
-	if m, _ := compileMatch(MatchSpec{DM: ptrBool(true)}); !matchPost(dmEv, dm, m, meID, meName, "", nil, nil) {
+	if m, _ := compileMatch(MatchSpec{DM: ptrBool(true)}); !matchPost(dmEv, dm, m, meID, meName, "", nil, nil, control.Status{}) {
 		t.Error("DM should match dm:true")
 	}
 
 	reply := &model.Post{Id: "p2", ChannelId: "c1", UserId: "u-bob", RootId: "root", Message: "in thread"}
 	replyEv := postedEvent(t, reply, map[string]string{"channel_type": "O"})
-	if m, _ := compileMatch(MatchSpec{IsThread: ptrBool(true)}); !matchPost(replyEv, reply, m, meID, meName, "", nil, nil) {
+	if m, _ := compileMatch(MatchSpec{IsThread: ptrBool(true)}); !matchPost(replyEv, reply, m, meID, meName, "", nil, nil, control.Status{}) {
 		t.Error("reply should match is_thread:true")
 	}
-	if m, _ := compileMatch(MatchSpec{IsThread: ptrBool(false)}); matchPost(replyEv, reply, m, meID, meName, "", nil, nil) {
+	if m, _ := compileMatch(MatchSpec{IsThread: ptrBool(false)}); matchPost(replyEv, reply, m, meID, meName, "", nil, nil, control.Status{}) {
 		t.Error("reply should not match is_thread:false")
 	}
 
 	withFile := &model.Post{Id: "p3", ChannelId: "c1", UserId: "u-bob", Message: "see attached", FileIds: []string{"f1"}}
 	fileEv := postedEvent(t, withFile, map[string]string{"channel_type": "O"})
-	if m, _ := compileMatch(MatchSpec{HasFile: true}); !matchPost(fileEv, withFile, m, meID, meName, "", nil, nil) {
+	if m, _ := compileMatch(MatchSpec{HasFile: true}); !matchPost(fileEv, withFile, m, meID, meName, "", nil, nil, control.Status{}) {
 		t.Error("post with file should match has_file")
 	}
 	noFile := &model.Post{Id: "p4", ChannelId: "c1", UserId: "u-bob", Message: "no file"}
 	noFileEv := postedEvent(t, noFile, map[string]string{"channel_type": "O"})
-	if m, _ := compileMatch(MatchSpec{HasFile: true}); matchPost(noFileEv, noFile, m, meID, meName, "", nil, nil) {
+	if m, _ := compileMatch(MatchSpec{HasFile: true}); matchPost(noFileEv, noFile, m, meID, meName, "", nil, nil, control.Status{}) {
 		t.Error("post without file should not match has_file")
 	}
 }
@@ -138,10 +140,10 @@ func TestMatchPostFromMe(t *testing.T) {
 			if err != nil {
 				t.Fatalf("compileMatch: %v", err)
 			}
-			if got := matchPost(mineEv, mine, m, meID, meName, "", nil, nil); got != c.mineWant {
+			if got := matchPost(mineEv, mine, m, meID, meName, "", nil, nil, control.Status{}); got != c.mineWant {
 				t.Errorf("own post: matchPost = %v, want %v", got, c.mineWant)
 			}
-			if got := matchPost(theirsEv, theirs, m, meID, meName, "", nil, nil); got != c.theirsWant {
+			if got := matchPost(theirsEv, theirs, m, meID, meName, "", nil, nil, control.Status{}); got != c.theirsWant {
 				t.Errorf("other's post: matchPost = %v, want %v", got, c.theirsWant)
 			}
 		})

@@ -118,7 +118,7 @@ func TestHighlightLinkStaysClickable(t *testing.T) {
 	url := "https://example.com"
 	body := "see " + osc8Link(url, mdLinkStyle.Render("docs")) + " ok"
 	out := highlightLink(body, url, mdLinkHoverStyle)
-	if !strings.Contains(out, "48;5;238") {
+	if !strings.Contains(out, bgSGR(panelHoverBg)) {
 		t.Fatalf("hover background not applied: %q", out)
 	}
 	if !strings.Contains(out, "\x1b]8;;"+url+"\x1b\\") {
@@ -137,7 +137,7 @@ func TestHighlightLinkOnlyMatchingURL(t *testing.T) {
 	body := osc8Link(a, mdLinkStyle.Render("aaa")) + " " + osc8Link(b, mdLinkStyle.Render("bbb"))
 	out := highlightLink(body, a, mdLinkHoverStyle)
 	// "aaa" (3 cells) carries the background; "bbb" must not, so exactly 3.
-	if n := strings.Count(out, "48;5;238"); n != 3 {
+	if n := strings.Count(out, bgSGR(panelHoverBg)); n != 3 {
 		t.Fatalf("expected only the 3 cells of the matched link highlighted, got %d", n)
 	}
 	// Both links remain intact and resolvable.
@@ -158,7 +158,7 @@ func TestMotionHoversAndHighlightsLink(t *testing.T) {
 	if m.hoverLink.url != url || m.hoverLink.postID != "p" || m.hoverLink.pane != focusMessages {
 		t.Fatalf("hover not set over the link: %+v", m.hoverLink)
 	}
-	if !strings.Contains(m.msgsView.GetContent(), "48;5;238") {
+	if !strings.Contains(m.msgsView.GetContent(), bgSGR(panelHoverBg)) {
 		t.Fatal("hovered link not highlighted in the transcript")
 	}
 	// Move onto the 'x' (col 2) — plain text.
@@ -167,7 +167,7 @@ func TestMotionHoversAndHighlightsLink(t *testing.T) {
 	if m.hoverLink.url != "" {
 		t.Fatalf("hover not cleared over plain text: %+v", m.hoverLink)
 	}
-	if strings.Contains(m.msgsView.GetContent(), "48;5;238") {
+	if strings.Contains(m.msgsView.GetContent(), bgSGR(panelHoverBg)) {
 		t.Fatal("highlight not removed after leaving the link")
 	}
 }

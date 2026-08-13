@@ -206,11 +206,11 @@ func TestInfoMemberHoverHighlights(t *testing.T) {
 	}
 
 	m.setInfoHover(memberIdx)
-	if !strings.Contains(m.infoView.GetContent(), "48;5;238") {
+	if !strings.Contains(m.infoView.GetContent(), bgSGR(panelHoverBg)) {
 		t.Error("hovered member row should carry the hover background")
 	}
 	m.setInfoHover(-1)
-	if strings.Contains(m.infoView.GetContent(), "48;5;238") {
+	if strings.Contains(m.infoView.GetContent(), bgSGR(panelHoverBg)) {
 		t.Error("clearing the hover should drop the background")
 	}
 }

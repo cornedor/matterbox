@@ -277,6 +277,133 @@ func TestFeedBadgeCountsSkipsMuted(t *testing.T) {
 	}
 }
 
+// mutedFeedModel builds a model with one muted and one loud channel, both
+// unread, on the Feed tab — the state every show-muted assertion needs.
+func mutedFeedModel(showMuted bool) Model {
+	member := func(id, level string) model.ChannelMemberWithTeamData {
+		return model.ChannelMemberWithTeamData{ChannelMember: model.ChannelMember{
+			ChannelId:   id,
+			NotifyProps: model.StringMap{model.MarkUnreadNotifyProp: level},
+		}}
+	}
+	m := Model{
+		channels: map[string][]*model.Channel{
+			"t1": {
+				{Id: "c-muted", DisplayName: "noisy", Type: model.ChannelTypeOpen},
+				{Id: "c-loud", DisplayName: "general", Type: model.ChannelTypeOpen},
+			},
+		},
+		members: model.ChannelMembersWithTeamData{
+			member("c-muted", model.ChannelMarkUnreadMention),
+			member("c-loud", model.ChannelMarkUnreadAll),
+		},
+		unread:   map[string]int{"c-muted": 3, "c-loud": 1},
+		mentions: map[string]int{},
+		feed:     newFeedState(showMuted),
+	}
+	m.rebuildMutedChannels()
+	return m
+}
+
+func TestFeedExcludesMuted(t *testing.T) {
+	hiding := mutedFeedModel(false)
+	if !hiding.feedExcludes("c-muted") {
+		t.Error("feedExcludes(c-muted) = false with show-muted off; want true")
+	}
+	if hiding.feedExcludes("c-loud") {
+		t.Error("feedExcludes(c-loud) = true; want false (not muted)")
+	}
+	if n := hiding.feedHiddenMuted(); n != 1 {
+		t.Errorf("feedHiddenMuted = %d; want 1", n)
+	}
+	if unread, _ := hiding.feedBadgeCounts(); unread != 1 {
+		t.Errorf("unread badge = %d; want 1 (muted channel excluded)", unread)
+	}
+
+	showing := mutedFeedModel(true)
+	if showing.feedExcludes("c-muted") {
+		t.Error("feedExcludes(c-muted) = true with show-muted on; want false")
+	}
+	if n := showing.feedHiddenMuted(); n != 0 {
+		t.Errorf("feedHiddenMuted = %d with show-muted on; want 0", n)
+	}
+	// The badge must count exactly what the feed would show, both ways.
+	if unread, _ := showing.feedBadgeCounts(); unread != 2 {
+		t.Errorf("unread badge = %d; want 2 (muted channel included)", unread)
+	}
+}
+
+// TestToggleFeedMutedFlips covers the M key's effect on the filter itself. The
+// rebuild it returns needs a client, so only the flag + status are asserted.
+func TestToggleFeedMutedFlips(t *testing.T) {
+	m := mutedFeedModel(false)
+	m.toggleFeedMuted()
+	if !m.feed.showMuted {
+		t.Fatal("toggleFeedMuted did not turn show-muted on")
+	}
+	if !strings.Contains(m.status, "showing muted") {
+		t.Errorf("status = %q; want it to mention showing muted", m.status)
+	}
+	m.toggleFeedMuted()
+	if m.feed.showMuted {
+		t.Error("second toggleFeedMuted did not turn show-muted back off")
+	}
+}
+
+// TestFeedAppendPostedMuted pins the live-WS path to the same rule as the
+// build: a muted channel's post only makes a bubble when muted are shown, and
+// then it joins at the bottom rather than jumping the queue.
+func TestFeedAppendPostedMuted(t *testing.T) {
+	post := &model.Post{Id: "p1", ChannelId: "c-muted", CreateAt: 200, Message: "hi"}
+
+	hiding := mutedFeedModel(false)
+	hiding.feed.built = true
+	hiding.feedAppendPosted(post)
+	if len(hiding.feed.entries) != 0 {
+		t.Errorf("feed gained %d entries for a muted channel; want 0", len(hiding.feed.entries))
+	}
+
+	showing := mutedFeedModel(true)
+	showing.feed.built = true
+	showing.feed.entries = []feedEntry{{
+		channelID: "c-loud",
+		unread:    []*model.Post{{Id: "p0", ChannelId: "c-loud", CreateAt: 100}},
+	}}
+	showing.feedAppendPosted(post)
+	if len(showing.feed.entries) != 2 {
+		t.Fatalf("feed has %d entries; want 2", len(showing.feed.entries))
+	}
+	if showing.feed.entries[1].channelID != "c-muted" {
+		t.Errorf("muted bubble landed at index 0; want it last (entries: %q, %q)",
+			showing.feed.entries[0].channelID, showing.feed.entries[1].channelID)
+	}
+	if showing.feed.idx != 0 {
+		t.Errorf("selection moved to %d; want it to stay on 0", showing.feed.idx)
+	}
+}
+
+func TestFeedMutedCommand(t *testing.T) {
+	// Off the Feed tab (teamIdx 1 = Search) the toggle doesn't apply.
+	off := mutedFeedModel(false)
+	off.teamIdx = 1
+	if _, ok := off.feedMutedCommand(); ok {
+		t.Error("feedMutedCommand applies off the Feed tab; want not applicable")
+	}
+
+	on := mutedFeedModel(false)
+	cmd, ok := on.feedMutedCommand()
+	if !ok || cmd.name != "Feed: show muted channels" {
+		t.Fatalf("feedMutedCommand = %q, ok=%v; want the show command", cmd.name, ok)
+	}
+	cmd.run(&on, "")
+	if !on.feed.showMuted {
+		t.Fatal("running the command did not turn show-muted on")
+	}
+	if cmd, _ := on.feedMutedCommand(); cmd.name != "Feed: hide muted channels" {
+		t.Errorf("feedMutedCommand = %q; want the hide command once muted are shown", cmd.name)
+	}
+}
+
 func TestMuteCommand(t *testing.T) {
 	member := func(muted bool) model.ChannelMemberWithTeamData {
 		level := model.ChannelMarkUnreadAll
@@ -300,7 +427,10 @@ func TestMuteCommand(t *testing.T) {
 	}
 
 	// No open channel → no mute command, and allCommands == the static set.
-	none := Model{}
+	// teamIdx 1 parks the model on the Search tab: the zero value sits on the
+	// Feed tab, where the feed's show-muted toggle legitimately applies (see
+	// TestFeedMutedCommand) and allCommands would not be the static set.
+	none := Model{teamIdx: 1}
 	if _, ok := none.muteCommand(); ok {
 		t.Error("muteCommand applies with no open channel; want not applicable")
 	}

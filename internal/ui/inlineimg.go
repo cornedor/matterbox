@@ -850,6 +850,30 @@ func inlineThumbBox(paneWidth int) int {
 	return box
 }
 
+// thumbFitBox is the box every thumbnail is *fitted* to, whichever pane is about
+// to draw it: the narrowest pane that can be showing one right now.
+//
+// A thumbnail is one image, at one size, displayed by placeholder cells that name
+// nothing but its id — so every pane drawing it draws the same size. The
+// transcript and the thread sidebar can be showing the same post at the same
+// time (a thread root is in both), at widths that differ by a couple of cells.
+// Fit to the wider one and the narrower pane sees an image too wide for it, sends
+// it back to be re-fitted, and the fetch — which used to fit to the messages pane
+// unconditionally — builds exactly the same too-wide image again. That cycle has
+// no exit: every event re-decodes, re-downscales and re-encodes the image, frees
+// its old terminal id and transmits a new one, which is visible as the thumbnail
+// flashing. Fitting to the narrower pane costs those few cells and converges.
+//
+// Panes wider than these draw it happily at this size (the SQL tab's result rows,
+// which are full-width), so they need no say here.
+func (m *Model) thumbFitBox() int {
+	w := m.msgsView.Width()
+	if m.threadOpen && m.threadView.Width() < w {
+		w = m.threadView.Width()
+	}
+	return inlineThumbBox(w)
+}
+
 // inlineThumbCells picks the cell box for a wPx×hPx image: aspect-correct, at
 // most inlineThumbRows tall and box wide. fitImageCells (shared with the preview
 // modal) will not upscale past the image's natural size, so a small image stays
@@ -891,8 +915,8 @@ func (m *Model) reserveThumbCells(it previewItem, box int) (cols, rows int) {
 // can't draw them, the pane is too narrow, or the image failed to decode.
 //
 // Every row is indented by the standard two-cell gutter so it lines up with the
-// message body and survives wrapBodyLine untouched (the placement is fitted to the
-// pane width, so it never needs wrapping).
+// message body and survives wrapBodyLine untouched (the placement is fitted to a
+// box no wider than any pane that draws it, so it never needs wrapping).
 //
 // The placeholder rows are emitted raw, never through a lipgloss style: the image
 // id rides in each cell's truecolor foreground, and a style would overwrite it and
@@ -901,7 +925,12 @@ func (m *Model) inlineThumbLines(it previewItem, paneWidth int) []string {
 	if !m.inlineImagesActive() {
 		return nil
 	}
-	box := inlineThumbBox(paneWidth)
+	// This pane has to have room for one at all; the size it gets is the one
+	// every pane agrees on (see thumbFitBox).
+	if inlineThumbBox(paneWidth) == 0 {
+		return nil
+	}
+	box := m.thumbFitBox()
 	if box == 0 {
 		return nil
 	}
@@ -1136,7 +1165,9 @@ func (m *Model) fetchPendingInlineImages() tea.Cmd {
 	if !m.inlineImagesActive() {
 		return nil
 	}
-	box := inlineThumbBox(m.msgsView.Width())
+	// The same box the sighting used, or the build would come back a size the
+	// pane that asked for it can't take, and be sent straight back here.
+	box := m.thumbFitBox()
 	if box == 0 {
 		return nil // pane too narrow to place any; they stay pending for a resize
 	}

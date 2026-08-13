@@ -233,6 +233,7 @@ Different fields are ANDed; an empty `match` matches every message.
 | `from_me` | `true` = only your own posts; `false` = only others'; unset = either. `from_me: false` is how you keep a rule from firing on the messages **you** send — `exec`/`webhook`/`react` have no built-in self-skip the way `notify`/`send` do. |
 | `has_file` | `true` requires at least one attachment. |
 | `is_thread` | `true` = only thread replies; `false` = only root posts; unset = either. |
+| `viewing` | `true` = only when you're **looking at** the post's channel; `false` = only when you're not; unset = either. See [Not while you're reading it](#not-while-youre-reading-it). |
 | `not` | A nested `match` block that **inverts**: the rule fires only when the post does **not** satisfy it. Recursive. |
 | `frequency` | A rolling-window threshold: even when the fields match, fire only on a **burst**. See below. |
 | `cooldown` | A minimum interval: even when the fields match, fire at most **once per period** (`every: 48h`), then stay quiet. Persisted across restarts. The general form of "once a day/week". See below. |
@@ -247,6 +248,46 @@ match:
   not:
     author: [deploybot, alertmanager]
 ```
+
+### Not while you're reading it
+
+The daemon has its own WebSocket connection and knows nothing about your TUI, so
+without help it will happily pop a desktop notification for the reply to the
+message you are, at that moment, watching someone type. `viewing` is the fix:
+
+```yaml
+rules:
+  - name: desktop-dms
+    match:
+      dm: true
+      from_me: false
+      viewing: false        # … but not for the chat that's on my screen
+    actions:
+      - type: exec
+        command: [notify-send, "{{ .author }}", "{{ .message }}"]
+```
+
+`viewing: true` holds when a matterbox TUI **on this machine** has the post's
+channel open *and* its terminal has focus. Both halves matter: a conversation
+sitting in a buried window is not being read, and it still notifies.
+
+The daemon asks the TUI over its control socket
+(`~/.config/matterbox/tui.sock`, the same one `matterbox open` writes to) and
+caches the answer for a second. Anything that isn't a clear "yes" — no TUI
+running, the socket gone stale, a daemon on another host, a channel hidden
+behind the Feed/Search/SQL tab — counts as **not viewing**, so a
+`viewing: false` rule keeps firing exactly as it did before. A missed
+notification is the expensive failure; a redundant one isn't.
+
+`notify` actions get this for free: the Telegram bridge never pushes a message
+for the channel you're focused on, in the same breath as it skips muted channels
+and quiet hours. You only need `viewing` for `exec`/`webhook` rules — the ones
+that drive your own desktop notifications.
+
+Terminals report focus via DECSET 1004 (Ghostty, kitty, WezTerm, Alacritty,
+xterm; inside tmux, `set -g focus-events on`). On a terminal that never reports
+it, the TUI falls back to "was there input in the last minute" — coarser, but it
+still keeps quiet while you're typing.
 
 ### Rate limiting with `frequency`
 

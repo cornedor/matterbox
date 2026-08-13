@@ -2,12 +2,15 @@ package ui
 
 import (
 	"bufio"
+	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
+
+	"matterbox/internal/control"
 )
 
 // openChannelRequestMsg asks the running TUI to open a channel by id. It is
@@ -16,29 +19,16 @@ import (
 // notification buttons — write to.
 type openChannelRequestMsg struct{ channelID string }
 
-// ControlSocketPath returns the unix socket the running TUI listens on for
-// external "open channel" requests: <config-dir>/matterbox/tui.sock. It mirrors
-// config.Path's directory so the socket sits beside config.yaml.
-func ControlSocketPath() (string, error) {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		home, herr := os.UserHomeDir()
-		if herr != nil {
-			return "", err
-		}
-		dir = filepath.Join(home, ".config")
-	}
-	return filepath.Join(dir, "matterbox", "tui.sock"), nil
-}
-
 // ServeControlSocket starts a unix-socket listener that lets another process
-// drive the running TUI — today just `open <channel-id>`, which sends an
-// openChannelRequestMsg into the program. It returns a stop func that closes
-// the listener and removes the socket; call it (deferred) when the program
-// exits. Any setup failure degrades to a no-op stop: the TUI runs fine, just
-// without external control.
+// drive the running TUI (`open <channel-id>`, which sends an
+// openChannelRequestMsg into the program) or ask what it is showing (`status`,
+// answered from the atomic snapshot in focus.go — `matterbox listen` uses it to
+// stay quiet about the conversation you're reading). It returns a stop func
+// that closes the listener and removes the socket; call it (deferred) when the
+// program exits. Any setup failure degrades to a no-op stop: the TUI runs fine,
+// just without external control.
 func ServeControlSocket(p *tea.Program) func() {
-	path, err := ControlSocketPath()
+	path, err := control.SocketPath()
 	if err != nil {
 		return func() {}
 	}
@@ -88,18 +78,24 @@ func listenReclaim(path string) (net.Listener, error) {
 	return net.Listen("unix", path)
 }
 
-// handleControlConn reads newline-delimited commands from one connection. The
-// only verb is `open <channel-id>`; blank or unknown lines are ignored so the
-// protocol can grow without breaking older callers.
+// handleControlConn reads newline-delimited commands from one connection:
+// `open <channel-id>` (no reply) and `status` (one JSON line back). Blank or
+// unknown lines are ignored so the protocol can grow without breaking older
+// callers. status is answered straight from the published snapshot — never by
+// asking the program — so a query can't block on, or disturb, the event loop.
 func handleControlConn(conn net.Conn, send func(tea.Msg)) {
 	defer conn.Close()
 	sc := bufio.NewScanner(conn)
 	for sc.Scan() {
 		verb, arg, _ := strings.Cut(strings.TrimSpace(sc.Text()), " ")
 		switch verb {
-		case "open":
+		case control.VerbOpen:
 			if id := strings.TrimSpace(arg); id != "" {
 				send(openChannelRequestMsg{channelID: id})
+			}
+		case control.VerbStatus:
+			if b, err := json.Marshal(publishedStatus()); err == nil {
+				_, _ = conn.Write(append(b, '\n'))
 			}
 		}
 	}
