@@ -135,6 +135,12 @@ func TestUnicodeEmojiGlyph(t *testing.T) {
 		// Base glyph carrying a VS16 drops it before the modifier so the
 		// sequence is canonical (one grapheme, not glyph + swatch).
 		{"point_up_medium_skin_tone", "☝🏽"},
+		// Mattermost spells 👯‍♂️/👯‍♀️ singular, kyokomi plural — aliased so they
+		// don't fall through to the custom-emoji path and render as literal text.
+		{"man-with-bunny-ears-partying", "👯‍♂️"},
+		{"woman-with-bunny-ears-partying", "👯‍♀️"},
+		{"men-with-bunny-ears-partying", "👯‍♂️"},
+		{"women-with-bunny-ears-partying", "👯‍♀️"},
 		// Unknown base or non-emoji shortcode stays unresolved.
 		{"party_parrot", ""},
 		{"definitely_not_an_emoji_dark_skin_tone", ""},

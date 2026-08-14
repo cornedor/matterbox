@@ -37,6 +37,16 @@ var skinTones = []struct {
 	{"dark_skin_tone", '\U0001F3FF'},
 }
 
+// emojiAliases maps Mattermost shortcodes to kyokomi's spelling for the emoji
+// the two emoji-data vintages name differently. Mattermost still ships the
+// singular names for 👯‍♂️/👯‍♀️; upstream renamed them to the plural, so a direct
+// codemap lookup misses and the name would fall through to the custom-emoji
+// path and settle as literal ":man-with-bunny-ears-partying:" text.
+var emojiAliases = map[string]string{
+	"man-with-bunny-ears-partying":   "men-with-bunny-ears-partying",
+	"woman-with-bunny-ears-partying": "women-with-bunny-ears-partying",
+}
+
 // unicodeEmojiGlyph resolves a bare emoji shortcode (no colons) to a unicode
 // glyph, or "" if kyokomi doesn't know it. Beyond a direct codemap lookup it
 // understands Mattermost's "<base>_<tone>_skin_tone" naming: the base glyph is
@@ -45,6 +55,9 @@ var skinTones = []struct {
 // dropped first — it's redundant before a modifier and yields a non-canonical
 // sequence some terminals split into two glyphs.
 func unicodeEmojiGlyph(name string) string {
+	if alias := emojiAliases[name]; alias != "" {
+		name = alias
+	}
 	cm := emoji.CodeMap()
 	if g := cm[":"+name+":"]; g != "" {
 		return g
