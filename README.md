@@ -72,37 +72,35 @@ go build -o matterbox .
 
 ## Configure & log in
 
-1. **Point matterbox at your server.** On first run a config file is created at
-   `~/.config/matterbox/config.yaml`. Set your instance URL:
+### Setup tool (recommended)
 
-   ```yaml
-   server_url: https://mattermost.example.com
-   ```
+Run the interactive wizard to set server URL, log in, and pick basic preferences:
 
-2. **Authenticate.** `matterbox login` opens your browser for GitLab SSO and saves
-   the session token to `~/.config/matterbox/mm_token.json`:
+```sh
+matterbox welcome
+```
 
-   ```sh
-   matterbox login
-   ```
+`matterbox login` opens your browser for GitLab SSO and saves the token to
+`~/.config/matterbox/mm_token.json`. It hands the token back via an `mmauth://`
+link. On **Linux** matterbox registers itself as the handler so the capture is
+automatic; elsewhere, copy the link from the success page and paste it at the
+prompt. `--show` prints the token path; `--clear` deletes it.
 
-   It uses Mattermost's native-login endpoint, which hands the token back via an
-   `mmauth://` link once you authorize. On **Linux** matterbox registers itself as
-   the `mmauth://` handler, so your browser offers to "open Matterbox Login Handler"
-   and the token is captured automatically. On other platforms (or if you decline),
-   right-click the **link** on the success page, choose **Copy Link Address**, and
-   paste it at the prompt.
+(Or put any valid session token in that file as `{"token": "..."}`.)
 
-   `matterbox login --show` prints where the token is stored; `--clear` removes it.
+Running `matterbox` with no arguments launches the wizard automatically on first
+run.
 
-   (Alternatively, drop any valid Mattermost session/access token into that file as
-   `{"token": "..."}` — or paste a raw token at the `login` prompt.)
+### Manual configuration
 
-3. **Run it.**
+Edit `~/.config/matterbox/config.yaml` directly for full control. At minimum:
 
-   ```sh
-   matterbox
-   ```
+```yaml
+server_url: https://mattermost.example.com
+```
+
+Then run `matterbox login` or place a token in `~/.config/matterbox/mm_token.json`
+manually.
 
 ## CLI
 
