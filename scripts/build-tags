@@ -1,0 +1,66 @@
+#!/bin/sh
+# Print the optional Go build tags this machine can compile, comma-separated,
+# so `make` can turn features on automatically instead of asking people to
+# know which -tags to pass. Used by the Makefile as the default TAGS; pass
+# `-v` to also explain each decision on stderr (that's what `make tags` does).
+#
+#   demoaudio  --demo soundtrack (oto + tracker synth). Linux/*BSD: cgo + ALSA
+#              headers (pkg-config alsa). macOS/Windows: no cgo, always on.
+#   video      inline mp4/webm/mov/webp playback via go-astiav. cgo + the
+#              ffmpeg dev libraries (pkg-config libav*/libsw*).
+#
+# Override the result with `make build TAGS=…` (TAGS= for none).
+
+set -u
+verbose=${1:-}
+GO=${GO:-go}
+os=$(uname -s 2>/dev/null || echo unknown)
+tags=
+
+say() { [ "$verbose" = "-v" ] && echo "$*" >&2; return 0; }
+
+have_pkgs() {
+	command -v pkg-config >/dev/null 2>&1 && pkg-config --exists "$@" 2>/dev/null
+}
+
+cgo=$("$GO" env CGO_ENABLED 2>/dev/null || echo 0)
+if [ "$cgo" = "1" ]; then
+	say "cgo:       yes (CC=$("$GO" env CC 2>/dev/null))"
+else
+	say "cgo:       no — no C compiler found (or CGO_ENABLED=0); cgo-based features stay off"
+fi
+
+# demoaudio
+case "$os" in
+Darwin | MINGW* | MSYS* | CYGWIN*)
+	tags="demoaudio"
+	say "demoaudio: yes (no system libs needed on $os)"
+	;;
+*)
+	if [ "$cgo" != "1" ]; then
+		say "demoaudio: no — needs cgo"
+	elif have_pkgs alsa; then
+		tags="demoaudio"
+		say "demoaudio: yes (alsa found)"
+	else
+		say "demoaudio: no — ALSA headers not found (Fedora: alsa-lib-devel, Debian/Ubuntu: libasound2-dev); --demo plays silently"
+	fi
+	;;
+esac
+
+# video — the pkg-config list mirrors go-astiav's #cgo directive.
+avpkgs="libavcodec libavdevice libavfilter libavformat libswresample libswscale libavutil"
+if [ "$cgo" != "1" ]; then
+	say "video:     no — needs cgo"
+elif have_pkgs $avpkgs; then
+	tags="${tags:+$tags,}video"
+	say "video:     yes (ffmpeg dev libs found)"
+else
+	say "video:     no — ffmpeg dev libs not found (Fedora: ffmpeg-devel or ffmpeg-free-devel, Debian/Ubuntu: libavcodec-dev libavdevice-dev libavfilter-dev libavformat-dev libswresample-dev libswscale-dev libavutil-dev, macOS: brew install ffmpeg pkg-config); video files keep their 🎬 icon"
+fi
+
+if [ "$verbose" = "-v" ]; then
+	echo "tags:      ${tags:-(none)}" >&2
+else
+	printf '%s\n' "$tags"
+fi

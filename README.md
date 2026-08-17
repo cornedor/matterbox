@@ -64,7 +64,14 @@ make install    # build + install to ~/.local/bin and set up shell completion
 make run        # build and launch the TUI
 ```
 
-Or with plain Go:
+Optional features (the `--demo` soundtrack, inline video playback) need C
+libraries; `make` detects what your machine has and compiles in whatever it
+can, so a plain `make install` is all anyone needs. `make tags` shows what was
+picked and how to unlock the rest (e.g. install `ffmpeg-devel` / `libav*-dev`
+for video, then rebuild). Force a set with `make build TAGS=…` (`TAGS=` for
+none).
+
+Or with plain Go (no optional features, no cgo needed):
 
 ```sh
 go build -o matterbox .

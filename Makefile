@@ -7,34 +7,46 @@
 #                    the `matterbox listen` systemd --user unit (disabled)
 #   make uninstall  remove the binary, completion files, login handler, service
 #   make demo       run the `--demo` intro with its chiptune soundtrack
+#   make tags       show which optional features this machine can build
 #   make test/vet/fmt/clean/run  the usual dev helpers
 #
 # Override the install location with PREFIX, e.g.  make install PREFIX=~/apps
 #
-# The `--demo` soundtrack (oto + a tracker synth) needs cgo and system audio
-# libs (pkg-config/ALSA on Linux). The make targets compile it in by default
-# (TAGS=demoaudio); drop it with `make build TAGS=` to lose that dependency.
-# Raw `go build`/`go run` outside make stay tag-free, so they work without
-# pkg-config — the soundtrack just plays silently there.
+# Optional features live behind Go build tags. The make targets detect which
+# ones this machine can compile (scripts/build-tags) and turn them on
+# automatically, so `make install` needs no explanation:
 #
-# Optional VIDEO playback (mp4/webm/mov/webp when animations.native_animation is
-# on — inline thumbnails as short looping previews, the space preview streaming
-# the whole clip) is gated behind the `video` tag, which pulls in cgo + libav via
-# go-astiav. Opt in with
-#   make build TAGS=demoaudio,video      (needs CGO_ENABLED=1, on by default here)
-# It needs the ffmpeg dev libraries — pkg-config must find libavformat,
-# libavcodec, libavutil and libswscale (Fedora: ffmpeg-devel/ffmpeg-free-devel;
-# Debian/Ubuntu: libav*-dev). Without the tag, video files keep their 🎬 icon and
-# no libav is linked — go-astiav stays in go.mod (tidy reads tagged files too)
-# but is never built, so a tag-free build needs neither cgo nor ffmpeg.
+#   demoaudio  the `--demo` soundtrack (oto + a tracker synth). Linux: cgo +
+#              ALSA headers (pkg-config alsa; Fedora alsa-lib-devel, Debian
+#              libasound2-dev). macOS/Windows: nothing extra. Without it the
+#              intro plays silently.
+#   video      inline mp4/webm/mov/webp playback when animations.native_animation
+#              is on (thumbnails as short looping previews, the space preview
+#              streaming the whole clip) via go-astiav. cgo + the ffmpeg dev
+#              libraries — pkg-config must find libavcodec libavdevice
+#              libavfilter libavformat libswresample libswscale libavutil
+#              (Fedora ffmpeg-devel/ffmpeg-free-devel, Debian libav*-dev,
+#              macOS brew ffmpeg). Without it video files keep their 🎬 icon
+#              and no libav is linked (go-astiav stays in go.mod but is never
+#              built).
+#
+# `make tags` prints the detection with reasons. Force a set with
+#   make build TAGS=demoaudio     (or TAGS= for none)
+# Raw `go build`/`go run` outside make stay tag-free, so they work without
+# cgo, pkg-config, ALSA or ffmpeg.
 
 BINARY := matterbox
 PKG    := .
 GO     ?= go
 
-# Extra build tags. Defaults to `demoaudio` (compiles in the --demo audio);
-# clear it with `make build TAGS=` to drop the pkg-config/ALSA dependency.
-TAGS     ?= demoaudio
+# Build tags. Auto-detected per machine unless TAGS is given on the command
+# line or in the environment (TAGS= disables every optional feature).
+ifeq ($(origin TAGS),undefined)
+TAGS      := $(shell GO=$(GO) scripts/build-tags)
+TAGS_INFO := GO=$(GO) scripts/build-tags -v
+else
+TAGS_INFO := echo "tags:      $(if $(TAGS),$(TAGS),(none)) (TAGS override, detection skipped)"
+endif
 TAGFLAGS := $(if $(TAGS),-tags $(TAGS),)
 
 # User-level install prefix. ~/.local/bin is already on this user's PATH.
@@ -69,8 +81,13 @@ MACOS_LOG     := $(HOME)/Library/Logs/matterbox-listen.log
 .DEFAULT_GOAL := build
 
 .PHONY: build
-build: ## Build the matterbox binary into the repo root
+build: ## Build the matterbox binary into the repo root (optional features auto-detected, see `make tags`)
+	@$(TAGS_INFO)
 	$(GO) build $(TAGFLAGS) -o $(BINARY) $(PKG)
+
+.PHONY: tags
+tags: ## Show which optional features (build tags) this machine can compile, and why
+	@$(TAGS_INFO)
 
 .PHONY: install
 install: build install-completion install-service ## Install binary + completion (+ login handler & listen service on Linux)
@@ -190,8 +207,8 @@ run: ## Build and launch the TUI
 	$(GO) run $(TAGFLAGS) $(PKG)
 
 .PHONY: demo
-demo: ## Run the --demo intro with its chiptune soundtrack (needs pkg-config/ALSA)
-	$(GO) run -tags demoaudio $(PKG) welcome --demo
+demo: ## Run the --demo intro with its chiptune soundtrack (silent if demoaudio can't be built here)
+	$(GO) run $(TAGFLAGS) $(PKG) welcome --demo
 
 .PHONY: clean
 clean: ## Remove the built binary
