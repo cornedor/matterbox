@@ -582,6 +582,16 @@ func (s *Store) ChannelOfPost(id string) (channelID string, ok bool, err error) 
 	return channelID, true, nil
 }
 
+// Post fetches a single cached post by id, or (nil, nil) when it isn't cached.
+// The listen daemon uses it to resolve the post a reaction landed on without a
+// round-trip when the cache already holds it.
+func (s *Store) Post(id string) (*model.Post, error) {
+	if s == nil || id == "" {
+		return nil, nil
+	}
+	return s.lookupPost(id)
+}
+
 // lookupPost fetches a single post by Id. Returns (nil, nil) when the
 // id isn't in the cache.
 func (s *Store) lookupPost(id string) (*model.Post, error) {

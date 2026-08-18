@@ -36,6 +36,10 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=%h/.local/bin/matterbox listen
+# `systemctl --user reload matterbox-listen` re-reads the rules in place: no
+# dropped websocket, no re-run catch-up. A config that fails to compile is
+# logged and ignored, leaving the running rules alone.
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5s
 # The actual chat/embedding work happens in the (separately launched) llama

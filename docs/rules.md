@@ -1,11 +1,15 @@
-# Rules — per-message automation for `matterbox listen`
+# Rules — event automation for `matterbox listen`
 
 The `matterbox listen` daemon holds a persistent WebSocket connection to your
-Mattermost server and reacts to every incoming message. **Rules** make that
-reaction programmable: when a message matches a set of conditions, the daemon
-runs one or more actions — forward it to Telegram, run a local command, POST a
-webhook, post a message back, add a reaction, mark the channel read, or just log
-it.
+Mattermost server and reacts to what happens on it. **Rules** make that reaction
+programmable: when something matches a set of conditions, the daemon runs one or
+more actions — forward it to Telegram, run a local command, POST a webhook, post
+a message back, add a reaction, mark the channel read, or just log it.
+
+A rule reacts to a new message by default, but [`on:`](#triggers-on) widens that
+to edits, deletions, reactions — and to the clock, so "post the standup prompt
+at 09:00 on weekdays" is a rule rather than a separate cron job with its own
+copy of your config.
 
 Rules also have *memory*: a [`frequency`](#rate-limiting-with-frequency) window
 fires only on a burst ("three sev-1s in ten minutes"), and a [persistent
@@ -66,25 +70,39 @@ rules:
         text: "ops activity"
 ```
 
-### 4. Restart the daemon and check it loaded
+### 4. Load it, and check what loaded
 
-Rules are compiled and validated when the daemon starts, so restart it after
-every edit:
+Rules are compiled and validated when they load, so tell the running daemon to
+re-read them after every edit — a reload swaps the ruleset in place, without
+dropping the connection or re-running catch-up:
 
 ```sh
 # Linux (systemd --user)
-systemctl --user restart matterbox-listen.service
+systemctl --user reload matterbox-listen.service
 journalctl --user -u matterbox-listen -f
 
+# anywhere, by signal
+pkill -HUP -f "matterbox listen"
+
 # macOS (launchd)
-launchctl kickstart -k gui/$(id -u)/com.matterbox.listen
+launchctl kill -HUP gui/$(id -u)/com.matterbox.listen
 tail -f ~/Library/Logs/matterbox-listen.log
 
 # or just run it in the foreground while you iterate
 matterbox listen
 ```
 
-The startup line reports how many rules loaded:
+A reload that fails to compile changes nothing: the daemon logs the error and
+keeps running the rules it already had, so a typo can't disarm a working
+daemon.
+
+To see what is configured without touching the daemon at all:
+
+```sh
+matterbox rules list
+```
+
+The startup (and reload) line reports how many rules loaded:
 
 ```
 matterbox listen: cache=… two_way=true … rules=1 configured
@@ -101,6 +119,16 @@ rules: rule "watch-ops": bad message regexp "(": error parsing regexp: …
 Fix the config and restart.
 
 ### 5. Watch it fire, then swap in a real action
+
+You don't have to wait for someone to say the magic word — ask which rules a
+message would fire:
+
+```sh
+matterbox rules test -m "sev-1 in prod" --channel "Ops Alerts" --author bob
+```
+
+Nothing runs: it reports, per rule, whether it matches and — when it doesn't —
+which condition stopped it. See [Testing a rule](#testing-a-rule).
 
 With the daemon log open, post a test message that should match. You'll see your
 `log` line appear. Once the `match` is doing what you want, replace `log` with
@@ -163,6 +191,82 @@ else: run the daemon with `--notify-self` and post in your self-DM.
 - **Use `(?i)`** at the start of a `message` regexp for case-insensitive
   matching.
 - **Iterate with `log`**, promote to real actions once the match is right.
+- **`matterbox rules test` beats guessing.** It runs the same matcher the daemon
+  runs and names the first condition that failed.
+- **A rule only reacts to what it lists.** With no `on:`, that's new messages —
+  so a rule about a reaction or an edit needs [`on:`](#triggers-on).
+
+## Working on rules: `matterbox rules`
+
+Four verbs, all reading the same config the daemon reads and running the same
+matcher, so an answer here is the answer the daemon would give.
+
+### Testing a rule
+
+`matterbox rules test` reports, for every rule, whether it matches — and when it
+doesn't, the first condition that stopped it. Nothing runs: no action is
+executed, nothing is posted, and the ledger and the rate gates are only read.
+
+```sh
+$ matterbox rules test -m "sev-1 in prod" --channel "Ops Alerts" --author bob
+probe: message at Tue 18 Aug 21:32 in "Ops Alerts" from @bob — "sev-1 in prod"
+
+  ✓  pager                    → exec → notify  [stop: later rules are skipped]
+  ✗  desktop                  mention doesn't match
+  –  nightly-digest           reacts to schedule
+```
+
+`✓` fires, `✗` doesn't (with the condition that failed), `–` isn't listening for
+this kind of event, and `⏸` matches but is held back by a `cooldown` or
+`frequency` gate.
+
+Describe a hypothetical message with flags, or pass a real post's id — or the
+permalink the UI copies — to test against a message that actually exists,
+attachments and props included:
+
+```sh
+matterbox rules test -m "help" --dm --author alice
+matterbox rules test 8x4k9y…                              # a real post
+matterbox rules test 8x4k9y… --on reaction --emoji eyes --reactor bob
+matterbox rules test -m "deploy" --at 03:00               # test a time window
+matterbox rules test --on schedule                        # the timer rules
+```
+
+`--at` moves the clock, which is how a `time:` window or a weekday condition is
+checked without waiting for Tuesday.
+
+### Reloading
+
+`systemctl --user reload matterbox-listen.service` (or `pkill -HUP -f "matterbox
+listen"`) makes the daemon re-read the config and swap its rules in place — no
+dropped connection, no re-run catch-up. A config that fails to compile is
+reported and **ignored**: the daemon keeps the rules it already had.
+
+### Is it firing at all?
+
+```sh
+$ matterbox rules stats
+RULE                            FIRES  LAST
+pager                              12  2026-08-18 09:12
+desktop                             –  never
+```
+
+Counters persist across restarts and count *firings*, not matches — a rule held
+back by its cooldown or frequency window doesn't count. A dash next to a rule you
+expect to be busy is the fastest sign its match is wrong; `rules test` then says
+which condition.
+
+### The ledger
+
+```sh
+matterbox rules state                    # every key
+matterbox rules state get zork:active
+matterbox rules state set greeted today
+matterbox rules state del zork:active    # unwedge a stuck rule
+```
+
+The [ledger](#persistent-state-the-ledger) is the one piece of rule state with
+no other window onto it.
 
 ## The notification bridge is just a rule
 
@@ -213,10 +317,90 @@ the default `telegram.chat_id` (per-rule `chat_id` applies to live messages).
 
 ## How rules are evaluated
 
-For each incoming message (system messages, deletions, and empty bodies are
-skipped) the daemon walks the `rules:` list top to bottom. Every rule whose
-`match` passes runs its `actions`. A matching rule with `stop: true` ends
-evaluation — no later rule runs for that message.
+For each event (system messages are always skipped) the daemon walks the
+`rules:` list top to bottom, considering only the rules that react to *that kind
+of event*. Every rule whose `match` passes runs its `actions`. A matching rule
+with `stop: true` ends evaluation — no later rule runs for that event.
+
+## Triggers (`on`)
+
+A rule reacts to whatever its `on:` field lists. With no `on:`, that's `message`
+— a new post — which is what every rule did before this field existed.
+
+| `on:` | Fires when |
+|---|---|
+| `message` | A new post arrives. The default. |
+| `edit` | An existing post is edited. |
+| `delete` | A post is deleted. The post is the tombstone, so `message` still matches the text it had. |
+| `reaction` | Someone adds an emoji reaction to a post. |
+| `reaction_removed` | Someone removes one. |
+| `schedule` | The rule's own timer comes due. Needs a `schedule:` block; can't be combined with the other kinds. |
+
+A rule can list several: `on: [message, edit]` reacts to a post and to later
+edits of it.
+
+```yaml
+rules:
+  - name: someone-noticed
+    on: reaction              # a single value or a list
+    match:
+      from_me: true           # …reacted to *my* post
+      emoji: [eyes, white_check_mark]
+    actions:
+      - type: mark_read
+```
+
+On a reaction trigger the post-centric conditions keep their usual meaning:
+`author`, `from_me`, `channel` and `message` describe **the post**, and who
+reacted is [`reactor`](#conditions-match). That way "somebody acknowledged my
+message" is `from_me: true` — which is what you actually want to match.
+
+### Scheduled rules
+
+`on: schedule` is the trigger nothing in Mattermost causes. Set exactly one of
+`cron:` or `every:`:
+
+```yaml
+rules:
+  - name: standup-prompt
+    on: schedule
+    schedule:
+      cron: "0 9 * * 1-5"     # 09:00, Monday to Friday, local time
+    actions:
+      - type: send
+        channel: eng/standup  # required: a timer has no channel of its own
+        text: "Standup in 15 minutes ⏰"
+
+  - name: hourly-sweep
+    on: schedule
+    schedule:
+      every: 1h               # first fires an hour after the daemon starts
+    actions:
+      - type: exec
+        command: ["/home/me/bin/sweep.sh"]
+```
+
+`cron:` is the ordinary five-field crontab grammar — minute, hour, day of month,
+month, day of week — with `*`, lists (`1,15`), ranges (`1-5`), steps (`*/10`,
+`9-17/2`) and names (`mon`, `jan`). As in crontab, when day-of-month *and*
+day-of-week are both restricted the rule fires when **either** matches. Times
+are local.
+
+`every:` measures from the last firing, which is remembered across restarts — so
+a daemon that restarts twice an hour still runs a `24h` rule once a day. The
+minimum is `1m`.
+
+Three things to know:
+
+- **Nothing is caught up.** A firing missed because the daemon was down is
+  skipped, not replayed at startup. A standup prompt four hours late is worse
+  than one that never came.
+- **There is no post**, so `notify`, `react` and `mark_read` have nothing to act
+  on and are rejected at compile time, and `send` must name a `channel:`.
+- **`match` still applies.** `state` conditions in particular let a scheduled
+  digest hold its tongue until there is something to report.
+
+`matterbox rules list` shows when each scheduled rule fires next.
 
 ## Conditions (`match`)
 
@@ -227,11 +411,16 @@ Different fields are ANDed; an empty `match` matches every message.
 | `channel` | Case-insensitive glob (`*`, `?`) over the channel's **display name**, or an exact channel id. A single value or a list (matches **any**). |
 | `team` | Case-insensitive glob (`*`, `?`) over the team's **URL name** (the slug in the channel URL, e.g. `core`), or an exact team id. A single value or a list (matches **any**). A DM carries no team, so a `team` condition never matches a direct message. |
 | `author` | Username (no leading `@`), matched case-insensitively. A single value or a list (matches **any**). |
-| `message` | [RE2](https://github.com/google/re2/wiki/Syntax) regexp over the body. Prefix `(?i)` for case-insensitive. |
+| `message` | [RE2](https://github.com/google/re2/wiki/Syntax) regexp over the body **plus any attachment text** (see below). Prefix `(?i)` for case-insensitive. Its capture groups are available to templates — see [Captures](#captures-from-message). |
 | `mention` | `true` requires you were directly @named (the same test the bridge uses). |
 | `dm` | `true` = only direct messages; `false` = only channels; unset = either. |
 | `from_me` | `true` = only your own posts; `false` = only others'; unset = either. `from_me: false` is how you keep a rule from firing on the messages **you** send — `exec`/`webhook`/`react` have no built-in self-skip the way `notify`/`send` do. |
 | `has_file` | `true` requires at least one attachment. |
+| `from_bot` | `true` = only posts from a bot or incoming webhook; `false` = only posts from people; unset = either. |
+| `channel_type` | `public`, `private`, `dm`, or `group` (a multi-person DM). A single value or a list (matches **any**). |
+| `emoji` | Reaction shortcode (no colons), as a case-insensitive glob or exact name. A single value or a list. Needs `on: reaction` (or `reaction_removed`). |
+| `reactor` | Username (no `@`) of whoever reacted. A single value or a list. Needs a reaction trigger. |
+| `time` | A window of the local clock and/or certain weekdays: `after`, `before`, `days`. See [Office hours](#office-hours-with-time). |
 | `is_thread` | `true` = only thread replies; `false` = only root posts; unset = either. |
 | `viewing` | `true` = only when you're **looking at** the post's channel; `false` = only when you're not; unset = either. See [Not while you're reading it](#not-while-youre-reading-it). |
 | `not` | A nested `match` block that **inverts**: the rule fires only when the post does **not** satisfy it. Recursive. |
@@ -248,6 +437,72 @@ match:
   not:
     author: [deploybot, alertmanager]
 ```
+
+### Messages that hide in attachments
+
+Integrations — Jira, GitLab, alertmanager, most incoming webhooks — routinely
+post with an **empty body** and put everything in a Slack-style attachment. A
+`message` condition therefore matches the body *and* the flattened attachment
+text (pretext, title, text, fields, footer), and such a post reaches the rules
+even though its body is empty:
+
+```yaml
+rules:
+  - name: failed-pipelines
+    match:
+      from_bot: true
+      message: "(?i)pipeline failed"   # matches attachment text too
+    actions:
+      - type: notify
+        urgent: true
+```
+
+The raw attachment text is also in the [exec/webhook
+payload](#the-exec--webhook-payload) as `attachment_text`, separate from
+`message`.
+
+### Captures from `message`
+
+The capture groups of a `message` regexp are available to every
+[template](#templating-keys-and-values) in the rule, so a command-style message
+can carry its own arguments:
+
+```yaml
+rules:
+  - name: deploy-command
+    match:
+      message: '^!deploy (?P<env>\w+)$'
+    actions:
+      - type: exec
+        command: ["/home/me/bin/deploy.sh", "{{ .match.env }}"]
+```
+
+- A **named** group `(?P<env>…)` reads as `{{ .match.env }}`.
+- A **numbered** group reads as `{{ index .match "1" }}` — Go templates have no
+  syntax for a numeric field name. `"0"` is the whole match.
+- `exec` also gets them as `MATTERBOX_MATCH_ENV`, `MATTERBOX_MATCH_1`, …
+- Each rule sees only its own captures; a rule with no `message` condition sees
+  an empty map.
+
+### Office hours with `time`
+
+`frequency` and `cooldown` say how *often* a rule may fire; `time` says *when*
+it may fire at all. Every field set is ANDed:
+
+```yaml
+match:
+  time:
+    after: "09:00"          # inclusive, local time
+    before: "17:30"         # exclusive
+    days: [mon, tue, wed, thu, fri]
+```
+
+A `before` earlier than `after` wraps midnight, so `after: "22:00", before:
+"06:00"` is the night. Either bound can stand alone (`after: "18:00"` runs to
+the end of the day). `days` accepts `mon`..`sun`, full names, or `0`-`7`.
+
+The window is tested against the moment the **trigger** fired, not the daemon's
+uptime — so a reaction to an old post is judged by when the reaction happened.
 
 ### Not while you're reading it
 
@@ -412,6 +667,12 @@ script can depend on them:
   "files": ["diagram.png"],
   "create_at": 1700000000000,
   "permalink": "https://mm.example.com/core/pl/abc123",
+  "event": "message",
+  "emoji": "eyes",
+  "reactor": "alice",
+  "attachment_text": "Pipeline failed on main",
+  "rule": "",
+  "match": { "0": "deploying now", "1": "now" },
   "state": { "failure_count": "3", "last_failure_time": "1700000000000" }
 }
 ```
@@ -421,12 +682,22 @@ is whether *you* were @named; `files` lists attachment names (present only when
 the post carries file metadata); `state` is a snapshot of the [persistent
 ledger](#persistent-state-the-ledger) (omitted when empty).
 
+`event` is the [trigger kind](#triggers-on), so one script can serve several
+rules. `emoji`/`reactor` are set only for a reaction trigger, `rule` only for a
+scheduled one, `attachment_text` only when the post carries [attachment
+text](#messages-that-hide-in-attachments), and `match` holds the `message`
+regexp's [captures](#captures-from-message).
+
 `exec` additionally exports each scalar field as an environment variable so a
 quick script needn't parse JSON: `MATTERBOX_POST_ID`, `MATTERBOX_CHANNEL_ID`,
 `MATTERBOX_CHANNEL`, `MATTERBOX_TEAM_ID`, `MATTERBOX_TEAM`, `MATTERBOX_AUTHOR`,
 `MATTERBOX_MESSAGE`, `MATTERBOX_IS_DM`, `MATTERBOX_IS_THREAD`,
 `MATTERBOX_ROOT_ID`, `MATTERBOX_MENTIONED`, `MATTERBOX_FILES` (comma-separated),
-and `MATTERBOX_PERMALINK`. The ledger is exported as `MATTERBOX_STATE` (the whole
+`MATTERBOX_PERMALINK`, `MATTERBOX_EVENT`, `MATTERBOX_EMOJI`,
+`MATTERBOX_REACTOR`, `MATTERBOX_ATTACHMENT_TEXT`, and `MATTERBOX_RULE`. Regexp
+captures are exported as `MATTERBOX_MATCH_<NAME>` / `MATTERBOX_MATCH_1`.
+
+The ledger is exported as `MATTERBOX_STATE` (the whole
 map as JSON) plus one `MATTERBOX_STATE_<KEY>` per entry (the key upper-cased,
 non-alphanumerics collapsed to `_`), e.g. `MATTERBOX_STATE_FAILURE_COUNT=3`.
 
@@ -675,6 +946,69 @@ rules:
         command: ["notify-send", "{{ .author }} mentioned you", "{{ .message }}"]
 ```
 
+Mark a DM read as soon as you acknowledge it from your phone with 👀:
+
+```yaml
+rules:
+  - name: ack-clears-unread
+    on: reaction
+    match:
+      dm: true
+      reactor: me-on-mobile      # your own username
+      emoji: eyes
+    actions:
+      - type: mark_read
+```
+
+Post the standup prompt on weekday mornings:
+
+```yaml
+rules:
+  - name: standup-prompt
+    on: schedule
+    schedule:
+      cron: "0 9 * * 1-5"
+    actions:
+      - type: send
+        channel: eng/standup
+        text: "Standup in 15 minutes ⏰"
+```
+
+Page for a failed pipeline — from an integration that posts an empty body and
+puts everything in an attachment — but only during office hours:
+
+```yaml
+rules:
+  - name: pipeline-failures
+    match:
+      from_bot: true
+      channel_type: [public, private]
+      message: "(?i)pipeline failed"
+      time:
+        after: "08:00"
+        before: "18:00"
+        days: [mon, tue, wed, thu, fri]
+    actions:
+      - type: notify
+        summarize: false
+```
+
+Run a deploy script with the environment the message named:
+
+```yaml
+rules:
+  - name: deploy-command
+    match:
+      from_me: false
+      message: '^!deploy (?P<env>staging|prod)$'
+    actions:
+      - type: exec
+        command: ["/home/me/bin/deploy.sh", "{{ .match.env }}"]
+      - type: react
+        emoji: rocket
+    stop: true
+```
+
 Auto-react with 👀 when a bot drops a deploy notice, and mark it read:
 
 ```yaml
@@ -860,10 +1194,23 @@ out (a little late) rather than being lost.
 
 ## Safety
 
+A rule that reacts to a reaction and then *adds* one is the obvious way to build
+a loop: the server echoes every reaction back over the websocket. The daemon
+breaks that specific circle — the echo of a reaction its own `react` action just
+added never triggers a rule — while a reaction **you** make (from your phone,
+say) still does. Nothing stops a rule from looping through a slower path, though
+(a `send` whose text matches the rule's own condition, for instance), so give
+any rule that writes back a condition that its own output can't satisfy —
+`from_me: false` is usually it.
+
 `exec` runs commands from your own config, as you, on your own machine — same
 trust level as a shell alias. Each run is bounded by a timeout and runs off the
 ingest path, so a slow or hung command can't block message caching or take the
-daemon down. A bad glob, regexp, **template, `frequency`/`cooldown` duration, or
-`state` condition** (missing key / no operator), or an unknown action `type`, is reported at startup
-so a typo fails loud rather than silently never firing. `state_*` writes touch only matterbox's own database
+daemon down. A bad glob, regexp, **template, `frequency`/`cooldown` duration, `cron`
+expression, `time` window, or `state` condition** (missing key / no operator),
+an unknown action `type` or `on:` kind, and any combination that could never
+work — an `emoji` condition without a reaction trigger, a schedule rule whose
+`send` has no channel — are all reported when the rules load, so a typo fails
+loud rather than silently never firing. A failed **reload** leaves the running
+rules in place. `state_*` writes touch only matterbox's own database
 (the `rule_state` table), never your Mattermost server.

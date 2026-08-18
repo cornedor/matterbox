@@ -329,11 +329,44 @@ type RuleConfig struct {
 	Name string `yaml:"name,omitempty"`
 	// Stop halts evaluation of later rules once this one matches.
 	Stop bool `yaml:"stop,omitempty"`
+	// On lists the events the rule reacts to: message (the default), edit,
+	// delete, reaction, reaction_removed, or schedule. Accepts a single value
+	// or a list. A rule without `on` reacts to new messages only.
+	On StringList `yaml:"on,omitempty"`
+	// Schedule is the timer of an `on: schedule` rule — the trigger nothing in
+	// Mattermost causes. Required for that kind, rejected for the rest.
+	Schedule *RuleScheduleConfig `yaml:"schedule,omitempty"`
 	// Match holds the conditions; all set conditions must hold (AND). An empty
 	// match matches every non-system, non-empty post.
 	Match RuleMatchConfig `yaml:"match"`
 	// Actions run in order when Match passes.
 	Actions []RuleActionConfig `yaml:"actions"`
+}
+
+// RuleScheduleConfig is the timer of an `on: schedule` rule. Set exactly one
+// of cron / every. See internal/listen.ScheduleSpec.
+type RuleScheduleConfig struct {
+	// Cron is a five-field crontab expression in local time, e.g.
+	// "0 9 * * 1-5" (09:00 on weekdays). Supports *, lists, ranges, steps and
+	// names (mon, jan).
+	Cron string `yaml:"cron,omitempty"`
+	// Every is an interval ("30m", "6h"): the rule first fires one interval
+	// after the daemon starts, and the last firing is remembered across
+	// restarts.
+	Every string `yaml:"every,omitempty"`
+}
+
+// RuleTimeConfig restricts a rule to a window of the local clock and/or certain
+// weekdays. See internal/listen.TimeSpec.
+type RuleTimeConfig struct {
+	// After is the inclusive start of the window, "HH:MM" local.
+	After string `yaml:"after,omitempty"`
+	// Before is the exclusive end, "HH:MM" local. Earlier than after means the
+	// window wraps midnight (22:00-06:00 is the night).
+	Before string `yaml:"before,omitempty"`
+	// Days limits the rule to certain weekdays: mon..sun (or 0-7). Accepts a
+	// single value or a list.
+	Days StringList `yaml:"days,omitempty"`
 }
 
 // RuleMatchConfig holds a rule's conditions. See internal/listen.MatchSpec.
@@ -371,6 +404,25 @@ type RuleMatchConfig struct {
 	// — or a daemon on another host — you are viewing nothing, so such a rule
 	// behaves exactly as it did before.
 	Viewing *bool `yaml:"viewing,omitempty"`
+	// Emoji matches a reaction trigger's shortcode (no colons), as a
+	// case-insensitive glob or exact name. Accepts a single value or a list
+	// (match any). Needs `on: reaction`.
+	Emoji StringList `yaml:"emoji,omitempty"`
+	// Reactor is the username (no leading @) whose reaction fires the rule.
+	// Accepts a single value or a list. On a reaction trigger `author` and
+	// `from_me` still describe the post's writer, so "someone reacted to my
+	// message" is from_me: true.
+	Reactor StringList `yaml:"reactor,omitempty"`
+	// ChannelType restricts the conversation kind: public, private, dm, or
+	// group. Accepts a single value or a list (match any).
+	ChannelType StringList `yaml:"channel_type,omitempty"`
+	// FromBot, when set, requires the post come from a bot or incoming webhook
+	// (true) or from a person (false) — the integrations whose text lives in
+	// attachments rather than the message body.
+	FromBot *bool `yaml:"from_bot,omitempty"`
+	// Time restricts the rule to a window of the local clock and/or certain
+	// weekdays, tested against the moment the trigger fired.
+	Time *RuleTimeConfig `yaml:"time,omitempty"`
 	// Not inverts a nested match: the rule fires only when the post does NOT
 	// satisfy it (e.g. everything in a channel except posts from a bot).
 	Not *RuleMatchConfig `yaml:"not,omitempty"`
@@ -1279,11 +1331,20 @@ func writeConfig(p string, cfg *Config) error {
 		"#             A notification is always skipped for the conversation you have\n" +
 		"#             open and focused in a matterbox TUI on this machine — you're\n" +
 		"#             already reading it. Rules gate on the same thing with viewing.\n" +
-		"# rules:      per-message automation for `matterbox listen`. Each rule has a\n" +
-		"#             match (conditions, ANDed) and actions (run in order). Match on\n" +
-		"#             channel (display-name glob or id), author, message (RE2 regexp),\n" +
-		"#             mention (you were @named), dm, from_me (your own posts; set\n" +
-		"#             false to skip them), has_file, is_thread, viewing (the\n" +
+		"# rules:      event automation for `matterbox listen`. Each rule has an\n" +
+		"#             optional on: (which events it reacts to — message (default),\n" +
+		"#             edit, delete, reaction, reaction_removed, or schedule), a\n" +
+		"#             match (conditions, ANDed) and actions (run in order). An\n" +
+		"#             `on: schedule` rule needs a schedule: { cron: \"0 9 * * 1-5\" }\n" +
+		"#             or { every: 30m } and fires off the clock, not off a message.\n" +
+		"#             Match on\n" +
+		"#             channel (display-name glob or id), author, message (RE2 regexp\n" +
+		"#             over the body *and* any attachment text; its capture groups\n" +
+		"#             reach templates as .match), mention (you were @named), dm,\n" +
+		"#             from_me (your own posts; set false to skip them), from_bot,\n" +
+		"#             channel_type (public/private/dm/group), has_file, is_thread,\n" +
+		"#             emoji + reactor (reaction triggers), time: { after, before,\n" +
+		"#             days } (a local-clock window), viewing (the\n" +
 		"#             channel is open + focused in your TUI — `viewing: false`\n" +
 		"#             keeps a desktop-notify rule off the chat you're reading);\n" +
 		"#             channel and\n" +
@@ -1301,7 +1362,10 @@ func writeConfig(p string, cfg *Config) error {
 		"#             state_incr / state_del (key/value are templates over the post,\n" +
 		"#             exposed to later actions via .state and MATTERBOX_STATE*).\n" +
 		"#             stop: true ends evaluation. With no rules the daemon uses a\n" +
-		"#             built-in notify rule from the listen options above. Full\n" +
+		"#             built-in notify rule from the listen options above.\n" +
+		"#             `matterbox rules list/test/stats/state` inspect and dry-run\n" +
+		"#             them; a SIGHUP (systemctl --user reload matterbox-listen)\n" +
+		"#             swaps an edited ruleset in without a restart. Full\n" +
 		"#             reference + examples in docs/rules.md.\n" +
 		"# jira:       the issue side panel. Press v on a message naming a Jira\n" +
 		"#             issue to fetch it from Jira Cloud and view it inline.\n" +

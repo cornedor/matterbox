@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"text/template"
@@ -65,10 +66,18 @@ const webhookTimeout = 15 * time.Second
 // regexp, glob, or action so a typo is a startup error rather than a rule that
 // silently never fires.
 type RuleSpec struct {
-	Name    string
-	Stop    bool
-	Match   MatchSpec
-	Actions []ActionSpec
+	Name string
+	Stop bool
+	// On lists the event kinds the rule reacts to (the Event* ids: message,
+	// edit, delete, reaction, reaction_removed, schedule). Empty means message
+	// only, so a rule written before the other triggers existed keeps reacting
+	// to new posts and nothing else.
+	On []string
+	// Schedule is the timer of an `on: schedule` rule — the one trigger nothing
+	// in Mattermost causes. Required for that kind, rejected for the others.
+	Schedule *ScheduleSpec
+	Match    MatchSpec
+	Actions  []ActionSpec
 }
 
 // MatchSpec is the config form of a rule's conditions. All set conditions are
@@ -115,6 +124,30 @@ type MatchSpec struct {
 	// daemon on another machine) means you aren't viewing anything, so a
 	// `viewing: false` rule keeps firing exactly as it did before.
 	Viewing *bool
+	// Emoji matches a reaction trigger's shortcode (no colons) as a
+	// case-insensitive glob or exact name; the trigger matches when ANY entry
+	// does. Only the reaction kinds carry an emoji, so it never matches a
+	// message trigger.
+	Emoji []string
+	// Reactors lists usernames (without the leading @) whose reaction fires the
+	// rule. On a reaction trigger the post-centric conditions keep their
+	// meaning — Authors and FromMe are about whoever wrote the post — so
+	// "somebody else reacted to my message" is FromMe: true plus Reactors.
+	Reactors []string
+	// ChannelTypes restricts the kind of conversation: "public", "private",
+	// "dm", or "group" (a multi-person DM). A post matches when its channel is
+	// ANY of them. DM is the same test as the DM field, spelled so it can sit
+	// alongside the others.
+	ChannelTypes []string
+	// FromBot, when non-nil, requires the post come from a bot or an incoming
+	// webhook (true) or from a person (false). Worth having because the
+	// integrations that post alerts are exactly the ones whose text lives in
+	// attachments rather than the message body.
+	FromBot *bool
+	// Time, when set, restricts the rule to a window of the local clock and/or
+	// to certain weekdays — office hours, weekends, the night shift. It is
+	// tested against the moment the trigger fired, not the daemon's uptime.
+	Time *TimeSpec
 	// Not, when set, inverts a nested match: the rule matches only when the post
 	// does NOT satisfy this sub-match. Lets a rule say "everything in #ops
 	// except from the bots" in one place. Recursive.
@@ -138,6 +171,21 @@ type MatchSpec struct {
 	// carries. Within one post the ledger is re-read after a rule mutates it, so
 	// a rule can match on a counter an earlier rule just incremented.
 	State []StateCondSpec
+}
+
+// TimeSpec is the config form of a rule's clock window. Every set field is
+// ANDed: after + before + days is "weekdays, office hours". It answers the
+// question the rate gates can't — frequency and cooldown say how often a rule
+// may fire, never at what time of day it is allowed to.
+type TimeSpec struct {
+	// After is the inclusive start of the window as "HH:MM", local time.
+	After string
+	// Before is the exclusive end as "HH:MM", local time. A Before earlier than
+	// After wraps midnight, so 22:00–06:00 is the night.
+	Before string
+	// Days lists the weekdays the rule may fire on: "mon".."sun" (full names
+	// work too, as do 0-7 with Sunday at either end). Empty means any day.
+	Days []string
 }
 
 // CooldownSpec is the config form of a rule's minimum-interval gate: the
@@ -237,10 +285,30 @@ type Rule struct {
 	Stop    bool
 	Match   Match
 	Actions []Action
+	// on is the set of event kinds this rule reacts to; never empty after
+	// compilation (an unset `on:` compiles to just EventMessage).
+	on map[string]bool
+	// schedule is the compiled timer of an `on: schedule` rule, nil otherwise.
+	schedule *schedule
 	// mutatesState is true when any action writes the ledger, so applyRules knows
 	// to re-read the snapshot after this rule for the benefit of later `state`
 	// conditions. Precomputed so the hot path doesn't rescan the actions.
 	mutatesState bool
+}
+
+// fires reports whether this rule reacts to an event kind.
+func (r Rule) fires(kind string) bool { return r.on[kind] }
+
+// Kinds lists the event kinds this rule reacts to, in a stable order, for the
+// rule listing.
+func (r Rule) Kinds() []string {
+	out := make([]string, 0, len(r.on))
+	for _, k := range validEventKinds {
+		if r.on[k] {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // Match is a compiled MatchSpec: the globs/regexps are pre-compiled and the
@@ -263,6 +331,11 @@ type Match struct {
 	hasFile     bool
 	isThread    *bool
 	viewing     *bool
+	emojiRes    []*regexp.Regexp
+	reactors    []string
+	chanTypes   []string // Mattermost type letters: O, P, D, G
+	fromBot     *bool
+	window      *timeWindow
 	not         *Match
 	// freq is the compiled rolling-window gate, applied by the engine after the
 	// field conditions pass (matchPost never reads it — it is stateful and must
@@ -293,6 +366,27 @@ type frequency struct {
 type cooldown struct {
 	every time.Duration
 	by    string // "author" | "channel" | "team" | "global"
+}
+
+// timeWindow is a compiled TimeSpec: a half-open window of the local clock
+// plus an optional weekday set. start/end are minutes of day; days is a bitmask
+// over time.Weekday, zero meaning any day.
+type timeWindow struct {
+	start, end int
+	days       uint8
+}
+
+// matches reports whether t falls inside the window. The clock test is the same
+// half-open, midnight-wrapping comparison quiet hours use, so "22:00-06:00"
+// means the night rather than nothing.
+func (w *timeWindow) matches(t time.Time) bool {
+	if w.days != 0 && w.days&(1<<uint(int(t.Weekday()))) == 0 {
+		return false
+	}
+	if w.start == w.end {
+		return true // no clock window, only days
+	}
+	return inQuietHours(t.Hour()*60+t.Minute(), w.start, w.end)
 }
 
 // stateCond is a compiled StateCondSpec — one condition on a ledger key. The
@@ -348,6 +442,18 @@ func (c stateCond) eval(state map[string]string, render func(*template.Template)
 	return true
 }
 
+// renderedKey is the condition's key with its template expanded, for the
+// explanation of a failed match — "state:zork:active:bob:c1" says far more than
+// the template it was written as.
+func (c stateCond) renderedKey(render func(*template.Template) string) string {
+	if render != nil && c.keyTmpl != nil {
+		if k := render(c.keyTmpl); k != "" {
+			return k
+		}
+	}
+	return c.key
+}
+
 // Action is a compiled ActionSpec. The state actions carry their key/value as
 // pre-parsed templates so a syntax error in a template is caught at startup,
 // like a bad regexp or glob.
@@ -386,7 +492,18 @@ func CompileRules(specs []RuleSpec) ([]Rule, error) {
 		if name == "" {
 			name = fmt.Sprintf("rule %d", i+1)
 		}
+		on, err := compileKinds(s.On)
+		if err != nil {
+			return nil, fmt.Errorf("rule %q: %w", name, err)
+		}
 		m, err := compileMatch(s.Match)
+		if err != nil {
+			return nil, fmt.Errorf("rule %q: %w", name, err)
+		}
+		if err := matchFitsKinds(on, m); err != nil {
+			return nil, fmt.Errorf("rule %q: %w", name, err)
+		}
+		sched, err := compileRuleSchedule(on, s.Schedule)
 		if err != nil {
 			return nil, fmt.Errorf("rule %q: %w", name, err)
 		}
@@ -401,12 +518,103 @@ func CompileRules(specs []RuleSpec) ([]Rule, error) {
 			}
 			actions = append(actions, ca)
 		}
+		if err := actionsFitKinds(on, actions); err != nil {
+			return nil, fmt.Errorf("rule %q: %w", name, err)
+		}
 		rules = append(rules, Rule{
 			Name: name, Stop: s.Stop, Match: m, Actions: actions,
+			on: on, schedule: sched,
 			mutatesState: actionsMutateState(actions),
 		})
 	}
 	return rules, nil
+}
+
+// compileKinds normalises a rule's `on:` list into the set of event kinds it
+// reacts to. An empty list is the old behaviour — new posts only. An unknown
+// kind is a startup error, like a bad glob.
+func compileKinds(on []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	for _, k := range on {
+		k = strings.ToLower(strings.TrimSpace(k))
+		if k == "" {
+			continue
+		}
+		if !slices.Contains(validEventKinds, k) {
+			return nil, fmt.Errorf("unknown on %q (want one of: %s)", k, strings.Join(validEventKinds, ", "))
+		}
+		out[k] = true
+	}
+	if len(out) == 0 {
+		out[EventMessage] = true
+	}
+	if out[EventSchedule] && len(out) > 1 {
+		return nil, fmt.Errorf("on: schedule can't be combined with other kinds — a scheduled firing has no post to match")
+	}
+	return out, nil
+}
+
+// compileRuleSchedule pairs a rule's schedule block with its kinds: a schedule
+// rule needs one, and any other rule that carries one has almost certainly
+// forgotten `on: schedule` — a timer that silently never ticks is exactly the
+// failure this package tries not to have.
+func compileRuleSchedule(on map[string]bool, s *ScheduleSpec) (*schedule, error) {
+	if !on[EventSchedule] {
+		if s != nil {
+			return nil, fmt.Errorf("schedule: needs `on: schedule`")
+		}
+		return nil, nil
+	}
+	if s == nil {
+		return nil, fmt.Errorf("on: schedule needs a schedule: block (cron or every)")
+	}
+	return compileSchedule(*s)
+}
+
+// matchFitsKinds rejects conditions that can never hold for the kinds a rule
+// listens to — an emoji condition on a rule that only reacts to messages would
+// simply never fire.
+func matchFitsKinds(on map[string]bool, m Match) error {
+	reacts := on[EventReaction] || on[EventUnreact]
+	if reacts {
+		return nil
+	}
+	if usesReactionFields(m) {
+		return fmt.Errorf("emoji/reactor only apply to reaction triggers — add `on: reaction`")
+	}
+	return nil
+}
+
+// usesReactionFields reports whether a match (or a nested not:) tests something
+// only a reaction trigger carries.
+func usesReactionFields(m Match) bool {
+	if len(m.emojiRes) > 0 || len(m.reactors) > 0 {
+		return true
+	}
+	return m.not != nil && usesReactionFields(*m.not)
+}
+
+// actionsFitKinds rejects actions that need something the trigger doesn't have.
+// A schedule rule has no post, so there is nothing to react to, mark read, or
+// summarise into a notification, and a send has no channel to fall back on.
+func actionsFitKinds(on map[string]bool, actions []Action) error {
+	if !on[EventSchedule] {
+		return nil
+	}
+	for _, a := range actions {
+		switch a.Type {
+		case ActionReact, ActionMarkRead, ActionNotify:
+			return fmt.Errorf("action %q needs a post; a schedule rule has none (use send/exec/webhook)", a.Type)
+		case ActionSend:
+			if a.Channel == "" {
+				return fmt.Errorf("send: a schedule rule has no trigger channel — set channel: team/channel or @user")
+			}
+			if a.Thread {
+				return fmt.Errorf("send: a schedule rule has no thread to reply in")
+			}
+		}
+	}
+	return nil
 }
 
 // actionsMutateState reports whether any action writes the ledger.
@@ -431,6 +639,35 @@ func compileMatch(s MatchSpec) (Match, error) {
 		hasFile:     s.HasFile,
 		isThread:    s.IsThread,
 		viewing:     s.Viewing,
+		reactors:    s.Reactors,
+		fromBot:     s.FromBot,
+	}
+	for _, em := range s.Emoji {
+		if em == "" {
+			continue
+		}
+		re, err := globToRegexp(strings.Trim(em, ": "))
+		if err != nil {
+			return Match{}, fmt.Errorf("bad emoji glob %q: %w", em, err)
+		}
+		m.emojiRes = append(m.emojiRes, re)
+	}
+	for _, ct := range s.ChannelTypes {
+		if strings.TrimSpace(ct) == "" {
+			continue
+		}
+		letter, err := channelTypeLetter(ct)
+		if err != nil {
+			return Match{}, err
+		}
+		m.chanTypes = append(m.chanTypes, letter)
+	}
+	if s.Time != nil {
+		w, err := compileTimeWindow(*s.Time)
+		if err != nil {
+			return Match{}, fmt.Errorf("time: %w", err)
+		}
+		m.window = w
 	}
 	for _, ch := range s.Channels {
 		if ch == "" {
@@ -488,6 +725,83 @@ func compileMatch(s MatchSpec) (Match, error) {
 		m.state = append(m.state, c)
 	}
 	return m, nil
+}
+
+// channelTypeLetter maps a human channel-type word to the Mattermost type
+// letter the websocket event carries. Anything else is a startup error, so a
+// typo like "priv" fails loud instead of never matching.
+func channelTypeLetter(word string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(word)) {
+	case "public", "open", "o":
+		return string(model.ChannelTypeOpen), nil
+	case "private", "p":
+		return string(model.ChannelTypePrivate), nil
+	case "dm", "direct", "d":
+		return string(model.ChannelTypeDirect), nil
+	case "group", "g":
+		return string(model.ChannelTypeGroup), nil
+	}
+	return "", fmt.Errorf("unknown channel_type %q (want public, private, dm, or group)", word)
+}
+
+// weekdayNumber parses a weekday as a three-letter or full name, or as 0-7 with
+// Sunday at either end (matching cron).
+func weekdayNumber(word string) (int, error) {
+	w := strings.ToLower(strings.TrimSpace(word))
+	if n, err := strconv.Atoi(w); err == nil {
+		if n < 0 || n > 7 {
+			return 0, fmt.Errorf("weekday %d out of range 0-7", n)
+		}
+		return n % 7, nil
+	}
+	if len(w) >= 3 {
+		if n, ok := dayNames[w[:3]]; ok {
+			return n, nil
+		}
+	}
+	return 0, fmt.Errorf("unknown weekday %q (want mon..sun or 0-7)", word)
+}
+
+// compileTimeWindow validates a TimeSpec. A window with neither a clock range
+// nor days would silently match everything, so it is an error; a one-sided
+// range is allowed and runs to the end (or start) of the day.
+func compileTimeWindow(s TimeSpec) (*timeWindow, error) {
+	w := &timeWindow{}
+	after, before := strings.TrimSpace(s.After), strings.TrimSpace(s.Before)
+	if after != "" || before != "" {
+		w.start, w.end = 0, 24*60
+		if after != "" {
+			v, ok := parseHHMM(after)
+			if !ok {
+				return nil, fmt.Errorf("bad after %q (want HH:MM)", s.After)
+			}
+			w.start = v
+		}
+		if before != "" {
+			v, ok := parseHHMM(before)
+			if !ok {
+				return nil, fmt.Errorf("bad before %q (want HH:MM)", s.Before)
+			}
+			w.end = v
+		}
+		if w.start == w.end {
+			return nil, fmt.Errorf("after and before resolve to the same time — an empty window")
+		}
+	}
+	for _, d := range s.Days {
+		if strings.TrimSpace(d) == "" {
+			continue
+		}
+		n, err := weekdayNumber(d)
+		if err != nil {
+			return nil, err
+		}
+		w.days |= 1 << uint(n)
+	}
+	if w.start == w.end && w.days == 0 {
+		return nil, fmt.Errorf("needs after, before, or days")
+	}
+	return w, nil
 }
 
 // compileFrequency validates and normalises a FrequencySpec. A bad duration,
@@ -718,6 +1032,7 @@ func defaultRules(opts Options) []Rule {
 		Name:    "notify-mentions-and-dms",
 		Match:   Match{builtin: true},
 		Actions: []Action{{Type: ActionNotify}},
+		on:      map[string]bool{EventMessage: true},
 	}}
 }
 
@@ -733,8 +1048,12 @@ func ruleHasNotify(r Rule) bool {
 
 // hasNotifyRule reports whether any compiled rule can notify. It gates the
 // reconnect catch-up: a daemon with no notify rule (cache-warmer only) skips it.
-func (e *Engine) hasNotifyRule() bool {
-	for _, r := range e.rules {
+func (e *Engine) hasNotifyRule() bool { return rulesCanNotify(e.ruleSet()) }
+
+// rulesCanNotify reports whether any of these rules can deliver a Telegram
+// notification.
+func rulesCanNotify(rules []Rule) bool {
+	for _, r := range rules {
 		if ruleHasNotify(r) {
 			return true
 		}
@@ -749,62 +1068,113 @@ func (e *Engine) hasNotifyRule() bool {
 // only notifies for one channel no longer gets a catch-up digest for the rest.
 func (e *Engine) notifyMatches(ev *model.WebSocketEvent, p *model.Post) bool {
 	state := e.matchState()
-	render := e.stateKeyRenderer(ev, p)
-	for _, r := range e.rules {
-		if ruleHasNotify(r) && e.matches(ev, p, r.Match, state, render) {
+	render := e.stateKeyRenderer(msgTrigger(ev, p))
+	for _, r := range e.ruleSet() {
+		if r.fires(EventMessage) && ruleHasNotify(r) && e.matches(ev, p, r.Match, state, render) {
 			return true
 		}
 	}
 	return false
 }
 
-// applyRules evaluates the engine's rules against an ingested post, running the
-// actions of every matching rule in order and stopping at the first matched
-// rule that sets Stop. System messages, deletions, and empty bodies never
-// match anything (mirroring the old isDirectMention guards), so a join notice
-// or a tombstone can't trigger an exec rule.
+// applyRules evaluates the engine's rules against an ingested post — the
+// message trigger, and the entry point the ingest path uses. System messages,
+// deletions, and posts with nothing to match on never get this far (see
+// trigger.eligible), so a join notice or a tombstone can't trigger an exec
+// rule.
 func (e *Engine) applyRules(ctx context.Context, ev *model.WebSocketEvent, p *model.Post) {
-	if p == nil || p.DeleteAt != 0 || p.IsSystemMessage() || strings.TrimSpace(p.Message) == "" {
+	e.applyTrigger(ctx, msgTrigger(ev, p))
+}
+
+// applyTrigger evaluates every rule that reacts to this trigger's kind, running
+// the actions of each match in order and stopping at the first matched rule
+// that sets Stop.
+func (e *Engine) applyTrigger(ctx context.Context, t trigger) {
+	if !t.eligible() {
 		return
 	}
+	// Message triggers arrive on the single ingest goroutine, but reactions,
+	// edits and schedules don't — and the ledger logic below (snapshot, mutate,
+	// re-read) only holds if one trigger is evaluated at a time. The section is
+	// short: matching plus the inline state writes, with every slow action
+	// already dispatched to its own goroutine.
+	e.evalMu.Lock()
+	defer e.evalMu.Unlock()
 	// The ledger snapshot is read once up front (nil when no rule uses `state`),
 	// then refreshed after any rule whose actions wrote state, so a later rule's
 	// `state` condition observes what an earlier rule's state_incr just stored.
 	// render expands templated `state.key`s (e.g. hot:{{ .channel_id }}) against
-	// this post; it is built once and lazily fills its envelope on first use.
+	// this trigger; it is built once and lazily fills its envelope on first use.
 	state := e.matchState()
-	render := e.stateKeyRenderer(ev, p)
-	for i := range e.rules {
-		r := e.rules[i]
-		if !e.matches(ev, p, r.Match, state, render) {
+	render := e.stateKeyRenderer(t)
+	rules := e.ruleSet()
+	for i := range rules {
+		r := rules[i]
+		if !r.fires(t.kind) {
 			continue
 		}
-		// A cooldown gate suppresses the rule until its interval has elapsed since
-		// the last firing. Checked read-only first, so a post that is still on
-		// cooldown skips the rule without recording a frequency hit; the new fire
-		// time is written only once the rule actually runs (below).
-		if r.Match.cool != nil && !e.cooldownReady(r, ev, p) {
+		fired, stop := e.evalRule(ctx, t, i, r, state, render)
+		if !fired {
 			continue
 		}
-		// A frequency gate is applied only once the fields match: it records the
-		// hit and reports whether the window has now reached the threshold. When
-		// it hasn't, the rule neither runs its actions nor honours Stop — it is as
-		// if this post didn't match it, so later rules still get their turn.
-		if r.Match.freq != nil && !e.frequencyAllows(i, r.Match.freq, ev, p) {
-			continue
-		}
-		e.runActions(ctx, ev, p, r.Actions)
-		if r.Match.cool != nil {
-			e.recordCooldown(r, ev, p)
-		}
-		if e.usesState && r.mutatesState {
+		if e.stateful() && r.mutatesState {
 			state = e.matchState()
 		}
-		if r.Stop {
+		if stop {
 			return
 		}
 	}
 }
+
+// evalRule runs one rule against one trigger: the field conditions first, then
+// the two rate gates, then the actions. It reports whether the rule fired, so
+// the caller can refresh the ledger snapshot and honour Stop — a rule held back
+// by a gate is treated as not having matched at all, leaving later rules their
+// turn.
+func (e *Engine) evalRule(ctx context.Context, t trigger, idx int, r Rule, state map[string]string, render func(*template.Template) string) (fired, stop bool) {
+	if !e.matches(t.ev, t.post, r.Match, state, render) {
+		return false, false
+	}
+	// A cooldown gate suppresses the rule until its interval has elapsed since
+	// the last firing. Checked read-only first, so a trigger that is still on
+	// cooldown skips the rule without recording a frequency hit; the new fire
+	// time is written only once the rule actually runs (below).
+	if r.Match.cool != nil && !e.cooldownReady(r, t) {
+		return false, false
+	}
+	// A frequency gate is applied only once the fields match: it records the hit
+	// and reports whether the window has now reached the threshold.
+	if r.Match.freq != nil && !e.frequencyAllows(idx, r.Match.freq, t) {
+		return false, false
+	}
+	e.runActions(ctx, t.withCaps(captures(r.Match.messageRe, matchText(t.post))), r.Actions)
+	if r.Match.cool != nil {
+		e.recordCooldown(r, t)
+	}
+	e.recordFire(r)
+	return true, r.Stop
+}
+
+// recordFire bumps the rule's persisted fire count and last-fired stamp. It is
+// what `matterbox rules stats` reads, and the cheapest answer to "is this rule
+// doing anything at all?" — the daemon log only ever shows what the actions
+// did, which for a quiet rule is nothing.
+func (e *Engine) recordFire(r Rule) {
+	if _, err := e.store.IncrMeta(ruleStatKey(r.Name, "count"), 1); err != nil {
+		e.log.Printf("rule %s: count fire: %v", r.Name, err)
+		return
+	}
+	if err := e.store.SetMeta(ruleStatKey(r.Name, "last"), strconv.FormatInt(e.clock().UnixMilli(), 10)); err != nil {
+		e.log.Printf("rule %s: stamp fire: %v", r.Name, err)
+	}
+}
+
+// RuleStatKey is the meta-store key holding one statistic ("count", "last") for
+// a rule, in the same reserved namespace as the cooldown and schedule stamps.
+// Exported so the CLI reads the same keys the daemon writes.
+func RuleStatKey(ruleName, field string) string { return ruleStatKey(ruleName, field) }
+
+func ruleStatKey(ruleName, field string) string { return "rulestat:" + ruleName + ":" + field }
 
 // frequencyAllows records this post as a hit for the rule's window and reports
 // whether the rule should fire now. It keeps a sliding window of recent hit
@@ -813,8 +1183,8 @@ func (e *Engine) applyRules(ctx context.Context, ev *model.WebSocketEvent, p *mo
 // rather than firing on every subsequent message. The window lives only in
 // memory and is live-only: it is empty after a restart and is never touched by
 // the reconnect catch-up (which replays history and would otherwise corrupt it).
-func (e *Engine) frequencyAllows(ruleIdx int, f *frequency, ev *model.WebSocketEvent, p *model.Post) bool {
-	key := freqBucketKey(ruleIdx, f, ev, p)
+func (e *Engine) frequencyAllows(ruleIdx int, f *frequency, t trigger) bool {
+	key := freqBucketKey(ruleIdx, f, t.ev, t.post)
 	now := e.clock()
 	cutoff := now.Add(-f.within)
 
@@ -862,8 +1232,8 @@ func freqBucketKey(ruleIdx int, f *frequency, ev *model.WebSocketEvent, p *model
 // reads the persisted last-fire time; recordCooldown commits the new one once
 // the rule actually runs. A read error fails open (ready) and is logged, so a
 // transient store hiccup delays nothing.
-func (e *Engine) cooldownReady(r Rule, ev *model.WebSocketEvent, p *model.Post) bool {
-	key := cooldownMetaKey(r.Name, r.Match.cool, ev, p)
+func (e *Engine) cooldownReady(r Rule, t trigger) bool {
+	key := cooldownMetaKey(r.Name, r.Match.cool, t.ev, t.post)
 	v, ok, err := e.store.GetMeta(key)
 	if err != nil {
 		e.log.Printf("rule %s: read cooldown: %v", r.Name, err)
@@ -882,8 +1252,8 @@ func (e *Engine) cooldownReady(r Rule, ev *model.WebSocketEvent, p *model.Post) 
 // recordCooldown stamps the rule's last-fire time for this (rule, group) in the
 // persistent meta store, re-arming the interval. Called only after the rule's
 // actions are dispatched, so a gate that blocked the firing never advances it.
-func (e *Engine) recordCooldown(r Rule, ev *model.WebSocketEvent, p *model.Post) {
-	key := cooldownMetaKey(r.Name, r.Match.cool, ev, p)
+func (e *Engine) recordCooldown(r Rule, t trigger) {
+	key := cooldownMetaKey(r.Name, r.Match.cool, t.ev, t.post)
 	if err := e.store.SetMeta(key, strconv.FormatInt(e.clock().UnixMilli(), 10)); err != nil {
 		e.log.Printf("rule %s: record cooldown: %v", r.Name, err)
 	}
@@ -914,14 +1284,25 @@ func cooldownMetaKey(ruleName string, c *cooldown, ev *model.WebSocketEvent, p *
 // snapshot the field matcher tests `state` conditions against (nil when no rule
 // uses state — see matchState).
 func (e *Engine) matches(ev *model.WebSocketEvent, p *model.Post, m Match, state map[string]string, render func(*template.Template) string) bool {
+	ok, _ := e.matchesWhy(ev, p, m, state, render)
+	return ok
+}
+
+// matchesWhy is matches plus the name of the first condition that failed, which
+// is what `matterbox rules test` reports. Keeping one implementation behind both
+// means the explanation can't drift from the behaviour it explains.
+func (e *Engine) matchesWhy(ev *model.WebSocketEvent, p *model.Post, m Match, state map[string]string, render func(*template.Template) string) (bool, string) {
 	meID, meName := "", ""
 	if e.me != nil {
 		meID, meName = e.me.Id, e.me.Username
 	}
 	if m.builtin {
-		return isDirectMention(ev, p, meID, meName, e.opts.NotifySelf)
+		if isDirectMention(ev, p, meID, meName, e.opts.NotifySelf) {
+			return true, ""
+		}
+		return false, "mention/dm"
 	}
-	return matchPost(ev, p, m, meID, meName, e.teamName(ev), state, render, e.tuiStatus())
+	return matchPostWhy(ev, p, m, meID, meName, e.teamName(ev), state, render, e.tuiStatus())
 }
 
 // teamName resolves an event's team id to its URL name (slug) for the team
@@ -944,9 +1325,17 @@ func (e *Engine) teamName(ev *model.WebSocketEvent) string {
 // resolved once per post by the caller (see Engine.tuiStatus) and passed down
 // so a nested not: evaluates `viewing` against the same reading.
 func matchPost(ev *model.WebSocketEvent, p *model.Post, m Match, meID, meName, teamName string, state map[string]string, render func(*template.Template) string, tui control.Status) bool {
+	ok, _ := matchPostWhy(ev, p, m, meID, meName, teamName, state, render, tui)
+	return ok
+}
+
+// matchPostWhy is matchPost plus the name of the first failing condition (""
+// when everything held), so a rule that doesn't fire can say which condition
+// stopped it instead of leaving the user to bisect their config.
+func matchPostWhy(ev *model.WebSocketEvent, p *model.Post, m Match, meID, meName, teamName string, state map[string]string, render func(*template.Template) string, tui control.Status) (bool, string) {
 	isDM := eventStr(ev, "channel_type") == string(model.ChannelTypeDirect)
 	if m.dm != nil && *m.dm != isDM {
-		return false
+		return false, "dm"
 	}
 	// The same p.UserId == me test the notify/send actions apply internally, so an
 	// exec/webhook/react rule can exclude (from_me: false) or target (true) the
@@ -954,54 +1343,198 @@ func matchPost(ev *model.WebSocketEvent, p *model.Post, m Match, meID, meName, t
 	if m.fromMe != nil {
 		isMe := meID != "" && p.UserId == meID
 		if *m.fromMe != isMe {
-			return false
+			return false, "from_me"
 		}
 	}
-	if m.mention && !(wsMentions(ev)[meID] && mentionsName(p.Message, meName)) {
-		return false
+	if m.fromBot != nil && *m.fromBot != postIsBot(p) {
+		return false, "from_bot"
+	}
+	if len(m.chanTypes) > 0 && !slices.Contains(m.chanTypes, eventStr(ev, "channel_type")) {
+		return false, "channel_type"
+	}
+	if m.mention && !mentioned(ev, p, meID, meName) {
+		return false, "mention"
 	}
 	if len(m.authors) > 0 {
 		sender := strings.TrimPrefix(eventStr(ev, "sender_name"), "@")
 		if !matchesAny(sender, m.authors) {
-			return false
+			return false, "author"
 		}
 	}
 	if len(m.channelRes) > 0 {
 		name := eventStr(ev, "channel_display_name")
 		if !matchesChannel(name, p.ChannelId, m) {
-			return false
+			return false, "channel"
 		}
 	}
 	if len(m.teamRes) > 0 {
 		if !matchesTeam(teamName, eventStr(ev, "team_id"), m) {
-			return false
+			return false, "team"
 		}
 	}
-	if m.messageRe != nil && !m.messageRe.MatchString(p.Message) {
-		return false
+	if m.messageRe != nil && !m.messageRe.MatchString(matchText(p)) {
+		return false, "message"
 	}
 	if m.hasFile && !postHasFile(p) {
-		return false
+		return false, "has_file"
+	}
+	if len(m.emojiRes) > 0 && !matchesEmoji(eventStr(ev, emojiKey), m) {
+		return false, "emoji"
+	}
+	if len(m.reactors) > 0 && !matchesAny(strings.TrimPrefix(eventStr(ev, reactorKey), "@"), m.reactors) {
+		return false, "reactor"
 	}
 	if m.isThread != nil {
 		isReply := p.RootId != "" && p.RootId != p.Id
 		if *m.isThread != isReply {
-			return false
+			return false, "is_thread"
 		}
 	}
+	if m.window != nil && !m.window.matches(triggerAt(ev, p).Local()) {
+		return false, "time"
+	}
 	if m.viewing != nil && *m.viewing != tui.Viewing(p.ChannelId) {
-		return false
+		return false, "viewing"
 	}
 	for _, c := range m.state {
 		if !c.eval(state, render) {
-			return false
+			return false, "state:" + c.renderedKey(render)
 		}
 	}
 	// A nested not: matches the whole post only when the sub-match does not.
 	if m.not != nil && matchPost(ev, p, *m.not, meID, meName, teamName, state, render, tui) {
+		return false, "not"
+	}
+	return true, ""
+}
+
+// mentioned reports whether the reader was named by the post. For a live post
+// the server's own mention list must agree with an @name in the text, so a
+// broad @channel that merely expands to include the reader doesn't count. The
+// edit and delete events carry no mention list at all, so for those the text
+// alone decides — otherwise `mention: true` could never match an edit.
+func mentioned(ev *model.WebSocketEvent, p *model.Post, meID, meName string) bool {
+	if !mentionsName(p.Message, meName) {
 		return false
 	}
-	return true
+	if ev != nil && ev.EventType() != model.WebsocketEventPosted {
+		return true
+	}
+	return wsMentions(ev)[meID]
+}
+
+// matchesEmoji reports whether a reaction's shortcode matches any of the
+// compiled emoji globs. An empty name (any trigger that isn't a reaction) never
+// matches.
+func matchesEmoji(name string, m Match) bool {
+	if name == "" {
+		return false
+	}
+	for _, re := range m.emojiRes {
+		if re.MatchString(name) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchText is what a `message` condition (and its captures) are tested
+// against: the post body plus the text of any Slack-style attachments.
+// Integrations — Jira, GitLab, alertmanager, most webhooks — routinely post an
+// empty body with everything in an attachment, and a rule that only ever saw
+// p.Message could never match the alerts people most want to automate on.
+func matchText(p *model.Post) string {
+	if p == nil {
+		return ""
+	}
+	body := p.Message
+	if att := attachmentText(p); att != "" {
+		if body != "" {
+			body += "\n"
+		}
+		body += att
+	}
+	return body
+}
+
+// attachmentText flattens a post's message attachments into plain text in the
+// order they render: pretext, title, body, fields, footer. The fallback is
+// skipped — it usually duplicates the rest.
+func attachmentText(p *model.Post) string {
+	atts := p.Attachments()
+	if len(atts) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	add := func(s string) {
+		if s = strings.TrimSpace(s); s != "" {
+			if b.Len() > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(s)
+		}
+	}
+	for _, a := range atts {
+		if a == nil {
+			continue
+		}
+		add(a.Pretext)
+		add(a.Title)
+		add(a.Text)
+		for _, f := range a.Fields {
+			if f == nil {
+				continue
+			}
+			add(f.Title)
+			if f.Value != nil {
+				add(fmt.Sprint(f.Value))
+			}
+		}
+		add(a.Footer)
+	}
+	return b.String()
+}
+
+// postIsBot reports whether a post came from a bot account, an incoming
+// webhook, or a plugin, using only the props the post already carries (no user
+// lookup on the ingest path).
+func postIsBot(p *model.Post) bool {
+	if p == nil {
+		return false
+	}
+	for _, key := range []string{model.PostPropsFromBot, model.PostPropsFromWebhook, model.PostPropsFromPlugin} {
+		if v, _ := p.GetProp(key).(string); v == "true" {
+			return true
+		}
+	}
+	if v, _ := p.GetProp(model.PostPropsOverrideUsername).(string); v != "" {
+		return true
+	}
+	return false
+}
+
+// captures returns the submatches of a rule's message regexp against the text
+// it matched: by group number ("0" is the whole match) and, for named groups,
+// by name. A template reads a named group as {{ .match.env }} and a numbered one
+// as {{ index .match "1" }} — text/template has no syntax for a numeric field.
+// Nil when the rule has no message condition, or the regexp captures nothing.
+func captures(re *regexp.Regexp, text string) map[string]string {
+	if re == nil {
+		return nil
+	}
+	sub := re.FindStringSubmatch(text)
+	if sub == nil {
+		return nil
+	}
+	out := make(map[string]string, len(sub)*2)
+	names := re.SubexpNames()
+	for i, v := range sub {
+		out[strconv.Itoa(i)] = v
+		if i < len(names) && names[i] != "" {
+			out[names[i]] = v
+		}
+	}
+	return out
 }
 
 // matchesAny reports whether sender equals any of authors (case-insensitive).
@@ -1062,37 +1595,37 @@ func postHasFile(p *model.Post) bool {
 // network or run a command are spun off (tracked by e.wg, cancelled on
 // shutdown) so they never block the single ingest goroutine; log is cheap and
 // runs inline.
-func (e *Engine) runActions(ctx context.Context, ev *model.WebSocketEvent, p *model.Post, actions []Action) {
+func (e *Engine) runActions(ctx context.Context, t trigger, actions []Action) {
 	for _, a := range actions {
 		switch a.Type {
 		case ActionNotify:
-			e.notifyGate(ctx, ev, p, e.notifyOptsFor(a))
+			e.notifyGate(ctx, t.ev, t.post, e.notifyOptsFor(a))
 		case ActionExec:
 			a := a
 			e.wg.Add(1)
-			go e.runExec(ctx, ev, p, a)
+			go e.runExec(ctx, t, a)
 		case ActionWebhook:
 			a := a
 			e.wg.Add(1)
-			go e.runWebhook(ctx, ev, p, a)
+			go e.runWebhook(ctx, t, a)
 		case ActionReact:
 			a := a
 			e.wg.Add(1)
-			go e.runReact(ctx, p, a)
+			go e.runReact(ctx, t.post, a)
 		case ActionMarkRead:
 			e.wg.Add(1)
-			go e.runMarkRead(ctx, p)
+			go e.runMarkRead(ctx, t.post)
 		case ActionSend:
 			a := a
 			e.wg.Add(1)
-			go e.runSend(ctx, ev, p, a)
+			go e.runSend(ctx, t, a)
 		case ActionLog:
-			e.runLog(ev, p, a)
+			e.runLog(t, a)
 		case ActionStateSet, ActionStateIncr, ActionStateDel:
 			// State writes run inline, in order: they are quick local SQLite
 			// writes, and running them synchronously means a later exec/webhook in
 			// the same rule observes the values this rule just wrote.
-			e.runState(ev, p, a)
+			e.runState(t, a)
 		}
 	}
 }
@@ -1178,6 +1711,22 @@ type envelope struct {
 	Files     []string `json:"files,omitempty"`
 	CreateAt  int64    `json:"create_at"`
 	Permalink string   `json:"permalink,omitempty"`
+	// Event is the trigger kind (message, edit, delete, reaction,
+	// reaction_removed, schedule), so one script can serve several rules.
+	Event string `json:"event"`
+	// Emoji and Reactor describe a reaction trigger: the shortcode that landed
+	// and who put it there. Empty for every other kind.
+	Emoji   string `json:"emoji,omitempty"`
+	Reactor string `json:"reactor,omitempty"`
+	// AttachmentText is the flattened text of the post's Slack-style
+	// attachments — where an integration's actual content lives when Message is
+	// empty. The `message` condition matches against both.
+	AttachmentText string `json:"attachment_text,omitempty"`
+	// Rule names the schedule rule whose timer fired, for a schedule trigger.
+	Rule string `json:"rule,omitempty"`
+	// Match holds the message regexp's captures, by group number ("1") and by
+	// name for named groups.
+	Match map[string]string `json:"match,omitempty"`
 	// State is a snapshot of the persistent rule ledger (the state_* actions),
 	// so a script or webhook receives every stored value alongside the post.
 	State map[string]string `json:"state,omitempty"`
@@ -1185,7 +1734,8 @@ type envelope struct {
 
 // buildEnvelope assembles the exec/webhook payload from the event + post,
 // using only data already in hand (no extra API calls on the ingest path).
-func (e *Engine) buildEnvelope(ev *model.WebSocketEvent, p *model.Post) envelope {
+func (e *Engine) buildEnvelope(t trigger) envelope {
+	ev, p := t.ev, t.post
 	meID, meName := "", ""
 	if e.me != nil {
 		meID, meName = e.me.Id, e.me.Username
@@ -1205,11 +1755,18 @@ func (e *Engine) buildEnvelope(ev *model.WebSocketEvent, p *model.Post) envelope
 		IsDM:      eventStr(ev, "channel_type") == string(model.ChannelTypeDirect),
 		IsThread:  p.RootId != "" && p.RootId != p.Id,
 		RootID:    p.RootId,
-		Mentioned: wsMentions(ev)[meID] && mentionsName(p.Message, meName),
+		Mentioned: mentioned(ev, p, meID, meName),
 		Files:     postFileNames(p),
 		CreateAt:  p.CreateAt,
 		Permalink: e.permalink(ev, p.Id),
 		State:     e.loadState(),
+
+		Event:          t.kind,
+		Emoji:          eventStr(ev, emojiKey),
+		Reactor:        strings.TrimPrefix(eventStr(ev, reactorKey), "@"),
+		AttachmentText: attachmentText(p),
+		Rule:           t.rule,
+		Match:          t.caps,
 	}
 }
 
@@ -1229,7 +1786,7 @@ func (e *Engine) loadState() map[string]string {
 // or nil when no rule has any — so a config that never matches on state pays no
 // per-message read.
 func (e *Engine) matchState() map[string]string {
-	if !e.usesState {
+	if !e.stateful() {
 		return nil
 	}
 	return e.loadState()
@@ -1240,21 +1797,21 @@ func (e *Engine) matchState() map[string]string {
 // the action templates use) is built lazily on first use and cached, so a post
 // that never evaluates a templated key pays nothing, and one that evaluates
 // several builds the envelope once.
-func (e *Engine) stateKeyRenderer(ev *model.WebSocketEvent, p *model.Post) func(*template.Template) string {
+func (e *Engine) stateKeyRenderer(t trigger) func(*template.Template) string {
 	var data map[string]any
 	built := false
-	return func(t *template.Template) string {
-		if t == nil {
+	return func(tmpl *template.Template) string {
+		if tmpl == nil {
 			return ""
 		}
 		if !built {
-			if d, err := envelopeMap(e.buildEnvelope(ev, p)); err == nil {
+			if d, err := envelopeMap(e.buildEnvelope(t)); err == nil {
 				data = d
 			}
 			built = true
 		}
 		var b strings.Builder
-		if err := t.Execute(&b, data); err != nil {
+		if err := tmpl.Execute(&b, data); err != nil {
 			return ""
 		}
 		return b.String()
@@ -1297,9 +1854,9 @@ func postFileNames(p *model.Post) []string {
 // the key fields exported as MATTERBOX_* environment variables, bounded by
 // execTimeout. The argv is rendered per post (each element is a template over
 // the envelope). Output is logged (truncated); a failure is logged, not fatal.
-func (e *Engine) runExec(ctx context.Context, ev *model.WebSocketEvent, p *model.Post, a Action) {
+func (e *Engine) runExec(ctx context.Context, t trigger, a Action) {
 	defer e.wg.Done()
-	env := e.buildEnvelope(ev, p)
+	env := e.buildEnvelope(t)
 	payload, err := json.Marshal(env)
 	if err != nil {
 		e.log.Printf("rule exec: marshal envelope: %v", err)
@@ -1370,7 +1927,20 @@ func execEnv(env envelope) []string {
 		"MATTERBOX_MENTIONED="+boolStr(env.Mentioned),
 		"MATTERBOX_FILES="+strings.Join(env.Files, ","),
 		"MATTERBOX_PERMALINK="+env.Permalink,
+		"MATTERBOX_EVENT="+env.Event,
+		"MATTERBOX_EMOJI="+env.Emoji,
+		"MATTERBOX_REACTOR="+env.Reactor,
+		"MATTERBOX_ATTACHMENT_TEXT="+env.AttachmentText,
+		"MATTERBOX_RULE="+env.Rule,
 	)
+	for k, v := range env.Match {
+		// A capture is often numbered ("1"), which envKeySanitize rejects for a
+		// ledger key — here the MATTERBOX_MATCH_ prefix already makes the name
+		// legal, so only the character mapping applies.
+		if name := strings.Trim(envKeyChars(k), "_"); name != "" {
+			out = append(out, "MATTERBOX_MATCH_"+name+"="+v)
+		}
+	}
 	if len(env.State) > 0 {
 		if b, err := json.Marshal(env.State); err == nil {
 			out = append(out, "MATTERBOX_STATE="+string(b))
@@ -1389,6 +1959,17 @@ func execEnv(env envelope) []string {
 // underscore. A key that sanitizes to empty (or starts with a digit) is exposed
 // only via MATTERBOX_STATE, not its own variable.
 func envKeySanitize(key string) string {
+	s := strings.Trim(envKeyChars(key), "_")
+	if s == "" || (s[0] >= '0' && s[0] <= '9') {
+		return ""
+	}
+	return s
+}
+
+// envKeyChars upper-cases a key and collapses every non-alphanumeric run to an
+// underscore, without judging the result — the two callers differ only in
+// whether a leading digit is acceptable.
+func envKeyChars(key string) string {
 	var b strings.Builder
 	for _, r := range strings.ToUpper(key) {
 		switch {
@@ -1398,18 +1979,14 @@ func envKeySanitize(key string) string {
 			b.WriteByte('_')
 		}
 	}
-	s := strings.Trim(b.String(), "_")
-	if s == "" || (s[0] >= '0' && s[0] <= '9') {
-		return ""
-	}
-	return s
+	return b.String()
 }
 
 // runWebhook POSTs the post envelope as JSON to the configured URL, bounded by
 // webhookTimeout. Non-2xx and transport errors are logged, not fatal.
-func (e *Engine) runWebhook(ctx context.Context, ev *model.WebSocketEvent, p *model.Post, a Action) {
+func (e *Engine) runWebhook(ctx context.Context, t trigger, a Action) {
 	defer e.wg.Done()
-	payload, err := json.Marshal(e.buildEnvelope(ev, p))
+	payload, err := json.Marshal(e.buildEnvelope(t))
 	if err != nil {
 		e.log.Printf("rule webhook: marshal envelope: %v", err)
 		return
@@ -1447,6 +2024,8 @@ func (e *Engine) runReact(ctx context.Context, p *model.Post, a Action) {
 	if e.me == nil {
 		return
 	}
+	// Noted before the call so the echo can't arrive first on a fast server.
+	e.noteSelfReaction(p.Id, a.Emoji)
 	if err := e.client.AddReaction(ctx, e.me.Id, p.Id, a.Emoji); err != nil {
 		e.log.Printf("rule react %q on %s: %v", a.Emoji, p.Id, err)
 	}
@@ -1457,15 +2036,16 @@ func (e *Engine) runReact(ctx context.Context, p *model.Post, a Action) {
 // posts into the channel the trigger arrived in; a Channel ("team/channel" or
 // "@user") routes it elsewhere. Own posts are skipped (unless notify_self) so an
 // ungated send rule can't loop on the very message it just posted.
-func (e *Engine) runSend(ctx context.Context, ev *model.WebSocketEvent, p *model.Post, a Action) {
+func (e *Engine) runSend(ctx context.Context, t trigger, a Action) {
 	defer e.wg.Done()
+	p := t.post
 	if e.me == nil {
 		return
 	}
 	if p.UserId == e.me.Id && !e.opts.NotifySelf {
 		return
 	}
-	body, err := e.renderTemplate(a.textTmpl, ev, p)
+	body, err := e.renderTemplate(a.textTmpl, t)
 	if err != nil {
 		e.log.Printf("rule send: render text: %v", err)
 		return
@@ -1540,21 +2120,25 @@ func (e *Engine) runMarkRead(ctx context.Context, p *model.Post) {
 }
 
 // runLog writes a single line about the matched post to the daemon log.
-func (e *Engine) runLog(ev *model.WebSocketEvent, p *model.Post, a Action) {
+func (e *Engine) runLog(t trigger, a Action) {
 	prefix := strings.TrimSpace(a.Text)
 	if prefix == "" {
 		prefix = "rule matched"
 	}
-	label := channelLabel(ev, "")
-	e.log.Printf("%s: %s — %s", prefix, label, truncateForLog(p.Message))
+	if t.kind == EventSchedule {
+		e.log.Printf("%s: schedule %s", prefix, t.rule)
+		return
+	}
+	label := channelLabel(t.ev, "")
+	e.log.Printf("%s [%s]: %s — %s", prefix, t.kind, label, truncateForLog(t.post.Message))
 }
 
 // runState applies a state_set / state_incr / state_del action against the
 // persistent ledger. The key (and, for state_set, the value) are templates
 // expanded against the post and current state, so one rule can address per-author
 // or per-channel keys. Failures are logged, never fatal.
-func (e *Engine) runState(ev *model.WebSocketEvent, p *model.Post, a Action) {
-	key, err := e.renderTemplate(a.keyTmpl, ev, p)
+func (e *Engine) runState(t trigger, a Action) {
+	key, err := e.renderTemplate(a.keyTmpl, t)
 	if err != nil {
 		e.log.Printf("rule %s: render key: %v", a.Type, err)
 		return
@@ -1565,7 +2149,7 @@ func (e *Engine) runState(ev *model.WebSocketEvent, p *model.Post, a Action) {
 	}
 	switch a.Type {
 	case ActionStateSet:
-		val, err := e.renderTemplate(a.valueTmpl, ev, p)
+		val, err := e.renderTemplate(a.valueTmpl, t)
 		if err != nil {
 			e.log.Printf("rule state_set %q: render value: %v", key, err)
 			return
@@ -1591,17 +2175,16 @@ func (e *Engine) runState(ev *model.WebSocketEvent, p *model.Post, a Action) {
 // The template data is the exec/webhook envelope (so `{{ .author }}`,
 // `{{ .create_at }}`, … match the documented field names) plus the current
 // ledger under `.state` (so `{{ .state.failure_count }}` reads a counter).
-func (e *Engine) renderTemplate(t *template.Template, ev *model.WebSocketEvent, p *model.Post) (string, error) {
-	if t == nil {
+func (e *Engine) renderTemplate(tmpl *template.Template, t trigger) (string, error) {
+	if tmpl == nil {
 		return "", nil
 	}
-	env := e.buildEnvelope(ev, p)
-	data, err := envelopeMap(env)
+	data, err := envelopeMap(e.buildEnvelope(t))
 	if err != nil {
 		return "", err
 	}
 	var b strings.Builder
-	if err := t.Execute(&b, data); err != nil {
+	if err := tmpl.Execute(&b, data); err != nil {
 		return "", err
 	}
 	return b.String(), nil
@@ -1627,6 +2210,9 @@ func envelopeMap(env envelope) (map[string]any, error) {
 	}
 	if _, ok := m["state"]; !ok {
 		m["state"] = map[string]string{} // always present so {{ .state.x }} is safe
+	}
+	if _, ok := m["match"]; !ok {
+		m["match"] = map[string]string{} // likewise for {{ index .match "1" }}
 	}
 	return m, nil
 }

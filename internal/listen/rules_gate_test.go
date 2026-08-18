@@ -184,7 +184,7 @@ func TestRunSendSkips(t *testing.T) {
 	send := func(e *Engine, p *model.Post, a Action) {
 		ev := postedEvent(t, p, map[string]string{"channel_type": "O", "sender_name": "@x"})
 		e.wg.Add(1)
-		e.runSend(context.Background(), ev, p, a)
+		e.runSend(context.Background(), msgTrigger(ev, p), a)
 		e.wg.Wait()
 	}
 	greet, err := compileAction(ActionSpec{Type: ActionSend, Text: "hi {{ .author }}"})
@@ -290,7 +290,7 @@ func TestRunStateEmptyKeySkip(t *testing.T) {
 	}
 	p := &model.Post{Id: "p", ChannelId: "c1", UserId: "u-bob", Message: "x"}
 	ev := postedEvent(t, p, map[string]string{"channel_type": "O", "sender_name": "@bob"}) // no channel_display_name
-	e.runState(ev, p, a)
+	e.runState(msgTrigger(ev, p), a)
 
 	if st, _ := e.store.AllState(); len(st) != 0 {
 		t.Errorf("an empty key should write nothing, got ledger %v", st)
@@ -335,7 +335,7 @@ func TestCooldownByTeam(t *testing.T) {
 	if err := e.store.SetMeta(cooldownMetaKey(r.Name, r.Match.cool, ev, p), "not-a-number"); err != nil {
 		t.Fatalf("seed cooldown: %v", err)
 	}
-	if !e.cooldownReady(r, ev, p) {
+	if !e.cooldownReady(r, msgTrigger(ev, p)) {
 		t.Error("an unparseable last-fire timestamp should fail open (ready)")
 	}
 }

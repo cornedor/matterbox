@@ -22,7 +22,7 @@ const tuiStatusTTL = time.Second
 // is either a notification you didn't need (harmless) or one you never got
 // (the bug this exists to avoid).
 func (e *Engine) tuiStatus() control.Status {
-	if !e.needsTUIStatus || e.tuiSocket == "" {
+	if !e.asksTUI() || e.tuiSocket == "" {
 		return control.Status{}
 	}
 	now := e.clock()
@@ -42,7 +42,7 @@ func (e *Engine) tuiStatus() control.Status {
 // TUISocketPath is the control socket the daemon asks about the on-screen
 // conversation, for the startup log. Empty means it won't ask at all.
 func (e *Engine) TUISocketPath() string {
-	if !e.needsTUIStatus {
+	if !e.asksTUI() {
 		return ""
 	}
 	return e.tuiSocket

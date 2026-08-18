@@ -69,20 +69,20 @@ func TestFrequencyThresholdAndReset(t *testing.T) {
 	f, _ := compileFrequency(FrequencySpec{Count: 3, Within: "10m"})
 	p, ev := bobEvent(t, "sev-1")
 
-	if e.frequencyAllows(0, f, ev, p) {
+	if e.frequencyAllows(0, f, msgTrigger(ev, p)) {
 		t.Fatal("1st match must not fire")
 	}
 	cur = cur.Add(time.Minute)
-	if e.frequencyAllows(0, f, ev, p) {
+	if e.frequencyAllows(0, f, msgTrigger(ev, p)) {
 		t.Fatal("2nd match must not fire")
 	}
 	cur = cur.Add(time.Minute)
-	if !e.frequencyAllows(0, f, ev, p) {
+	if !e.frequencyAllows(0, f, msgTrigger(ev, p)) {
 		t.Fatal("3rd match within the window must fire")
 	}
 	// Fired → window reset; the next match starts a fresh burst.
 	cur = cur.Add(time.Minute)
-	if e.frequencyAllows(0, f, ev, p) {
+	if e.frequencyAllows(0, f, msgTrigger(ev, p)) {
 		t.Fatal("match right after firing must not fire (re-arming)")
 	}
 }
@@ -94,13 +94,13 @@ func TestFrequencyWindowExpiry(t *testing.T) {
 	f, _ := compileFrequency(FrequencySpec{Count: 2, Within: "10m"})
 	p, ev := bobEvent(t, "x")
 
-	if e.frequencyAllows(0, f, ev, p) {
+	if e.frequencyAllows(0, f, msgTrigger(ev, p)) {
 		t.Fatal("1st must not fire")
 	}
 	// The 2nd arrives after the window, so the 1st has expired and the count is
 	// back to one — no burst, no fire.
 	cur = cur.Add(11 * time.Minute)
-	if e.frequencyAllows(0, f, ev, p) {
+	if e.frequencyAllows(0, f, msgTrigger(ev, p)) {
 		t.Fatal("a hit outside the window must not count toward the threshold")
 	}
 }
@@ -118,13 +118,13 @@ func TestFrequencyByAuthorSeparatesBuckets(t *testing.T) {
 	pb, eb := mk("bob")
 	pa, ea := mk("alice")
 
-	if e.frequencyAllows(0, f, eb, pb) {
+	if e.frequencyAllows(0, f, msgTrigger(eb, pb)) {
 		t.Fatal("bob 1st must not fire")
 	}
-	if e.frequencyAllows(0, f, ea, pa) {
+	if e.frequencyAllows(0, f, msgTrigger(ea, pa)) {
 		t.Fatal("alice 1st is a separate bucket; must not fire")
 	}
-	if !e.frequencyAllows(0, f, eb, pb) {
+	if !e.frequencyAllows(0, f, msgTrigger(eb, pb)) {
 		t.Fatal("bob 2nd reaches bob's threshold and must fire")
 	}
 }
@@ -264,7 +264,7 @@ func TestBuildEnvelopeCarriesState(t *testing.T) {
 	e := newStoreEngine(t)
 	_ = e.store.SetState("failure_count", "3")
 	p, ev := bobEvent(t, "x")
-	env := e.buildEnvelope(ev, p)
+	env := e.buildEnvelope(msgTrigger(ev, p))
 	if env.State["failure_count"] != "3" {
 		t.Fatalf("envelope state = %v, want failure_count=3", env.State)
 	}

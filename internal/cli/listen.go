@@ -37,11 +37,15 @@ func newListenCmd() *cobra.Command {
 			"the same chat server as the `summary` command and fall back to the raw\n" +
 			"message text when it is down. With no telegram.bot_token the daemon only\n" +
 			"keeps the cache warm.\n\n" +
-			"What the daemon does with each message is driven by rules (the `rules:`\n" +
-			"config block): match on channel/author/text/mention and run actions —\n" +
-			"notify, run a local command, POST a webhook, react, mark read. With no\n" +
-			"rules configured the Telegram bridge above is applied as the default\n" +
-			"rule. See docs/rules.md.\n\n" +
+			"What the daemon does is driven by rules (the `rules:` config block):\n" +
+			"match on channel/author/text/mention and run actions — notify, run a\n" +
+			"local command, POST a webhook, react, mark read. A rule reacts to new\n" +
+			"messages by default; `on:` widens that to edits, deletions, reactions,\n" +
+			"or the clock (`on: schedule`). With no rules configured the Telegram\n" +
+			"bridge above is applied as the default rule.\n\n" +
+			"`matterbox rules list/test/stats/state` inspect and dry-run them, and a\n" +
+			"SIGHUP (systemctl --user reload matterbox-listen) swaps an edited\n" +
+			"ruleset in without dropping the connection. See docs/rules.md.\n\n" +
 			"Intended to run under a process supervisor. `make install` drops a\n" +
 			"(disabled) service for your OS — systemd --user on Linux, a launchd\n" +
 			"LaunchAgent on macOS — which you then enable once configured:\n\n" +
@@ -172,11 +176,51 @@ func runListen(ctx context.Context, out io.Writer, notifySelf bool) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// SIGHUP re-reads the config and swaps the ruleset in place. Restarting to
+	// pick up a rule edit drops the websocket, re-runs catch-up and re-warms
+	// every cache, which is a lot of ceremony for a changed regexp — and enough
+	// friction that rules don't get iterated on. A bad config leaves the running
+	// rules untouched: a typo must never disarm a working daemon.
+	go watchReloads(ctx, eng, logger)
+
 	if err := eng.Run(ctx); err != nil && ctx.Err() == nil {
 		return err
 	}
 	logger.Printf("matterbox listen: stopped")
 	return nil
+}
+
+// watchReloads swaps the daemon's rules on every SIGHUP until ctx is cancelled.
+func watchReloads(ctx context.Context, eng *listen.Engine, logger *log.Logger) {
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Stop(hup)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-hup:
+			reloadRules(eng, logger)
+		}
+	}
+}
+
+// reloadRules recompiles the config's rules and installs them. Every failure
+// path keeps the current ruleset and says so, so a half-written config can't
+// leave the daemon running no rules at all.
+func reloadRules(eng *listen.Engine, logger *log.Logger) {
+	cfg, err := config.Load()
+	if err != nil {
+		logger.Printf("matterbox listen: reload failed, rules unchanged: %v", err)
+		return
+	}
+	rules, err := listen.CompileRules(ruleSpecs(cfg.Rules))
+	if err != nil {
+		logger.Printf("matterbox listen: reload failed, rules unchanged: rules: %v", err)
+		return
+	}
+	eng.SetRules(rules)
+	logger.Printf("matterbox listen: reloaded — rules=%s", rulesState(len(rules)))
 }
 
 // ruleSpecs maps the config's YAML rule structs to the listen package's
@@ -207,8 +251,12 @@ func ruleSpecs(cfg []config.RuleConfig) []listen.RuleSpec {
 		specs[i] = listen.RuleSpec{
 			Name:    r.Name,
 			Stop:    r.Stop,
+			On:      []string(r.On),
 			Match:   matchSpec(r.Match),
 			Actions: actions,
+		}
+		if r.Schedule != nil {
+			specs[i].Schedule = &listen.ScheduleSpec{Cron: r.Schedule.Cron, Every: r.Schedule.Every}
 		}
 	}
 	return specs
@@ -217,16 +265,23 @@ func ruleSpecs(cfg []config.RuleConfig) []listen.RuleSpec {
 // matchSpec maps a config match (recursing into not:) to the listen form.
 func matchSpec(m config.RuleMatchConfig) listen.MatchSpec {
 	spec := listen.MatchSpec{
-		Channels: []string(m.Channel),
-		Teams:    []string(m.Team),
-		Authors:  []string(m.Author),
-		Message:  m.Message,
-		Mention:  m.Mention,
-		DM:       m.DM,
-		FromMe:   m.FromMe,
-		HasFile:  m.HasFile,
-		IsThread: m.IsThread,
-		Viewing:  m.Viewing,
+		Channels:     []string(m.Channel),
+		Teams:        []string(m.Team),
+		Authors:      []string(m.Author),
+		Message:      m.Message,
+		Mention:      m.Mention,
+		DM:           m.DM,
+		FromMe:       m.FromMe,
+		HasFile:      m.HasFile,
+		IsThread:     m.IsThread,
+		Viewing:      m.Viewing,
+		Emoji:        []string(m.Emoji),
+		Reactors:     []string(m.Reactor),
+		ChannelTypes: []string(m.ChannelType),
+		FromBot:      m.FromBot,
+	}
+	if m.Time != nil {
+		spec.Time = &listen.TimeSpec{After: m.Time.After, Before: m.Time.Before, Days: []string(m.Time.Days)}
 	}
 	if m.Not != nil {
 		not := matchSpec(*m.Not)

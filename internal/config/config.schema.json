@@ -15,18 +15,39 @@
     "reactions": {
       "type": "array",
       "description": "Emoji shortcodes shown in the reaction picker (R on a message). Names match Mattermost's shortcodes (no colons).",
-      "items": { "type": "string" },
-      "default": ["+1", "-1", "heart", "tada", "eyes", "rocket", "laughing", "thinking_face"]
+      "items": {
+        "type": "string"
+      },
+      "default": [
+        "+1",
+        "-1",
+        "heart",
+        "tada",
+        "eyes",
+        "rocket",
+        "laughing",
+        "thinking_face"
+      ]
     },
     "team_order": {
       "type": "array",
       "description": "Preferred left-to-right ordering of team tabs, by team URL name (or display name; case-insensitive). Teams not listed are appended alphabetically. Reorder in-app with < / >.",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string"
+      }
     },
-    "summary": { "$ref": "#/definitions/summary" },
-    "ai_search": { "$ref": "#/definitions/aiSearch" },
-    "embeddings": { "$ref": "#/definitions/embeddings" },
-    "search": { "$ref": "#/definitions/search" },
+    "summary": {
+      "$ref": "#/definitions/summary"
+    },
+    "ai_search": {
+      "$ref": "#/definitions/aiSearch"
+    },
+    "embeddings": {
+      "$ref": "#/definitions/embeddings"
+    },
+    "search": {
+      "$ref": "#/definitions/search"
+    },
     "mark_read_delay_seconds": {
       "type": "integer",
       "description": "How long a channel must stay open before it's marked read (default 5). 0 marks read immediately on open.",
@@ -41,18 +62,18 @@
     },
     "collapse_long_messages": {
       "type": "integer",
-      "description": "Fold a message taller than this many wrapped rows down to a preview plus a \"… N more lines\" footer (default 12; press z to expand). 0 disables folding.",
+      "description": "Fold a message taller than this many wrapped rows down to a preview plus a \"\u2026 N more lines\" footer (default 12; press z to expand). 0 disables folding.",
       "minimum": 0,
       "default": 12
     },
     "collapse_preview_lines": {
       "type": "integer",
-      "description": "How many leading rows a folded message keeps as its preview (default: two-thirds of collapse_long_messages). Clamped to 1…collapse_long_messages; ignored when folding is off.",
+      "description": "How many leading rows a folded message keeps as its preview (default: two-thirds of collapse_long_messages). Clamped to 1\u2026collapse_long_messages; ignored when folding is off.",
       "minimum": 1
     },
     "custom_status": {
       "type": "boolean",
-      "description": "Show DM partners' custom statuses — emoji + text — in the header and sidebar (default true). false shows presence dots only.",
+      "description": "Show DM partners' custom statuses \u2014 emoji + text \u2014 in the header and sidebar (default true). false shows presence dots only.",
       "default": true
     },
     "date_separators": {
@@ -77,12 +98,12 @@
     },
     "sql_tab": {
       "type": "boolean",
-      "description": "Show the read-only SQL tab — a query editor over your local message cache whose rows render as chat messages (default false, hidden).",
+      "description": "Show the read-only SQL tab \u2014 a query editor over your local message cache whose rows render as chat messages (default false, hidden).",
       "default": false
     },
     "feed_show_muted": {
       "type": "boolean",
-      "description": "Include muted channels in the unread feed and its tab badge (default false — muting opts a channel out of the feed). Only the startup state: M on the Feed tab toggles it for the session.",
+      "description": "Include muted channels in the unread feed and its tab badge (default false \u2014 muting opts a channel out of the feed). Only the startup state: M on the Feed tab toggles it for the session.",
       "default": false
     },
     "kaomoji_options": {
@@ -93,52 +114,102 @@
       },
       "default": []
     },
-    "keybindings": { "$ref": "#/definitions/keybindings" },
+    "keybindings": {
+      "$ref": "#/definitions/keybindings"
+    },
     "emoji_images": {
       "type": "string",
       "description": "Render custom (server) emoji as inline images via the Kitty graphics protocol. \"auto\" (default) enables them on a Kitty/Ghostty truecolor terminal outside tmux; \"off\" keeps literal :name: text. Unicode emoji are unaffected.",
-      "enum": ["auto", "off"],
+      "enum": [
+        "auto",
+        "off"
+      ],
       "default": "auto"
     },
     "image_thumbnails": {
       "type": "string",
       "description": "Draw image attachments as inline thumbnails in the transcript, so an image is visible without pressing space for the full-size preview. \"off\" (default) shows only the filename line; \"auto\" draws thumbnails wherever emoji_images works (same Kitty-graphics terminal gate). Space still opens the full preview either way.",
-      "enum": ["auto", "off"],
+      "enum": [
+        "auto",
+        "off"
+      ],
       "default": "off"
     },
     "code_theme": {
       "type": "string",
       "description": "Colour scheme for syntax-highlighting fenced code blocks. Any chroma style name plus the bundled everforest-dark. An unknown name falls back to the default; NO_COLOR disables code colour.",
       "default": "monokai",
-      "examples": ["monokai", "dracula", "github-dark", "gruvbox", "nord", "onedark", "catppuccin-mocha", "tokyonight-night", "everforest-dark"]
+      "examples": [
+        "monokai",
+        "dracula",
+        "github-dark",
+        "gruvbox",
+        "nord",
+        "onedark",
+        "catppuccin-mocha",
+        "tokyonight-night",
+        "everforest-dark"
+      ]
     },
-    "animations": { "$ref": "#/definitions/animations" },
-    "giphy": { "$ref": "#/definitions/giphy" },
-    "telegram": { "$ref": "#/definitions/telegram" },
-    "listen": { "$ref": "#/definitions/listen" },
+    "animations": {
+      "$ref": "#/definitions/animations"
+    },
+    "giphy": {
+      "$ref": "#/definitions/giphy"
+    },
+    "telegram": {
+      "$ref": "#/definitions/telegram"
+    },
+    "listen": {
+      "$ref": "#/definitions/listen"
+    },
     "rules": {
       "type": "array",
       "description": "Per-message automation for `matterbox listen`. Each rule has a match (conditions, ANDed) and actions (run in order). With no rules the daemon uses a built-in notify rule from the listen options. Full reference in docs/rules.md.",
-      "items": { "$ref": "#/definitions/rule" }
+      "items": {
+        "$ref": "#/definitions/rule"
+      }
     },
-    "jira": { "$ref": "#/definitions/jira" },
-    "gitlab": { "$ref": "#/definitions/gitlab" },
-    "language_tool": { "$ref": "#/definitions/languageTool" }
+    "jira": {
+      "$ref": "#/definitions/jira"
+    },
+    "gitlab": {
+      "$ref": "#/definitions/gitlab"
+    },
+    "language_tool": {
+      "$ref": "#/definitions/languageTool"
+    }
   },
   "definitions": {
     "stringList": {
       "description": "A single value or a list of values (match any).",
       "oneOf": [
-        { "type": "string" },
-        { "type": "array", "items": { "type": "string" } }
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
       ]
     },
     "stringOrList": {
       "description": "A single key/chord, a list of them, or an empty list / \"none\" / null to unbind.",
       "oneOf": [
-        { "type": "string" },
-        { "type": "array", "items": { "type": "string" } },
-        { "type": "null" }
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        {
+          "type": "null"
+        }
       ]
     },
     "summary": {
@@ -240,14 +311,27 @@
       "properties": {
         "nav_modifier": {
           "type": "string",
-          "description": "Modifier for arrow-key team/channel navigation. \"none\" turns arrow-nav off (freeing ctrl+←/→ for the composer). On macOS ctrl+arrows clash with Mission Control — try shift, or super on a Kitty-protocol terminal.",
-          "enum": ["ctrl", "alt", "shift", "super", "cmd", "meta", "hyper", "none"],
+          "description": "Modifier for arrow-key team/channel navigation. \"none\" turns arrow-nav off (freeing ctrl+\u2190/\u2192 for the composer). On macOS ctrl+arrows clash with Mission Control \u2014 try shift, or super on a Kitty-protocol terminal.",
+          "enum": [
+            "ctrl",
+            "alt",
+            "shift",
+            "super",
+            "cmd",
+            "meta",
+            "hyper",
+            "none"
+          ],
           "default": "ctrl"
         },
         "vim_nav": {
           "type": "string",
           "description": "When the ctrl+h/j/k/l vim keys switch team/channel: \"global\" (default, from anywhere incl. while typing), \"reading\" (only outside text inputs, freeing ctrl+h/ctrl+k for composer editing), or \"off\".",
-          "enum": ["global", "reading", "off"],
+          "enum": [
+            "global",
+            "reading",
+            "off"
+          ],
           "default": "global"
         },
         "ctrl_arrow_nav": {
@@ -257,7 +341,9 @@
         "bindings": {
           "type": "object",
           "description": "Rebind individual actions by id, e.g. {compose: [i, a], delete_post: shift+d}. Value is a single key or a list; an empty list or \"none\" unbinds. Jump actions: goto_team, goto_dm, goto_feed, search_here, search_all.",
-          "additionalProperties": { "$ref": "#/definitions/stringOrList" }
+          "additionalProperties": {
+            "$ref": "#/definitions/stringOrList"
+          }
         }
       }
     },
@@ -283,7 +369,7 @@
         },
         "native_animation": {
           "type": "boolean",
-          "description": "Experimental (default false): play custom emoji, inline thumbnails, and the preview modal via the Kitty graphics protocol's native animation frames (a=f/a=a) instead of client-side re-transmission on a timer, so the terminal itself times and loops the frames. In a binary built with the `video` tag it also plays mp4/webm/mov/webp video — inline thumbnails as short looping previews, and the space-to-preview modal streams the whole clip. Needs animation-frame support beyond the base graphics protocol most Kitty-class terminals implement.",
+          "description": "Experimental (default false): play custom emoji, inline thumbnails, and the preview modal via the Kitty graphics protocol's native animation frames (a=f/a=a) instead of client-side re-transmission on a timer, so the terminal itself times and loops the frames. In a binary built with the `video` tag it also plays mp4/webm/mov/webp video \u2014 inline thumbnails as short looping previews, and the space-to-preview modal streams the whole clip. Needs animation-frame support beyond the base graphics protocol most Kitty-class terminals implement.",
           "default": false
         },
         "native_gif_protocol": {
@@ -305,7 +391,14 @@
         "rendition": {
           "type": "string",
           "description": "Which Giphy size to post. downsized / downsized_medium need api_key; original can be several MB.",
-          "enum": ["fixed_height", "fixed_height_small", "fixed_width", "downsized", "downsized_medium", "original"],
+          "enum": [
+            "fixed_height",
+            "fixed_height_small",
+            "fixed_width",
+            "downsized",
+            "downsized_medium",
+            "original"
+          ],
           "default": "fixed_height"
         }
       }
@@ -371,7 +464,7 @@
         },
         "notify_delay_seconds": {
           "type": "integer",
-          "description": "Wait this long before sending, then re-check the server's read state — if any client marked the channel read during the window the notification is suppressed (default 60). 0 delivers immediately with no read-check.",
+          "description": "Wait this long before sending, then re-check the server's read state \u2014 if any client marked the channel read during the window the notification is suppressed (default 60). 0 delivers immediately with no read-check.",
           "minimum": 0,
           "default": 60
         }
@@ -389,16 +482,18 @@
         },
         "email": {
           "type": "string",
-          "description": "Atlassian account email — the username half of the Cloud Basic-auth pair."
+          "description": "Atlassian account email \u2014 the username half of the Cloud Basic-auth pair."
         },
         "api_token": {
           "type": "string",
-          "description": "Atlassian API token (id.atlassian.com → Security → API tokens). The JIRA_API_TOKEN env var overrides this."
+          "description": "Atlassian API token (id.atlassian.com \u2192 Security \u2192 API tokens). The JIRA_API_TOKEN env var overrides this."
         },
         "projects": {
           "type": "array",
           "description": "Allowlist of project keys (e.g. [\"ABC\", \"PROJ\"]) whose bare ids (ABC-123) open the panel. Empty means only full /browse/KEY links are detected, so look-alikes like \"UTF-8\" never trigger.",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         },
         "story_points_field": {
           "type": "string",
@@ -441,11 +536,16 @@
           "type": "string",
           "description": "Checking language code, or \"auto\" (default) to let the server detect it per message.",
           "default": "auto",
-          "examples": ["auto", "en-US", "en-GB", "nl"]
+          "examples": [
+            "auto",
+            "en-US",
+            "en-GB",
+            "nl"
+          ]
         },
         "picky": {
           "type": "boolean",
-          "description": "Enable LanguageTool's \"picky\" level — stricter style, typography and grammar rules (default false).",
+          "description": "Enable LanguageTool's \"picky\" level \u2014 stricter style, typography and grammar rules (default false).",
           "default": false
         }
       }
@@ -464,11 +564,22 @@
           "description": "Halt evaluation of later rules once this one matches.",
           "default": false
         },
-        "match": { "$ref": "#/definitions/ruleMatch" },
+        "match": {
+          "$ref": "#/definitions/ruleMatch"
+        },
         "actions": {
           "type": "array",
           "description": "Actions run in order when the match passes.",
-          "items": { "$ref": "#/definitions/ruleAction" }
+          "items": {
+            "$ref": "#/definitions/ruleAction"
+          }
+        },
+        "on": {
+          "description": "Events the rule reacts to: message (default), edit, delete, reaction, reaction_removed, or schedule. A single value or a list.",
+          "$ref": "#/definitions/stringOrList"
+        },
+        "schedule": {
+          "$ref": "#/definitions/ruleSchedule"
         }
       }
     },
@@ -517,20 +628,50 @@
         },
         "viewing": {
           "type": "boolean",
-          "description": "When set, require that you are (true) or are not (false) looking at the post's channel — a matterbox TUI on this machine has it open and its terminal has focus. `viewing: false` keeps a notification rule quiet about the conversation you're already reading."
+          "description": "When set, require that you are (true) or are not (false) looking at the post's channel \u2014 a matterbox TUI on this machine has it open and its terminal has focus. `viewing: false` keeps a notification rule quiet about the conversation you're already reading."
         },
         "not": {
           "description": "Inverts a nested match: the rule fires only when the post does NOT satisfy it.",
           "$ref": "#/definitions/ruleMatch"
         },
-        "frequency": { "$ref": "#/definitions/ruleFrequency" },
-        "cooldown": { "$ref": "#/definitions/ruleCooldown" },
+        "frequency": {
+          "$ref": "#/definitions/ruleFrequency"
+        },
+        "cooldown": {
+          "$ref": "#/definitions/ruleCooldown"
+        },
         "state": {
           "description": "Match against the persistent ledger (the state_* actions). A single condition or a list (all ANDed).",
           "oneOf": [
-            { "$ref": "#/definitions/ruleState" },
-            { "type": "array", "items": { "$ref": "#/definitions/ruleState" } }
+            {
+              "$ref": "#/definitions/ruleState"
+            },
+            {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/ruleState"
+              }
+            }
           ]
+        },
+        "emoji": {
+          "description": "Reaction shortcode (no colons) as a case-insensitive glob or exact name. Needs `on: reaction`. A single value or a list.",
+          "$ref": "#/definitions/stringOrList"
+        },
+        "reactor": {
+          "description": "Username (no @) whose reaction fires the rule. On a reaction trigger author/from_me still describe the post's writer. A single value or a list.",
+          "$ref": "#/definitions/stringOrList"
+        },
+        "channel_type": {
+          "description": "Conversation kind: public, private, dm, or group. A single value or a list.",
+          "$ref": "#/definitions/stringOrList"
+        },
+        "from_bot": {
+          "type": "boolean",
+          "description": "Require the post come from a bot or incoming webhook (true) or from a person (false)."
+        },
+        "time": {
+          "$ref": "#/definitions/ruleTime"
         }
       }
     },
@@ -551,13 +692,17 @@
         "by": {
           "type": "string",
           "description": "Groups the counting (default global).",
-          "enum": ["author", "channel", "global"]
+          "enum": [
+            "author",
+            "channel",
+            "global"
+          ]
         }
       }
     },
     "ruleCooldown": {
       "type": "object",
-      "description": "Minimum-interval gate: fires at most once per interval. Persisted, so it survives a restart — the general form of \"once a day/week\".",
+      "description": "Minimum-interval gate: fires at most once per interval. Persisted, so it survives a restart \u2014 the general form of \"once a day/week\".",
       "additionalProperties": false,
       "properties": {
         "every": {
@@ -567,7 +712,12 @@
         "by": {
           "type": "string",
           "description": "Groups the cooldown (default global).",
-          "enum": ["author", "channel", "team", "global"]
+          "enum": [
+            "author",
+            "channel",
+            "team",
+            "global"
+          ]
         }
       }
     },
@@ -618,7 +768,18 @@
         "type": {
           "type": "string",
           "description": "The action to run.",
-          "enum": ["notify", "exec", "webhook", "react", "mark_read", "send", "log", "state_set", "state_incr", "state_del"]
+          "enum": [
+            "notify",
+            "exec",
+            "webhook",
+            "react",
+            "mark_read",
+            "send",
+            "log",
+            "state_set",
+            "state_incr",
+            "state_del"
+          ]
         },
         "summarize": {
           "type": "boolean",
@@ -636,7 +797,9 @@
         "command": {
           "type": "array",
           "description": "(exec) The argv; the post is piped to stdin as JSON and its fields exported as MATTERBOX_* env vars.",
-          "items": { "type": "string" }
+          "items": {
+            "type": "string"
+          }
         },
         "url": {
           "type": "string",
@@ -646,7 +809,9 @@
         "headers": {
           "type": "object",
           "description": "(webhook) Extra request headers; values are expanded from the daemon's environment ($TOKEN) so secrets stay out of the config.",
-          "additionalProperties": { "type": "string" }
+          "additionalProperties": {
+            "type": "string"
+          }
         },
         "emoji": {
           "type": "string",
@@ -654,11 +819,11 @@
         },
         "text": {
           "type": "string",
-          "description": "(log) The log line prefix, or (send) the message body — a text/template over the post."
+          "description": "(log) The log line prefix, or (send) the message body \u2014 a text/template over the post."
         },
         "channel": {
           "type": "string",
-          "description": "(send) The target channel — \"team/channel\" or \"@user\". Empty posts into the channel the triggering message arrived in."
+          "description": "(send) The target channel \u2014 \"team/channel\" or \"@user\". Empty posts into the channel the triggering message arrived in."
         },
         "thread": {
           "type": "boolean",
@@ -676,6 +841,40 @@
         "by": {
           "type": "integer",
           "description": "(state_incr) The amount to add; omitted means 1 (negative decrements)."
+        }
+      }
+    },
+    "ruleSchedule": {
+      "type": "object",
+      "description": "Timer for an `on: schedule` rule. Set exactly one of cron / every.",
+      "additionalProperties": false,
+      "properties": {
+        "cron": {
+          "type": "string",
+          "description": "Five-field crontab expression in local time, e.g. \"0 9 * * 1-5\" (09:00 on weekdays)."
+        },
+        "every": {
+          "type": "string",
+          "description": "Interval between firings (\"30m\", \"6h\"); first fires one interval after startup, and the last firing survives a restart."
+        }
+      }
+    },
+    "ruleTime": {
+      "type": "object",
+      "description": "Restrict a rule to a window of the local clock and/or certain weekdays.",
+      "additionalProperties": false,
+      "properties": {
+        "after": {
+          "type": "string",
+          "description": "Inclusive start of the window, HH:MM local."
+        },
+        "before": {
+          "type": "string",
+          "description": "Exclusive end, HH:MM local. Earlier than after wraps midnight."
+        },
+        "days": {
+          "description": "Weekdays the rule may fire on: mon..sun (or 0-7). A single value or a list.",
+          "$ref": "#/definitions/stringOrList"
         }
       }
     }

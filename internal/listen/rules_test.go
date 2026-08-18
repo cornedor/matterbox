@@ -246,7 +246,7 @@ func TestRunExecPipesEnvelope(t *testing.T) {
 
 	a := Action{Type: ActionExec, Command: []string{"sh", "-c", "cat > " + out}}
 	e.wg.Add(1)
-	e.runExec(t.Context(), ev, p, a) // runs synchronously here, calls wg.Done
+	e.runExec(t.Context(), msgTrigger(ev, p), a) // runs synchronously here, calls wg.Done
 	e.wg.Wait()
 
 	data, err := os.ReadFile(out)
@@ -285,7 +285,7 @@ func TestRunExecTemplatesCommand(t *testing.T) {
 		t.Fatalf("compileAction(exec): %v", err)
 	}
 	e.wg.Add(1)
-	e.runExec(t.Context(), ev, p, a)
+	e.runExec(t.Context(), msgTrigger(ev, p), a)
 	e.wg.Wait()
 
 	got, err := os.ReadFile(out)
@@ -334,7 +334,7 @@ func TestRunWebhookPostsEnvelope(t *testing.T) {
 
 	a := Action{Type: ActionWebhook, URL: srv.URL}
 	e.wg.Add(1)
-	e.runWebhook(t.Context(), ev, p, a)
+	e.runWebhook(t.Context(), msgTrigger(ev, p), a)
 	e.wg.Wait()
 
 	mu.Lock()
@@ -411,7 +411,7 @@ func TestBuildEnvelopeEnriched(t *testing.T) {
 		"team_id": "t1", "mentions": mentionsData(t, "u-me"),
 	})
 
-	env := e.buildEnvelope(ev, p)
+	env := e.buildEnvelope(msgTrigger(ev, p))
 	if !env.IsThread || env.RootID != "root1" {
 		t.Errorf("thread fields wrong: is_thread=%v root=%q", env.IsThread, env.RootID)
 	}
@@ -454,7 +454,7 @@ func TestRunWebhookHeaders(t *testing.T) {
 		"X-Static":      "plain",
 	}}
 	e.wg.Add(1)
-	e.runWebhook(t.Context(), ev, p, a)
+	e.runWebhook(t.Context(), msgTrigger(ev, p), a)
 	e.wg.Wait()
 
 	mu.Lock()

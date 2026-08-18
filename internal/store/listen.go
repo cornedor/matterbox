@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -41,6 +42,27 @@ func (s *Store) SetMeta(key, value string) error {
 		return fmt.Errorf("set meta %s: %w", key, err)
 	}
 	return nil
+}
+
+// IncrMeta atomically adds delta to the integer value of a meta key (treating a
+// missing or non-numeric value as 0, as IncrState does) and returns the new
+// value. Used for the per-rule fire counters, where a read-modify-write would
+// lose counts when two triggers land at once.
+func (s *Store) IncrMeta(key string, delta int64) (int64, error) {
+	if s == nil {
+		return 0, nil
+	}
+	var n int64
+	err := s.db.QueryRow(
+		`INSERT INTO meta(key, value) VALUES(?, ?)
+		 ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + ? AS TEXT)
+		 RETURNING CAST(value AS INTEGER)`,
+		key, strconv.FormatInt(delta, 10), delta,
+	).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("incr meta %s: %w", key, err)
+	}
+	return n, nil
 }
 
 // PutNotifTarget records which Mattermost message a sent Telegram notification

@@ -154,11 +154,14 @@ type Engine struct {
 	opts     Options
 	log      *log.Logger
 
-	// rules drives the reaction to each incoming post. Either the user's
-	// configured rules (opts.Rules) or, when they configured none, the
-	// synthesised default that reproduces the legacy mention/DM → Telegram
-	// bridge (see defaultRules).
-	rules []Rule
+	// rules drives the reaction to each trigger. Either the user's configured
+	// rules (opts.Rules) or, when they configured none, the synthesised default
+	// that reproduces the legacy mention/DM → Telegram bridge (see
+	// defaultRules). Guarded by rulesMu because a SIGHUP reload swaps the whole
+	// set (with the two flags derived from it) while events are flowing —
+	// always read it through ruleSet().
+	rulesMu sync.RWMutex
+	rules   []Rule
 
 	// freqWindows backs the rules' frequency gate: a sliding window of recent
 	// match times per (rule, group) key (see frequencyAllows). In-memory and
@@ -166,9 +169,32 @@ type Engine struct {
 	freqMu      sync.Mutex
 	freqWindows map[string][]time.Time
 
+	// evalMu serialises rule evaluation: the message path runs on the ingest
+	// goroutine, but reaction/edit/schedule triggers each have their own (see
+	// applyTrigger).
+	evalMu sync.Mutex
+
 	// usesState caches whether any rule matches on the ledger, so a config that
-	// never does pays no per-message state read (see matchState).
+	// never does pays no per-message state read (see matchState). Guarded by
+	// rulesMu.
 	usesState bool
+
+	// chanCache resolves channel id → name/type/team for the triggers whose
+	// websocket event doesn't carry them (reactions, edits, deletes). Filled in
+	// bulk from the reader's channel list; chanAt throttles the refills.
+	chanMu    sync.Mutex
+	chanCache map[string]chanInfo
+	chanAt    time.Time
+
+	// userCache resolves user id → username for the same triggers.
+	userMu    sync.Mutex
+	userCache map[string]string
+
+	// selfReact remembers the reactions the react action just added, so the
+	// websocket echo of one doesn't feed the rule that caused it (see
+	// noteSelfReaction).
+	selfReactMu sync.Mutex
+	selfReact   map[string]time.Time
 
 	// The local TUI's "what am I looking at" answer, behind a short TTL so a
 	// burst of posts costs one round-trip (see tuiStatus). needsTUIStatus is
@@ -291,16 +317,9 @@ func New(client *mm.Client, st *store.Store, ch *chat.Client, tg *telegram.Clien
 	if start, end, ok := parseQuietHours(opts.QuietHours); ok {
 		e.quietStart, e.quietEnd, e.quietOn = start, end, true
 	}
-	if len(opts.Rules) > 0 {
-		e.rules = opts.Rules
-	} else {
-		e.rules = defaultRules(opts)
-	}
-	e.usesState = rulesUseState(e.rules)
-	// The TUI is worth asking about when a rule matches on `viewing`, or when a
-	// rule can notify — the notify gate skips a push for the conversation you're
-	// reading, the same way it skips a muted channel.
-	e.needsTUIStatus = rulesUseViewing(e.rules) || e.hasNotifyRule()
+	e.chanCache = map[string]chanInfo{}
+	e.userCache = map[string]string{}
+	e.applyRuleSet(opts.Rules)
 	e.tuiSocket = opts.TUISocket
 	if e.tuiSocket == "" {
 		if p, err := control.SocketPath(); err == nil {
@@ -309,6 +328,67 @@ func New(client *mm.Client, st *store.Store, ch *chat.Client, tg *telegram.Clien
 	}
 	e.tuiTTL = tuiStatusTTL
 	return e
+}
+
+// ruleSet returns the current ruleset. Every read of e.rules goes through it,
+// so a reload can swap the slice without racing the ingest goroutine (the slice
+// header is copied under the lock; the rules themselves are immutable once
+// compiled).
+func (e *Engine) ruleSet() []Rule {
+	e.rulesMu.RLock()
+	defer e.rulesMu.RUnlock()
+	return e.rules
+}
+
+// SetRules swaps the daemon's ruleset in place — what a SIGHUP reload calls
+// after recompiling the config. An empty set falls back to the built-in notify
+// rule, exactly as at startup, so removing every rule doesn't silently leave
+// the previous ones running. Safe to call while events are flowing: a trigger
+// already being evaluated finishes against the ruleset it started with.
+func (e *Engine) SetRules(rules []Rule) {
+	e.applyRuleSet(rules)
+	// The frequency windows are keyed by a rule's position, which a reload can
+	// shift, so they start fresh rather than being credited to whichever rule
+	// now sits at that index. Cooldowns and schedules are keyed by name and
+	// persisted, so they carry over as they should.
+	e.freqMu.Lock()
+	e.freqWindows = map[string][]time.Time{}
+	e.freqMu.Unlock()
+	e.seedSchedules()
+}
+
+// applyRuleSet installs a ruleset and the two flags derived from it. Both
+// derived values are computed before the lock is taken, because hasNotifyRule
+// reads the ruleset through ruleSet().
+func (e *Engine) applyRuleSet(rules []Rule) {
+	if len(rules) == 0 {
+		rules = defaultRules(e.opts)
+	}
+	usesState := rulesUseState(rules)
+	// The TUI is worth asking about when a rule matches on `viewing`, or when a
+	// rule can notify — the notify gate skips a push for the conversation you're
+	// reading, the same way it skips a muted channel.
+	needsTUI := rulesUseViewing(rules) || rulesCanNotify(rules)
+	e.rulesMu.Lock()
+	e.rules = rules
+	e.usesState = usesState
+	e.needsTUIStatus = needsTUI
+	e.rulesMu.Unlock()
+}
+
+// stateful reports whether the current ruleset matches on the ledger.
+func (e *Engine) stateful() bool {
+	e.rulesMu.RLock()
+	defer e.rulesMu.RUnlock()
+	return e.usesState
+}
+
+// asksTUI reports whether the current ruleset needs the TUI's "am I reading
+// this?" answer.
+func (e *Engine) asksTUI() bool {
+	e.rulesMu.RLock()
+	defer e.rulesMu.RUnlock()
+	return e.needsTUIStatus
 }
 
 // checkSession runs one session liveness check through the engine's
@@ -358,6 +438,16 @@ func (e *Engine) clock() time.Time {
 // ctx is cancelled. It returns ctx.Err() once all in-flight notifications have
 // drained, so a caller wiring it to SIGINT/SIGTERM gets a clean shutdown.
 func (e *Engine) Run(ctx context.Context) error {
+	// The background goroutines below (the Telegram poller, the scheduler, the
+	// in-flight notifications) stop when this context is cancelled. Deriving one
+	// from the caller's is what lets the exit paths that don't cancel it — a
+	// dead session, most importantly — stop waiting on goroutines that would
+	// otherwise watch the caller's context forever.
+	parent := ctx
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	drain := func() { cancel(); e.wg.Wait() }
+
 	e.loadCursor()       // catch-up watermark (set to now on first ever run)
 	e.refreshTeams(ctx)  // team names for permalinks
 	e.refreshMuted(ctx)  // best-effort initial mute set, before events flow
@@ -367,10 +457,16 @@ func (e *Engine) Run(ctx context.Context) error {
 		e.wg.Add(1)
 		go e.pollUpdates(ctx)
 	}
+	// The scheduler is independent of the connection: a rule that posts a
+	// reminder at 09:00 should still fire while the websocket is flapping, and
+	// running it unconditionally is what lets a reload add the first schedule
+	// rule without a restart.
+	e.wg.Add(1)
+	go e.runScheduler(ctx)
 	attempt := 0
 	for {
-		if err := ctx.Err(); err != nil {
-			e.wg.Wait()
+		if err := parent.Err(); err != nil {
+			drain()
 			return err
 		}
 		wsc, err := e.client.DialWS()
@@ -379,15 +475,15 @@ func (e *Engine) Run(ctx context.Context) error {
 			// exit cleanly so the supervisor doesn't restart-loop forever.
 			if IsUnauthorized(err) {
 				e.alertTokenExpired(ctx)
-				e.wg.Wait()
+				drain()
 				return nil
 			}
 			attempt++
 			d := backoff(attempt)
 			e.log.Printf("websocket dial failed (retry in %s): %v", d, err)
 			if !sleepCtx(ctx, d) {
-				e.wg.Wait()
-				return ctx.Err()
+				drain()
+				return parent.Err()
 			}
 			continue
 		}
@@ -405,19 +501,19 @@ func (e *Engine) Run(ctx context.Context) error {
 		// leaves it down until `matterbox login` and a restart.
 		if errors.Is(cerr, errSessionExpired) {
 			e.alertTokenExpired(ctx)
-			e.wg.Wait()
+			drain()
 			return nil
 		}
-		if err := ctx.Err(); err != nil {
-			e.wg.Wait()
+		if err := parent.Err(); err != nil {
+			drain()
 			return err
 		}
 		attempt++
 		d := backoff(attempt)
 		e.log.Printf("websocket disconnected, reconnecting in %s", d)
 		if !sleepCtx(ctx, d) {
-			e.wg.Wait()
-			return ctx.Err()
+			drain()
+			return parent.Err()
 		}
 	}
 }
@@ -481,16 +577,54 @@ func (e *Engine) handle(ctx context.Context, ev *model.WebSocketEvent) {
 	case model.WebsocketEventPostEdited:
 		if p := postFromEvent(ev); p != nil {
 			e.ingest(p)
+			e.deferTrigger(ctx, EventEdit, ev, p)
 		}
 	case model.WebsocketEventPostDeleted:
 		if p := postFromEvent(ev); p != nil {
 			if err := e.store.Delete(p); err != nil {
 				e.log.Printf("delete post %s: %v", p.Id, err)
 			}
+			e.deferTrigger(ctx, EventDelete, ev, p)
 		}
+	case model.WebsocketEventReactionAdded:
+		e.deferReaction(ctx, ev, EventReaction)
+	case model.WebsocketEventReactionRemoved:
+		e.deferReaction(ctx, ev, EventUnreact)
 	case model.WebsocketEventStatusChange:
 		e.applyStatusChange(ev)
 	}
+}
+
+// deferTrigger evaluates an edit or delete off the ingest goroutine. Both need
+// the channel and sender the event omits, and looking those up inline would
+// stall the persistence path behind an API call — while the store write above
+// has already happened, in order.
+func (e *Engine) deferTrigger(ctx context.Context, kind string, ev *model.WebSocketEvent, p *model.Post) {
+	if !e.wantsKind(kind) {
+		return
+	}
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		e.enrich(ctx, ev, p)
+		e.applyTrigger(ctx, trigger{kind: kind, ev: ev, post: p})
+	}()
+}
+
+// deferReaction evaluates a reaction event off the ingest goroutine: it has to
+// fetch the post the reaction landed on, which a config with no reaction rule
+// should never pay for — hence the wantsKind check first.
+func (e *Engine) deferReaction(ctx context.Context, ev *model.WebSocketEvent, kind string) {
+	if !e.wantsKind(kind) {
+		return
+	}
+	e.wg.Add(1)
+	go func() {
+		defer e.wg.Done()
+		if t, ok := e.reactionTrigger(ctx, ev, kind); ok {
+			e.applyTrigger(ctx, t)
+		}
+	}()
 }
 
 // ingest upserts one post into the cache. Errors are logged, not fatal: a single
