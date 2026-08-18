@@ -22,9 +22,7 @@ func key(code rune) tea.KeyPressMsg { return tea.KeyPressMsg{Code: code} }
 // to a temp dir so the test never touches the real config.yaml / token.
 func newWizard(t *testing.T) *Model {
 	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
-	t.Setenv("HOME", dir)
+	t.Setenv(config.DirEnv, t.TempDir())
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatal(err)

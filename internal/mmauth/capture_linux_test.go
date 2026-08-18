@@ -19,6 +19,9 @@ func TestCaptureRoundTrip(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	dataHome := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", dataHome)
+	// Registration shells out to xdg-mime, which edits mimeapps.list in
+	// XDG_CONFIG_HOME — the user's real one unless it is redirected too.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -61,6 +64,7 @@ func TestCaptureRoundTrip(t *testing.T) {
 func TestCaptureCloseUnblocksWaiter(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	cap, enabled := StartCapture(context.Background())
 	if !enabled {

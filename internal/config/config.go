@@ -2,6 +2,10 @@
 // ~/.config/matterbox/config.yaml. A missing or partial file is fine:
 // defaults are filled in so first-run users don't need to write anything
 // to get a working client.
+//
+// It also owns Dir/File (see paths.go), the single answer to "where does
+// matterbox keep its files" that every other package asks — this package
+// imports nothing internal, so anyone can.
 package config
 
 import (
@@ -863,15 +867,7 @@ var defaultReactions = []string{
 
 // Path returns the canonical config file location.
 func Path() (string, error) {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		home, herr := os.UserHomeDir()
-		if herr != nil {
-			return "", fmt.Errorf("locate config dir: %w", err)
-		}
-		dir = filepath.Join(home, ".config")
-	}
-	return filepath.Join(dir, "matterbox", "config.yaml"), nil
+	return File("config.yaml")
 }
 
 // Load reads config.yaml, applies defaults, and writes the file back to

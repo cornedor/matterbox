@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 
 	tea "charm.land/bubbletea/v2"
+
+	"matterbox/internal/config"
 )
 
 // pickerStatsFile is the persisted popularity record for the autocomplete
@@ -20,15 +22,7 @@ type pickerStatsFile struct {
 }
 
 func pickerStatsPath() (string, error) {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		home, herr := os.UserHomeDir()
-		if herr != nil {
-			return "", err
-		}
-		dir = filepath.Join(home, ".config")
-	}
-	return filepath.Join(dir, "matterbox", "picker_stats.json"), nil
+	return config.File("picker_stats.json")
 }
 
 // loadPickerStats reads the persisted popularity maps. Like channel stats,

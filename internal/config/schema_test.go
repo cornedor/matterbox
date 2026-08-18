@@ -73,13 +73,13 @@ func TestSchemaModelineFormat(t *testing.T) {
 // with the modeline, so autocomplete works out of the box.
 func TestLoadDropsSchemaBesideConfig(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv(DirEnv, dir)
 
 	if _, err := Load(); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 
-	cfgPath := filepath.Join(dir, "matterbox", "config.yaml")
+	cfgPath := filepath.Join(dir, "config.yaml")
 	cfg, err := os.ReadFile(cfgPath)
 	if err != nil {
 		t.Fatalf("read config: %v", err)
@@ -88,7 +88,7 @@ func TestLoadDropsSchemaBesideConfig(t *testing.T) {
 		t.Errorf("config header does not start with the schema modeline; got:\n%s", firstLine(cfg))
 	}
 
-	schemaPath := filepath.Join(dir, "matterbox", SchemaFileName)
+	schemaPath := filepath.Join(dir, SchemaFileName)
 	got, err := os.ReadFile(schemaPath)
 	if err != nil {
 		t.Fatalf("read schema beside config: %v", err)

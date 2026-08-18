@@ -109,6 +109,9 @@ server_url: https://mattermost.example.com
 Then run `matterbox login` or place a token in `~/.config/matterbox/mm_token.json`
 manually.
 
+Set `MATTERBOX_CONFIG_DIR` to keep all of it (config, token, message cache,
+stats) somewhere else — handy for a second profile.
+
 ## CLI
 
 Running `matterbox` with no arguments launches the TUI. The subcommands are for

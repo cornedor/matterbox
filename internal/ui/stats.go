@@ -7,6 +7,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+
+	"matterbox/internal/config"
 )
 
 // channelStat is the persisted per-channel usage record. open_count is
@@ -52,15 +54,7 @@ type channelStatsFile struct {
 }
 
 func channelStatsPath() (string, error) {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		home, herr := os.UserHomeDir()
-		if herr != nil {
-			return "", err
-		}
-		dir = filepath.Join(home, ".config")
-	}
-	return filepath.Join(dir, "matterbox", "channel_stats.json"), nil
+	return config.File("channel_stats.json")
 }
 
 // loadChannelStats reads the persisted stats. Missing file / parse

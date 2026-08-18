@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/config"
 )
 
 // Fuzzy (subsequence) matching surfaces an emoji even when the query drops
@@ -112,7 +114,7 @@ func TestBumpPickerStats(t *testing.T) {
 // writePickerStats → loadPickerStats round-trips both maps through the
 // configured stats path.
 func TestPickerStatsRoundTrip(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv(config.DirEnv, t.TempDir())
 	emoji := map[string]int{"tada": 3, "smile": 1}
 	mention := map[string]int{"bob": 2}
 	if err := writePickerStats(emoji, mention); err != nil {
@@ -129,7 +131,7 @@ func TestPickerStatsRoundTrip(t *testing.T) {
 
 // A missing stats file degrades to empty (non-nil) maps rather than erroring.
 func TestLoadPickerStatsMissing(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv(config.DirEnv, t.TempDir())
 	e, mn := loadPickerStats()
 	if e == nil || mn == nil {
 		t.Fatal("expected non-nil maps for missing file")

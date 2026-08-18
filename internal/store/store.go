@@ -14,6 +14,8 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite"
+
+	"matterbox/internal/config"
 )
 
 // defaultRecencyHalfLife is the age at which a search match's relevance weight
@@ -50,18 +52,10 @@ func WithRecencyHalfLife(d time.Duration) Option {
 	}
 }
 
-// DefaultPath returns ~/.config/matterbox/messages.db, mirroring the
-// path convention used by channel_stats.json.
+// DefaultPath returns messages.db inside the matterbox config directory,
+// beside config.yaml and channel_stats.json.
 func DefaultPath() (string, error) {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		home, herr := os.UserHomeDir()
-		if herr != nil {
-			return "", err
-		}
-		dir = filepath.Join(home, ".config")
-	}
-	return filepath.Join(dir, "matterbox", "messages.db"), nil
+	return config.File("messages.db")
 }
 
 // Open opens (and creates if needed) the SQLite database at path and

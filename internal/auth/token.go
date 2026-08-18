@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"matterbox/internal/config"
 )
 
 type tokenFile struct {
@@ -12,15 +14,7 @@ type tokenFile struct {
 }
 
 func tokenPath() (string, error) {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		home, herr := os.UserHomeDir()
-		if herr != nil {
-			return "", fmt.Errorf("locate config dir: %w", err)
-		}
-		dir = filepath.Join(home, ".config")
-	}
-	return filepath.Join(dir, "matterbox", "mm_token.json"), nil
+	return config.File("mm_token.json")
 }
 
 // TokenPath returns the path of the saved token file. Exposed so the

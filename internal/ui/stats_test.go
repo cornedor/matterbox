@@ -4,12 +4,14 @@ import (
 	"testing"
 
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/config"
 )
 
 // TestChannelStatsRoundTrip verifies the per-team last-open map survives a
 // write → load cycle alongside the existing stats and last-active record.
 func TestChannelStatsRoundTrip(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv(config.DirEnv, t.TempDir())
 
 	stats := map[string]channelStat{"c1": {OpenCount: 3, LastOpened: 42}}
 	la := &lastActive{TeamID: "t1", ChannelID: "c1"}
@@ -34,7 +36,7 @@ func TestChannelStatsRoundTrip(t *testing.T) {
 // TestLoadChannelStatsMissingFile returns empty, non-nil maps so callers can
 // write to them without a nil-map panic.
 func TestLoadChannelStatsMissingFile(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv(config.DirEnv, t.TempDir())
 
 	stats, la, byTeam := loadChannelStats()
 	if stats == nil || byTeam == nil {

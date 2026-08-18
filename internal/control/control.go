@@ -14,9 +14,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"os"
-	"path/filepath"
 	"time"
+
+	"matterbox/internal/config"
 )
 
 // The verbs the socket understands. Unknown lines are ignored, so a new verb
@@ -63,19 +63,10 @@ func (s Status) Viewing(channelID string) bool {
 	return s.Focused && s.ChannelID != "" && s.ChannelID == channelID
 }
 
-// SocketPath returns the unix socket a running TUI listens on:
-// <config-dir>/matterbox/tui.sock. It mirrors config.Path's directory so the
-// socket sits beside config.yaml.
+// SocketPath returns the unix socket a running TUI listens on: tui.sock in
+// the matterbox config directory, so it sits beside config.yaml.
 func SocketPath() (string, error) {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		home, herr := os.UserHomeDir()
-		if herr != nil {
-			return "", err
-		}
-		dir = filepath.Join(home, ".config")
-	}
-	return filepath.Join(dir, "matterbox", "tui.sock"), nil
+	return config.File("tui.sock")
 }
 
 // Query asks the TUI at path what it is showing. The second result is false
