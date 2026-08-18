@@ -190,6 +190,11 @@ type Engine struct {
 	userMu    sync.Mutex
 	userCache map[string]string
 
+	// lastTick is when the scheduler last woke, so a tick can tell a late
+	// wakeup (a suspended laptop) from an ordinary one and still fire the minute
+	// it slept through. In-memory: a restart deliberately replays nothing.
+	lastTick time.Time
+
 	// selfReact remembers the reactions the react action just added, so the
 	// websocket echo of one doesn't feed the rule that caused it (see
 	// noteSelfReaction).

@@ -248,11 +248,11 @@ func TestScheduleSurvivesRestart(t *testing.T) {
 	e.seedSchedules()
 	now = now.Add(time.Hour)
 	e.seedSchedules() // a restart re-seeds; it must not reset the stamp
-	if e.scheduleDue(e.rules[0], now) {
+	if _, due := e.scheduleDue(e.rules[0], now, e.tickMinutes(now)); due {
 		t.Error("an interval rule must not fire an hour into a 24h interval after a restart")
 	}
 	now = now.Add(24 * time.Hour)
-	if !e.scheduleDue(e.rules[0], now) {
+	if _, due := e.scheduleDue(e.rules[0], now, e.tickMinutes(now)); !due {
 		t.Error("an interval rule should fire once its interval has elapsed")
 	}
 }
@@ -277,7 +277,7 @@ func TestIntervalFiresEveryTick(t *testing.T) {
 	minute := time.Date(2026, 8, 18, 22, 25, 1, 0, time.Local)
 	for i := 0; i < 3; i++ {
 		at := minute.Add(time.Duration(i) * time.Minute)
-		if !e.scheduleDue(e.rules[0], at) {
+		if _, due := e.scheduleDue(e.rules[0], at, e.tickMinutes(at)); !due {
 			t.Fatalf("every: 1m should fire at %s", at.Format("15:04:05"))
 		}
 		if err := e.store.SetMeta(scheduleMetaKey("tick"), strconv.FormatInt(at.UnixMilli(), 10)); err != nil {
@@ -285,7 +285,82 @@ func TestIntervalFiresEveryTick(t *testing.T) {
 		}
 	}
 	// Twice within one tick is still once.
-	if e.scheduleDue(e.rules[0], minute.Add(2*time.Minute+time.Millisecond)) {
+	if at := minute.Add(2*time.Minute + time.Millisecond); func() bool { _, due := e.scheduleDue(e.rules[0], at, e.tickMinutes(at)); return due }() {
 		t.Error("a second check inside the same minute must not fire again")
+	}
+}
+
+// TestCronSurvivesALateWakeup is the suspended-laptop case: Go's timers are
+// monotonic and freeze with the machine, so the tick that should have landed at
+// 09:00 arrives after the resume at 09:01. The firing it slept through still
+// goes out — once — and a rule that already fired for that minute doesn't
+// repeat.
+func TestCronSurvivesALateWakeup(t *testing.T) {
+	e, count := logEngine(t)
+	now := time.Date(2026, 8, 19, 8, 59, 1, 0, time.Local)
+	e.now = func() time.Time { return now }
+	e.rules = mustCompile(t, RuleSpec{
+		Name:     "standup",
+		On:       []string{EventSchedule},
+		Schedule: &ScheduleSpec{Cron: "0 9 * * *"},
+		Actions:  []ActionSpec{{Type: ActionLog, Text: "STANDUP"}},
+	})
+
+	e.tickSchedules(t.Context(), now) // 08:59 — not due, and this seeds lastTick
+	if count("STANDUP") != 0 {
+		t.Fatalf("nothing should fire at 08:59, got %d", count("STANDUP"))
+	}
+
+	// Asleep across 09:00; the pending timer only fires after the resume.
+	now = time.Date(2026, 8, 19, 9, 1, 5, 0, time.Local)
+	e.tickSchedules(t.Context(), now)
+	if got := count("STANDUP"); got != 1 {
+		t.Errorf("the minute slept through should still fire, got %d", got)
+	}
+
+	now = now.Add(time.Minute)
+	e.tickSchedules(t.Context(), now)
+	if got := count("STANDUP"); got != 1 {
+		t.Errorf("a caught-up firing must not repeat, got %d", got)
+	}
+}
+
+// TestLongSleepFiresOnce keeps the catch-up honest: a night's suspend owes you
+// the most recent firing, not one for every boundary it slept through.
+func TestLongSleepFiresOnce(t *testing.T) {
+	e, count := logEngine(t)
+	now := time.Date(2026, 8, 18, 22, 40, 1, 0, time.Local)
+	e.now = func() time.Time { return now }
+	e.rules = mustCompile(t, RuleSpec{
+		Name:     "recap",
+		On:       []string{EventSchedule},
+		Schedule: &ScheduleSpec{Cron: "*/10 * * * *"},
+		Actions:  []ActionSpec{{Type: ActionLog, Text: "RECAP"}},
+	})
+	e.tickSchedules(t.Context(), now)
+	if count("RECAP") != 1 {
+		t.Fatalf("22:40 should fire, got %d", count("RECAP"))
+	}
+
+	// Suspended overnight, resumed at 06:21. The 45 boundaries it slept through
+	// owe exactly one firing — the most recent, 06:20 — not one each.
+	now = time.Date(2026, 8, 19, 6, 21, 40, 0, time.Local)
+	e.tickSchedules(t.Context(), now)
+	if got := count("RECAP"); got != 2 {
+		t.Errorf("resume should deliver the most recent boundary once, got %d firings", got)
+	}
+
+	// And it stays delivered: the next tick doesn't re-fire it.
+	now = now.Add(time.Minute)
+	e.tickSchedules(t.Context(), now)
+	if got := count("RECAP"); got != 2 {
+		t.Errorf("the caught-up firing must not repeat, got %d", got)
+	}
+
+	// The next real boundary fires normally.
+	now = time.Date(2026, 8, 19, 6, 30, 1, 0, time.Local)
+	e.tickSchedules(t.Context(), now)
+	if got := count("RECAP"); got != 3 {
+		t.Errorf("the next boundary should fire, got %d", got)
 	}
 }

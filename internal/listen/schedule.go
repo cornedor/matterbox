@@ -248,6 +248,14 @@ func (r Rule) NextRun(t time.Time) (time.Time, bool) {
 // ledger).
 func scheduleMetaKey(ruleName string) string { return "schedule:" + ruleName }
 
+// scheduleCatchUp bounds how far back a tick looks for a minute it should have
+// fired on but didn't. It exists for the laptop case: the machine suspends, Go's
+// timers are monotonic and freeze with it, and the tick that should have landed
+// at 09:00 arrives at 09:01:05 on resume — without this, that firing is simply
+// lost. Anything older than this window is a real outage rather than a late
+// wakeup, and those are deliberately not replayed.
+const scheduleCatchUp = 5 * time.Minute
+
 // scheduleTick is how often the scheduler wakes to check every schedule rule.
 // A minute is cron's own resolution, and the tick is aligned to the wall clock
 // so "0 9 * * *" fires just after 09:00:00 rather than at some offset that
@@ -305,35 +313,74 @@ func (e *Engine) seedSchedules() {
 
 // tickSchedules fires every schedule rule that is due at now.
 func (e *Engine) tickSchedules(ctx context.Context, now time.Time) {
+	minutes := e.tickMinutes(now)
 	rules := e.ruleSet()
 	for i, r := range rules {
-		if r.schedule == nil || !e.scheduleDue(r, now) {
+		if r.schedule == nil {
 			continue
 		}
-		if err := e.store.SetMeta(scheduleMetaKey(r.Name), strconv.FormatInt(now.UnixMilli(), 10)); err != nil {
+		at, due := e.scheduleDue(r, now, minutes)
+		if !due {
+			continue
+		}
+		// The stamp records the minute the rule fired *for*, not the instant the
+		// tick ran, so the dedupe below stays exact across a late wakeup.
+		if err := e.store.SetMeta(scheduleMetaKey(r.Name), strconv.FormatInt(at.UnixMilli(), 10)); err != nil {
 			e.log.Printf("rule %s: record schedule: %v", r.Name, err)
 		}
-		e.fireSchedule(ctx, i, r, now)
+		e.fireSchedule(ctx, i, r, at)
 	}
+	e.lastTick = now
 }
 
-// scheduleDue reports whether a schedule rule should fire at now. A cron rule
-// fires on a matching minute it hasn't already fired in (so a restart inside
-// that minute doesn't fire it twice); an interval rule fires once its interval
-// has elapsed since the last firing.
-func (e *Engine) scheduleDue(r Rule, now time.Time) bool {
+// tickMinutes lists the minutes this tick is answering for, newest first: its
+// own, plus any the process slept through since the previous tick (bounded by
+// scheduleCatchUp). The first tick of a run answers only for itself — lastTick
+// is in-memory, so a restart never replays anything.
+func (e *Engine) tickMinutes(now time.Time) []time.Time {
+	minute := now.Truncate(scheduleTick)
+	out := []time.Time{minute}
+	if e.lastTick.IsZero() {
+		return out
+	}
+	floor := minute.Add(-scheduleCatchUp)
+	if last := e.lastTick.Truncate(scheduleTick); last.After(floor) {
+		floor = last
+	}
+	for m := minute.Add(-scheduleTick); m.After(floor); m = m.Add(-scheduleTick) {
+		out = append(out, m)
+	}
+	return out
+}
+
+// scheduleDue reports whether a schedule rule should fire, and the minute it
+// fires for. An interval rule fires once its interval has elapsed since the last
+// firing. A cron rule fires for the most recent matching minute it hasn't fired
+// yet — normally the current one, and after a suspend the minute the machine
+// slept through. Only the most recent match fires: waking from an hour's sleep
+// with a `*/10` rule owes you one recap, not six.
+func (e *Engine) scheduleDue(r Rule, now time.Time, minutes []time.Time) (time.Time, bool) {
 	last, ok := e.lastSchedule(r.Name)
 	if r.schedule.every > 0 {
 		// Compared on minute boundaries, not instant to instant: a tick lands a
 		// second past the minute and the stamp it writes carries those
 		// milliseconds, so the gap between two consecutive ticks is a hair under
 		// a minute — and `every: 1m` would fire every *other* minute.
-		return !ok || now.Truncate(scheduleTick).Sub(last.Truncate(scheduleTick)) >= r.schedule.every
+		if !ok || now.Truncate(scheduleTick).Sub(last.Truncate(scheduleTick)) >= r.schedule.every {
+			return now, true
+		}
+		return time.Time{}, false
 	}
-	if !r.schedule.cron.matches(now) {
-		return false
+	for _, m := range minutes {
+		if !r.schedule.cron.matches(m) {
+			continue
+		}
+		if ok && !last.Truncate(scheduleTick).Before(m) {
+			return time.Time{}, false // already fired for this minute (or a later one)
+		}
+		return m, true
 	}
-	return !ok || !last.Truncate(scheduleTick).Equal(now.Truncate(scheduleTick))
+	return time.Time{}, false
 }
 
 // lastSchedule reads a rule's persisted last-firing time.
@@ -356,8 +403,8 @@ func (e *Engine) lastSchedule(ruleName string) (time.Time, bool) {
 // trigger — the field conditions, the cooldown, the frequency window and the
 // ledger still apply — so `state` can hold a scheduled digest back until there
 // is something to report.
-func (e *Engine) fireSchedule(ctx context.Context, idx int, r Rule, now time.Time) {
-	t := e.scheduleTrigger(r, now)
+func (e *Engine) fireSchedule(ctx context.Context, idx int, r Rule, at time.Time) {
+	t := e.scheduleTrigger(r, at)
 	state := e.matchState()
 	render := e.stateKeyRenderer(t)
 	e.evalRule(ctx, t, idx, r, state, render)

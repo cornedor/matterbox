@@ -392,9 +392,14 @@ minimum is `1m`.
 
 Three things to know:
 
-- **Nothing is caught up.** A firing missed because the daemon was down is
-  skipped, not replayed at startup. A standup prompt four hours late is worse
-  than one that never came.
+- **A restart catches up nothing.** A firing missed because the daemon was down
+  is skipped, never replayed at startup — a standup prompt four hours late is
+  worse than one that never came. A *running* daemon does cover a late tick,
+  though: if the machine suspends and the clock jumps (Go's timers freeze with
+  it), the tick after the resume still fires the minute it slept through, as
+  long as that was within the last five minutes. Only the most recent match
+  fires — waking from an hour's sleep with a `*/10` rule owes you one recap,
+  not six.
 - **There is no post**, so `notify`, `react` and `mark_read` have nothing to act
   on and are rejected at compile time, and `send` must name a `channel:`.
 - **`match` still applies.** `state` conditions in particular let a scheduled
