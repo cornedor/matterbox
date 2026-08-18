@@ -2,6 +2,7 @@ package listen
 
 import (
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -259,4 +260,14 @@ func mustRegexp(t *testing.T, expr string) *regexp.Regexp {
 		t.Fatalf("compileMatch: %v", err)
 	}
 	return re.messageRe
+}
+
+// TestExecEnvCarriesCreateAt keeps the post's timestamp in the exec
+// environment: without it a script that needs it has to open the message cache
+// and look the post up again, for a value the daemon already had.
+func TestExecEnvCarriesCreateAt(t *testing.T) {
+	env := execEnv(envelope{PostID: "p1", CreateAt: 1755500000000})
+	if !slices.Contains(env, "MATTERBOX_CREATE_AT=1755500000000") {
+		t.Errorf("MATTERBOX_CREATE_AT missing from %v", env)
+	}
 }

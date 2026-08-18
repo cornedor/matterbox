@@ -1927,6 +1927,10 @@ func execEnv(env envelope) []string {
 		"MATTERBOX_MENTIONED="+boolStr(env.Mentioned),
 		"MATTERBOX_FILES="+strings.Join(env.Files, ","),
 		"MATTERBOX_PERMALINK="+env.Permalink,
+		// The post's own timestamp, so a script slicing context around it (or
+		// stamping a queue row) needn't go back to the cache for a value the
+		// daemon already had in hand.
+		"MATTERBOX_CREATE_AT="+strconv.FormatInt(env.CreateAt, 10),
 		"MATTERBOX_EVENT="+env.Event,
 		"MATTERBOX_EMOJI="+env.Emoji,
 		"MATTERBOX_REACTOR="+env.Reactor,

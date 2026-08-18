@@ -693,7 +693,7 @@ quick script needn't parse JSON: `MATTERBOX_POST_ID`, `MATTERBOX_CHANNEL_ID`,
 `MATTERBOX_CHANNEL`, `MATTERBOX_TEAM_ID`, `MATTERBOX_TEAM`, `MATTERBOX_AUTHOR`,
 `MATTERBOX_MESSAGE`, `MATTERBOX_IS_DM`, `MATTERBOX_IS_THREAD`,
 `MATTERBOX_ROOT_ID`, `MATTERBOX_MENTIONED`, `MATTERBOX_FILES` (comma-separated),
-`MATTERBOX_PERMALINK`, `MATTERBOX_EVENT`, `MATTERBOX_EMOJI`,
+`MATTERBOX_PERMALINK`, `MATTERBOX_CREATE_AT`, `MATTERBOX_EVENT`, `MATTERBOX_EMOJI`,
 `MATTERBOX_REACTOR`, `MATTERBOX_ATTACHMENT_TEXT`, and `MATTERBOX_RULE`. Regexp
 captures are exported as `MATTERBOX_MATCH_<NAME>` / `MATTERBOX_MATCH_1`.
 
@@ -1131,15 +1131,16 @@ from `{{ today }}` instead of a cooldown:
 
 ### Reminders: "!remind me in 2 hours …" / "!remind me at friday 9am …"
 
-A rule reacts to messages, so it can't fire on its own *later* — but paired with
-a small helper and a once-a-minute timer it makes a `!remind me …` command.
-The rule just hands every `!remind` message you post to
+Two rules and a small helper make a `!remind me …` command: one reacts to the
+message that asks for the reminder, the other is a schedule rule that delivers
+the ones that have come due.
+
+The first hands every `!remind` message you post to
 [`scripts/matterbox-remind`](../scripts/matterbox-remind), which parses the
 delay, stores the reminder in `~/.config/matterbox/reminders.db`, and replies a
-confirmation; a systemd `--user` timer
-([`scripts/matterbox-remind.timer`](../scripts/matterbox-remind.timer)) runs the
-same helper with `--tick` each minute to deliver the ones that have come due.
-Everything posts back with `matterbox reply`, so the confirmation and the
+confirmation. The second runs the same helper with `--tick` once a minute; the
+tick delivers *every* reminder that is due, so a missed minute is late, never
+lost. Everything posts back with `matterbox reply`, so the confirmation and the
 delivered reminder thread under your original message.
 
 ```yaml
@@ -1151,6 +1152,14 @@ rules:
     actions:
       - type: exec
         command: ["/home/me/.config/matterbox/matterbox-remind"]
+
+  - name: reminder-tick
+    on: schedule
+    schedule:
+      every: 1m
+    actions:
+      - type: exec
+        command: ["/home/me/.config/matterbox/matterbox-remind", "--tick"]
 ```
 
 What you can type (the helper dispatches on the message):
@@ -1177,20 +1186,21 @@ time, a no-year date — rolls forward to its next occurrence; a fully-specified
 past moment is rejected. (`on` and `@` work as synonyms for `at`, and a bare
 absolute date with no keyword is accepted too.)
 
-Install the helper and timer (see the headers in the two unit files):
+Install the helper:
 
 ```sh
-cp scripts/matterbox-remind         ~/.config/matterbox/
-cp scripts/matterbox-remind.service ~/.config/systemd/user/
-cp scripts/matterbox-remind.timer   ~/.config/systemd/user/
+cp scripts/matterbox-remind ~/.config/matterbox/
 chmod +x ~/.config/matterbox/matterbox-remind
-systemctl --user daemon-reload
-systemctl --user enable --now matterbox-remind.timer
+systemctl --user reload matterbox-listen      # pick up the two rules
 ```
 
-The reminders persist in SQLite, so they survive a daemon — or host — restart;
-`Persistent=true` on the timer means one missed while the box was off still goes
-out (a little late) rather than being lost.
+The reminders persist in SQLite, so they survive a daemon — or host — restart.
+Delivery only runs while the daemon does, which is also the only time a reminder
+can be *created*; if you want them to go out even with the daemon stopped, the
+tick rule can be a systemd timer instead —
+[`scripts/matterbox-remind.timer`](../scripts/matterbox-remind.timer) and its
+service unit still do exactly that (`Persistent=true` catches up a tick missed
+while the box was off).
 
 ## Safety
 

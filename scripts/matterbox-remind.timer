@@ -1,5 +1,10 @@
 # systemd --user timer: run the reminder delivery check once a minute.
 #
+# Optional. The simpler setup is an `on: schedule, every: 1m` rule running
+# `matterbox-remind --tick` (see docs/rules.md) — the daemon then owns the tick
+# and there are no units to install. Use this timer instead when reminders must
+# go out even while `matterbox listen` is stopped.
+#
 # Persistent=true so a run missed while the machine was off fires on the next
 # boot — reminders still go out (a little late) rather than being lost.
 
