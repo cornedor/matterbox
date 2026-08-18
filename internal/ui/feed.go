@@ -882,7 +882,7 @@ func (m *Model) feedHints() string {
 // separator rule, then the bubble viewport. Mirrors renderSearchPane
 // without the search input row.
 func (m Model) renderFeedPane(height, width int) string {
-	innerH := height // no top or bottom border: the tab strip and footer close the pane
+	innerH := height - 1 // bottom border (top connects to the tab strip)
 	if innerH < 1 {
 		innerH = 1
 	}
@@ -915,7 +915,6 @@ func (m Model) renderFeedPane(height, width int) string {
 	style := lipgloss.NewStyle().
 		Border(border).
 		UnsetBorderTop().
-		UnsetBorderBottom().
 		Width(width).
 		Height(innerH)
 	if m.focus == focusFeed {

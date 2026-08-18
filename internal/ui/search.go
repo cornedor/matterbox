@@ -1183,7 +1183,7 @@ func styleMentions(body, self string, baseStyle lipgloss.Style) string {
 // renderSearchPane composes the entire body of the Search tab: title,
 // input row, separator, then the result viewport.
 func (m Model) renderSearchPane(height, width int) string {
-	innerH := height // no top or bottom border: the tab strip and footer close the pane
+	innerH := height - 1 // bottom border (top connects to the tab strip)
 	if innerH < 1 {
 		innerH = 1
 	}
@@ -1226,7 +1226,6 @@ func (m Model) renderSearchPane(height, width int) string {
 	style := lipgloss.NewStyle().
 		Border(border).
 		UnsetBorderTop().
-		UnsetBorderBottom().
 		Width(width).
 		Height(innerH)
 	if m.focus == focusSearch {

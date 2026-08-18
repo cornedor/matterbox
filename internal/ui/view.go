@@ -83,6 +83,16 @@ var (
 // tabBorderWithBottom returns a rounded border with the bottom row
 // overridden to the given left/middle/right characters. Used to make
 // the lipgloss-style tabs join cleanly along their bottom rule.
+// dividedBorder is the pane border for a box whose left edge is a divider it
+// shares with the pane before it (the messages pane against the sidebar): its
+// bottom-left corner tees into that pane's bottom rule instead of starting a
+// second box.
+var dividedBorder = func() lipgloss.Border {
+	b := lipgloss.NormalBorder()
+	b.BottomLeft = "┴"
+	return b
+}()
+
 func tabBorderWithBottom(left, middle, right string) lipgloss.Border {
 	b := lipgloss.RoundedBorder()
 	b.BottomLeft = left
@@ -130,10 +140,10 @@ func resizeSettleCmd(gen int) tea.Cmd {
 func (m *Model) layoutPanes() {
 	// Match View()'s body sizing: subtract the rendered footer height
 	// (1 line normally, several when full help is open) plus the tab strip.
-	// The panes draw neither a top nor a bottom border — the tab strip closes
-	// them above and the footer below — so every row here is content.
+	// The extra -1 accounts for the body pane's bottom border row (the top
+	// border is omitted so the pane connects to the tab strip).
 	footerH := lipgloss.Height(m.renderFooter())
-	bodyH := m.height - footerH - tabsHeight
+	bodyH := m.height - footerH - tabsHeight - 1
 	if bodyH < 5 {
 		bodyH = 5
 	}
@@ -182,8 +192,11 @@ func (m *Model) layoutPanes() {
 	// (and its attachment chip strip).
 	if m.threadOpen {
 		// The composer has moved into the thread pane, so the messages pane is
-		// just its title row plus the viewport.
-		mh := bodyH - 1
+		// just its title row plus the viewport. The -2 is that title and the one
+		// content row renderMessagesPane's lower box can't render without (it
+		// carries the bottom border); anything more is transcript the pane has
+		// room for but wouldn't show.
+		mh := bodyH - 2
 		if mh < 1 {
 			mh = 1
 		}
@@ -923,8 +936,9 @@ var scrollbarThumbStyle = lipgloss.NewStyle().Foreground(focusedColor)
 
 // renderRightBorder builds a 1-column wide string `outerH` rows tall
 // that serves as the merged right border + scrollbar for a bordered
-// pane rendered with .UnsetBorderRight(). Every row is a content row —
-// the pane has no bottom border to corner into.
+// pane rendered with .UnsetBorderRight(). The first outerH-1 rows are
+// the content-area rows, the last row is the bottom-right corner so it
+// aligns with the box's bottom border row.
 //
 // When showScrollbar is true and the viewport content overflows, a
 // proportional thumb is painted at the rows corresponding to the
@@ -943,12 +957,13 @@ func renderRightBorder(outerH, vpTop, vpHeight int, totalRows int, percent float
 	track := borderStyle.Render("│")
 
 	lines := make([]string, outerH)
-	for i := range lines {
+	for i := 0; i < outerH-1; i++ {
 		lines[i] = track
 	}
-	if joinRow >= 0 && joinRow < outerH {
+	if joinRow >= 0 && joinRow < outerH-1 {
 		lines[joinRow] = borderStyle.Render("┤")
 	}
+	lines[outerH-1] = borderStyle.Render("┘")
 
 	if showScrollbar && vpHeight > 0 && totalRows > vpHeight {
 		thumb := vpHeight * vpHeight / totalRows
@@ -969,7 +984,7 @@ func renderRightBorder(outerH, vpTop, vpHeight int, totalRows int, percent float
 		thumbCell := scrollbarThumbStyle.Render("█")
 		for i := pos; i < pos+thumb; i++ {
 			idx := vpTop + i
-			if idx >= 0 && idx < outerH {
+			if idx >= 0 && idx < outerH-1 {
 				lines[idx] = thumbCell
 			}
 		}
@@ -1696,7 +1711,7 @@ func (m *Model) dmCustomStatus(c *model.Channel) (model.CustomStatus, bool) {
 }
 
 func (m *Model) renderChannelsPane(height int) string {
-	innerH := height // no top or bottom border: the tab strip and footer close the pane
+	innerH := height - 1 // bottom border row (top connects to tab strip)
 	if innerH < 1 {
 		innerH = 1
 	}
@@ -1812,10 +1827,12 @@ func (m *Model) renderChannelsPane(height int) string {
 	}
 
 	// Border stays dim: the pane is a ctrl-driven selector, never a Tab focus.
-	// No right border either — the messages pane's left border is the divider
-	// between the two, so the seam is one column instead of two.
-	style := lipgloss.NewStyle().Border(border).UnsetBorderTop().UnsetBorderBottom().
-		UnsetBorderRight().Width(channelsWidth).Height(innerH).BorderForeground(dimColor)
+	// No right border: the messages pane's left border is the divider between
+	// the two, so the seam is one column instead of two. That leaves this box
+	// without a bottom-right corner — the messages pane tees into it (see
+	// dividedBorder).
+	style := lipgloss.NewStyle().Border(border).UnsetBorderTop().UnsetBorderRight().
+		Width(channelsWidth).Height(innerH).BorderForeground(dimColor)
 	out := style.Render(strings.Join(rows, "\n"))
 	if c := m.vcache; c != nil {
 		c.sidebar = sidebarCache{fp: fp, rendered: out, valid: true}
@@ -1824,8 +1841,10 @@ func (m *Model) renderChannelsPane(height int) string {
 }
 
 func (m *Model) renderMessagesPane(height, width int) string {
-	// Every pane is `height` rows of content — no top or bottom border, so the
-	// tab strip closes them above and the footer below.
+	// renderChannelsPane pads its content to height rows, which overflows
+	// the inner area (height-1) and makes lipgloss extend the box by one
+	// row; that pane ends up `height` rows tall. We need to match that so
+	// the bottom borders align, hence Height(height) here (not height-1).
 	innerH := height
 	if innerH < 1 {
 		innerH = 1
@@ -1933,9 +1952,9 @@ func (m *Model) renderMessagesPane(height, width int) string {
 	// render cost — is memoized and reused verbatim across keystrokes (see
 	// renderMsgsUpper / scrollbackCache). The viewport always renders exactly its
 	// Height() rows, so title (1 row) + viewport occupy a fixed upperRows; the
-	// lower box takes the rest. The two left borders abut into one continuous
-	// column and any bottom padding lands in the same place, so upper+"\n"+lower
-	// is byte-identical to rendering one box.
+	// lower box takes the rest and carries the pane's bottom border. The two left
+	// borders abut into one continuous column and any bottom padding lands in the
+	// same place, so upper+"\n"+lower is byte-identical to rendering one box.
 	upperRows := 1 + m.msgsView.Height()
 	lowerH := innerH - upperRows
 
@@ -1987,8 +2006,9 @@ func (m *Model) renderMessagesPane(height, width int) string {
 	// painted by renderRightBorder (so the scrollbar can replace the
 	// regular `│` when scrolled), so we omit the right border here and
 	// pass width-1 — JoinHorizontal with the 1-col right border brings
-	// the total back to `width`. The lower box carries only the left border.
-	lower := lipgloss.NewStyle().Border(border).UnsetBorderTop().UnsetBorderRight().UnsetBorderBottom().
+	// the total back to `width`. The lower box keeps the left+bottom border;
+	// Height(lowerH) includes that bottom rule.
+	lower := lipgloss.NewStyle().Border(dividedBorder).UnsetBorderTop().UnsetBorderRight().
 		Width(width - 1).Height(lowerH).BorderForeground(borderColor).
 		Render(lipgloss.JoinVertical(lipgloss.Left, lowerParts...))
 
@@ -2009,7 +2029,7 @@ func (m *Model) renderMessagesPane(height, width int) string {
 
 // renderMsgsUpper renders — and memoizes — the scrollback half of the messages
 // pane: the channel title plus the message viewport, framed with the left border
-// only (the lower box holds the composer and its rule). Styling this re-measures the
+// only (the lower box carries the bottom border). Styling this re-measures the
 // display width of every visible row via lipgloss, which a pprof of composer
 // typing showed dominating CPU even though the scrollback is unchanged between
 // keystrokes. The fingerprint captures every input the bytes depend on, so an
@@ -2129,7 +2149,8 @@ func (m *Model) attachmentBarHeight(width int) int {
 }
 
 func (m *Model) renderThreadPane(height, width int) string {
-	// Every pane is `height` rows of content — no top or bottom border.
+	// Match renderChannelsPane's effective outer height (it overflows its
+	// padding by 1, extending the box) so bottom borders align.
 	innerH := height
 	if innerH < 1 {
 		innerH = 1
@@ -2168,7 +2189,7 @@ func (m *Model) renderThreadPane(height, width int) string {
 
 	// Right edge handled by renderRightBorder so the scrollbar can
 	// overlay it (see renderMessagesPane for details).
-	style := lipgloss.NewStyle().Border(border).UnsetBorderTop().UnsetBorderRight().UnsetBorderBottom().
+	style := lipgloss.NewStyle().Border(border).UnsetBorderTop().UnsetBorderRight().
 		Width(width - 1).Height(innerH).BorderForeground(borderColor)
 	box := joinRuleRows(style.Render(content), ruleRow)
 

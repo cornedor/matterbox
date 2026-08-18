@@ -623,7 +623,7 @@ func (m *Model) sqlAuthorName(p *model.Post) string {
 // query editor, a separator rule, then the result viewport. Mirrors
 // renderSearchPane with a textarea instead of a single-line input.
 func (m Model) renderSQLPane(height, width int) string {
-	innerH := height // no top or bottom border: the tab strip and footer close the pane
+	innerH := height - 1 // bottom border (top connects to the tab strip)
 	if innerH < 1 {
 		innerH = 1
 	}
@@ -670,7 +670,6 @@ func (m Model) renderSQLPane(height, width int) string {
 	style := lipgloss.NewStyle().
 		Border(border).
 		UnsetBorderTop().
-		UnsetBorderBottom().
 		Width(width).
 		Height(innerH)
 	if m.focus == focusSQL {

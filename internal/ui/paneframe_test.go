@@ -10,18 +10,17 @@ import (
 )
 
 // The panes, the tab strip above them and the footer below are drawn as
-// separate boxes that have to read as one frame. Three promises hold that
-// together, and each one has been wrong at some point:
+// separate boxes that have to read as one frame. Two promises hold that
+// together, and both have been wrong at some point:
 //
-//   - the panes draw no bottom border — the footer is the frame's bottom edge,
-//     so every body row is content and the body fills the terminal;
-//   - the sidebar and the messages pane share one divider column, not two;
+//   - the sidebar and the messages pane share one divider column, not two —
+//     top to bottom, including the tee where the bottom rule crosses it;
 //   - a full-width rule inside a pane (the composer separator, the Search /
 //     Feed / SQL section rules) meets the frame as ├ ┤ instead of floating
 //     between two untouched walls.
 //
-// The geometry the mouse layer reproduces has to agree with all three, so
-// these check the rendered frame, not the intent.
+// The geometry the mouse layer reproduces has to agree with both, so these
+// check the rendered frame, not the intent.
 
 // frameLines renders one frame and returns its rows with styling stripped.
 func frameLines(t *testing.T, m Model) []string {
@@ -54,22 +53,24 @@ func TestFrameFillsTerminalHeight(t *testing.T) {
 	}
 }
 
-// No pane draws a bottom border, so the body's last row is content — a corner
-// or a tee there means a pane is spending a row on chrome the footer provides.
-func TestPanesHaveNoBottomBorder(t *testing.T) {
-	layouts := map[string]func(*Model){
-		"panes":  func(*Model) {},
-		"thread": func(m *Model) { m.threadOpen = true; m.threadPosts = []*model.Post{p("a", 100)} },
-		"search": func(m *Model) { m.teamIdx = 2 },
-		"feed":   func(m *Model) { m.teamIdx = 1 },
-	}
-	for name, setup := range layouts {
+// The body's last row is the panes' bottom border, and across the shared
+// sidebar seam it has to stay one continuous rule: a ┴ where the divider lands,
+// never the ┘└ of two boxes ending side by side.
+func TestBottomRuleCrossesTheSharedDivider(t *testing.T) {
+	for _, threadOpen := range []bool{false, true} {
 		m := tabJoinModel()
-		setup(&m)
+		if threadOpen {
+			m.threadOpen = true
+			m.threadPosts = []*model.Post{p("a", 100)}
+		}
 		rows := bodyRows(t, m)
-		last := rows[len(rows)-1]
-		if strings.ContainsAny(last, "└┘┴") {
-			t.Errorf("%s: body's last row carries a bottom border: %q", name, last)
+		last := []rune(rows[len(rows)-1])
+		if last[0] != '└' || last[len(last)-1] != '┘' {
+			t.Errorf("threadOpen=%v: bottom rule doesn't corner the frame: %q", threadOpen, string(last))
+		}
+		if last[channelsWidth] != '┴' {
+			t.Errorf("threadOpen=%v: bottom rule breaks at the divider (col %d = %q): %q",
+				threadOpen, channelsWidth, string(last[channelsWidth]), string(last))
 		}
 	}
 }
@@ -80,11 +81,12 @@ func TestSidebarSharesOneDivider(t *testing.T) {
 	m := tabJoinModel()
 	for i, row := range bodyRows(t, m) {
 		r := []rune(row)
-		if r[0] != '│' {
+		if r[0] != '│' && r[0] != '└' {
 			t.Fatalf("row %d: body doesn't start on a left border: %q", i, row)
 		}
-		// The divider is a plain │, or a ├ where the composer rule meets it.
-		if r[channelsWidth] != '│' && r[channelsWidth] != '├' {
+		// The divider is a plain │, a ├ where the composer rule meets it, or the
+		// ┴ where the bottom rule crosses it.
+		if !strings.ContainsRune("│├┴", r[channelsWidth]) {
 			t.Fatalf("row %d: no divider at col %d: %q", i, channelsWidth, row)
 		}
 		if r[channelsWidth-1] == '│' {
@@ -166,8 +168,8 @@ func TestComposerGeomMatchesRender(t *testing.T) {
 	if want := tabsHeight + r + 1; top != want {
 		t.Errorf("composer top = %d, want %d (rule on body row %d)", top, want, r)
 	}
-	if got, want := top+height-1, tabsHeight+len(rows)-1; got != want {
-		t.Errorf("composer ends on screen row %d, want the body's last row %d", got, want)
+	if got, want := top+height-1, tabsHeight+len(rows)-2; got != want {
+		t.Errorf("composer ends on screen row %d, want the row above the bottom border %d", got, want)
 	}
 }
 

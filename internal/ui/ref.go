@@ -397,7 +397,7 @@ func (m *Model) renderRefPane(height, width int) string {
 	if m.focus == focusRef {
 		borderColor = focusedColor
 	}
-	style := lipgloss.NewStyle().Border(border).UnsetBorderTop().UnsetBorderRight().UnsetBorderBottom().
+	style := lipgloss.NewStyle().Border(border).UnsetBorderTop().UnsetBorderRight().
 		Width(width - 1).Height(innerH).BorderForeground(borderColor)
 	box := style.Render(content)
 
