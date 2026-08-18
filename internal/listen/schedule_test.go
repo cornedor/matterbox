@@ -2,6 +2,7 @@ package listen
 
 import (
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -253,5 +254,38 @@ func TestScheduleSurvivesRestart(t *testing.T) {
 	now = now.Add(24 * time.Hour)
 	if !e.scheduleDue(e.rules[0], now) {
 		t.Error("an interval rule should fire once its interval has elapsed")
+	}
+}
+
+// TestIntervalFiresEveryTick pins the arithmetic against how the scheduler
+// actually ticks: a second past each minute, stamping that instant. Comparing
+// instant to instant leaves the next tick a fraction short of the interval, so
+// an `every: 1m` rule silently ran every other minute.
+func TestIntervalFiresEveryTick(t *testing.T) {
+	e := newStoreEngine(t)
+	// Seeded mid-minute, as a reload at an arbitrary moment would.
+	now := time.Date(2026, 8, 18, 22, 24, 1, 149_000_000, time.Local)
+	e.now = func() time.Time { return now }
+	e.rules = mustCompile(t, RuleSpec{
+		Name:     "tick",
+		On:       []string{EventSchedule},
+		Schedule: &ScheduleSpec{Every: "1m"},
+		Actions:  []ActionSpec{{Type: ActionLog}},
+	})
+	e.seedSchedules()
+
+	minute := time.Date(2026, 8, 18, 22, 25, 1, 0, time.Local)
+	for i := 0; i < 3; i++ {
+		at := minute.Add(time.Duration(i) * time.Minute)
+		if !e.scheduleDue(e.rules[0], at) {
+			t.Fatalf("every: 1m should fire at %s", at.Format("15:04:05"))
+		}
+		if err := e.store.SetMeta(scheduleMetaKey("tick"), strconv.FormatInt(at.UnixMilli(), 10)); err != nil {
+			t.Fatalf("record: %v", err)
+		}
+	}
+	// Twice within one tick is still once.
+	if e.scheduleDue(e.rules[0], minute.Add(2*time.Minute+time.Millisecond)) {
+		t.Error("a second check inside the same minute must not fire again")
 	}
 }

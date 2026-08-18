@@ -324,7 +324,11 @@ func (e *Engine) tickSchedules(ctx context.Context, now time.Time) {
 func (e *Engine) scheduleDue(r Rule, now time.Time) bool {
 	last, ok := e.lastSchedule(r.Name)
 	if r.schedule.every > 0 {
-		return !ok || now.Sub(last) >= r.schedule.every
+		// Compared on minute boundaries, not instant to instant: a tick lands a
+		// second past the minute and the stamp it writes carries those
+		// milliseconds, so the gap between two consecutive ticks is a hair under
+		// a minute — and `every: 1m` would fire every *other* minute.
+		return !ok || now.Truncate(scheduleTick).Sub(last.Truncate(scheduleTick)) >= r.schedule.every
 	}
 	if !r.schedule.cron.matches(now) {
 		return false
