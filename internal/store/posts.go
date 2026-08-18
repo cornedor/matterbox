@@ -1214,3 +1214,28 @@ ORDER BY MAX(create_at) DESC`
 	}
 	return ids, rows.Err()
 }
+
+// ChannelPostCounts returns the number of live (non-deleted) cached posts per
+// channel. It answers "which of these conversations actually has substance",
+// which is how the search agent ranks a channel list: a DM with 57k cached
+// messages is a far more likely home for a topic than one with three.
+func (s *Store) ChannelPostCounts() (map[string]int, error) {
+	if s == nil {
+		return nil, nil
+	}
+	rows, err := s.db.Query(`SELECT channel_id, count(*) FROM posts WHERE delete_at = 0 GROUP BY channel_id`)
+	if err != nil {
+		return nil, fmt.Errorf("channel post counts: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var id string
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, fmt.Errorf("scan channel count: %w", err)
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
+}

@@ -283,6 +283,12 @@ func Run(ctx context.Context, cfg Config, cat Catalog, messages []Message, ch ch
 					return
 				}
 				messages = append(messages, Message{Role: "tool", ToolCallID: tc.ID, Content: result})
+			case "find_people":
+				result, ts := tools.execFindPeople(tc.Function.Arguments)
+				if !send(Update{Step: ts, HasStep: true}) {
+					return
+				}
+				messages = append(messages, Message{Role: "tool", ToolCallID: tc.ID, Content: result})
 			case "list_channels":
 				result, ts := tools.execListChannels(tc.Function.Arguments)
 				if !send(Update{Step: ts, HasStep: true}) {

@@ -35,15 +35,22 @@ func TestNormalizeChannelArg(t *testing.T) {
 // testCatalog builds a small in-memory catalog without a Model.
 func testCatalog() Catalog {
 	chs := []channel{
-		{id: "c1", name: "acme-project", displayName: "Acme Project", purpose: "Acme platform work", typ: model.ChannelTypeOpen, teamID: "tAcme"},
-		{id: "c2", name: "frontend", displayName: "Frontend", purpose: "headless CMS and web UI", typ: model.ChannelTypeOpen, teamID: "tDev"},
-		{id: "c3", name: "backend", displayName: "Backend", purpose: "APIs", typ: model.ChannelTypeOpen, teamID: "tDev"},
-		{id: "c4", typ: model.ChannelTypeDirect, dmPartner: "alice", name: "me__alice"},
+		{id: "c1", name: "acme-project", displayName: "Acme Project", purpose: "Acme platform work", typ: model.ChannelTypeOpen, teamID: "tAcme", posts: 40},
+		{id: "c2", name: "frontend", displayName: "Frontend", purpose: "headless CMS and web UI", typ: model.ChannelTypeOpen, teamID: "tDev", posts: 30},
+		{id: "c3", name: "backend", displayName: "Backend", purpose: "APIs", typ: model.ChannelTypeOpen, teamID: "tDev", posts: 20},
+		{id: "c4", typ: model.ChannelTypeDirect, dmPartner: "alice", dmPartnerID: "u2", name: "me__alice", posts: 900},
+		{id: "c5", typ: model.ChannelTypeDirect, dmPartner: "kevin", dmPartnerID: "u1", name: "me__kevin", posts: 500},
+		{id: "c6", typ: model.ChannelTypeGroup, displayName: "alice, kevin, me", members: []string{"alice", "kevin", "me"}, posts: 60},
+	}
+	people := map[string]Person{
+		"u1": {ID: "u1", Username: "kevin", FullName: "Kevin de Vries"},
+		"u2": {ID: "u2", Username: "alice", FullName: "Alice Jansen", Nickname: "Ali"},
 	}
 	cat := Catalog{
 		byID:      map[string]channel{},
 		teamNames: map[string]string{"tAcme": "Acme", "tDev": "Dev"},
-		userNames: map[string]string{"u1": "kevin"},
+		people:    people,
+		userNames: map[string]string{"u1": "kevin", "u2": "alice"},
 		teams: []*model.Team{
 			{Id: "tAcme", Name: "acme", DisplayName: "Acme"},
 			{Id: "tDev", Name: "dev", DisplayName: "Dev"},

@@ -79,18 +79,65 @@ func newAISearchState() aiSearchState {
 // whether it currently owns the Search viewport.
 func (s aiSearchState) active() bool { return s.phase != aiSearchOff }
 
-// buildSearchCatalog snapshots the current channel/team/user metadata into a
-// form the worker goroutine can read without racing the update loop.
-func (m Model) buildSearchCatalog() aisearch.Catalog {
-	meID := ""
+// aiPeopleTTL is how long a resolved people directory is reused before the
+// worker refetches it. Long, because it only changes when someone joins, is
+// renamed, or a new DM appears.
+const aiPeopleTTL = 30 * time.Minute
+
+// catalogInput is the update-loop snapshot the worker turns into a Catalog.
+// Everything in it is copied, so the worker never reads live Model state.
+type catalogInput struct {
+	meID     string
+	teams    []*model.Team
+	channels []*model.Channel
+	// people is the cached directory; empty means the worker should resolve it.
+	people map[string]aisearch.Person
+	// fallback names the worker uses if the directory fetch fails, so a search
+	// still runs (without real-name matching) rather than losing every author.
+	fallback map[string]string
+}
+
+// buildSearchCatalogInput snapshots the current channel/team/user metadata so
+// the worker goroutine can build the catalog without racing the update loop.
+func (m Model) buildSearchCatalogInput() catalogInput {
+	in := catalogInput{fallback: make(map[string]string, len(m.userNames))}
 	if m.me != nil {
-		meID = m.me.Id
+		in.meID = m.me.Id
 	}
-	var chans []*model.Channel
+	in.teams = append(in.teams, m.teams...)
 	for _, list := range m.channels {
-		chans = append(chans, list...)
+		in.channels = append(in.channels, list...)
 	}
-	return aisearch.BuildCatalog(meID, m.teams, chans, m.userNames)
+	for id, name := range m.userNames {
+		in.fallback[id] = name
+	}
+	if time.Since(m.aiPeopleAt) < aiPeopleTTL {
+		in.people = m.aiPeople
+	}
+	return in
+}
+
+// buildCatalog turns the snapshot into the Catalog the tools resolve against,
+// resolving the people directory (one batched user fetch) when the cached one
+// has expired. Runs on the worker goroutine. Returns the directory too, so the
+// update loop can cache it for the next run.
+func (m Model) buildCatalog(ctx context.Context, in catalogInput) (aisearch.Catalog, map[string]aisearch.Person) {
+	people := in.people
+	if len(people) == 0 {
+		people = aisearch.ResolvePeople(ctx, m.client, in.meID, in.channels, m.store)
+	}
+	if len(people) == 0 {
+		people = aisearch.PeopleFromUsernames(in.fallback)
+	}
+	cat := aisearch.BuildCatalog(in.meID, in.teams, in.channels, people)
+	// Cached volume per channel ranks the channel and people listings, so the
+	// agent is shown the conversations that actually hold something first.
+	if m.store != nil {
+		if counts, err := m.store.ChannelPostCounts(); err == nil {
+			cat = cat.WithVolumes(counts)
+		}
+	}
+	return cat, people
 }
 
 // ---- bubbletea wiring ----------------------------------------------------
@@ -132,7 +179,7 @@ func (m *Model) startAISearch(rawQuery string) tea.Cmd {
 	m.renderSearchResults()
 
 	system := m.buildAISearchSystem()
-	catalog := m.buildSearchCatalog()
+	catalog := m.buildSearchCatalogInput()
 	messages := []aisearch.Message{
 		{Role: "system", Content: system},
 		{Role: "user", Content: query},
@@ -175,7 +222,7 @@ func (m *Model) startAIFollowup() tea.Cmd {
 	m.search.query = ""
 	m.renderSearchResults()
 
-	catalog := m.buildSearchCatalog()
+	catalog := m.buildSearchCatalogInput()
 	return tea.Batch(m.aiSearch.spinner.Tick, m.openAISearchCmd(seq, seed, maxSteps, catalog))
 }
 
@@ -208,7 +255,7 @@ func (m Model) buildAISearchSystem() string {
 
 // openAISearchCmd starts the worker goroutine and hands the UI the update
 // channel + cancel handle.
-func (m Model) openAISearchCmd(seq int, messages []aisearch.Message, maxSteps int, catalog aisearch.Catalog) tea.Cmd {
+func (m Model) openAISearchCmd(seq int, messages []aisearch.Message, maxSteps int, in catalogInput) tea.Cmd {
 	cfg := aisearch.Config{
 		Store:       m.store,
 		Endpoint:    m.summaryEndpoint,
@@ -225,9 +272,10 @@ func (m Model) openAISearchCmd(seq int, messages []aisearch.Message, maxSteps in
 	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		catalog, people := m.buildCatalog(ctx, in)
 		ch := make(chan aisearch.Update, 8)
 		go aisearch.Run(ctx, cfg, catalog, messages, ch)
-		return aiSearchOpenedMsg{seq: seq, ch: ch, cancel: cancel}
+		return aiSearchOpenedMsg{seq: seq, ch: ch, cancel: cancel, people: people}
 	}
 }
 
@@ -246,6 +294,12 @@ func waitAISearchUpdate(seq int, ch <-chan aisearch.Update) tea.Cmd {
 // applyAISearchOpened stores the channel + cancel and schedules the first
 // read. A stale open is cancelled immediately.
 func (m *Model) applyAISearchOpened(msg aiSearchOpenedMsg) tea.Cmd {
+	// Cache the directory even for a stale run — resolving it cost a fetch, and
+	// it is the same for every run.
+	if len(msg.people) > 0 {
+		m.aiPeople = msg.people
+		m.aiPeopleAt = time.Now()
+	}
 	if msg.seq != m.aiSearch.seq || m.aiSearch.phase != aiSearchRunning {
 		msg.cancel()
 		return nil

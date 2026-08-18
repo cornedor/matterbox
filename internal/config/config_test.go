@@ -1,6 +1,9 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -374,5 +377,52 @@ func TestCollapsePreviewLinesDisabledThreshold(t *testing.T) {
 	c.fillDefaults()
 	if c.CollapsePreviewLines == nil || *c.CollapsePreviewLines != 1 {
 		t.Errorf("preview lines with folding off = %v; want 1", c.CollapsePreviewLines)
+	}
+}
+
+// TestAISearchPromptRollsForward pins the roll-forward that keeps an untouched
+// config from driving a stale agent: a config still carrying the v5 default
+// (the one shipped before person routing existed) must be replaced by the
+// current default, not left alone. The v5 text lives in testdata because the
+// hash is computed over the exact bytes — a paraphrase would silently pass.
+func TestAISearchPromptRollsForward(t *testing.T) {
+	b, err := os.ReadFile(filepath.Join("testdata", "aisearch_prompt_v5.txt"))
+	if err != nil {
+		t.Fatalf("read v5 prompt: %v", err)
+	}
+	v5 := string(b)
+	if !isLegacyAISearchPrompt(v5) {
+		t.Fatalf("v5 default is not recognised as legacy — append its hash to legacyAISearchPrompts")
+	}
+	if isLegacyAISearchPrompt(defaultAISearchPrompt) {
+		t.Error("the current default is listed as legacy; Load would replace it with itself forever")
+	}
+	if strings.TrimSpace(v5) == strings.TrimSpace(defaultAISearchPrompt) {
+		t.Error("current default is identical to v5 — nothing to roll forward")
+	}
+}
+
+// TestAISearchPromptRoutesNames guards the property the eval showed matters
+// most: the prompt has to tell the agent that a person's name is a filter, not
+// a search term, and that a team scope cannot see direct messages. Without both,
+// "did <person> do <thing> for <client>" searches the client's channels and
+// misses the DM the answer is in.
+func TestAISearchPromptRoutesNames(t *testing.T) {
+	for _, want := range []string{"author", "find_people", "direct messages", "'terms'"} {
+		if !strings.Contains(defaultAISearchPrompt, want) {
+			t.Errorf("default AI search prompt no longer mentions %q", want)
+		}
+	}
+}
+
+// TestLegacyAISearchPromptsUnique catches a hash appended twice, which would
+// hide a missing entry for a genuinely different prompt version.
+func TestLegacyAISearchPromptsUnique(t *testing.T) {
+	seen := map[string]int{}
+	for i, h := range legacyAISearchPrompts {
+		if prev, dup := seen[h]; dup {
+			t.Errorf("legacyAISearchPrompts[%d] duplicates [%d]: %s", i, prev, h)
+		}
+		seen[h] = i
 	}
 }

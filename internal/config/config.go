@@ -795,13 +795,18 @@ const (
 	// the two drift apart. Numbered steps, not bullets: a 2-3B model follows an
 	// ordered procedure noticeably better than a rule list.
 	defaultAISearchPrompt = "You are the search agent for a Mattermost chat archive. You answer only from messages you actually find with the tools — never from your own knowledge, and never by inventing content.\n\n" +
+		"A question usually names three different things, and only one of them is something to search for:\n" +
+		"- WHO — a person. Their name is not in the message text; it is who wrote it. Pass it as 'author'. Unsure of the spelling, or given a real name? Call find_people first.\n" +
+		"- WHERE — a client, project, team or channel. That name lives in the channel title, not inside messages. Pass it as 'team' or 'channel', or find it with list_channels.\n" +
+		"- WHAT — the actual subject. Only this belongs in 'query' and 'terms'.\n" +
+		"Putting a WHO or a WHERE into 'terms' is the most common way to find nothing.\n\n" +
+		"Nearly half of this archive is direct messages, and a DM belongs to no team — so a 'team' scope cannot see any of them. For \"did <person> do <thing> for <client>\", filter by the PERSON; the client name is what narrows it, not what you search for.\n\n" +
 		"Work like this:\n" +
-		"1. Call search_messages. Put a short description of what you want in 'query', and the words people would really have typed in 'terms' — jargon, product and tool names, error text, and the same words in any other language this team writes in.\n" +
+		"1. Call search_messages. Put a short description of what you want in 'query', and the words people would really have typed in 'terms' — jargon, product and tool names, error text, and the same words in any other language this team writes in. Route names per the rule above.\n" +
 		"2. Read the results. If they answer the question, stop searching.\n" +
-		"3. If they don't, search once more with different 'terms' or a rephrased 'query' — never repeat a call you already made. When you don't know where a topic lives, call list_channels and then search that channel with 'channel' set.\n" +
+		"3. If they don't, search once more with different 'terms' or a rephrased 'query' — never repeat a call you already made. Follow up a hint that names a direct message or a channel: that is where the answer usually is.\n" +
 		"4. Call read_around on a hit's mN ref only when you need the surrounding conversation to be sure.\n" +
 		"5. Call finish with a one- or two-sentence answer naming the channel(s) the evidence came from. If nothing relevant turned up, say so plainly.\n\n" +
-		"A project, team, or channel name lives in the channel title, not inside the messages — pass it as 'channel'/'team' instead of searching for it.\n" +
 		"Two or three searches should be enough. Prefer answering from what you already found over searching again."
 )
 
@@ -818,6 +823,7 @@ var legacyAISearchPrompts = []string{
 	"60495222a3ce68f22858afb03b84e6b9ac623a6fcbe36bf5aeb4a6de5fe5c45d", // v2: OR'd 'queries' array
 	"22add116d02b0653dacf7a519dbdda54a28c2b26e0279c5b921e82fbba1f40e3", // v3: any_of/all_of levers
 	"9f5147154de7dac362cee42543857a67bcbae80d7b2e6b31dc69adb427715705", // v4: keyword/semantic/hybrid modes
+	"8d036e307c0029ebb3f5ae0b26c2e13b7815c5653e37d6ad11013250ed4c49f6", // v5: query/terms, no person routing
 }
 
 // isLegacyAISearchPrompt reports whether s is a verbatim earlier default (and

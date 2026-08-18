@@ -237,11 +237,6 @@ const askCatalogTTL = 10 * time.Minute
 // follow-ups; older ones are evicted.
 const askConvoCap = 50
 
-// askAuthorCap bounds how many distinct message authors are resolved to
-// usernames for the /ask catalog (best-effort citation quality without an
-// org-wide user fetch).
-const askAuthorCap = 4000
-
 // askProgressInterval throttles how often the live "searching…" placeholder is
 // edited with the current step, to stay well under Telegram's edit rate limit.
 const askProgressInterval = 2 * time.Second

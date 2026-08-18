@@ -17,6 +17,7 @@ import (
 	"github.com/atotto/clipboard"
 	"github.com/mattermost/mattermost/server/public/model"
 
+	"matterbox/internal/aisearch"
 	"matterbox/internal/config"
 	"matterbox/internal/editor"
 	"matterbox/internal/embed"
@@ -708,6 +709,15 @@ type Model struct {
 	aiSearchMaxSteps int
 	aiSearchTimeout  time.Duration
 	aiSearch         aiSearchState
+
+	// aiPeople is the resolved people directory (username + real name) the
+	// agent matches a person's name against, cached across runs because it
+	// costs a batched user fetch to build. m.userNames can't serve: it only
+	// holds who the UI happened to render, and carries no real names — so
+	// "did Stijn Bernards…" would resolve to nobody. Rebuilt when older than
+	// aiPeopleTTL.
+	aiPeople   map[string]aisearch.Person
+	aiPeopleAt time.Time
 
 	// Semantic-search indexing. embedClient talks to the embeddings server;
 	// embedModel/embedDim identify the model (and Matryoshka truncation) the

@@ -222,6 +222,9 @@ type aiSearchOpenedMsg struct {
 	seq    int
 	ch     chan aisearch.Update
 	cancel context.CancelFunc
+	// people is the directory the worker resolved, handed back so the update
+	// loop can cache it for the next run.
+	people map[string]aisearch.Person
 }
 
 // aiSearchUpdateMsg carries one update from the search agent: a trace step or

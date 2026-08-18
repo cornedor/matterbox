@@ -1014,3 +1014,37 @@ func ftsCount(t *testing.T, s *Store, term string) int {
 	}
 	return n
 }
+
+// TestChannelPostCounts covers the per-channel volume that ranks the search
+// agent's channel and people listings. Deleted posts must not count — a channel
+// of tombstones would otherwise look like a busy one worth searching.
+func TestChannelPostCounts(t *testing.T) {
+	s := tempStore(t)
+	now := time.Now().UnixMilli()
+	posts := []*model.Post{
+		mkPost("v1aaaaaaaaaaaaaaaaaaaaaaaa", "cA", "one", now-3000),
+		mkPost("v2aaaaaaaaaaaaaaaaaaaaaaaa", "cA", "two", now-2000),
+		mkPost("v3aaaaaaaaaaaaaaaaaaaaaaaa", "cB", "three", now-1000),
+	}
+	if err := s.UpsertMany(posts); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	counts, err := s.ChannelPostCounts()
+	if err != nil {
+		t.Fatalf("counts: %v", err)
+	}
+	if counts["cA"] != 2 || counts["cB"] != 1 {
+		t.Fatalf("counts = %v; want cA=2 cB=1", counts)
+	}
+
+	if err := s.Delete(posts[1]); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	counts, err = s.ChannelPostCounts()
+	if err != nil {
+		t.Fatalf("counts after delete: %v", err)
+	}
+	if counts["cA"] != 1 {
+		t.Errorf("deleted post still counted: cA=%d, want 1", counts["cA"])
+	}
+}

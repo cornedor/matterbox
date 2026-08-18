@@ -7,6 +7,62 @@ import (
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
+// ---- people --------------------------------------------------------------
+
+// Person is the searchable identity of one user: the username messages are
+// attributed to, plus the real name and nickname a question is far more likely
+// to use ("did Stijn Bernards …" resolves to @sbernards). Built by
+// PeopleFromUsers; PeopleFromUsernames covers callers that only know usernames.
+type Person struct {
+	ID       string
+	Username string
+	FullName string // "First Last", empty when the server exposes neither
+	Nickname string
+}
+
+// names returns every string this person can be addressed by, for matching.
+func (p Person) names() []string {
+	out := make([]string, 0, 3)
+	for _, n := range []string{p.Username, p.FullName, p.Nickname} {
+		if n = strings.TrimSpace(n); n != "" {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// PeopleFromUsers builds the people directory from full user records, so real
+// names and nicknames are searchable.
+func PeopleFromUsers(users []*model.User) map[string]Person {
+	out := make(map[string]Person, len(users))
+	for _, u := range users {
+		if u == nil || u.Id == "" {
+			continue
+		}
+		out[u.Id] = Person{
+			ID:       u.Id,
+			Username: u.Username,
+			FullName: strings.TrimSpace(strings.TrimSpace(u.FirstName) + " " + strings.TrimSpace(u.LastName)),
+			Nickname: u.Nickname,
+		}
+	}
+	return out
+}
+
+// PeopleFromUsernames builds a directory from a bare userID→username map, for
+// callers that never fetched full profiles. Real-name matching is unavailable
+// for these entries — they still resolve by username.
+func PeopleFromUsernames(names map[string]string) map[string]Person {
+	out := make(map[string]Person, len(names))
+	for id, name := range names {
+		if id == "" || name == "" {
+			continue
+		}
+		out[id] = Person{ID: id, Username: name}
+	}
+	return out
+}
+
 // ---- catalog snapshot ----------------------------------------------------
 
 // channel is a race-free, value-typed copy of the channel metadata the search
@@ -19,7 +75,16 @@ type channel struct {
 	header      string
 	typ         model.ChannelType
 	teamID      string
-	dmPartner   string // resolved DM partner username, "" for non-DMs
+	dmPartner   string   // resolved DM partner username, "" for non-DMs
+	dmPartnerID string   // resolved DM partner user id, "" for non-DMs
+	members     []string // group-DM member usernames; empty for every other type
+	posts       int      // cached posts in this channel (0 until WithVolumes)
+}
+
+// isDM reports a one-to-one or group direct message — a conversation that
+// belongs to no team, and so falls outside every team-scoped search.
+func (c channel) isDM() bool {
+	return c.typ == model.ChannelTypeDirect || c.typ == model.ChannelTypeGroup
 }
 
 // Catalog is the immutable snapshot the agent's tools resolve against: every
@@ -30,22 +95,28 @@ type Catalog struct {
 	byID      map[string]channel
 	teams     []*model.Team
 	teamNames map[string]string // teamID → display name
+	people    map[string]Person // userID → identity
 	userNames map[string]string // userID → username (for author lines)
 }
 
 // BuildCatalog snapshots channel/team/user metadata into a form the worker
 // goroutine can read without racing the caller. meID is the current user's id
 // (used to pick the partner out of a DM channel's "id__id" name); channels is a
-// flat list (callers flatten their own per-team maps); userNames maps user ids
-// to usernames for author resolution and citation lines.
-func BuildCatalog(meID string, teams []*model.Team, channels []*model.Channel, userNames map[string]string) Catalog {
+// flat list (callers flatten their own per-team maps); people is the directory
+// used to name authors and to resolve a person named in a question — build it
+// with PeopleFromUsers (real names included) or PeopleFromUsernames.
+func BuildCatalog(meID string, teams []*model.Team, channels []*model.Channel, people map[string]Person) Catalog {
 	cat := Catalog{
 		byID:      map[string]channel{},
 		teamNames: map[string]string{},
-		userNames: make(map[string]string, len(userNames)),
+		people:    make(map[string]Person, len(people)),
+		userNames: make(map[string]string, len(people)),
 	}
-	for id, name := range userNames {
-		cat.userNames[id] = name
+	for id, p := range people {
+		cat.people[id] = p
+		if p.Username != "" {
+			cat.userNames[id] = p.Username
+		}
 	}
 	for _, t := range teams {
 		cat.teams = append(cat.teams, t)
@@ -66,14 +137,24 @@ func BuildCatalog(meID string, teams []*model.Team, channels []*model.Channel, u
 			typ:         c.Type,
 			teamID:      c.TeamId,
 		}
-		if c.Type == model.ChannelTypeDirect {
+		switch c.Type {
+		case model.ChannelTypeDirect:
 			for _, id := range strings.Split(c.Name, "__") {
 				if id == "" || id == meID {
 					continue
 				}
-				if n, ok := userNames[id]; ok && n != "" {
-					cc.dmPartner = n
+				if p, ok := cat.people[id]; ok && p.Username != "" {
+					cc.dmPartner = p.Username
+					cc.dmPartnerID = id
 					break
+				}
+			}
+		case model.ChannelTypeGroup:
+			// A group DM's name is an opaque hash; its display name is the
+			// member usernames, which is the only handle we get.
+			for _, n := range strings.Split(c.DisplayName, ",") {
+				if n = strings.TrimSpace(n); n != "" {
+					cc.members = append(cc.members, n)
 				}
 			}
 		}
@@ -81,6 +162,24 @@ func BuildCatalog(meID string, teams []*model.Team, channels []*model.Channel, u
 		cat.byID[c.Id] = cc
 	}
 	return cat
+}
+
+// WithVolumes returns a copy of the catalog with each channel's cached-post
+// count attached (from store.ChannelPostCounts), so channel listings can be
+// ranked by how much conversation actually lives there.
+func (cat Catalog) WithVolumes(counts map[string]int) Catalog {
+	if len(counts) == 0 {
+		return cat
+	}
+	out := cat
+	out.channels = make([]channel, len(cat.channels))
+	copy(out.channels, cat.channels)
+	out.byID = make(map[string]channel, len(cat.byID))
+	for i := range out.channels {
+		out.channels[i].posts = counts[out.channels[i].id]
+		out.byID[out.channels[i].id] = out.channels[i]
+	}
+	return out
 }
 
 // TeamNames returns the display names of the teams in the catalog, sorted, for
@@ -140,7 +239,7 @@ func (cat Catalog) breadcrumb(channelID string) string {
 	if !ok {
 		return "?"
 	}
-	if c.typ == model.ChannelTypeDirect || c.typ == model.ChannelTypeGroup {
+	if c.isDM() {
 		return "DMs › " + c.label()
 	}
 	if name := cat.teamNames[c.teamID]; name != "" {
@@ -149,12 +248,105 @@ func (cat Catalog) breadcrumb(channelID string) string {
 	return c.label()
 }
 
+// ---- resolution ----------------------------------------------------------
+
+// resolvePeople maps a name from the question — a username, a real name, or a
+// nickname, with or without a leading "@" — to the people it can mean. Exact
+// matches (on any of the three) win outright; only when there are none does it
+// fall back to substring, so "bram" doesn't drag in "bramvandenberg" when a
+// @bram exists. Returns nil when nothing matches.
+func (cat Catalog) resolvePeople(name string) []Person {
+	name = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(name), "@"))
+	if name == "" {
+		return nil
+	}
+	var exact, sub []Person
+	for _, p := range cat.people {
+		hitExact, hitSub := false, false
+		for _, n := range p.names() {
+			switch {
+			case strings.EqualFold(n, name):
+				hitExact = true
+			case containsFold(n, name):
+				hitSub = true
+			}
+		}
+		switch {
+		case hitExact:
+			exact = append(exact, p)
+		case hitSub:
+			sub = append(sub, p)
+		}
+	}
+	out := exact
+	if len(out) == 0 {
+		out = sub
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Username < out[j].Username })
+	return out
+}
+
+// resolveAuthor maps a name to user IDs for an author filter. See resolvePeople
+// for the matching rules.
+func (cat Catalog) resolveAuthor(name string) []string {
+	people := cat.resolvePeople(name)
+	ids := make([]string, 0, len(people))
+	for _, p := range people {
+		ids = append(ids, p.ID)
+	}
+	return ids
+}
+
+// dmChannelsWith returns the direct and group-DM channels that involve any of
+// the given people — the conversations a team scope can never reach, because a
+// DM belongs to no team. This is what keeps "did X do Y for ACME" from
+// searching ACME's channels alone and missing the DM where X actually said it.
+func (cat Catalog) dmChannelsWith(people []Person) []string {
+	if len(people) == 0 {
+		return nil
+	}
+	byID := make(map[string]struct{}, len(people))
+	byName := make(map[string]struct{}, len(people))
+	for _, p := range people {
+		byID[p.ID] = struct{}{}
+		if p.Username != "" {
+			byName[strings.ToLower(p.Username)] = struct{}{}
+		}
+	}
+	var out []string
+	for _, c := range cat.channels {
+		if !c.isDM() {
+			continue
+		}
+		hit := false
+		if c.dmPartnerID != "" {
+			_, hit = byID[c.dmPartnerID]
+		}
+		if !hit {
+			for _, m := range c.members {
+				if _, ok := byName[strings.ToLower(m)]; ok {
+					hit = true
+					break
+				}
+			}
+		}
+		if hit {
+			out = append(out, c.id)
+		}
+	}
+	return out
+}
+
 // resolveScope turns optional team/channel arguments into a channel-id scope
 // for store.Search. requested reports whether any filter was asked for;
 // matched reports whether it resolved to at least one channel (so the caller
 // can fall back to a global search and tell the model when a name missed).
 // Matching is exact (case-insensitive) first, then a substring fallback so a
 // slightly-off name from the model still narrows usefully.
+//
+// A bare team name scopes to that team's own channels only — DMs belong to no
+// team. Callers that also know a person should union in dmChannelsWith, or the
+// scope silently excludes every direct message.
 func (cat Catalog) resolveScope(team, channelArg string) (ids []string, requested, matched bool) {
 	team = strings.TrimSpace(team)
 	channelArg = normalizeChannelArg(channelArg)
@@ -215,28 +407,17 @@ func (cat Catalog) resolveScope(team, channelArg string) (ids []string, requeste
 	return ids, requested, len(ids) > 0
 }
 
-// resolveAuthor maps a username (a leading "@" is tolerated) to user IDs:
-// exact case-insensitive match first, else substring, so a slightly-off name
-// still filters. Returns nil when nothing matches, so the caller can drop the
-// filter and tell the model.
-func (cat Catalog) resolveAuthor(name string) []string {
-	name = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(name), "@"))
-	if name == "" {
-		return nil
-	}
-	var exact, sub []string
-	for id, uname := range cat.userNames {
-		switch {
-		case strings.EqualFold(uname, name):
-			exact = append(exact, id)
-		case containsFold(uname, name):
-			sub = append(sub, id)
+// teamMatches reports whether a filter substring names one of the teams, so
+// list_channels can answer "zitmaxx" with the Zitmaxx team's channels even
+// though no channel is called that.
+func (cat Catalog) teamMatches(filter string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, t := range cat.teams {
+		if containsFold(t.DisplayName, filter) || containsFold(t.Name, filter) {
+			out[t.Id] = struct{}{}
 		}
 	}
-	if len(exact) > 0 {
-		return exact
-	}
-	return sub
+	return out
 }
 
 func (c channel) matchesExact(q string) bool {

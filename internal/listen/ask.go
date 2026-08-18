@@ -5,8 +5,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mattermost/mattermost/server/public/model"
-
 	"matterbox/internal/aisearch"
 	"matterbox/internal/telegram"
 )
@@ -201,52 +199,16 @@ func (e *Engine) buildCatalog(ctx context.Context) aisearch.Catalog {
 	if err != nil {
 		e.log.Printf("ask: load channels: %v", err)
 	}
-	names := e.resolveCatalogNames(ctx, channels)
-	return aisearch.BuildCatalog(e.me.Id, teams, channels, names)
-}
-
-// resolveCatalogNames resolves usernames for the people who appear in the
-// catalog: the reader, every DM partner, and the distinct authors of cached
-// messages (capped). Resolved in batches so a large set doesn't blow past the
-// users-by-ids endpoint.
-func (e *Engine) resolveCatalogNames(ctx context.Context, channels []*model.Channel) map[string]string {
-	idSet := map[string]struct{}{e.me.Id: {}}
-	for _, c := range channels {
-		if c.Type == model.ChannelTypeDirect {
-			if p := dmPartner(c, e.me.Id); p != "" {
-				idSet[p] = struct{}{}
-			}
-		}
-	}
-	if authors, err := e.store.DistinctUserIDs(askAuthorCap); err == nil {
-		for _, id := range authors {
-			idSet[id] = struct{}{}
-		}
+	people := aisearch.ResolvePeople(ctx, e.client, e.me.Id, channels, e.store)
+	cat := aisearch.BuildCatalog(e.me.Id, teams, channels, people)
+	// Cached volume per channel ranks the channel/people listings, so the agent
+	// sees the conversations that actually hold something first.
+	if counts, err := e.store.ChannelPostCounts(); err == nil {
+		cat = cat.WithVolumes(counts)
 	} else {
-		e.log.Printf("ask: distinct authors: %v", err)
+		e.log.Printf("ask: channel volumes: %v", err)
 	}
-
-	ids := make([]string, 0, len(idSet))
-	for id := range idSet {
-		ids = append(ids, id)
-	}
-	names := make(map[string]string, len(ids))
-	const chunk = 100
-	for i := 0; i < len(ids); i += chunk {
-		end := i + chunk
-		if end > len(ids) {
-			end = len(ids)
-		}
-		got, err := e.client.UsernamesByIDs(ctx, ids[i:end])
-		if err != nil {
-			e.log.Printf("ask: resolve usernames: %v", err)
-			continue
-		}
-		for k, v := range got {
-			names[k] = v
-		}
-	}
-	return names
+	return cat
 }
 
 // rememberConvo records a finished /ask transcript under the answer's Telegram
