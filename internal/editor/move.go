@@ -63,23 +63,28 @@ func (m *Model) wordRight() {
 }
 
 // cursorUp / cursorDown move by one visual row, trying to keep desiredVCol.
+// They navigate the cursor-aware layout — the geometry View actually drew — so
+// the caret steps between the rows the user can see; measuring against the bare
+// wrap instead made a caret parked on the reserved end-of-line row skip a row.
 func (m *Model) cursorUp() {
-	rows := m.layout(false)
+	rows := m.layout(true)
 	ci, _, _ := m.cursorVisRaw(rows)
 	if ci <= 0 {
 		m.col = 0
 		m.refreshDesired()
+		m.clampScroll()
 		return
 	}
 	m.moveToVis(rows, ci-1, m.desiredVCol)
 }
 
 func (m *Model) cursorDown() {
-	rows := m.layout(false)
+	rows := m.layout(true)
 	ci, _, _ := m.cursorVisRaw(rows)
 	if ci >= len(rows)-1 {
 		m.col = len(m.lines[m.row])
 		m.refreshDesired()
+		m.clampScroll()
 		return
 	}
 	m.moveToVis(rows, ci+1, m.desiredVCol)
@@ -104,6 +109,15 @@ func (m *Model) moveToVis(rows []visRow, vi, vcol int) {
 		}
 		w += cw
 		col++
+	}
+	// The offset at a soft-wrap seam is shared by two rows, and cursorVisRaw
+	// resolves it to the start of the *following* one. Landing there would put
+	// the caret a row below the one asked for — and for cursorUp that means no
+	// visible movement at all, which is how the caret got stuck on a wrapped
+	// long word: every up-press re-targeted the seam and bounced straight back.
+	// Keep the caret on row vi by stopping one rune short of the seam.
+	if col == vr.b && col > vr.a && vi+1 < len(rows) && rows[vi+1].line == vr.line {
+		col--
 	}
 	m.col = col
 	m.clampScroll()

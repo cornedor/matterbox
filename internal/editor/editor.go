@@ -22,8 +22,10 @@ import (
 
 // Model is a multi-line text input. The zero value is not usable; call New.
 // It is copied by value (matching the `m.field, cmd = m.field.Update(msg)`
-// pattern), so its mutable state is held in slices — copies share backing
-// arrays only until the next edit, which always reallocates the affected line.
+// pattern), so its mutable state is held in slices — and every mutation
+// reallocates both the lines slice and the line it touches (see setLine), so a
+// copy taken before the edit keeps the buffer it was taken with rather than
+// having the edit written through the shared backing array into it.
 type Model struct {
 	// lines holds the logical lines of the buffer (the value split on '\n').
 	// It is never empty: an empty buffer is [][]rune{{}}.
@@ -181,8 +183,12 @@ func (m *Model) Value() string {
 
 // SetValue replaces the buffer and parks the cursor at the end (matching the
 // textarea behaviour callers rely on; they reposition afterwards when needed).
+// The text goes through the same sanitiser a keystroke or a paste does: a
+// restored draft or a server-side message may carry a tab, and a real tab in
+// the buffer is measured as one cell but drawn as eight, which tears the
+// composer's frame open.
 func (m *Model) SetValue(s string) {
-	m.setLines(splitLines(s))
+	m.setLines(splitRunes(sanitize([]rune(s))))
 	m.ClearSelection()
 	m.CursorEnd()
 	m.recalc()
@@ -194,11 +200,31 @@ func (m *Model) setLines(lines [][]rune) {
 	if len(lines) == 0 {
 		lines = [][]rune{{}}
 	}
-	if m.MaxContentHeight > 0 && len(lines) > m.MaxContentHeight {
-		lines = lines[:m.MaxContentHeight]
-	}
 	m.lines = lines
+	m.capContentHeight()
 	m.clampCursor()
+}
+
+// capContentHeight drops logical lines past MaxContentHeight (0 = unbounded).
+// It runs after every mutation, not just SetValue: the cap exists to stop a
+// pathological paste, and a paste arrives through insert().
+func (m *Model) capContentHeight() {
+	if m.MaxContentHeight > 0 && len(m.lines) > m.MaxContentHeight {
+		m.lines = m.lines[:m.MaxContentHeight]
+	}
+}
+
+// setLine installs rs as logical line i, cloning the lines slice first. A Model
+// is copied by value all over the ui layer; writing an element of the shared
+// backing array (or editing a line's runes in place) would reach through into
+// every copy still holding the old buffer. Every mutation either goes through
+// here or builds a fresh lines slice outright — that is what makes the copy the
+// doc comment on Model promises actually safe.
+func (m *Model) setLine(i int, rs []rune) {
+	lines := make([][]rune, len(m.lines))
+	copy(lines, m.lines)
+	lines[i] = rs
+	m.lines = lines
 }
 
 // Reset empties the buffer and resets cursor and scroll.
@@ -298,19 +324,6 @@ func (m *Model) recalc() {
 		m.height = 1
 	}
 	m.clampScroll()
-}
-
-// splitLines splits a string into logical lines of runes, normalising CRLF/CR
-// to LF first. The result always has at least one (possibly empty) line.
-func splitLines(s string) [][]rune {
-	s = strings.ReplaceAll(s, "\r\n", "\n")
-	s = strings.ReplaceAll(s, "\r", "\n")
-	parts := strings.Split(s, "\n")
-	out := make([][]rune, len(parts))
-	for i, p := range parts {
-		out[i] = []rune(p)
-	}
-	return out
 }
 
 // sanitize cleans runes coming from a keystroke or paste: CRLF/CR become LF,

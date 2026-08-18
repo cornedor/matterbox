@@ -139,7 +139,12 @@ func (m *Model) renderRow(vr visRow, isCursorRow bool, cw int, base lipgloss.Sty
 	lineStart := m.lineStartOffset(vr.line)
 
 	var b strings.Builder
-	used := 0
+	// The row's cell width is measured on the whole segment, not summed per rune:
+	// a grapheme cluster (a ZWJ emoji, a flag, a combining accent) occupies fewer
+	// cells than its runes do separately, and summing them over-counts, which
+	// left the row short of `cw` and its right edge ragged. wrapLine measures the
+	// same way, so this is the width the row was wrapped to.
+	used := textwidth.Width(string(rs))
 	var run []rune
 	var runStyle lipgloss.Style
 	curDecor := -2 // sentinel distinct from -1 (no decoration)
@@ -162,7 +167,6 @@ func (m *Model) renderRow(vr visRow, isCursorRow bool, cw int, base lipgloss.Sty
 			flush()
 			curDecor, curClass, curSel = -2, mdClass(255), false
 			b.WriteString(m.Styles.Cursor.Inline(true).Render(string(rs[k])))
-			used += textwidth.Width(string(rs[k]))
 			continue
 		}
 		off := lineStart + vr.a + k
@@ -176,7 +180,6 @@ func (m *Model) renderRow(vr visRow, isCursorRow bool, cw int, base lipgloss.Sty
 				Foreground(shimmerColor(pos, m.cmdEnd-m.cmdStart, m.cmdPhase)).
 				Inherit(base).Inline(true)
 			b.WriteString(st.Render(string(rs[k])))
-			used += textwidth.Width(string(rs[k]))
 			continue
 		}
 		di := m.decorIndexAt(off)
@@ -193,7 +196,6 @@ func (m *Model) renderRow(vr visRow, isCursorRow bool, cw int, base lipgloss.Sty
 			}
 		}
 		run = append(run, rs[k])
-		used += textwidth.Width(string(rs[k]))
 	}
 	flush()
 

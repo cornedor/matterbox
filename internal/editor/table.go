@@ -251,7 +251,7 @@ func (m *Model) continueTable() bool {
 // a row left empty say "done", and it is the way out of a table at the end of the
 // buffer, where there is no line below to move down to.
 func (m *Model) endTable() {
-	m.lines[m.row] = []rune{}
+	m.setLine(m.row, nil)
 	m.col = 0
 	m.afterEdit()
 }
@@ -388,12 +388,15 @@ func (m *Model) tableStart() int {
 // that was deleting the table).
 func (m *Model) deleteRow(row int, back bool) {
 	if len(m.lines) == 1 {
-		m.lines[0] = []rune{}
+		m.setLine(0, nil)
 		m.row, m.col = 0, 0
 		m.afterEdit()
 		return
 	}
-	m.lines = append(m.lines[:row], m.lines[row+1:]...)
+	lines := make([][]rune, 0, len(m.lines)-1)
+	lines = append(lines, m.lines[:row]...)
+	lines = append(lines, m.lines[row+1:]...)
+	m.lines = lines
 	if back && row > 0 {
 		m.row = row - 1
 		m.col = len(m.lines[m.row])
@@ -417,7 +420,7 @@ func (m *Model) untableRow(row int) {
 			parts = append(parts, s)
 		}
 	}
-	m.lines[row] = []rune(r.indent + strings.Join(parts, " "))
+	m.setLine(row, []rune(r.indent+strings.Join(parts, " ")))
 	m.row = row
 	m.col = len([]rune(r.indent))
 	m.afterEdit()
@@ -699,9 +702,14 @@ func (m *Model) alignBlock(start, end int) {
 			return
 		}
 	}
+	// One clone for the whole block, not one per row (see setLine): the aligned
+	// rows must not be written through into a value copy of the Model.
+	buf := make([][]rune, len(m.lines))
+	copy(buf, m.lines)
 	for i, line := range lines {
-		m.lines[start+i] = line
+		buf[start+i] = line
 	}
+	m.lines = buf
 	if caretRow >= 0 && !caretHead {
 		m.col = col
 	}

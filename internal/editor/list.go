@@ -52,7 +52,7 @@ func (m *Model) continueList() bool {
 		return false
 	}
 	if isBlankLine(line[it.body:]) {
-		m.lines[m.row] = []rune{}
+		m.setLine(m.row, nil)
 		m.col = 0
 		m.afterEdit()
 		return true

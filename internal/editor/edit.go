@@ -38,7 +38,7 @@ func (m *Model) insert(rs []rune) {
 		merged = append(merged, head...)
 		merged = append(merged, parts[0]...)
 		merged = append(merged, tail...)
-		m.lines[m.row] = merged
+		m.setLine(m.row, merged)
 		m.col += len(parts[0])
 		m.afterEdit()
 		return
@@ -63,6 +63,7 @@ func (m *Model) insert(rs []rune) {
 	m.lines = newLines
 	m.row += len(parts) - 1
 	m.col = len(parts[len(parts)-1])
+	m.capContentHeight()
 	m.afterEdit()
 }
 
@@ -91,13 +92,12 @@ func (m *Model) deleteBackward() {
 	}
 	if m.col > 0 {
 		line := m.lines[m.row]
-		m.lines[m.row] = append(line[:m.col-1], line[m.col:]...)
+		m.setLine(m.row, concatRunes(line[:m.col-1], line[m.col:]))
 		m.col--
 	} else if m.row > 0 {
 		prev := m.lines[m.row-1]
 		joinAt := len(prev)
-		merged := append(append([]rune(nil), prev...), m.lines[m.row]...)
-		m.lines = append(m.lines[:m.row-1], append([][]rune{merged}, m.lines[m.row+1:]...)...)
+		m.joinLines(m.row-1, concatRunes(prev, m.lines[m.row]))
 		m.row--
 		m.col = joinAt
 	}
@@ -112,10 +112,9 @@ func (m *Model) deleteForward() {
 	}
 	line := m.lines[m.row]
 	if m.col < len(line) {
-		m.lines[m.row] = append(line[:m.col], line[m.col+1:]...)
+		m.setLine(m.row, concatRunes(line[:m.col], line[m.col+1:]))
 	} else if m.row < len(m.lines)-1 {
-		merged := append(append([]rune(nil), line...), m.lines[m.row+1]...)
-		m.lines = append(m.lines[:m.row], append([][]rune{merged}, m.lines[m.row+2:]...)...)
+		m.joinLines(m.row, concatRunes(line, m.lines[m.row+1]))
 	}
 	m.afterEdit()
 }
@@ -136,7 +135,7 @@ func (m *Model) deleteWordBackward() {
 	for c > 0 && !unicode.IsSpace(line[c-1]) {
 		c--
 	}
-	m.lines[m.row] = append(line[:c], line[end:]...)
+	m.setLine(m.row, concatRunes(line[:c], line[end:]))
 	m.col = c
 	m.afterEdit()
 }
@@ -157,20 +156,20 @@ func (m *Model) deleteWordForward() {
 	for c < len(line) && !unicode.IsSpace(line[c]) {
 		c++
 	}
-	m.lines[m.row] = append(line[:start], line[c:]...)
+	m.setLine(m.row, concatRunes(line[:start], line[c:]))
 	m.afterEdit()
 }
 
 // deleteAfterCursor truncates the current line at the cursor (ctrl+k).
 func (m *Model) deleteAfterCursor() {
-	m.lines[m.row] = m.lines[m.row][:m.col]
+	m.setLine(m.row, concatRunes(m.lines[m.row][:m.col], nil))
 	m.afterEdit()
 }
 
 // deleteBeforeCursor drops everything before the cursor on the current line
 // (ctrl+u).
 func (m *Model) deleteBeforeCursor() {
-	m.lines[m.row] = append([]rune(nil), m.lines[m.row][m.col:]...)
+	m.setLine(m.row, concatRunes(m.lines[m.row][m.col:], nil))
 	m.col = 0
 	m.afterEdit()
 }
@@ -183,6 +182,25 @@ func (m *Model) afterEdit() {
 	m.realignTables()
 	m.refreshDesired()
 	m.recalc()
+}
+
+// joinLines replaces lines i and i+1 with the single merged line, on a fresh
+// lines slice (see setLine — a value copy of the Model must not see the join).
+func (m *Model) joinLines(i int, merged []rune) {
+	lines := make([][]rune, 0, len(m.lines)-1)
+	lines = append(lines, m.lines[:i]...)
+	lines = append(lines, merged)
+	lines = append(lines, m.lines[i+2:]...)
+	m.lines = lines
+}
+
+// concatRunes joins two rune slices into a freshly allocated one. The obvious
+// append(a[:i], a[j:]...) would splice in place, writing through the backing
+// array a value copy of the Model still shares.
+func concatRunes(a, b []rune) []rune {
+	out := make([]rune, 0, len(a)+len(b))
+	out = append(out, a...)
+	return append(out, b...)
 }
 
 // splitRunes splits a rune slice on '\n' into one slice per line (never empty).

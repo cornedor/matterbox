@@ -86,9 +86,11 @@ func (m *Model) MoveToBegin() {
 }
 
 // refreshDesired records the cursor's current visual column so the next
-// vertical move tries to preserve it.
+// vertical move tries to preserve it. It measures against the cursor-aware
+// layout — where the caret is actually drawn — so a caret sitting on the
+// reserved end-of-line row records column 0, the column it is shown in.
 func (m *Model) refreshDesired() {
-	rows := m.layout(false)
+	rows := m.layout(true)
 	_, vc, _ := m.cursorVisRaw(rows)
 	m.desiredVCol = vc
 }
