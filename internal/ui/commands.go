@@ -59,6 +59,16 @@ func builtinCommands() []switcherCommand {
 			run:  runShowKeys,
 		},
 		{
+			name: "Saved messages",
+			desc: "browse your saved messages (enter opens, d unsaves)",
+			run:  runOpenSavedMessages,
+		},
+		{
+			name: "Message stats",
+			desc: "your most active channels in the last 7 days, from the local cache",
+			run:  runMessageStats,
+		},
+		{
 			name: "Status: online",
 			desc: "set your presence to online",
 			run:  runSetPresence(model.StatusOnline),
@@ -164,25 +174,34 @@ func runKeyDebug(m *Model, _ string) tea.Cmd {
 }
 
 // runCopyMessageID copies the ID of the currently selected post to the
-// system clipboard. It respects focus: a selected thread reply takes
-// precedence over the main message list.
+// system clipboard (see selectedPost for what "selected" means).
 func runCopyMessageID(m *Model, _ string) tea.Cmd {
-	var p *model.Post
-	switch m.focus {
-	case focusThread:
-		if m.threadIdx >= 0 && m.threadIdx < len(m.threadPosts) {
-			p = m.threadPosts[m.threadIdx]
-		}
-	case focusMessages:
-		if m.postIdx >= 0 && m.postIdx < len(m.posts) {
-			p = m.posts[m.postIdx]
-		}
-	}
+	p := m.selectedPost()
 	if p == nil {
 		m.status = "no message selected"
 		return nil
 	}
 	return m.copyText(p.Id, "message ID")
+}
+
+// selectedPost returns the message the selection bar is on: the thread reply
+// when the thread pane has focus, the channel post when the message pane
+// does, and nil otherwise. It follows focus on purpose — the selection bar is
+// drawn only in the pane keys reach (see selBarWanted), so from the composer
+// or a synthetic tab there is no visible selection to act on, and commands
+// say "no message selected" rather than touch a message the user can't see.
+func (m *Model) selectedPost() *model.Post {
+	switch m.focus {
+	case focusThread:
+		if m.threadIdx >= 0 && m.threadIdx < len(m.threadPosts) {
+			return m.threadPosts[m.threadIdx]
+		}
+	case focusMessages:
+		if m.postIdx >= 0 && m.postIdx < len(m.posts) {
+			return m.posts[m.postIdx]
+		}
+	}
+	return nil
 }
 
 // runCopyChannelID copies the ID of the currently open channel to the
@@ -490,6 +509,16 @@ func (m Model) allCommands() []switcherCommand {
 	if mute, ok := m.muteCommand(); ok {
 		contextual = append(contextual, mute)
 	}
+	if pins, ok := m.pinCommands(); ok {
+		contextual = append(contextual, pins...)
+		contextual = append(contextual, m.saveCommand())
+	}
+	if tmpl, ok := m.templateCommands(); ok {
+		contextual = append(contextual, tmpl...)
+	}
+	if sidebar, ok := m.sidebarUnreadCommand(); ok {
+		contextual = append(contextual, sidebar)
+	}
 	if feedMuted, ok := m.feedMutedCommand(); ok {
 		contextual = append(contextual, feedMuted)
 	}
@@ -531,6 +560,41 @@ func (m Model) commandResults() []switcherCommand {
 		}
 	}
 	return out
+}
+
+// sidebarUnreadCommand returns the unread-only sidebar toggle, plus whether
+// it applies — it only does on a team/DM tab, where the channel list exists.
+// The label states the direction, like the feed's muted toggle.
+func (m *Model) sidebarUnreadCommand() (switcherCommand, bool) {
+	if m.onFeedTab() || m.onSearchTab() || m.onSQLTab() {
+		return switcherCommand{}, false
+	}
+	if m.sidebarUnreadOnly {
+		return switcherCommand{
+			name: "Sidebar: show all channels",
+			desc: "return the sidebar to the full channel list",
+			run:  func(m *Model, _ string) tea.Cmd { return m.setSidebarUnreadOnly(false) },
+		}, true
+	}
+	return switcherCommand{
+		name: "Sidebar: show unread channels",
+		desc: "narrow the sidebar to channels with unread activity (plus the open one)",
+		run:  func(m *Model, _ string) tea.Cmd { return m.setSidebarUnreadOnly(true) },
+	}, true
+}
+
+// setSidebarUnreadOnly flips the sidebar mode and re-points the cursor at the
+// open channel — its row moves as the list is filtered or restored.
+func (m *Model) setSidebarUnreadOnly(on bool) tea.Cmd {
+	m.sidebarUnreadOnly = on
+	m.chanOff = 0
+	m.snapSidebarCursorToOpen()
+	if on {
+		m.status = "sidebar: unread channels only"
+	} else {
+		m.status = "sidebar: all channels"
+	}
+	return nil
 }
 
 // indexTargetChannel returns the channel ID and label of the currently-

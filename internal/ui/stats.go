@@ -3,7 +3,6 @@ package ui
 import (
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -89,28 +88,7 @@ func writeChannelStats(stats map[string]channelStat, la *lastActive, lastByTeam 
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-		return err
-	}
-	b, err := json.MarshalIndent(channelStatsFile{Stats: stats, LastActive: la, LastChannelByTeam: lastByTeam}, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(p), "channel_stats-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	return os.Rename(tmpName, p)
+	return writeJSONAtomic(p, channelStatsFile{Stats: stats, LastActive: la, LastChannelByTeam: lastByTeam})
 }
 
 // bumpChannelStat increments the in-memory count and timestamps the open.

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 	"github.com/mattermost/mattermost/server/public/model"
 
 	"matterbox/internal/mm"
@@ -466,5 +468,97 @@ func TestMuteCommand(t *testing.T) {
 	cmd2.run(&m, "")
 	if m.channelMuted("c1") {
 		t.Error("after running Unmute, channelMuted(c1) = true; want false")
+	}
+}
+
+func newFeedReplyModel() Model {
+	m := newRenderableModel()
+	m.filter = textinput.New()
+	m.teams = []*model.Team{{Id: "t1", Name: "eng"}}
+	m.channels = map[string][]*model.Channel{"t1": {
+		{Id: "c1", TeamId: "t1", DisplayName: "here", Type: model.ChannelTypeOpen},
+		{Id: "c2", TeamId: "t1", DisplayName: "other", Type: model.ChannelTypeOpen},
+	}}
+	m.unread = map[string]int{"c2": 2}
+	m.mentions = map[string]int{}
+	m.openChannelID = "c1"
+	m.focus = focusFeed
+	m.feed = feedState{
+		built: true,
+		idx:   0,
+		entries: []feedEntry{{
+			channelID: "c2",
+			unread: []*model.Post{
+				{Id: "p1", ChannelId: "c2", Message: "hey"},
+				{Id: "p2", ChannelId: "c2", Message: "you there?"},
+			},
+		}},
+	}
+	gotoTab(&m, tabFeed)
+	return m
+}
+
+// R on a feed bubble goes through the same channel open as enter (so
+// openChannelID — the composer's routing key — the sidebar and the feed all
+// move) and then opens the newest unread message's thread with the composer
+// focused: the reply the user types lands in that thread, in that channel.
+func TestReplyFromFeedEntry(t *testing.T) {
+	m := newFeedReplyModel()
+	next, cmd := m.replyFromFeedEntry()
+	got := next.(Model)
+	if got.openChannelID != "c2" {
+		t.Fatalf("openChannelID = %q, want c2 (the reply must route to the feed channel)", got.openChannelID)
+	}
+	// The thread is the newest unread's (p2 — the message at the bottom of the
+	// bubble); the reading position still jumps to the first unread.
+	if !got.threadOpen || got.threadRootID != "p2" || got.threadChannelID != "c2" {
+		t.Fatalf("thread open=%v root=%q channel=%q, want p2 in c2", got.threadOpen, got.threadRootID, got.threadChannelID)
+	}
+	if ch, root := got.composerTarget(); ch != "c2" || root != "p2" {
+		t.Fatalf("composerTarget = (%q, %q), want (c2, p2)", ch, root)
+	}
+	if got.focus != focusInput {
+		t.Fatalf("focus = %v, want the composer", got.focus)
+	}
+	if len(got.feed.entries) != 0 {
+		t.Fatal("the bubble should be dropped from the feed like an open does")
+	}
+	if got.pendingJumpPostID != "p1" {
+		t.Fatalf("pendingJumpPostID = %q, want the first unread post", got.pendingJumpPostID)
+	}
+	if cmd == nil {
+		t.Fatal("expected the load + thread-fetch commands")
+	}
+	// A newest unread that is itself a reply opens its root's thread.
+	m = newFeedReplyModel()
+	m.feed.entries[0].unread = append(m.feed.entries[0].unread, &model.Post{Id: "p3", ChannelId: "c2", RootId: "old", Message: "…"})
+	next, _ = m.replyFromFeedEntry()
+	if got := next.(Model); got.threadRootID != "old" {
+		t.Fatalf("threadRootID = %q, want the reply's root", got.threadRootID)
+	}
+	// Enter (open) shares that path minus the thread.
+	m = newFeedReplyModel()
+	next, _ = m.openFeedEntry()
+	got = next.(Model)
+	if got.openChannelID != "c2" || got.threadOpen || len(got.feed.entries) != 0 {
+		t.Fatalf("openFeedEntry: open=%q thread=%v entries=%d", got.openChannelID, got.threadOpen, len(got.feed.entries))
+	}
+}
+
+// The feed reply lives on its own key (R): r is the feed's refresh, and both
+// have to keep working from the feed's key handler.
+func TestFeedReplyKey(t *testing.T) {
+	m := newFeedReplyModel()
+	next, _ := m.handleFeedKey(tea.KeyPressMsg{Code: 'R', Text: "R", Mod: tea.ModShift})
+	if got := next.(Model); !got.threadOpen || got.openChannelID != "c2" {
+		t.Fatalf("R: thread=%v open=%q, want the reply flow", got.threadOpen, got.openChannelID)
+	}
+	m = newFeedReplyModel()
+	next, cmd := m.handleFeedKey(tea.KeyPressMsg{Code: 'r', Text: "r"})
+	if got := next.(Model); got.threadOpen || got.openChannelID != "c1" || cmd == nil {
+		t.Fatalf("r must still refresh the feed, not reply: thread=%v open=%q cmd=%v", got.threadOpen, got.openChannelID, cmd != nil)
+	}
+	if !strings.Contains(m.feedHints(), "R reply") {
+		t.Fatalf("feed footer should advertise the reply key, got %q", m.feedHints())
 	}
 }

@@ -352,6 +352,9 @@ type Model struct {
 	filter      textinput.Model
 	filterMode  bool
 	filterValue string // committed/live filter applied to channel list
+	// sidebarUnreadOnly narrows the current team's visible channel list to only
+	// channels with unread activity. Toggled from the command palette.
+	sidebarUnreadOnly bool
 
 	// global channel switcher (ctrl+k). When switcherMode is true, the
 	// switcher owns every keystroke and an overlay popup is rendered in
@@ -411,6 +414,7 @@ type Model struct {
 	// most float to the top within a match-quality tier. See pickerstats.go.
 	emojiUsage   map[string]int
 	mentionUsage map[string]int
+	kaomojiUsage map[string]int
 
 	// store is the local SQLite database that caches messages and powers
 	// future local search. Best-effort: if Open fails, it stays nil and
@@ -429,6 +433,11 @@ type Model struct {
 	// to a team reopens that channel instead of the first one. Persisted to
 	// channel_stats.json alongside lastActive; synthetic tabs are excluded.
 	lastChannelByTeam map[string]string
+
+	// templates are the composer snippets from templates.json (loaded on
+	// first use, see templates.go); templatePicker is their sheet.
+	templates      map[string]string
+	templatePicker templatePickerState
 
 	focus focus
 	// msgsClaim / threadClaim are the key-ownership state each pane's content
@@ -635,6 +644,9 @@ type Model struct {
 	keyDebugMode bool
 	keyDebugLog  []string
 
+	// textPopup is the read-only scrollable text sheet (message stats).
+	textPopup textPopupState
+
 	// Search tab state: live FTS5 search over the persisted message
 	// corpus. Activated by F (all channels) or / (scoped to the current
 	// channel), or by selecting the synthetic "Search" tab. See
@@ -691,6 +703,17 @@ type Model struct {
 	// ~/.config/matterbox/config.yaml. Snapshot at New() time — the file
 	// isn't watched, so editing it requires a restart.
 	reactionEmojis []string
+	// kaomojiOptions are the user's extra entries for the /kaomoji picker
+	// (kaomoji_options in config.yaml), appended after the built-in set.
+	kaomojiOptions []string
+	// kaomojiPicker is the /kaomoji sheet.
+	kaomojiPicker kaomojiPickerState
+
+	// savedPostIDs is the user's saved messages (Mattermost "flagged_post"
+	// preferences), loaded once the user is known and kept current from the
+	// preferences websocket events. savedPosts is their browser sheet.
+	savedPostIDs map[string]bool
+	savedPosts   savedPostsState
 
 	// Summary command (ctrl+k → "> Summarize"). The endpoint/model/prompt
 	// are snapshotted from config.yaml at New() time; summary holds the live
@@ -976,7 +999,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	h := help.New()
 
 	stats, la, lastByTeam := loadChannelStats()
-	emojiUsage, mentionUsage := loadPickerStats()
+	emojiUsage, mentionUsage, kaomojiUsage := loadPickerStats()
 
 	var st *store.Store
 	if p, err := store.DefaultPath(); err == nil {
@@ -1038,6 +1061,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	var jiraProjects []string
 	var gitlabCfg gitlab.Config
 	var serverURL string
+	var kaomojiOptions []string
 	if cfg != nil {
 		serverURL = cfg.ServerURL
 		vimNav = parseVimNav(cfg.Keybindings.VimNav)
@@ -1124,6 +1148,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 			BaseURL: cfg.GitLab.BaseURL,
 			Token:   cfg.GitLab.Token,
 		}
+		kaomojiOptions = append(kaomojiOptions, cfg.KaomojiOptions...)
 	}
 	// The GIPHY_API_KEY env var overrides the config key (handy for keeping a
 	// secret out of the YAML file).
@@ -1241,6 +1266,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		openStats:           stats,
 		emojiUsage:          emojiUsage,
 		mentionUsage:        mentionUsage,
+		kaomojiUsage:        kaomojiUsage,
 		store:               st,
 		lastActiveTeamID:    la.teamID(),
 		lastActiveChannelID: la.channelID(),
@@ -1261,6 +1287,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		ltClient:            ltClient,
 		grammar:             newGrammarState(),
 		reactionEmojis:      reactions,
+		kaomojiOptions:      kaomojiOptions,
 		teamOrder:           teamOrder,
 		summaryEndpoint:     summaryEndpoint,
 		summaryAPIKey:       summaryAPIKey,
@@ -2052,6 +2079,12 @@ func (m *Model) resolveUnknownSenders() tea.Cmd {
 			want(p.UserId)
 		}
 	}
+	// The saved-messages sheet names authors from any channel, loaded or not.
+	if m.savedPosts.active {
+		for _, it := range m.savedPosts.items {
+			want(it.post.UserId)
+		}
+	}
 	// DM/group-DM partners drive the sidebar labels (@name); a missing one
 	// shows as @<truncated-id> until resolved.
 	for _, c := range m.channels[dmTeamID] {
@@ -2461,6 +2494,11 @@ func (m *Model) enterChannel(channelID string) tea.Cmd {
 	// it). nil for same-channel reopens or when an edit/thread owns the composer.
 	draftCmd := m.swapChannelDraft(channelID)
 	m.openChannelID = channelID
+	// The unread-only sidebar keeps the open channel and drops read ones, so
+	// the rows shift the moment the open channel changes: re-point the cursor.
+	if m.sidebarUnreadOnly {
+		m.snapSidebarCursorToOpen()
+	}
 	// Drop any unread divider carried over from the previous channel; the paths
 	// that want one drawn on open re-arm the boundary after this returns.
 	m.unreadBoundary = 0
@@ -2593,9 +2631,30 @@ func (m *Model) fallbackTeamID() string {
 	return ""
 }
 
-// visibleChannels returns the channels in the current team, filtered.
+// visibleChannels returns the channels in the current team, filtered: the
+// unread-only sidebar (> Sidebar: show unread channels) narrows the list to
+// channels with unread activity plus the open one — which stays put while
+// it's read, so the conversation you're in never vanishes from the list —
+// and the f filter then matches on the label.
 func (m *Model) visibleChannels() []*model.Channel {
+	return m.sidebarChannels(m.sidebarUnreadOnly)
+}
+
+// sidebarChannels is visibleChannels with the unread-only narrowing under the
+// caller's control: tab landing (gotoTab, enter on the tab strip) picks the
+// remembered channel from the full bucket even while the sidebar is narrowed,
+// otherwise a team whose remembered channel is read would land nowhere.
+func (m *Model) sidebarChannels(unreadOnly bool) []*model.Channel {
 	all := m.channels[m.currentTeamID()]
+	if unreadOnly {
+		filtered := make([]*model.Channel, 0, len(all))
+		for _, c := range all {
+			if c.Id == m.openChannelID || m.unread[c.Id] > 0 || m.mentions[c.Id] > 0 {
+				filtered = append(filtered, c)
+			}
+		}
+		all = filtered
+	}
 	if m.filterValue == "" {
 		return all
 	}
@@ -2607,6 +2666,30 @@ func (m *Model) visibleChannels() []*model.Channel {
 		}
 	}
 	return out
+}
+
+// snapSidebarCursorToOpen points the sidebar cursor at the open channel's row
+// in the current visible list, or clamps if it isn't there. Needed whenever
+// unread-only mode re-derives the list: toggling it, and on channel open (the
+// previous open channel drops out once it's read, shifting the rows above the
+// cursor). Paths that compute channelIdx from the unfiltered bucket
+// (switchToChannelHomeTeam, tab landing) get corrected here too. The other
+// way the narrowed list shrinks — another session reading a channel — is
+// caught by renderChannelsPane's clamp.
+func (m *Model) snapSidebarCursorToOpen() {
+	vis := m.visibleChannels()
+	for i, c := range vis {
+		if c != nil && c.Id == m.openChannelID {
+			m.channelIdx = i
+			return
+		}
+	}
+	if m.channelIdx >= len(vis) {
+		m.channelIdx = len(vis) - 1
+	}
+	if m.channelIdx < 0 {
+		m.channelIdx = 0
+	}
 }
 
 // unreadChannels gathers every channel (across all buckets, including

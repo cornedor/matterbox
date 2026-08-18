@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	"charm.land/bubbles/v2/key"
@@ -10,10 +9,6 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/mattermost/mattermost/server/public/model"
 )
-
-// historyPopupMaxWidth caps the popup's outer width. Wider terminals
-// don't get arbitrarily wide popups — readability beats fill.
-const historyPopupMaxWidth = 96
 
 // historyTimeFormat is used for the dim per-revision timestamps. Local
 // timezone, fits a typical row without hogging it.
@@ -47,48 +42,11 @@ func (m *Model) closeHistory() {
 	m.historyRevisions = nil
 }
 
-// historyDims returns the popup's outer width and content (inner)
-// height. Width is min(80% of terminal, historyPopupMaxWidth) and
-// clamped to a sensible floor. Height leaves a few rows of margin
-// around the popup.
-func (m *Model) historyDims() (outerW, innerH int) {
-	outerW = m.width * 4 / 5
-	if outerW > historyPopupMaxWidth {
-		outerW = historyPopupMaxWidth
-	}
-	if outerW < 30 {
-		outerW = 30
-	}
-	if outerW > m.width-2 {
-		outerW = m.width - 2
-	}
-	if outerW < 1 {
-		outerW = 1
-	}
-
-	// Outer border + padding eat 4 vertical rows (top/bottom border +
-	// top/bottom padding=0 in our style → really just 2). Add 2 for
-	// title + separator rows below.
-	bodyH := m.height - 4
-	if bodyH < 6 {
-		bodyH = 6
-	}
-	innerH = bodyH - 4 // border (2) + title (1) + separator (1) = 4
-	if innerH < 3 {
-		innerH = 3
-	}
-	return outerW, innerH
-}
-
 // sizeHistoryView keeps the popup's viewport in sync with the current
 // terminal size. Call before rendering and on every relevant resize.
 func (m *Model) sizeHistoryView() {
-	w, h := m.historyDims()
-	inner := w - 4 // border (2) + padding (1) left/right
-	if inner < 1 {
-		inner = 1
-	}
-	m.historyView.SetWidth(inner)
+	_, h := m.modalDims()
+	m.historyView.SetWidth(m.modalInnerWidth())
 	m.historyView.SetHeight(h)
 }
 
@@ -183,30 +141,10 @@ func (m *Model) renderHistoryPopup() string {
 	if !m.historyMode || m.historyPost == nil {
 		return ""
 	}
-	outerW, _ := m.historyDims()
-	inner := outerW - 4
-	if inner < 1 {
-		inner = 1
-	}
-
 	name := m.userNames[m.historyPost.UserId]
 	if name == "" {
 		name = m.historyPost.UserId
 	}
-	title := titleStyle.Render("Edit history") + "  " +
-		lipgloss.NewStyle().Foreground(dimColor).Render(
-			fmt.Sprintf("%s · %d revision(s)", name, len(m.historyRevisions)),
-		)
-	dim := lipgloss.NewStyle().Foreground(dimColor)
-	rule := dim.Render(strings.Repeat("─", inner))
-
-	body := m.historyView.View()
-	rows := []string{title, rule, body}
-
-	return lipgloss.NewStyle().
-		Border(border).
-		BorderForeground(focusedColor).
-		Padding(0, 1).
-		Width(outerW).
-		Render(strings.Join(rows, "\n"))
+	sub := fmt.Sprintf("%s · %d revision(s)", name, len(m.historyRevisions))
+	return m.renderModal("Edit history", sub, m.historyView.View())
 }

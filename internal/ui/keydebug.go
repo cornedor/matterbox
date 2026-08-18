@@ -12,8 +12,8 @@ import (
 // shows the most recent that fit the terminal height.
 const keyDebugMax = 100
 
-// keyDebugMaxWidth caps the inspector popup's outer width, mirroring
-// keysSheetMaxWidth. Wide enough for a decoded line on one row.
+// keyDebugMaxWidth caps the inspector popup's outer width. Wide enough for a
+// decoded line on one row.
 const keyDebugMaxWidth = 100
 
 // openKeyDebug opens the key-inspector popup (switcher "> Debug: key

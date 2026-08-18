@@ -1059,6 +1059,50 @@ func (s *Store) AuthoredBetween(authorID string, after, before int64, limit int)
 	return out, nil
 }
 
+// ChannelPostCount is one aggregated "posts authored in a channel" row.
+type ChannelPostCount struct {
+	ChannelID string
+	Count     int
+}
+
+// AuthoredCountsByChannel returns up to limit channels, ordered by descending
+// authored-post count, for one user over an optional create_at window.
+func (s *Store) AuthoredCountsByChannel(authorID string, after, before int64, limit int) ([]ChannelPostCount, error) {
+	if s == nil || authorID == "" || limit <= 0 {
+		return nil, nil
+	}
+	var b strings.Builder
+	args := []any{authorID}
+	b.WriteString("SELECT channel_id, COUNT(*) FROM posts\nWHERE user_id = ? AND delete_at = 0")
+	if after > 0 {
+		b.WriteString("\n  AND create_at >= ?")
+		args = append(args, after)
+	}
+	if before > 0 {
+		b.WriteString("\n  AND create_at < ?")
+		args = append(args, before)
+	}
+	b.WriteString("\nGROUP BY channel_id\nORDER BY COUNT(*) DESC, channel_id ASC\nLIMIT ?")
+	args = append(args, limit)
+	rows, err := s.db.Query(b.String(), args...)
+	if err != nil {
+		return nil, fmt.Errorf("authored counts by channel: %w", err)
+	}
+	defer rows.Close()
+	var out []ChannelPostCount
+	for rows.Next() {
+		var row ChannelPostCount
+		if err := rows.Scan(&row.ChannelID, &row.Count); err != nil {
+			return nil, fmt.Errorf("scan authored counts by channel: %w", err)
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("authored counts by channel rows: %w", err)
+	}
+	return out, nil
+}
+
 // Revisions returns the archived prior versions of a post, oldest→newest
 // by edit_at. Returns nil if the post has no recorded edit history (or
 // has only ever been seen in its current form). Note: only versions

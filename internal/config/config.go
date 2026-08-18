@@ -125,6 +125,9 @@ type Config struct {
 	// startup state: M on the Feed tab flips it for the session. See
 	// internal/ui/feed.go.
 	FeedShowMuted *bool `yaml:"feed_show_muted"`
+	// KaomojiOptions are extra entries for the TUI's /kaomoji picker, listed
+	// after the built-in set.
+	KaomojiOptions []string `yaml:"kaomoji_options"`
 	// Keybindings holds optional keymap tweaks. See internal/ui.
 	Keybindings KeybindingsConfig `yaml:"keybindings"`
 	// EmojiImages controls whether custom (server) emoji render as real
@@ -290,6 +293,10 @@ type ListenConfig struct {
 	// RespectMutes skips notifications for channels you've muted in Mattermost.
 	// Pointer so an absent key defaults to true.
 	RespectMutes *bool `yaml:"respect_mutes"`
+	// RespectDND skips notifications while your Mattermost status is Do Not
+	// Disturb. Pointer so an absent key defaults to true; set false to keep
+	// notifying through DND (urgent notify actions still bypass either way).
+	RespectDND *bool `yaml:"respect_dnd"`
 	// QuietHours suppresses notifications during a daily window, "HH:MM-HH:MM"
 	// in local time (e.g. "22:00-08:00"; may wrap past midnight). Empty = always
 	// on. Messages are still cached — catch up with the bot's /unread command.
@@ -907,7 +914,7 @@ func Load() (*Config, error) {
 	if stalePrompt {
 		cfg.AISearch.Prompt = ""
 	}
-	addDefaults := stalePrompt || cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.CollapseLongMessages == nil || cfg.CollapsePreviewLines == nil || cfg.DownloadDir == "" || cfg.SQLTab == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.ImageThumbnails == "" || cfg.CodeTheme == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Animations.InlineImages == nil || cfg.Animations.NativeGIFProtocol != nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.TwoWay == nil || cfg.Listen.NotifyDMs == nil || cfg.Listen.NotifyDelaySeconds == nil
+	addDefaults := stalePrompt || cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.CollapseLongMessages == nil || cfg.CollapsePreviewLines == nil || cfg.DownloadDir == "" || cfg.SQLTab == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.ImageThumbnails == "" || cfg.CodeTheme == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Animations.InlineImages == nil || cfg.Animations.NativeGIFProtocol != nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.RespectDND == nil || cfg.Listen.TwoWay == nil || cfg.Listen.NotifyDMs == nil || cfg.Listen.NotifyDelaySeconds == nil
 	cfg.fillDefaults()
 	if addDefaults {
 		if werr := writeConfig(p, cfg); werr != nil {
@@ -1073,6 +1080,10 @@ func (c *Config) fillDefaults() {
 		t := true
 		c.Listen.RespectMutes = &t
 	}
+	if c.Listen.RespectDND == nil {
+		t := true
+		c.Listen.RespectDND = &t
+	}
 	if c.Listen.TwoWay == nil {
 		t := true
 		c.Listen.TwoWay = &t
@@ -1180,6 +1191,8 @@ func writeConfig(p string, cfg *Config) error {
 		"#             badge (default false — muting opts a channel out of the\n" +
 		"#             feed). This only sets the startup state; M on the Feed tab\n" +
 		"#             toggles it for the session.\n" +
+		"# kaomoji_options: extra entries for the /kaomoji picker, listed after the\n" +
+		"#             built-in set, e.g. [\"(╯°□°)╯︵ ┻━┻\", \"(づ｡◕‿‿◕｡)づ\"].\n" +
 		"# keybindings: nav_modifier sets the modifier for arrow-key team/channel\n" +
 		"#             navigation: ctrl (default), alt, shift, super (the ⌘/Windows\n" +
 		"#             key; also \"cmd\"), meta, hyper, or none. On macOS ctrl+arrows\n" +
@@ -1249,7 +1262,10 @@ func writeConfig(p string, cfg *Config) error {
 		"#             back to raw text when it's down) instead of the bare message;\n" +
 		"#             notify_prompt is that summary's system prompt;\n" +
 		"#             respect_mutes (default true) skips channels you muted in\n" +
-		"#             Mattermost; quiet_hours (e.g. \"22:00-08:00\", local, may wrap\n" +
+		"#             Mattermost; respect_dnd (default true) skips notifications\n" +
+		"#             while your Mattermost status is Do Not Disturb (status_change\n" +
+		"#             websocket events; urgent notify actions still bypass);\n" +
+		"#             quiet_hours (e.g. \"22:00-08:00\", local, may wrap\n" +
 		"#             midnight; empty = always on) suppresses pushes in that window\n" +
 		"#             (messages are still cached — use the bot's /unread);\n" +
 		"#             two_way (default true) enables replying from Telegram and the\n" +

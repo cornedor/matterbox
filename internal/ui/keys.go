@@ -93,6 +93,7 @@ type keyMap struct {
 	MarkRead  key.Binding
 	Refresh   key.Binding
 	FeedMuted key.Binding
+	FeedReply key.Binding
 
 	// Attachments (input + chip strip)
 	Paste        key.Binding
@@ -218,6 +219,9 @@ var actionDefs = []actionDef{
 	{id: "mark_read", field: func(k *keyMap) *key.Binding { return &k.MarkRead }, keys: []string{"m"}, desc: "mark read"},
 	{id: "refresh", field: func(k *keyMap) *key.Binding { return &k.Refresh }, keys: []string{"r"}, desc: "refresh"},
 	{id: "feed_toggle_muted", field: func(k *keyMap) *key.Binding { return &k.FeedMuted }, keys: []string{"M"}, desc: "show/hide muted channels"},
+	// R, not r: the feed's refresh already sits on r. R is react in the message
+	// pane, but the feed has no reactions, so the shifted key is free there.
+	{id: "feed_reply", field: func(k *keyMap) *key.Binding { return &k.FeedReply }, keys: []string{"R"}, desc: "reply in thread"},
 
 	{id: "paste", field: func(k *keyMap) *key.Binding { return &k.Paste }, keys: []string{"ctrl+v"}, desc: "paste"},
 	{id: "attachment_remove", field: func(k *keyMap) *key.Binding { return &k.AttachRemove }, keys: []string{"d", "x"}, desc: "remove"},

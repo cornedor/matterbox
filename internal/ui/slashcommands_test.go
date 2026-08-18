@@ -189,6 +189,34 @@ func TestUpdateSlashSuppressedWhileEditing(t *testing.T) {
 	}
 }
 
+func TestSlashKaomojiIsRegistryCommand(t *testing.T) {
+	c, ok := lookupSlash("kaomoji")
+	if !ok {
+		t.Fatal("/kaomoji missing from slashRegistry")
+	}
+	if c.run == nil {
+		t.Fatal("/kaomoji has no runner")
+	}
+	// Typing it behaves like every other command: the slash popup lists it,
+	// nothing opens until enter — so a future /kaomoji-something stays typeable.
+	m := newSlashTestModel("/kaomoji")
+	m.updateSlash()
+	if m.kaomojiPicker.active {
+		t.Fatal("typing /kaomoji must not open the picker; that happens on send")
+	}
+	if !m.slash.active {
+		t.Fatal("typing /kaomoji should keep the slash popup open like every other command")
+	}
+	next, _ := m.runSlashCommand("kaomoji", "")
+	got := next.(Model)
+	if !got.kaomojiPicker.active {
+		t.Fatal("running /kaomoji should open the picker")
+	}
+	if got.input.Value() != "" {
+		t.Fatalf("running /kaomoji should consume the composer, left %q", got.input.Value())
+	}
+}
+
 func TestSlashMatches(t *testing.T) {
 	const team = "team1"
 	m := newSlashTestModel("/")

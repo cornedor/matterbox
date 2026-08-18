@@ -83,6 +83,13 @@ func TestGroupWithPrevAffordances(t *testing.T) {
 			t.Error("an edited message should keep its header so 'edited' shows")
 		}
 	})
+	t.Run("current is pinned", func(t *testing.T) {
+		cur := base()
+		cur.IsPinned = true
+		if m.groupWithPrev(cur, base(), false) {
+			t.Error("a pinned message should keep its header so the pin mark shows")
+		}
+	})
 	t.Run("thread replies still group", func(t *testing.T) {
 		cur, prev := base(), base()
 		cur.RootId, prev.RootId = "root1", "root1"

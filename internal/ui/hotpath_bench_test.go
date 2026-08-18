@@ -85,6 +85,31 @@ func BenchmarkSwitcherResults(b *testing.B) {
 	}
 }
 
+// BenchmarkCommandResults is the "> " palette list rebuilt on every keystroke
+// / blink frame while it's open with a channel open: the static builtins plus
+// every contextual command (mute, pin/save, templates, sidebar toggle, channel
+// actions), each deciding whether it applies.
+func BenchmarkCommandResults(b *testing.B) {
+	for _, n := range []int{50, 800} {
+		m := benchSwitcherModel(n)
+		m.teams = []*model.Team{{Id: "team0"}, {Id: "team1"}, {Id: "team2"}, {Id: "team3"}}
+		m.teamIdx = m.firstTeamTabIdx()
+		m.openChannelID = "chan" + strconv.Itoa(n-1) // last in its bucket: worst-case findChannel
+		m.me = &model.User{Id: "me"}
+		m.posts = []*model.Post{{Id: "p1", ChannelId: m.openChannelID}}
+		m.focus = focusMessages
+		m.savedPostIDs = map[string]bool{"p1": true}
+		m.switcher.SetValue(">")
+		b.Run(fmt.Sprintf("chans=%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = m.commandResults()
+			}
+		})
+	}
+}
+
 // benchMentionModel builds a Model whose userNames cache holds n usernames plus
 // the mentionUsage popularity map localMentionMatches reads while ranking.
 func benchMentionModel(n int) *Model {
@@ -248,6 +273,29 @@ func BenchmarkVisibleChannels(b *testing.B) {
 	}
 }
 
+// BenchmarkVisibleChannelsUnreadOnly is the sidebar list under
+// "> Sidebar: show unread channels": rebuilt on every View while the mode is
+// on (like a typed f filter), with a tenth of the channels unread.
+func BenchmarkVisibleChannelsUnreadOnly(b *testing.B) {
+	for _, n := range []int{50, 200, 800} {
+		m := benchVisibleModel(n)
+		m.unread = map[string]int{}
+		m.mentions = map[string]int{}
+		for i := 0; i < n; i += 10 {
+			m.unread["chan"+strconv.Itoa(i)] = 1
+		}
+		m.openChannelID = "chan5"
+		m.sidebarUnreadOnly = true
+		b.Run(fmt.Sprintf("chans=%d", n), func(b *testing.B) {
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = m.visibleChannels()
+			}
+		})
+	}
+}
+
 // BenchmarkFeedBadgeCounts measures the Feed-tab badge tally recomputed on
 // every render: a scan of the unread and mention maps, each entry checked
 // against channelMuted (a linear members scan). n is the number of channels
@@ -301,4 +349,16 @@ func BenchmarkExpandTabs(b *testing.B) {
 			_ = expandTabs(tabHeavy, 4)
 		}
 	})
+}
+
+// BenchmarkPostLineFingerprint is the per-post row-cache key computed on
+// every renderMessages for every post in the window; the branch added the
+// pinned flag and a saved-set lookup to it.
+func BenchmarkPostLineFingerprint(b *testing.B) {
+	m := &Model{userNames: map[string]string{"u1": "alice"}, savedPostIDs: map[string]bool{"p9": true}}
+	p := &model.Post{Id: "p1", UserId: "u1", Message: "hello there", CreateAt: 1000}
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = m.postLineFingerprint(p, 80, false, false, false)
+	}
 }

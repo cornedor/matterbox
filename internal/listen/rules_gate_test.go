@@ -139,10 +139,31 @@ func TestNotifyGate(t *testing.T) {
 			t.Errorf("quiet hours should suppress (cursor %d, want 0)", got)
 		}
 	})
+	t.Run("dnd suppressed", func(t *testing.T) {
+		p, ev := channel()
+		cfg := func(e *Engine) { e.opts.RespectDND = true; e.myStatus = model.StatusDnd }
+		if got := run(t, cfg, p, ev, false); got != 0 {
+			t.Errorf("dnd should suppress (cursor %d, want 0)", got)
+		}
+	})
 	t.Run("urgent bypasses quiet hours", func(t *testing.T) {
 		p, ev := channel()
 		if got := run(t, setQuietNow, p, ev, true); got != ts {
 			t.Errorf("urgent should deliver during quiet hours (cursor %d, want %d)", got, ts)
+		}
+	})
+	t.Run("urgent bypasses dnd", func(t *testing.T) {
+		p, ev := channel()
+		cfg := func(e *Engine) { e.opts.RespectDND = true; e.myStatus = model.StatusDnd }
+		if got := run(t, cfg, p, ev, true); got != ts {
+			t.Errorf("urgent should deliver during dnd (cursor %d, want %d)", got, ts)
+		}
+	})
+	t.Run("dnd ignored when respect_dnd off", func(t *testing.T) {
+		p, ev := channel()
+		cfg := func(e *Engine) { e.opts.RespectDND = false; e.myStatus = model.StatusDnd }
+		if got := run(t, cfg, p, ev, false); got != ts {
+			t.Errorf("respect_dnd off should deliver (cursor %d, want %d)", got, ts)
 		}
 	})
 }

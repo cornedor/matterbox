@@ -7,11 +7,6 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// keysSheetMaxWidth caps the cheatsheet popup's outer width — wide enough for
-// two columns (keys + description), capped so it stays readable on a big
-// terminal. Mirrors historyPopupMaxWidth.
-const keysSheetMaxWidth = 96
-
 // keysSheetSections lists, in display order, the context layers shown in the
 // cheatsheet under a friendly heading. The rows come from each named context's
 // claims() (looked up in keyContexts), so the sheet reflects the *live* keymap:
@@ -107,43 +102,11 @@ func (m *Model) closeKeysSheet() {
 	m.helpSheet = false
 }
 
-// keysSheetDims returns the popup's outer width and content (inner) height,
-// mirroring historyDims: min(80% of terminal, cap), clamped to a floor, with
-// a few rows of vertical margin and room for the title + separator.
-func (m *Model) keysSheetDims() (outerW, innerH int) {
-	outerW = m.width * 4 / 5
-	if outerW > keysSheetMaxWidth {
-		outerW = keysSheetMaxWidth
-	}
-	if outerW < 30 {
-		outerW = 30
-	}
-	if outerW > m.width-2 {
-		outerW = m.width - 2
-	}
-	if outerW < 1 {
-		outerW = 1
-	}
-	bodyH := m.height - 4
-	if bodyH < 6 {
-		bodyH = 6
-	}
-	innerH = bodyH - 4 // border (2) + title (1) + separator (1)
-	if innerH < 3 {
-		innerH = 3
-	}
-	return outerW, innerH
-}
-
 // sizeKeysSheetView keeps the popup viewport sized to the terminal. Call
 // before rendering and on resize.
 func (m *Model) sizeKeysSheetView() {
-	w, h := m.keysSheetDims()
-	inner := w - 4 // border (2) + padding (1) left/right
-	if inner < 1 {
-		inner = 1
-	}
-	m.keysSheetView.SetWidth(inner)
+	_, h := m.modalDims()
+	m.keysSheetView.SetWidth(m.modalInnerWidth())
 	m.keysSheetView.SetHeight(h)
 }
 
@@ -210,8 +173,7 @@ func (m *Model) renderKeysSheet() {
 	if m.helpSheet {
 		groups = []keysSheetGroup{{title: "Slash commands", rows: slashHelpRows()}}
 	}
-	w, _ := m.keysSheetDims()
-	inner := w - 4
+	inner := m.modalInnerWidth()
 	if inner < 10 {
 		inner = 10
 	}
@@ -267,30 +229,16 @@ func (m Model) handleKeysSheetKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// renderKeysSheetPopup composes the bordered cheatsheet popup. The viewport's
-// SoftWrap re-wraps long rows to the popup width as the user scrolls.
+// renderKeysSheetPopup composes the cheatsheet popup in the shared sheet
+// modal frame. The viewport's SoftWrap re-wraps long rows to the popup width
+// as the user scrolls.
 func (m *Model) renderKeysSheetPopup() string {
 	if !m.keysSheetMode {
 		return ""
-	}
-	outerW, _ := m.keysSheetDims()
-	inner := outerW - 4
-	if inner < 1 {
-		inner = 1
 	}
 	heading := "Keyboard shortcuts"
 	if m.helpSheet {
 		heading = "Slash commands"
 	}
-	title := titleStyle.Render(heading) + "  " +
-		lipgloss.NewStyle().Foreground(dimColor).Render("esc/q close · ↑/↓ scroll")
-	dim := lipgloss.NewStyle().Foreground(dimColor)
-	rule := dim.Render(strings.Repeat("─", inner))
-	rows := []string{title, rule, m.keysSheetView.View()}
-	return lipgloss.NewStyle().
-		Border(border).
-		BorderForeground(focusedColor).
-		Padding(0, 1).
-		Width(outerW).
-		Render(strings.Join(rows, "\n"))
+	return m.renderModal(heading, "esc/q close · ↑/↓ scroll", m.keysSheetView.View())
 }

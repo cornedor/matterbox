@@ -13,12 +13,14 @@ import (
 // pickerStatsFile is the persisted popularity record for the autocomplete
 // pickers. Emoji counts a shortcode every time it's accepted from the `:`
 // picker or chosen in the reaction picker; Mention counts a username every
-// time it's accepted from the `@` picker. Both are keyed by the stable
-// display token (the bare emoji shortcode / the username), so the maps
-// survive even when the underlying ids change.
+// time it's accepted from the `@` picker; Kaomoji counts an entry picked from
+// /kaomoji. All are keyed by the stable display token (the bare emoji
+// shortcode / the username / the kaomoji text), so the maps survive even
+// when the underlying ids change.
 type pickerStatsFile struct {
 	Emoji   map[string]int `json:"emoji,omitempty"`
 	Mention map[string]int `json:"mention,omitempty"`
+	Kaomoji map[string]int `json:"kaomoji,omitempty"`
 }
 
 func pickerStatsPath() (string, error) {
@@ -29,20 +31,21 @@ func pickerStatsPath() (string, error) {
 // a missing file or parse error degrades silently to empty maps — picker
 // weighting is a nicety, not load-bearing, so the user never sees a startup
 // error over it.
-func loadPickerStats() (emoji, mention map[string]int) {
+func loadPickerStats() (emoji, mention, kaomoji map[string]int) {
 	emoji = map[string]int{}
 	mention = map[string]int{}
+	kaomoji = map[string]int{}
 	p, err := pickerStatsPath()
 	if err != nil {
-		return emoji, mention
+		return emoji, mention, kaomoji
 	}
 	b, err := os.ReadFile(p)
 	if err != nil {
-		return emoji, mention
+		return emoji, mention, kaomoji
 	}
 	var f pickerStatsFile
 	if err := json.Unmarshal(b, &f); err != nil {
-		return emoji, mention
+		return emoji, mention, kaomoji
 	}
 	if f.Emoji != nil {
 		emoji = f.Emoji
@@ -50,24 +53,33 @@ func loadPickerStats() (emoji, mention map[string]int) {
 	if f.Mention != nil {
 		mention = f.Mention
 	}
-	return emoji, mention
+	if f.Kaomoji != nil {
+		kaomoji = f.Kaomoji
+	}
+	return emoji, mention, kaomoji
 }
 
-// writePickerStats persists both maps atomically (tmp file + same-dir
-// rename), mirroring writeChannelStats.
-func writePickerStats(emoji, mention map[string]int) error {
+// writePickerStats persists the maps atomically.
+func writePickerStats(emoji, mention, kaomoji map[string]int) error {
 	p, err := pickerStatsPath()
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+	return writeJSONAtomic(p, pickerStatsFile{Emoji: emoji, Mention: mention, Kaomoji: kaomoji})
+}
+
+// writeJSONAtomic writes v as indented JSON to path via a temp file in the
+// same directory + rename, so a crash mid-write leaves the old file intact.
+// Shared by the stats, picker-stats and templates files.
+func writeJSONAtomic(path string, v any) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(pickerStatsFile{Emoji: emoji, Mention: mention}, "", "  ")
+	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(p), "picker_stats-*.tmp")
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+"-*.tmp")
 	if err != nil {
 		return err
 	}
@@ -81,7 +93,7 @@ func writePickerStats(emoji, mention map[string]int) error {
 		os.Remove(tmpName)
 		return err
 	}
-	return os.Rename(tmpName, p)
+	return os.Rename(tmpName, path)
 }
 
 // persistPickerStats snapshots both usage maps and returns a Cmd that writes
@@ -97,8 +109,12 @@ func (m *Model) persistPickerStats() tea.Cmd {
 	for k, v := range m.mentionUsage {
 		mention[k] = v
 	}
+	kaomoji := make(map[string]int, len(m.kaomojiUsage))
+	for k, v := range m.kaomojiUsage {
+		kaomoji[k] = v
+	}
 	return func() tea.Msg {
-		_ = writePickerStats(emoji, mention)
+		_ = writePickerStats(emoji, mention, kaomoji)
 		return nil
 	}
 }

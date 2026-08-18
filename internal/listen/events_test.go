@@ -359,3 +359,32 @@ func ids(posts []*model.Post) []string {
 func tsOf(p *model.Post) string {
 	return postLine(p, map[string]string{p.UserId: "x"})[1:6]
 }
+
+func TestHandleStatusChange(t *testing.T) {
+	e := &Engine{
+		me:   &model.User{Id: "u-me"},
+		opts: Options{RespectDND: true},
+	}
+	ev := model.NewWebSocketEvent(model.WebsocketEventStatusChange, "", "", "u-me", nil, "")
+	ev.Add("user_id", "u-me")
+	ev.Add("status", model.StatusDnd)
+	e.handle(t.Context(), ev)
+	if e.myStatus != model.StatusDnd {
+		t.Fatalf("own status_change: myStatus = %q, want dnd", e.myStatus)
+	}
+
+	other := model.NewWebSocketEvent(model.WebsocketEventStatusChange, "", "", "u-bob", nil, "")
+	other.Add("user_id", "u-bob")
+	other.Add("status", model.StatusOnline)
+	e.handle(t.Context(), other)
+	if e.myStatus != model.StatusDnd {
+		t.Fatalf("other user's status_change overwrote myStatus = %q", e.myStatus)
+	}
+
+	e.opts.RespectDND = false
+	e.myStatus = ""
+	e.handle(t.Context(), ev)
+	if e.myStatus != "" {
+		t.Fatalf("respect_dnd off should ignore status_change, myStatus = %q", e.myStatus)
+	}
+}

@@ -78,6 +78,12 @@ func (m *Model) postLineFingerprint(p *model.Post, width int, isThread, isRoot, 
 	if grouped {
 		b.WriteByte('g')
 	}
+	if p.IsPinned {
+		b.WriteByte('P')
+	}
+	if m.isSaved(p.Id) {
+		b.WriteByte('S')
+	}
 	b.WriteByte('|')
 	b.WriteString(m.postAuthorName(p))
 	b.WriteByte('|')

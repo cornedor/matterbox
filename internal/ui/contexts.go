@@ -56,7 +56,8 @@ func (m *Model) contentFocus() bool {
 func (m *Model) inModal() bool {
 	return m.deleteConfirmPostID != "" || m.reactionPickerPostID != "" ||
 		m.openPickerActive() || m.codePickerActive() || m.pollDialog.open || m.historyMode ||
-		m.summary.active() || m.switcherMode || m.keysSheetMode || m.preview.active ||
+		m.summary.active() || m.switcherMode || m.keysSheetMode || m.textPopup.active ||
+		m.templatePicker.active || m.savedPosts.active || m.kaomojiPicker.active || m.preview.active ||
 		m.createChan != nil || m.chanEdit != nil || m.chanConfirm != nil || m.joinChan != nil ||
 		m.gorillas.active || m.kurve.active
 }
@@ -104,6 +105,32 @@ var keyContexts = []keyContext{
 		typing:   true,
 		claims:   func(m *Model) []key.Binding { return []key.Binding{m.keys.Tab, m.keys.ShiftTab} },
 	},
+	// The list sheets (saved messages, templates, kaomoji) each own every
+	// keystroke while open: ↑/↓ move, enter picks, esc/q close (hardwired).
+	{
+		name:     "modal:saved-posts",
+		active:   func(m *Model) bool { return m.savedPosts.active },
+		terminal: true,
+		claims: func(m *Model) []key.Binding {
+			return []key.Binding{m.keys.Up, m.keys.Down, m.keys.InputUp, m.keys.InputDown, m.keys.OpenChannel}
+		},
+	},
+	{
+		name:     "modal:template-picker",
+		active:   func(m *Model) bool { return m.templatePicker.active },
+		terminal: true,
+		claims: func(m *Model) []key.Binding {
+			return []key.Binding{m.keys.Up, m.keys.Down, m.keys.InputUp, m.keys.InputDown, m.keys.OpenChannel}
+		},
+	},
+	{
+		name:     "modal:kaomoji-picker",
+		active:   func(m *Model) bool { return m.kaomojiPicker.active },
+		terminal: true,
+		claims: func(m *Model) []key.Binding {
+			return []key.Binding{m.keys.Up, m.keys.Down, m.keys.InputUp, m.keys.InputDown, m.keys.OpenChannel}
+		},
+	},
 	{
 		name:     "modal:history",
 		active:   func(m *Model) bool { return m.historyMode },
@@ -121,6 +148,12 @@ var keyContexts = []keyContext{
 		// All keys are hardwired in handleKeysSheetKey, so it claims nothing.
 		name:     "modal:keys-sheet",
 		active:   func(m *Model) bool { return m.keysSheetMode },
+		terminal: true,
+		claims:   func(m *Model) []key.Binding { return nil },
+	},
+	{
+		name:     "modal:text-popup",
+		active:   func(m *Model) bool { return m.textPopup.active },
 		terminal: true,
 		claims:   func(m *Model) []key.Binding { return nil },
 	},
@@ -353,7 +386,7 @@ var keyContexts = []keyContext{
 			return []key.Binding{
 				m.keys.Up, m.keys.Down, m.keys.InputUp, m.keys.InputDown,
 				m.keys.Home, m.keys.End, m.keys.OpenChannel, m.keys.MarkRead, m.keys.Refresh,
-				m.keys.FeedMuted,
+				m.keys.FeedMuted, m.keys.FeedReply,
 			}
 		},
 	},
@@ -385,9 +418,13 @@ var shadowProbeStates = []struct {
 	{"code-picker", func(m *Model) { m.codePickerBlocks = make([]codeBlock, 1) }},
 	{"poll-dialog", func(m *Model) { m.pollDialog.open = true }},
 	{"history", func(m *Model) { m.historyMode = true }},
+	{"saved-posts", func(m *Model) { m.savedPosts.active = true }},
+	{"template-picker", func(m *Model) { m.templatePicker.active = true }},
+	{"kaomoji-picker", func(m *Model) { m.kaomojiPicker.active = true }},
 	{"summary", func(m *Model) { m.summary.phase = summaryPicking }},
 	{"switcher", func(m *Model) { m.switcherMode = true }},
 	{"keys-sheet", func(m *Model) { m.keysSheetMode = true }},
+	{"text-popup", func(m *Model) { m.textPopup.active = true }},
 	{"image-preview", func(m *Model) { m.preview.active = true }},
 }
 

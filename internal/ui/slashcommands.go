@@ -43,6 +43,8 @@ func slashRegistry() []slashCommand {
 	cmds := []slashCommand{
 		{name: "me", args: "<action>", desc: "send an action / emote message", run: slashMe},
 		{name: "shrug", args: "[message]", desc: `append ¯\_(ツ)_/¯ to your message`, run: slashShrug},
+		{name: "kaomoji", desc: "pick a kaomoji into the composer", run: slashKaomoji},
+		{name: "tmpl", aliases: []string{"template"}, args: "[name]", desc: "insert a saved template (no name: pick from the list)", run: slashTemplate},
 		{name: "dm", aliases: []string{"msg"}, args: "@user[,@user…] [message]",
 			desc: "open (creating if new) a DM / group DM, optionally sending a message", run: slashDM},
 		{name: "search", aliases: []string{"find"}, args: "<query>",
@@ -310,6 +312,19 @@ func slashSearch(m *Model, args string) tea.Cmd {
 func slashHelp(m *Model, _ string) tea.Cmd {
 	m.openHelpSheet()
 	return nil
+}
+
+// slashKaomoji opens the kaomoji picker; the pick lands in the (now empty)
+// composer for the user to send.
+func slashKaomoji(m *Model, _ string) tea.Cmd {
+	m.openKaomojiPicker()
+	return nil
+}
+
+// slashTemplate inserts the named template, or opens the Templates sheet when
+// no name was given.
+func slashTemplate(m *Model, args string) tea.Cmd {
+	return m.insertTemplate(args)
 }
 
 // slashHelpRows renders the registry as cheatsheet rows for the /help popup.

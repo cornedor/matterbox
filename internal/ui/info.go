@@ -93,17 +93,23 @@ var (
 // the key again for the same channel closes it (a toggle). The Search / Feed /
 // SQL tabs have no open channel, so it's a no-op there.
 func (m Model) openChannelInfo() (tea.Model, tea.Cmd) {
+	return m, m.raiseChannelInfo()
+}
+
+// raiseChannelInfo is the pointer-receiver half of openChannelInfo, so
+// command runners can open the panel without copying the ~133KB Model.
+func (m *Model) raiseChannelInfo() tea.Cmd {
 	if m.onSearchTab() || m.onFeedTab() || m.onSQLTab() {
-		return m, nil
+		return nil
 	}
 	c := m.findChannel(m.openChannelID)
 	if c == nil {
 		m.status = "no channel open"
-		return m, nil
+		return nil
 	}
 	if m.infoOpen && m.infoChannelID == c.Id {
 		m.closeInfo()
-		return m, nil
+		return nil
 	}
 	// The info panel and the thread sidebar / reference panel share the single
 	// right slot.
@@ -139,7 +145,7 @@ func (m Model) openChannelInfo() (tea.Model, tea.Cmd) {
 	m.resizeMessagesViewport()
 	m.renderMessages()
 	m.renderInfo()
-	return m, tea.Batch(threadCmd, m.fetchInfoMembers(c.Id), m.fetchInfoPinned(c.Id), m.fetchInfoMedia(c.Id))
+	return tea.Batch(threadCmd, m.fetchInfoMembers(c.Id), m.fetchInfoPinned(c.Id), m.fetchInfoMedia(c.Id))
 }
 
 // closeInfo tears the panel down and returns focus to the messages pane.

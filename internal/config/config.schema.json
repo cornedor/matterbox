@@ -85,6 +85,14 @@
       "description": "Include muted channels in the unread feed and its tab badge (default false — muting opts a channel out of the feed). Only the startup state: M on the Feed tab toggles it for the session.",
       "default": false
     },
+    "kaomoji_options": {
+      "type": "array",
+      "description": "Extra entries for the TUI's /kaomoji picker, listed after the built-in set.",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    },
     "keybindings": { "$ref": "#/definitions/keybindings" },
     "emoji_images": {
       "type": "string",
@@ -339,6 +347,11 @@
         "respect_mutes": {
           "type": "boolean",
           "description": "Skip notifications for channels you've muted in Mattermost (default true).",
+          "default": true
+        },
+        "respect_dnd": {
+          "type": "boolean",
+          "description": "Skip notifications while your Mattermost status is Do Not Disturb (default true). Uses status_change websocket events; urgent notify actions still bypass.",
           "default": true
         },
         "quiet_hours": {

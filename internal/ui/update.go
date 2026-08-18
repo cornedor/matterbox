@@ -174,6 +174,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// drag doesn't re-transmit the image preview on every frame.
 		m.layoutPanes()
 		m.resizeInput()
+		m.sizeTextPopup()
 		m.resizeGen++
 		return m, resizeSettleCmd(m.resizeGen)
 
@@ -375,6 +376,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.fetchTeams(m.me.Id),
 			m.fetchAllChannels(m.me.Id),
 			m.fetchChannelMembers(m.me.Id),
+			m.fetchSavedPostIDs(m.me.Id),
 		)
 
 	case teamsLoadedMsg:
@@ -418,6 +420,19 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case groupDMResolvedMsg:
 		return m.applyGroupDMResolved(msg)
+
+	case pinnedChangedMsg:
+		return m.applyPinnedChanged(msg)
+
+	case savedIDsLoadedMsg:
+		m.applySavedIDsLoaded(msg)
+		return m, nil
+
+	case savedChangedMsg:
+		return m.applySavedChanged(msg)
+
+	case savedPostsLoadedMsg:
+		return m.applySavedPostsLoaded(msg)
 
 	case channelMembersAddedMsg:
 		return m.applyMembersAdded(msg)
@@ -1280,6 +1295,12 @@ func (m *Model) handleWSEvent(ev *model.WebSocketEvent) tea.Cmd {
 		return m.applyTypingEvent(ev)
 	case model.WebsocketEventMultipleChannelsViewed:
 		return m.applyMultipleChannelsViewed(ev)
+	case model.WebsocketEventPreferencesChanged:
+		m.applyPreferencesEvent(ev, true)
+		return nil
+	case model.WebsocketEventPreferencesDeleted:
+		m.applyPreferencesEvent(ev, false)
+		return nil
 	case model.WebsocketEventDraftCreated, model.WebsocketEventDraftUpdated:
 		m.applyDraftUpserted(ev)
 		return nil
@@ -2019,11 +2040,23 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.historyMode {
 		return m.handleHistoryKey(msg)
 	}
+	if m.textPopup.active {
+		return m.handleTextPopupKey(msg)
+	}
+	if m.templatePicker.active {
+		return m.handleTemplatePickerKey(msg)
+	}
+	if m.savedPosts.active {
+		return m.handleSavedPostsKey(msg)
+	}
 	// Keyboard cheatsheet popup ("> Keys") is fully modal: esc/q close it,
 	// the rest scrolls the viewport. Opened from the switcher, which closes
 	// itself first, so there's no overlap.
 	if m.keysSheetMode {
 		return m.handleKeysSheetKey(msg)
+	}
+	if m.kaomojiPicker.active {
+		return m.handleKaomojiPickerKey(msg)
 	}
 	// Image-preview modal is fully modal: space/esc/q close it, ←/→ cycle the
 	// post's images, everything else is swallowed.
@@ -2456,19 +2489,28 @@ func (m Model) gotoTab(target int) (tea.Model, tea.Cmd) {
 	}
 	// Channel/DM tab: land in the messages pane (the sidebar is not a
 	// focus) and open the preferred channel.
+	return m, m.landOnTabChannel()
+}
+
+// landOnTabChannel opens the current channel tab's remembered channel (or its
+// first) into the messages pane — the shared tail of gotoTab and enter on the
+// tab strip. The candidate list is the tab's full bucket (minus the f filter),
+// not the unread-only narrowing, so a read remembered channel still opens;
+// enterChannel then re-points the sidebar cursor if the sidebar is narrowed.
+func (m *Model) landOnTabChannel() tea.Cmd {
 	m.focus = focusMessages
 	m.chanOff = 0
-	vis := m.visibleChannels()
-	if len(vis) == 0 {
+	cands := m.sidebarChannels(false)
+	if len(cands) == 0 {
 		m.channelIdx = 0
 		m.posts = nil
 		m.renderMessages()
 		m.status = "no channels in this team"
-		return m, nil
+		return nil
 	}
-	m.channelIdx = m.preferredChannelIdx(vis)
-	ch := vis[m.channelIdx]
-	return m, tea.Batch(m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id))
+	m.channelIdx = m.preferredChannelIdx(cands)
+	ch := cands[m.channelIdx]
+	return tea.Batch(m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id))
 }
 
 // switchTeamTab moves the active tab one step in `dir` (-1 left, +1 right) via
@@ -4172,21 +4214,9 @@ func (m Model) handleTeamsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.focus = focusSQL
 			return m, m.sql.input.Focus()
 		}
-		m.focus = focusMessages
-		m.chanOff = 0
 		m.filterValue = ""
 		m.filter.SetValue("")
-		vis := m.visibleChannels()
-		if len(vis) == 0 {
-			m.channelIdx = 0
-			m.posts = nil
-			m.renderMessages()
-			m.status = "no channels in this team"
-			return m, nil
-		}
-		m.channelIdx = m.preferredChannelIdx(vis)
-		ch := vis[m.channelIdx]
-		return m, tea.Batch(m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id))
+		return m, m.landOnTabChannel()
 	}
 	return m, nil
 }

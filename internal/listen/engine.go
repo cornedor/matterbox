@@ -101,6 +101,11 @@ type Options struct {
 	NotifyDelaySeconds int
 	// RespectMutes skips notifications for channels muted in Mattermost.
 	RespectMutes bool
+	// RespectDND skips notifications while the reader's Mattermost status is
+	// Do Not Disturb. Default true in config; urgent notify actions still
+	// bypass. Status is seeded at startup and kept current via status_change
+	// websocket events.
+	RespectDND bool
 	// QuietHours is the raw "HH:MM-HH:MM" suppression window (local); empty =
 	// always on. Parsed once in New.
 	QuietHours string
@@ -140,13 +145,14 @@ type Options struct {
 // Engine owns the daemon's connection lifecycle and event handling. Construct
 // with New and drive with Run.
 type Engine struct {
-	client *mm.Client
-	store  *store.Store
-	chat   *chat.Client     // nil → never summarize (send raw text)
-	tg     *telegram.Client // nil → log only, no delivery
-	me     *model.User
-	opts   Options
-	log    *log.Logger
+	client   *mm.Client
+	store    *store.Store
+	chat     *chat.Client     // nil → never summarize (send raw text)
+	tg       *telegram.Client // nil → log only, no delivery
+	me       *model.User
+	myStatus string
+	opts     Options
+	log      *log.Logger
 
 	// rules drives the reaction to each incoming post. Either the user's
 	// configured rules (opts.Rules) or, when they configured none, the
@@ -352,9 +358,10 @@ func (e *Engine) clock() time.Time {
 // ctx is cancelled. It returns ctx.Err() once all in-flight notifications have
 // drained, so a caller wiring it to SIGINT/SIGTERM gets a clean shutdown.
 func (e *Engine) Run(ctx context.Context) error {
-	e.loadCursor()      // catch-up watermark (set to now on first ever run)
-	e.refreshTeams(ctx) // team names for permalinks
-	e.refreshMuted(ctx) // best-effort initial mute set, before events flow
+	e.loadCursor()       // catch-up watermark (set to now on first ever run)
+	e.refreshTeams(ctx)  // team names for permalinks
+	e.refreshMuted(ctx)  // best-effort initial mute set, before events flow
+	e.refreshStatus(ctx) // DND gate: seed myStatus before the first notify
 	if e.inboundEnabled() {
 		e.log.Printf("two-way enabled: replies + commands accepted from chat %s", e.opts.TelegramChatID)
 		e.wg.Add(1)
@@ -387,6 +394,7 @@ func (e *Engine) Run(ctx context.Context) error {
 		attempt = 0
 		e.log.Printf("connected (%s)", e.opts.ServerURL)
 		go e.refreshMuted(ctx) // pick up mute changes made while we were away
+		e.refreshStatus(ctx)   // same goroutine as consume — myStatus is unmutexed
 		e.catchUp(ctx)         // notify mentions that arrived while disconnected
 		cerr := e.consume(ctx, wsc)
 		wsc.Close()
@@ -480,6 +488,8 @@ func (e *Engine) handle(ctx context.Context, ev *model.WebSocketEvent) {
 				e.log.Printf("delete post %s: %v", p.Id, err)
 			}
 		}
+	case model.WebsocketEventStatusChange:
+		e.applyStatusChange(ev)
 	}
 }
 
@@ -692,6 +702,43 @@ func (e *Engine) refreshMuted(ctx context.Context) {
 	e.mutedMu.Lock()
 	e.muted = set
 	e.mutedMu.Unlock()
+}
+
+// refreshStatus seeds myStatus from the server so the DND gate is accurate
+// from the first notification, not after the first status_change. Best-effort:
+// a failure leaves myStatus unchanged (empty at startup, last-known later).
+// Only called from Run / consume's goroutine — myStatus is not mutexed.
+func (e *Engine) refreshStatus(ctx context.Context) {
+	if !e.opts.RespectDND || e.me == nil || e.me.Id == "" || e.client == nil {
+		return
+	}
+	statuses, err := e.client.UsersStatuses(ctx, []string{e.me.Id})
+	if err != nil {
+		e.log.Printf("refresh status: %v", err)
+		return
+	}
+	e.myStatus = statuses[e.me.Id]
+}
+
+// applyStatusChange keeps myStatus in sync with Mattermost presence. The
+// server pushes status_change for every user the session tracks; we only
+// care about our own. Same goroutine as consume.
+func (e *Engine) applyStatusChange(ev *model.WebSocketEvent) {
+	if !e.opts.RespectDND || e.me == nil {
+		return
+	}
+	data := ev.GetData()
+	st, _ := data["status"].(string)
+	id, _ := data["user_id"].(string)
+	if id == "" {
+		if b := ev.GetBroadcast(); b != nil {
+			id = b.UserId
+		}
+	}
+	if id == "" || id != e.me.Id {
+		return
+	}
+	e.myStatus = st
 }
 
 // inQuietHoursNow reports whether the current local time is in the quiet window.

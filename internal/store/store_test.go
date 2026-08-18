@@ -189,6 +189,31 @@ func TestDeleteUncachedSeedsTombstone(t *testing.T) {
 	}
 }
 
+func TestAuthoredCountsByChannel(t *testing.T) {
+	s := tempStore(t)
+	p1 := mkPost("p1aaaaaaaaaaaaaaaaaaaaaaaa", "c1", "one", 100)
+	p2 := mkPost("p2aaaaaaaaaaaaaaaaaaaaaaaa", "c1", "two", 200)
+	p3 := mkPost("p3aaaaaaaaaaaaaaaaaaaaaaaa", "c2", "three", 300)
+	p4 := mkPost("p4aaaaaaaaaaaaaaaaaaaaaaaa", "c2", "four", 400)
+	p4.UserId = "u2"
+	if err := s.UpsertMany([]*model.Post{p1, p2, p3, p4}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	rows, err := s.AuthoredCountsByChannel("u1", 0, 0, 10)
+	if err != nil {
+		t.Fatalf("AuthoredCountsByChannel: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want 2", len(rows))
+	}
+	if rows[0].ChannelID != "c1" || rows[0].Count != 2 {
+		t.Errorf("row[0] = %+v, want c1 x2", rows[0])
+	}
+	if rows[1].ChannelID != "c2" || rows[1].Count != 1 {
+		t.Errorf("row[1] = %+v, want c2 x1", rows[1])
+	}
+}
+
 // TestDeleteWatermarkAndIdempotent covers the offline-deletion sync contract:
 // a Delete carrying the server's delete time stamps the tombstone with it and
 // advances MaxUpdateAt past it (so the next PostsSince sweep won't re-report

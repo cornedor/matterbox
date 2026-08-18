@@ -1155,6 +1155,7 @@ func (m *Model) renderThreadPostLines(p *model.Post, isRoot, grouped bool) ([]st
 			if isRoot {
 				header += "  " + replyHintStyle.Render("· root")
 			}
+			header += m.postMarks(p)
 			header = withEditedTag(header, p, width)
 			lines = append(lines, header)
 		}
@@ -1229,6 +1230,10 @@ func (m *Model) groupWithPrev(cur, prev *model.Post, inThread bool) bool {
 	if cur.EditAt != 0 {
 		return false
 	}
+	// A pinned or saved message keeps its header so its mark stays visible.
+	if cur.IsPinned || m.isSaved(cur.Id) {
+		return false
+	}
 	// A removed message renders as a tombstone with its own header, and the
 	// post below it shouldn't fold up into that tombstone either.
 	if cur.DeleteAt != 0 || prev.DeleteAt != 0 {
@@ -1244,6 +1249,22 @@ func (m *Model) groupWithPrev(cur, prev *model.Post, inThread bool) bool {
 		return false
 	}
 	return true
+}
+
+// postMarks returns the header tags for a pinned and/or saved message ("·
+// pinned", "· saved"), each in the dim reply-hint style, or "" for neither.
+func (m *Model) postMarks(p *model.Post) string {
+	if p == nil {
+		return ""
+	}
+	var out string
+	if p.IsPinned {
+		out += "  " + replyHintStyle.Render("· pinned")
+	}
+	if m.isSaved(p.Id) {
+		out += "  " + replyHintStyle.Render("· saved")
+	}
+	return out
 }
 
 // renderPostLines returns one rendered line per visual row of a post:
@@ -1284,6 +1305,7 @@ func (m *Model) renderPostLines(p *model.Post, grouped bool) ([]string, int) {
 			} else if p.ReplyCount > 0 {
 				header += "  " + replyHintStyle.Render(fmt.Sprintf("↪ %d", p.ReplyCount))
 			}
+			header += m.postMarks(p)
 			header = withEditedTag(header, p, width)
 			lines = append(lines, header)
 		}
@@ -1631,8 +1653,12 @@ func init() {
 		{func(m *Model) bool { return m.historyMode }, func(m *Model, _ int) string { return m.renderHistoryPopup() }},
 		{func(m *Model) bool { return m.keysSheetMode }, func(m *Model, _ int) string { return m.renderKeysSheetPopup() }},
 		{func(m *Model) bool { return m.keyDebugMode }, func(m *Model, _ int) string { return m.renderKeyDebugPopup() }},
+		{func(m *Model) bool { return m.textPopup.active }, func(m *Model, _ int) string { return m.renderTextPopup() }},
+		{func(m *Model) bool { return m.templatePicker.active }, func(m *Model, _ int) string { return m.renderTemplatePicker() }},
+		{func(m *Model) bool { return m.savedPosts.active }, func(m *Model, _ int) string { return m.renderSavedPosts() }},
 		{func(m *Model) bool { return m.deleteConfirmPostID != "" }, func(m *Model, _ int) string { return m.renderDeleteConfirm() }},
 		{func(m *Model) bool { return m.reactionPickerPostID != "" }, func(m *Model, _ int) string { return m.renderReactionPicker() }},
+		{func(m *Model) bool { return m.kaomojiPicker.active }, func(m *Model, _ int) string { return m.renderKaomojiPicker() }},
 		{func(m *Model) bool { return m.jiraPicker.active }, func(m *Model, h int) string { return m.renderJiraPicker(h) }},
 		{func(m *Model) bool { return m.jiraPointsActive }, func(m *Model, _ int) string { return m.renderJiraPointsInput() }},
 		{func(m *Model) bool { return m.jiraCommentActive }, func(m *Model, _ int) string { return m.renderJiraCommentInput() }},
@@ -1745,7 +1771,13 @@ func (m *Model) renderChannelsPane(height int) string {
 	if m.filterMode {
 		header = filterStyle.Render(m.filter.View())
 	} else if m.filterValue != "" {
-		header = filterStyle.Render("f " + m.filterValue)
+		prefix := ""
+		if m.sidebarUnreadOnly {
+			prefix = "unread "
+		}
+		header = filterStyle.Render("f " + prefix + m.filterValue)
+	} else if m.sidebarUnreadOnly {
+		header = filterStyle.Render("f unread")
 	} else {
 		title := "Channels"
 		if m.currentTeamID() == dmTeamID {
@@ -1757,6 +1789,14 @@ func (m *Model) renderChannelsPane(height int) string {
 	listH := innerH - 1
 	if listH < 1 {
 		listH = 1
+	}
+
+	// The unread-only list shrinks under the cursor when another session reads
+	// a channel above it; keep the cursor on the last row rather than pointing
+	// past the end (which would scroll the whole list out of view). Same kind
+	// of bookkeeping as the chanOff write below.
+	if m.sidebarUnreadOnly && m.channelIdx >= len(vis) {
+		m.channelIdx = max(len(vis)-1, 0)
 	}
 
 	// scroll window

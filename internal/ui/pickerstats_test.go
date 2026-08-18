@@ -111,32 +111,36 @@ func TestBumpPickerStats(t *testing.T) {
 	}
 }
 
-// writePickerStats → loadPickerStats round-trips both maps through the
+// writePickerStats → loadPickerStats round-trips all three maps through the
 // configured stats path.
 func TestPickerStatsRoundTrip(t *testing.T) {
 	t.Setenv(config.DirEnv, t.TempDir())
 	emoji := map[string]int{"tada": 3, "smile": 1}
 	mention := map[string]int{"bob": 2}
-	if err := writePickerStats(emoji, mention); err != nil {
+	kaomoji := map[string]int{`¯\_(ツ)_/¯`: 4}
+	if err := writePickerStats(emoji, mention, kaomoji); err != nil {
 		t.Fatalf("writePickerStats: %v", err)
 	}
-	gotE, gotM := loadPickerStats()
+	gotE, gotM, gotK := loadPickerStats()
 	if gotE["tada"] != 3 || gotE["smile"] != 1 {
 		t.Errorf("emoji round-trip mismatch: %v", gotE)
 	}
 	if gotM["bob"] != 2 {
 		t.Errorf("mention round-trip mismatch: %v", gotM)
 	}
+	if gotK[`¯\_(ツ)_/¯`] != 4 {
+		t.Errorf("kaomoji round-trip mismatch: %v", gotK)
+	}
 }
 
 // A missing stats file degrades to empty (non-nil) maps rather than erroring.
 func TestLoadPickerStatsMissing(t *testing.T) {
 	t.Setenv(config.DirEnv, t.TempDir())
-	e, mn := loadPickerStats()
-	if e == nil || mn == nil {
+	e, mn, k := loadPickerStats()
+	if e == nil || mn == nil || k == nil {
 		t.Fatal("expected non-nil maps for missing file")
 	}
-	if len(e) != 0 || len(mn) != 0 {
-		t.Errorf("expected empty maps, got %v / %v", e, mn)
+	if len(e) != 0 || len(mn) != 0 || len(k) != 0 {
+		t.Errorf("expected empty maps, got %v / %v / %v", e, mn, k)
 	}
 }

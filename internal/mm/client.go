@@ -212,6 +212,21 @@ func (c *Client) PinnedPosts(ctx context.Context, channelID string) (*model.Post
 	return pl, nil
 }
 
+// SavedPosts returns the current user's Mattermost saved messages, newest first.
+func (c *Client) SavedPosts(ctx context.Context, userID string, page, perPage int) ([]*model.Post, error) {
+	pl, _, err := c.c.GetFlaggedPostsForUser(ctx, userID, page, perPage)
+	if err != nil {
+		return nil, fmt.Errorf("get saved posts: %w", err)
+	}
+	out := make([]*model.Post, 0, len(pl.Order))
+	for _, id := range pl.Order {
+		if p := pl.Posts[id]; p != nil {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
 // ChannelUsers returns the user records of every member of the channel,
 // paging until the list is exhausted (the server caps per_page). Unlike
 // ChannelMembers (membership rows with counters) this carries full user
@@ -267,6 +282,65 @@ func (c *Client) SetChannelMuted(ctx context.Context, userID, channelID string, 
 	props := map[string]string{model.MarkUnreadNotifyProp: level}
 	if _, err := c.c.UpdateChannelNotifyProps(ctx, channelID, userID, props); err != nil {
 		return fmt.Errorf("update channel notify props: %w", err)
+	}
+	return nil
+}
+
+// PinPost pins a post so it appears in the channel's pinned-posts list.
+func (c *Client) PinPost(ctx context.Context, postID string) error {
+	if _, err := c.c.PinPost(ctx, postID); err != nil {
+		return fmt.Errorf("pin post: %w", err)
+	}
+	return nil
+}
+
+// UnpinPost removes a post from the channel's pinned-posts list.
+func (c *Client) UnpinPost(ctx context.Context, postID string) error {
+	if _, err := c.c.UnpinPost(ctx, postID); err != nil {
+		return fmt.Errorf("unpin post: %w", err)
+	}
+	return nil
+}
+
+// SavedPostIDs returns the ids of every post in the current user's saved
+// messages — the "flagged_post" preference category, one preference per post.
+func (c *Client) SavedPostIDs(ctx context.Context, userID string) ([]string, error) {
+	prefs, _, err := c.c.GetPreferencesByCategory(ctx, userID, model.PreferenceCategoryFlaggedPost)
+	if err != nil {
+		return nil, fmt.Errorf("get saved post ids: %w", err)
+	}
+	ids := make([]string, 0, len(prefs))
+	for _, p := range prefs {
+		if p.Name != "" {
+			ids = append(ids, p.Name)
+		}
+	}
+	return ids, nil
+}
+
+// SavePost saves a post to the current user's Mattermost saved-messages list.
+func (c *Client) SavePost(ctx context.Context, userID, postID string) error {
+	prefs := model.Preferences{model.Preference{
+		UserId:   userID,
+		Category: model.PreferenceCategoryFlaggedPost,
+		Name:     postID,
+		Value:    "true",
+	}}
+	if _, err := c.c.UpdatePreferences(ctx, userID, prefs); err != nil {
+		return fmt.Errorf("save post: %w", err)
+	}
+	return nil
+}
+
+// UnsavePost removes a post from the current user's Mattermost saved-messages list.
+func (c *Client) UnsavePost(ctx context.Context, userID, postID string) error {
+	prefs := model.Preferences{model.Preference{
+		UserId:   userID,
+		Category: model.PreferenceCategoryFlaggedPost,
+		Name:     postID,
+	}}
+	if _, err := c.c.DeletePreferences(ctx, userID, prefs); err != nil {
+		return fmt.Errorf("unsave post: %w", err)
 	}
 	return nil
 }

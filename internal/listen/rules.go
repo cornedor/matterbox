@@ -1143,6 +1143,10 @@ func (e *Engine) notifyGate(ctx context.Context, ev *model.WebSocketEvent, p *mo
 		return
 	}
 	if !opts.urgent {
+		if e.opts.RespectDND && e.myStatus == model.StatusDnd {
+			e.log.Printf("notifications suppressed while status is dnd")
+			return
+		}
 		if e.opts.RespectMutes && e.isMuted(p.ChannelId) {
 			e.log.Printf("mention in muted channel %s — skipped", p.ChannelId)
 			return

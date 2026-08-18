@@ -484,6 +484,8 @@ func (m Model) handleFeedKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Matches(msg, m.keys.OpenChannel):
 		return m.openFeedEntry()
+	case key.Matches(msg, m.keys.FeedReply):
+		return m.replyFromFeedEntry()
 	case key.Matches(msg, m.keys.MarkRead):
 		return m.markFeedEntryRead()
 	case key.Matches(msg, m.keys.Refresh):
@@ -498,18 +500,21 @@ func (m Model) handleFeedKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// openFeedEntry opens the selected bubble's channel (which marks it read,
-// as a normal channel open does), jumping to the first unread message.
-// The entry is dropped from the feed since it's no longer unread.
-func (m Model) openFeedEntry() (tea.Model, tea.Cmd) {
+// enterFeedEntry opens the selected bubble's channel exactly as a sidebar
+// open does (enterChannel via openChannelLoadCmd — so openChannelID, the
+// composer target, the title and live routing all move), jumping to its first
+// unread message. The bubble is dropped from the feed since the open marks
+// the channel read. Shared by open (enter) and reply (R). Returns the entry
+// and the load command; ok=false when nothing usable is selected.
+func (m *Model) enterFeedEntry() (e feedEntry, cmd tea.Cmd, ok bool) {
 	if m.feed.idx < 0 || m.feed.idx >= len(m.feed.entries) {
-		return m, nil
+		return feedEntry{}, nil, false
 	}
-	e := m.feed.entries[m.feed.idx]
+	e = m.feed.entries[m.feed.idx]
 	ch := m.findChannel(e.channelID)
 	if ch == nil {
 		m.status = "channel not in the local list"
-		return m, nil
+		return feedEntry{}, nil, false
 	}
 	m.removeFeedEntry(e.channelID)
 	m.switchToChannelHomeTeam(ch)
@@ -519,7 +524,34 @@ func (m Model) openFeedEntry() (tea.Model, tea.Cmd) {
 	if len(e.unread) > 0 {
 		m.pendingJumpPostID = e.unread[0].Id
 	}
-	return m, tea.Batch(m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id))
+	return e, tea.Batch(m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id)), true
+}
+
+// openFeedEntry opens the selected bubble's channel (enter).
+func (m Model) openFeedEntry() (tea.Model, tea.Cmd) {
+	_, cmd, ok := m.enterFeedEntry()
+	if !ok {
+		return m, nil
+	}
+	return m, cmd
+}
+
+// replyFromFeedEntry (R) opens the selected bubble's channel like
+// openFeedEntry and then the thread of its newest unread message — the one
+// at the bottom of the bubble, the message you're answering (the oldest may
+// be an old thread's reply, or above the bubble's cap and not shown at all)
+// — with the composer focused on the reply. So the reply lands in that
+// thread, in that channel, not wherever the previous open channel was.
+func (m Model) replyFromFeedEntry() (tea.Model, tea.Cmd) {
+	e, cmd, ok := m.enterFeedEntry()
+	if !ok {
+		return m, nil
+	}
+	if len(e.unread) == 0 {
+		return m, cmd
+	}
+	next, threadCmd := m.openThreadForPost(e.unread[len(e.unread)-1])
+	return next, tea.Batch(cmd, threadCmd)
 }
 
 // markFeedEntryRead clears the selected channel's unread/mention state on
@@ -867,6 +899,7 @@ func (m *Model) feedHints() string {
 	}
 	if len(m.feed.entries) > 0 {
 		add(m.keys.OpenChannel, "open")
+		add(m.keys.FeedReply, "reply")
 		add(m.keys.MarkRead, "mark read")
 		add(m.keys.Refresh, "refresh")
 	}

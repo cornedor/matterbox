@@ -140,6 +140,7 @@ func runListen(ctx context.Context, out io.Writer, notifySelf bool) error {
 		NotifyDMs:          cfg.Listen.NotifyDMs != nil && *cfg.Listen.NotifyDMs,
 		NotifyDelaySeconds: notifyDelay,
 		RespectMutes:       cfg.Listen.RespectMutes != nil && *cfg.Listen.RespectMutes,
+		RespectDND:         cfg.Listen.RespectDND != nil && *cfg.Listen.RespectDND,
 		QuietHours:         cfg.Listen.QuietHours,
 		TwoWay:             cfg.Listen.TwoWay != nil && *cfg.Listen.TwoWay,
 		Rules:              rules,
@@ -156,8 +157,8 @@ func runListen(ctx context.Context, out io.Writer, notifySelf bool) error {
 	}
 
 	logger.Printf("matterbox listen: starting as @%s on %s", me.Username, cfg.ServerURL)
-	logger.Printf("matterbox listen: cache=%s notify_on_mention=%t notify_dms=%t notify_delay=%ds summarize=%t notify_self=%t respect_mutes=%t two_way=%t ask=%t quiet_hours=%q telegram=%s rules=%s",
-		p, opts.NotifyOnMention, opts.NotifyDMs, opts.NotifyDelaySeconds, opts.Summarize, opts.NotifySelf, opts.RespectMutes, opts.TwoWay,
+	logger.Printf("matterbox listen: cache=%s notify_on_mention=%t notify_dms=%t notify_delay=%ds summarize=%t notify_self=%t respect_mutes=%t respect_dnd=%t two_way=%t ask=%t quiet_hours=%q telegram=%s rules=%s",
+		p, opts.NotifyOnMention, opts.NotifyDMs, opts.NotifyDelaySeconds, opts.Summarize, opts.NotifySelf, opts.RespectMutes, opts.RespectDND, opts.TwoWay,
 		opts.AskEndpoint != "" && opts.AskModel != "", cfg.Listen.QuietHours, telegramState(tgClient, cfg.Telegram.ChatID), rulesState(len(rules)))
 
 	eng := listen.New(client, st, chatClient, tgClient, me, opts, logger)
