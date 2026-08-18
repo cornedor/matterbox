@@ -476,10 +476,10 @@ func (m Model) handleFeedKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.feed.idx = len(m.feed.entries) - 1
 		m.renderFeedResults()
 		return m, nil
-	case msg.String() == "pgup":
+	case key.Matches(msg, m.keys.PageUp):
 		m.feed.view.ScrollUp(m.feed.view.Height() / 2)
 		return m, nil
-	case msg.String() == "pgdown":
+	case key.Matches(msg, m.keys.PageDown):
 		m.feed.view.ScrollDown(m.feed.view.Height() / 2)
 		return m, nil
 	case key.Matches(msg, m.keys.OpenChannel):

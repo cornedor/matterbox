@@ -118,7 +118,7 @@ func (m Model) openRefForPost(p *model.Post) (tea.Model, tea.Cmd) {
 	m.refs = refs
 	m.refIdx = 0
 	m.focus = focusRef
-	m.status = refStatusHint(refs[0], len(refs))
+	m.status = m.refStatusHint(refs[0], len(refs))
 	cmd := m.loadCurrentRef()
 	m.resizeMessagesViewport()
 	return m, tea.Batch(threadCmd, cmd)
@@ -142,15 +142,24 @@ func refCycleHint(n int) string {
 }
 
 // refStatusHint builds the status-bar line for the current ref: the keys that
-// act on it (provider-specific) plus the shared o/r/esc affordances.
-func refStatusHint(r reference, n int) string {
+// act on it (provider-specific) plus the shared o/r/esc affordances. The key
+// names come from the live bindings, so a rebound provider key is advertised
+// as the user bound it.
+func (m *Model) refStatusHint(r reference, n int) string {
+	shared := helpKey(m.keys.OpenAttach) + " browser · " + helpKey(m.keys.Refresh) + " refresh · esc closes"
 	switch r.kind {
 	case refJira:
-		return "s/p/P/a edit · c comment · R reply · o browser · r refresh · esc closes" + refCycleHint(n)
+		edit := strings.Join([]string{
+			helpKey(m.keys.JiraStatus), helpKey(m.keys.JiraPriority),
+			helpKey(m.keys.JiraPoints), helpKey(m.keys.JiraAssignee),
+		}, "/")
+		return edit + " edit · " + helpKey(m.keys.JiraComment) + " comment · " +
+			helpKey(m.keys.JiraReply) + " reply · " + shared + refCycleHint(n)
 	case refGitLab:
-		return "A approve · M merge · o browser · r refresh · esc closes" + refCycleHint(n)
+		return helpKey(m.keys.GitLabApprove) + " approve · " + helpKey(m.keys.GitLabMerge) +
+			" merge · " + shared + refCycleHint(n)
 	}
-	return "o browser · r refresh · esc closes" + refCycleHint(n)
+	return shared + refCycleHint(n)
 }
 
 // loadCurrentRef puts the panel into its loading state for the current ref and
@@ -211,7 +220,7 @@ func (m Model) cycleRef(delta int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.refIdx = ((m.refIdx+delta)%n + n) % n
-	m.status = refStatusHint(m.refs[m.refIdx], n)
+	m.status = m.refStatusHint(m.refs[m.refIdx], n)
 	cmd := m.loadCurrentRef()
 	return m, cmd
 }
@@ -281,20 +290,20 @@ func (m Model) handleRefKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// through to scroll the viewport.
 	r := m.currentRef()
 	if r != nil && r.kind == refJira && m.jiraIssue != nil {
-		switch msg.String() {
-		case "s":
+		switch {
+		case key.Matches(msg, m.keys.JiraStatus):
 			return m, m.openJiraStatusPicker()
-		case "p":
+		case key.Matches(msg, m.keys.JiraPriority):
 			return m, m.openJiraPriorityPicker()
-		case "P":
+		case key.Matches(msg, m.keys.JiraPoints):
 			m.openJiraPointsInput()
 			return m, nil
-		case "a":
+		case key.Matches(msg, m.keys.JiraAssignee):
 			return m, m.openJiraAssigneePicker()
-		case "c":
+		case key.Matches(msg, m.keys.JiraComment):
 			m.openJiraCommentInput()
 			return m, nil
-		case "R":
+		case key.Matches(msg, m.keys.JiraReply):
 			if len(m.jiraIssue.Comments) == 0 {
 				m.status = "no comments to reply to"
 				return m, nil
@@ -304,12 +313,12 @@ func (m Model) handleRefKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if r != nil && r.kind == refGitLab && m.glMR != nil {
-		switch msg.String() {
-		case "A":
+		switch {
+		case key.Matches(msg, m.keys.GitLabApprove):
 			return m.openGitLabApprove()
-		case "M":
+		case key.Matches(msg, m.keys.GitLabMerge):
 			return m.openGitLabMerge()
-		case "t":
+		case key.Matches(msg, m.keys.GitLabJobs):
 			m.glJobsExpanded = !m.glJobsExpanded
 			m.refView.GotoTop()
 			m.renderRef()

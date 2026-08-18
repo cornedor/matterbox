@@ -308,7 +308,7 @@ func (m Model) handleSavedPostsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	p := vis[m.savedPosts.idx].post
 	switch {
-	case msg.String() == "d" || msg.String() == "D":
+	case key.Matches(msg, m.keys.SheetRemove):
 		if m.me == nil {
 			return m, nil
 		}
@@ -346,5 +346,5 @@ func (m *Model) renderSavedPosts() string {
 	row := func(i int) string {
 		return vis[i].channel + " · " + m.postAuthorName(vis[i].post) + ": " + vis[i].text
 	}
-	return m.renderListModal("Saved messages", "enter opens · d unsaves · esc closes", body, len(vis), idx, row)
+	return m.renderListModal("Saved messages", helpKey(m.keys.OpenChannel)+" opens · "+helpKey(m.keys.SheetRemove)+" unsaves · esc closes", body, len(vis), idx, row)
 }

@@ -480,7 +480,7 @@ func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.renderSearchResults()
 		}
 		return m, nil
-	case msg.String() == "enter":
+	case key.Matches(msg, m.keys.ApplyOpen):
 		// While an AI run is in flight, enter is a no-op (it would restart it).
 		if m.aiSearch.phase == aiSearchRunning {
 			return m, nil
@@ -584,7 +584,7 @@ func (m Model) handleAIDoneKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.renderSearchResults()
 		}
 		return m, nil
-	case msg.String() == "enter":
+	case key.Matches(msg, m.keys.ApplyOpen):
 		if m.search.idx <= -1 {
 			return m, m.startAIFollowup()
 		}

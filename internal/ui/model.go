@@ -1341,54 +1341,134 @@ const statusPollInterval = 60 * time.Second
 // ShortHelp returns the bindings shown on the footer's single-line help.
 // The selection depends on which pane has focus so the prompt always
 // matches the keys that will work right now.
-func (m Model) ShortHelp() []key.Binding {
+//
+// Modal states (and the channel filter) take their line straight from the
+// context ladder's claims: a modal owns every key, so the layer that declares
+// what it swallows is also the honest source for what to advertise. The
+// reading panes stay curated — focus:messages alone claims two dozen keys, far
+// more than one line holds — with `?` and the "> Keys" sheet behind them.
+//
+// Pointer receiver: Model is large and this runs on every render (see
+// PERF_NOTES.md); *Model satisfies help.KeyMap, and renderFooter passes one.
+func (m *Model) ShortHelp() []key.Binding {
 	k := m.keys
+	if m.inModal() || m.filterMode {
+		if bs := m.claimedShortHelp(); len(bs) > 0 {
+			return bs
+		}
+	}
 	switch {
-	case m.switcherMode:
-		return []key.Binding{k.ApplyOpen, k.Up, k.Down, k.CancelEdit}
-	case m.filterMode:
-		return []key.Binding{k.ApplyOpen, k.CancelEdit}
+	case m.popupOpenInComposer():
+		// An autocomplete popup (@mention, :emoji, /command, ```language, or an
+		// effect) owns the list keys and tab/enter while it is up.
+		return []key.Binding{k.InputUp, k.InputDown, popupAcceptKey, popupDismissKey, k.CommandPicker}
 	case m.focus == focusInput:
-		return []key.Binding{k.Send, k.NewLine, k.Paste, k.LeaveInput, k.Tab}
+		return []key.Binding{k.Send, k.NewLine, k.Paste, k.Undo, k.ClearInput, k.LeaveInput, k.Tab, k.CommandPicker}
 	case m.focus == focusMessages:
 		// Concise footer: the primary actions only (the old 23-binding line
-		// ellipsized after ~6). `?` opens the full, grouped help.
-		return []key.Binding{k.Compose, k.OpenThread, k.ChannelInfo, k.SearchHere, k.Filter, k.NavTeam, k.Help}
+		// ellipsized after ~6). The two ways out of it — `?` for the expanded
+		// help and f1 for the palette — come before the situational keys, so a
+		// narrow terminal truncates the extras rather than the discovery keys.
+		return []key.Binding{k.Compose, k.OpenThread, k.SearchHere, k.Filter, k.Help, k.CommandPicker, k.ChannelInfo, k.React, k.NavTeam}
 	case m.focus == focusThread:
-		return []key.Binding{k.Compose, k.SearchHere, k.CloseThread, k.NavTeam, k.Help}
+		return []key.Binding{k.Compose, k.CloseThread, k.SearchHere, k.Help, k.CommandPicker, k.React, k.NavTeam}
 	case m.focus == focusRef:
-		return []key.Binding{k.Up, k.Down, k.OpenAttach, k.Refresh, k.OpenRef, k.NavTeam, k.Help}
+		return []key.Binding{k.Up, k.Down, k.OpenAttach, k.Refresh, k.OpenRef, k.Help, k.NavTeam}
+	case m.focus == focusInfo && m.infoMode == infoModeMedia:
+		return []key.Binding{k.Up, k.Down, k.OpenAttach, k.Preview, k.Download, k.ChannelInfo, k.Help}
 	case m.focus == focusInfo:
 		// k.ChannelInfo doubles as the close key, mirroring the ref pane's OpenRef.
-		return []key.Binding{k.Up, k.Down, k.OpenChannel, k.ChannelInfo, k.NavTeam, k.Help}
+		return []key.Binding{k.Up, k.Down, k.OpenChannel, k.ChannelInfo, k.Help, k.NavTeam}
 	case m.focus == focusAttachments:
-		return []key.Binding{k.Left, k.Right, k.OpenAttach, k.AttachRemove, k.Tab, k.NavTeam, k.Help, k.Quit}
+		return []key.Binding{k.Left, k.Right, k.OpenAttach, k.AttachRemove, k.Tab, k.Help, k.NavTeam, k.Quit}
 	case m.focus == focusTeams:
-		return []key.Binding{k.Tab, k.LoadTeam, k.MoveTeamLeft, k.MoveTeamRight, k.SearchHere, k.NavTeam, k.Switcher, k.Search, k.Help, k.Quit}
+		return []key.Binding{k.Tab, k.LoadTeam, k.MoveTeamLeft, k.MoveTeamRight, k.SearchHere, k.Help, k.NavTeam, k.Switcher, k.CommandPicker, k.Quit}
 	case m.focus == focusSearch:
-		return []key.Binding{k.Up, k.Down, k.ApplyOpen, k.CancelEdit, k.Tab, k.Help, k.Quit}
+		// The hit list hangs off a text input, so ↑/↓ + ctrl+p/ctrl+n move it —
+		// never the reading panes' k/j, which type into the query. `?` and q
+		// type here too, so the footer can't offer help / quit.
+		return []key.Binding{k.InputUp, k.InputDown, k.ApplyOpen, k.CancelEdit, k.Tab, k.Paste, k.NavTeam, k.CommandPicker}
 	case m.focus == focusFeed:
-		return []key.Binding{k.Up, k.Down, k.OpenChannel, k.MarkRead, k.Refresh, k.FeedMuted, k.Tab, k.NavTeam, k.Help, k.Quit}
+		return []key.Binding{k.Up, k.Down, k.OpenChannel, k.MarkRead, k.Help, k.FeedReply, k.Refresh, k.FeedMuted, k.Tab, k.NavTeam, k.Quit}
 	case m.focus == focusSQL:
-		return []key.Binding{k.Send, k.NewLine, k.Tab, k.NavTeam, k.Help, k.Quit}
+		// A query is text: like the search box, this pane swallows ? and q.
+		return []key.Binding{k.Send, k.NewLine, k.Paste, k.Tab, k.NavTeam, k.CommandPicker}
 	case m.focus == focusSQLResults:
-		return []key.Binding{k.Up, k.Down, k.OpenAttach, k.Preview, k.Download, k.CopyMD, k.Tab, k.Help, k.Quit}
+		return []key.Binding{k.Up, k.Down, k.OpenAttach, k.Preview, k.Download, k.Help, k.CopyMD, k.Tab, k.Quit}
 	}
-	return []key.Binding{k.Tab, k.NavTeam, k.Switcher, k.Search, k.SearchHere, k.Help, k.Quit}
+	return []key.Binding{k.Tab, k.NavTeam, k.Switcher, k.CommandPicker, k.Search, k.SearchHere, k.Help, k.Quit}
 }
 
-// FullHelp returns the bindings grouped into columns for the expanded
-// help view (toggled with `?`). Columns mirror the panes of the UI.
-func (m Model) FullHelp() [][]key.Binding {
-	k := m.keys
-	return [][]key.Binding{
-		{k.Tab, k.ShiftTab, k.NavTeam, k.NavDM, k.NavFeed, k.Switcher, k.Search, k.SearchHere, k.Help, k.Quit},
-		{k.Up, k.Down, k.Home, k.End, k.Left, k.Right, k.PageDown, k.PageUp, k.NextHit, k.PrevHit, k.PrevOwnMsg},
-		{k.NavChanPrev, k.NavChanNext, k.NavTeamPrev, k.NavTeamNext},
-		{k.Filter, k.ClearFilter, k.OpenChannel, k.OpenThread, k.ReplyInThread, k.OpenRef, k.ChannelInfo, k.CloseThread},
-		{k.OpenAttach, k.Download, k.CopyMD, k.CopyCode, k.EditPost, k.DeletePost, k.React, k.ShowHistory, k.Compose, k.Send, k.NewLine, k.LeaveInput},
-		{k.Paste, k.AttachRemove},
+// The composer autocomplete popups match these literally (see handleInputKey);
+// built once because ShortHelp runs on every render.
+var (
+	popupAcceptKey  = hardwired("accept", "tab", "enter")
+	popupDismissKey = hardwired("dismiss", "esc")
+)
+
+// claimedShortHelp builds the one-line footer for whichever modal / filter
+// layer owns the keyboard: the claims of the topmost active terminal context,
+// deduped by description (↑ is listed once even though the layer answers to
+// both the reading and the input-list variants).
+func (m *Model) claimedShortHelp() []key.Binding {
+	reach := reachableContexts(m)
+	if len(reach) == 0 {
+		return nil
 	}
+	top := reach[len(reach)-1]
+	if !top.terminal {
+		return nil
+	}
+	var out []key.Binding
+	seen := map[string]bool{}
+	for _, b := range top.claims(m) {
+		if len(b.Keys()) == 0 || seen[b.Help().Desc] {
+			continue
+		}
+		seen[b.Help().Desc] = true
+		out = append(out, b)
+	}
+	return out
+}
+
+// helpColumnRows caps how tall one column of the expanded help gets. A layer
+// with more bindings than this flows into further columns instead of growing
+// the footer down over the transcript.
+const helpColumnRows = 6
+
+// FullHelp returns the bindings grouped into columns for the expanded help
+// view (toggled with `?`). The columns are read off the context ladder for the
+// *current* state — the pane or modal that owns the keyboard first, then the
+// globals above it — so the expanded footer lists exactly the keys that work
+// right now and can't drift from the handlers the way a hand-written table
+// does. The "> Keys" sheet remains the complete, scrollable list.
+func (m *Model) FullHelp() [][]key.Binding {
+	reach := reachableContexts(m)
+	var cols [][]key.Binding
+	var col []key.Binding
+	seen := map[string]bool{}
+	// Reversed: reachableContexts is highest-precedence first (the globals),
+	// but the focused pane's own keys are what the reader wants leftmost.
+	for i := len(reach) - 1; i >= 0; i-- {
+		for _, b := range reach[i].claims(m) {
+			if len(b.Keys()) == 0 {
+				continue
+			}
+			id := b.Help().Key + "\x00" + b.Help().Desc
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			col = append(col, b)
+			if len(col) == helpColumnRows {
+				cols, col = append(cols, col), nil
+			}
+		}
+		if len(col) > 0 { // don't run two layers together in one column
+			cols, col = append(cols, col), nil
+		}
+	}
+	return cols
 }
 
 func (m Model) Init() tea.Cmd {

@@ -2700,6 +2700,10 @@ func (m *Model) renderFooter() string {
 
 	left := footerStyle.Render(prefix) + m.help.View(m)
 	if m.help.ShowAll {
+		// The expanded help lists every layer that is live right now, but a
+		// narrow terminal still ellipsizes the rightmost columns — so point at
+		// the sheet that never truncates.
+		left += "\n" + footerStyle.Render(helpKey(m.keys.CommandPicker)+" › Keys — the full cheatsheet")
 		// Full help is multi-line; right-align the status on the last row.
 		gap := m.width - lipgloss.Width(lastLine(left)) - lipgloss.Width(right) - lipgloss.Width(rightDot)
 		if gap < 1 {

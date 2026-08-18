@@ -3,8 +3,11 @@ package ui
 import (
 	"strings"
 
+	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+
+	"matterbox/internal/editor"
 )
 
 // keysSheetSections lists, in display order, the context layers shown in the
@@ -14,30 +17,50 @@ import (
 // section with no bound keys is dropped, so e.g. arrow-nav disabled or a layer
 // emptied by overrides simply doesn't appear.
 var keysSheetSections = []struct {
-	title    string
-	contexts []string                      // rows pulled from these contexts' claims
-	rows     func(m *Model) []keysSheetRow // alternative source (used when set)
+	title string
+	// contexts names the layers this section documents. Their claims are the
+	// section's rows — unless rows is set, in which case the names only record
+	// which layers the section covers (keysSheetCoversEveryContext checks that
+	// every layer in the ladder is documented somewhere).
+	contexts []string
+	rows     func(m *Model) []keysSheetRow // alternative row source
 }{
-	{title: "Global", contexts: []string{"global:reading", "global:switcher-chord"}},
+	{title: "Global", contexts: []string{"global:reading", "global:switcher-chord", "global:command-picker", "global:team-jump"}},
 	// Sidebar nav comes straight from the routes so each direction is one row
 	// merging its arrow alias + vim key, honouring vim_nav (the global:nav
 	// context splits them and its bindings carry no descriptions).
-	{title: "Sidebar navigation", rows: (*Model).navSheetRows},
+	{title: "Sidebar navigation", contexts: []string{"global:nav"}, rows: (*Model).navSheetRows},
 	{title: "Messages", contexts: []string{"focus:messages"}},
 	{title: "Thread", contexts: []string{"focus:thread"}},
 	{title: "Reference (Jira / GitLab)", contexts: []string{"focus:ref"}},
-	// The preview modal's own keys are hardwired in handlePreviewKey (not bound
-	// through the registry), so list them from a synthetic source (rows func),
-	// like navSheetRows above.
-	{title: "Image preview", rows: (*Model).previewSheetRows},
+	{title: "Jira editors", contexts: []string{"modal:jira-picker", "modal:jira-points", "modal:jira-comment"}},
+	{title: "Channel info / media", contexts: []string{"focus:info", "focus:info-media"}},
+	// The preview modal's dismiss keys are hardwired in handlePreviewKey, so the
+	// rows are built from a synthetic source (rows func) that merges them with
+	// the bound toggle, like navSheetRows above.
+	{title: "Image preview", contexts: []string{"modal:image-preview"}, rows: (*Model).previewSheetRows},
 	{title: "Compose", contexts: []string{"focus:input"}},
+	// The editing keys live in internal/editor's own keymap, below every
+	// context (they are what a text input does with the keys nothing above it
+	// claimed), so they come from the live editor rather than a context.
+	{title: "Text editing (composer · SQL · comments)", rows: (*Model).editorSheetRows},
 	{title: "Attachments", contexts: []string{"focus:attachments"}},
 	{title: "Teams", contexts: []string{"focus:teams"}},
 	{title: "Unread feed", contexts: []string{"focus:feed"}},
 	{title: "Search", contexts: []string{"focus:search"}},
+	{title: "SQL tab", contexts: []string{"focus:sql", "focus:sqlresults"}},
 	{title: "Channel filter", contexts: []string{"mode:filter"}},
 	{title: "Channel switcher", contexts: []string{"modal:switcher"}},
+	{title: "Saved messages · templates · kaomoji", contexts: []string{"modal:saved-posts", "modal:template-picker", "modal:kaomoji-picker"}},
+	{title: "Reaction picker", contexts: []string{"modal:reaction-picker"}},
+	{title: "Open-target / code-block picker", contexts: []string{"modal:open-picker", "modal:code-picker"}},
+	{title: "Edit history", contexts: []string{"modal:history"}},
+	{title: "Channel summary", contexts: []string{"modal:summary"}},
+	{title: "Poll dialog", contexts: []string{"modal:poll-dialog"}},
+	{title: "Channel forms (create / edit / join)", contexts: []string{"modal:channel-form"}},
 	{title: "Delete dialog", contexts: []string{"modal:delete-confirm"}},
+	{title: "Confirm dialogs (approve / merge / archive / link)", contexts: []string{"modal:confirm"}},
+	{title: "Sheets, popups & games", contexts: []string{"modal:keys-sheet", "modal:text-popup", "modal:key-debug", "modal:game"}},
 }
 
 // navSheetRows builds one cheatsheet row per sidebar-nav direction, merging the
@@ -71,6 +94,64 @@ func (m *Model) previewSheetRows() []keysSheetRow {
 	cycleKeys := append(append([]string(nil), m.keys.Left.Keys()...), m.keys.Right.Keys()...)
 	if len(cycleKeys) > 0 {
 		rows = append(rows, keysSheetRow{keys: prettyKeysAll(cycleKeys), desc: "previous / next image"})
+	}
+	return rows
+}
+
+// editorSheetRows lists the composer's editing keys — the emacs-style motions
+// and kills internal/editor handles once no layer above it claimed the key.
+// They're read off the live keymap, so the ctrl+←/→ word-jump that appears when
+// the sidebar nav isn't on ctrl shows up here too. A Model built without an
+// editor (tests) falls back to the defaults rather than dropping the section.
+func (m *Model) editorSheetRows() []keysSheetRow {
+	km := m.input.KeyMap
+	if len(km.LineStart.Keys()) == 0 {
+		km = editor.DefaultKeyMap()
+	}
+	pairs := []struct {
+		desc string
+		bs   []key.Binding
+	}{
+		{"character left / right", []key.Binding{km.CharacterBackward, km.CharacterForward}},
+		{"word left / right", []key.Binding{km.WordBackward, km.WordForward}},
+		{"start / end of line", []key.Binding{km.LineStart, km.LineEnd}},
+		{"start / end of the draft", []key.Binding{km.InputBegin, km.InputEnd}},
+		{"delete character back / forward", []key.Binding{km.DeleteCharacterBackward, km.DeleteCharacterForward}},
+		{"delete word back / forward", []key.Binding{km.DeleteWordBackward, km.DeleteWordForward}},
+		{"kill to end of line", []key.Binding{km.DeleteAfterCursor}},
+		{"kill to start of line", []key.Binding{km.DeleteBeforeCursor}},
+		{"next / previous cell (inside a table)", []key.Binding{km.NextTableCell, km.PrevTableCell}},
+	}
+	// A key a global layer takes while composing never reaches the editor:
+	// ctrl+p always belongs to the switcher, and under vim_nav=global so do
+	// ctrl+h/j/k/l — which is exactly why "reading" exists as an option. Don't
+	// advertise what won't happen; a row left with no keys drops out.
+	stolen := keySet([]key.Binding{m.keys.Switcher})
+	for _, r := range m.keys.navRoutes {
+		for _, k := range r.arrow.Keys() {
+			stolen[k] = true
+		}
+		if m.vimNav == vimNavGlobal {
+			for _, k := range r.vim.Keys() {
+				stolen[k] = true
+			}
+		}
+	}
+
+	var rows []keysSheetRow
+	for _, p := range pairs {
+		var keys []string
+		for _, b := range p.bs {
+			for _, k := range b.Keys() {
+				if !stolen[k] && !inList(keys, k) {
+					keys = append(keys, k)
+				}
+			}
+		}
+		if len(keys) == 0 {
+			continue
+		}
+		rows = append(rows, keysSheetRow{keys: prettyKeysAll(keys), desc: p.desc})
 	}
 	return rows
 }
@@ -136,7 +217,11 @@ func (m *Model) keysSheetGroups() []keysSheetGroup {
 		if sec.rows != nil {
 			rows = sec.rows(m)
 		} else {
-			seen := map[string]bool{}
+			// One row per description: a layer often answers to two key sets for
+			// the same action (↑/k in a list, ↑/ctrl+p when it hangs off an
+			// input), and two merged layers repeat each other's rows. Union the
+			// keys instead of printing "up" twice.
+			byDesc := map[string][]string{}
 			for _, cname := range sec.contexts {
 				c, ok := byName[cname]
 				if !ok {
@@ -147,15 +232,15 @@ func (m *Model) keysSheetGroups() []keysSheetGroup {
 					if len(keys) == 0 {
 						continue
 					}
-					label := prettyKeysAll(keys)
 					desc := b.Help().Desc
-					k := label + "\x00" + desc
-					if seen[k] {
-						continue
+					if _, ok := byDesc[desc]; !ok {
+						rows = append(rows, keysSheetRow{desc: desc})
 					}
-					seen[k] = true
-					rows = append(rows, keysSheetRow{keys: label, desc: desc})
+					byDesc[desc] = appendNewKeys(byDesc[desc], keys)
 				}
+			}
+			for i := range rows {
+				rows[i].keys = prettyKeysAll(byDesc[rows[i].desc])
 			}
 		}
 		if len(rows) > 0 {
@@ -163,6 +248,17 @@ func (m *Model) keysSheetGroups() []keysSheetGroup {
 		}
 	}
 	return groups
+}
+
+// appendNewKeys appends the keys of add that dst doesn't already carry,
+// preserving the order they were declared in.
+func appendNewKeys(dst, add []string) []string {
+	for _, k := range add {
+		if !inList(dst, k) {
+			dst = append(dst, k)
+		}
+	}
+	return dst
 }
 
 // renderKeysSheet populates the popup viewport: a bold heading per group, then

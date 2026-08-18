@@ -138,9 +138,11 @@ Channels are addressed as `team/channel` (e.g. `eng/general`) or `@username` for
 
 ## Keybindings
 
-Press `?` in the TUI for the full, grouped list; the footer shows the primary
-keys for the focused pane. Three knobs under `keybindings:` in `config.yaml`
-tune them:
+The footer shows the primary keys for whatever has the keyboard — the focused
+pane, or the modal on top of it. `?` expands it into every key that works right
+now, grouped by layer; `f1 › Keys` opens the complete, scrollable cheatsheet of
+your effective bindings (`matterbox keys` prints the same list). Three knobs
+under `keybindings:` in `config.yaml` tune them:
 
 ```yaml
 keybindings:

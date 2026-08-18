@@ -95,6 +95,21 @@ type keyMap struct {
 	FeedMuted key.Binding
 	FeedReply key.Binding
 
+	// Reference panel, once the provider's data has loaded: the Jira issue
+	// editors and the GitLab MR actions.
+	JiraStatus    key.Binding
+	JiraPriority  key.Binding
+	JiraPoints    key.Binding
+	JiraAssignee  key.Binding
+	JiraComment   key.Binding
+	JiraReply     key.Binding
+	GitLabApprove key.Binding
+	GitLabMerge   key.Binding
+	GitLabJobs    key.Binding
+
+	// List sheets (saved messages, templates): drop the selected row.
+	SheetRemove key.Binding
+
 	// Attachments (input + chip strip)
 	Paste        key.Binding
 	AttachRemove key.Binding
@@ -223,6 +238,22 @@ var actionDefs = []actionDef{
 	// pane, but the feed has no reactions, so the shifted key is free there.
 	{id: "feed_reply", field: func(k *keyMap) *key.Binding { return &k.FeedReply }, keys: []string{"R"}, desc: "reply in thread"},
 
+	// Reference-panel provider keys. They only act once the panel has loaded
+	// the issue / MR (otherwise they fall through to scrolling it), but they
+	// are registry actions like any other so the cheatsheet lists them and a
+	// user can rebind one that collides with their terminal.
+	{id: "jira_status", field: func(k *keyMap) *key.Binding { return &k.JiraStatus }, keys: []string{"s"}, desc: "Jira: change status"},
+	{id: "jira_priority", field: func(k *keyMap) *key.Binding { return &k.JiraPriority }, keys: []string{"p"}, desc: "Jira: change priority"},
+	{id: "jira_points", field: func(k *keyMap) *key.Binding { return &k.JiraPoints }, keys: []string{"P"}, desc: "Jira: set story points"},
+	{id: "jira_assignee", field: func(k *keyMap) *key.Binding { return &k.JiraAssignee }, keys: []string{"a"}, desc: "Jira: change assignee"},
+	{id: "jira_comment", field: func(k *keyMap) *key.Binding { return &k.JiraComment }, keys: []string{"c"}, desc: "Jira: add comment"},
+	{id: "jira_reply", field: func(k *keyMap) *key.Binding { return &k.JiraReply }, keys: []string{"R"}, desc: "Jira: reply to comment"},
+	{id: "gitlab_approve", field: func(k *keyMap) *key.Binding { return &k.GitLabApprove }, keys: []string{"A"}, desc: "MR: approve"},
+	{id: "gitlab_merge", field: func(k *keyMap) *key.Binding { return &k.GitLabMerge }, keys: []string{"M"}, desc: "MR: merge"},
+	{id: "gitlab_jobs", field: func(k *keyMap) *key.Binding { return &k.GitLabJobs }, keys: []string{"t"}, desc: "MR: all / fewer jobs"},
+
+	{id: "sheet_remove", field: func(k *keyMap) *key.Binding { return &k.SheetRemove }, keys: []string{"d", "D"}, desc: "remove entry"},
+
 	{id: "paste", field: func(k *keyMap) *key.Binding { return &k.Paste }, keys: []string{"ctrl+v"}, desc: "paste"},
 	{id: "attachment_remove", field: func(k *keyMap) *key.Binding { return &k.AttachRemove }, keys: []string{"d", "x"}, desc: "remove"},
 
@@ -274,6 +305,12 @@ func prettyKey(k string) string {
 	return strings.Join(parts, "+")
 }
 
+// helpKey is a binding's rendered key label — what the footer, the cheatsheet
+// and the panel hint lines print for it. Reading it off the binding (rather
+// than baking the literal into a hint string) keeps those hints honest after a
+// rebind.
+func helpKey(b key.Binding) string { return b.Help().Key }
+
 // prettyKeyLabel builds the help key-label from an action's final keys: the
 // first two keys, prettified and joined with "/". Generating it (rather than
 // hand-writing) keeps the footer honest after a user rebinds a key.
@@ -304,8 +341,9 @@ func prettyKeysAll(keys []string) string {
 
 // foldDigitRun collapses a maximal run (length ≥ 3) of keys that share a
 // modifier prefix and carry consecutive single digits — e.g. "alt+1", "alt+2",
-// …, "alt+9" — into a single "alt+1…9" token. Shorter runs and any key that
-// isn't <modifier>+<digit> pass through untouched.
+// …, "alt+9" — into a single "alt+1…9" token, and likewise a run of bare
+// digits (a picker's 1…9 accelerators) into "1…9". Shorter runs and any key
+// that isn't [modifier+]<digit> pass through untouched.
 func foldDigitRun(keys []string) []string {
 	out := make([]string, 0, len(keys))
 	for i := 0; i < len(keys); {
@@ -331,8 +369,9 @@ func foldDigitRun(keys []string) []string {
 	return out
 }
 
-// splitModDigit splits "alt+5" into ("alt+", 5, true); ok is false unless the
-// key is a real <modifier>+<single digit> (a bare "5" doesn't fold).
+// splitModDigit splits "alt+5" into ("alt+", 5, true) and a bare "5" into
+// ("", 5, true); ok is false for anything that isn't [modifier+]<single digit>.
+// A lone digit still doesn't fold — foldDigitRun needs a run of three.
 func splitModDigit(k string) (mod string, d int, ok bool) {
 	if k == "" {
 		return "", 0, false
@@ -342,7 +381,7 @@ func splitModDigit(k string) (mod string, d int, ok bool) {
 		return "", 0, false
 	}
 	mod = k[:len(k)-1]
-	if !strings.HasSuffix(mod, "+") {
+	if mod != "" && !strings.HasSuffix(mod, "+") {
 		return "", 0, false
 	}
 	return mod, int(last - '0'), true

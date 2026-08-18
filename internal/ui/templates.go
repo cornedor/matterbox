@@ -142,7 +142,8 @@ func (m Model) handleTemplatePickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 	case "esc", "q":
 		m.closeTemplatePicker()
 		return m, nil
-	case "d", "D":
+	}
+	if key.Matches(msg, m.keys.SheetRemove) {
 		if m.templatePicker.idx < 0 || m.templatePicker.idx >= len(m.templatePicker.names) {
 			return m, nil
 		}
@@ -180,7 +181,7 @@ func (m *Model) renderTemplatePicker() string {
 		return names[i] + "  " + preview
 	}
 	empty := "No templates saved yet.\n\nType a message, then run \"> Templates: save composer as…\" to keep it as a template."
-	return m.renderListModal("Templates", "enter inserts · d deletes · esc closes", empty, len(names), m.templatePicker.idx, row)
+	return m.renderListModal("Templates", helpKey(m.keys.OpenChannel)+" inserts · "+helpKey(m.keys.SheetRemove)+" deletes · esc closes", empty, len(names), m.templatePicker.idx, row)
 }
 
 // saveTemplate stores the composer's current text under name (lower-cased),

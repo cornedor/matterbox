@@ -121,12 +121,12 @@ func (m *Model) renderGitLabMR(mr *gitlab.MR, width int) string {
 	// panel. Merge readiness lives in the "Merge:" row above; pressing M when
 	// the MR isn't mergeable reports the reason in the status bar. The jobs
 	// toggle is offered only when some stage is actually truncated.
-	hint := "A approve · M merge"
+	hint := helpKey(m.keys.GitLabApprove) + " approve · " + helpKey(m.keys.GitLabMerge) + " merge"
 	if hasTruncatedStage(mr.Pipeline) {
 		if m.glJobsExpanded {
-			hint += " · t fewer jobs"
+			hint += " · " + helpKey(m.keys.GitLabJobs) + " fewer jobs"
 		} else {
-			hint += " · t all jobs"
+			hint += " · " + helpKey(m.keys.GitLabJobs) + " all jobs"
 		}
 	}
 	b.WriteString("\n" + refDimStyle.Render(hint) + "\n")

@@ -134,5 +134,5 @@ func (m *Model) renderKaomojiPicker() string {
 		}
 		return items[i].name + "  " + items[i].text
 	}
-	return m.renderListModal("Kaomoji", "enter inserts · esc closes", "", len(items), m.kaomojiPicker.idx, row)
+	return m.renderListModal("Kaomoji", helpKey(m.keys.OpenChannel)+" inserts · esc closes", "", len(items), m.kaomojiPicker.idx, row)
 }

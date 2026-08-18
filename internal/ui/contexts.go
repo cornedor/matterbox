@@ -40,6 +40,24 @@ type keyContext struct {
 	shadows []string
 }
 
+// hardwired declares keys a handler matches literally rather than through the
+// registry — a modal's esc/q dismiss, a form's tab/enter, a picker's digit
+// accelerators. Nothing rebinds them, but a layer still *consumes* them, so
+// they belong in claims(): that is what keeps the shadow audit and the
+// cheatsheet honest about which keys a layer swallows.
+func hardwired(desc string, keys ...string) key.Binding {
+	// The label folds a digit run ("1…9") so an accelerator row reads as one
+	// token in the footer instead of "1/2".
+	return key.NewBinding(key.WithKeys(keys...), key.WithHelp(prettyKeyLabel(foldDigitRun(keys)), desc))
+}
+
+// viewportScrollKeys are the scroll keys a popup's viewport handles once its
+// own keys have had their say (bubbles' viewport default keymap).
+var viewportScrollKeys = hardwired("scroll", "up", "k", "down", "j", "pgup", "pgdown", "b", "f", "u", "d")
+
+// digitKeys is the "1".."9" accelerator row the pickers offer.
+var digitKeys = []string{"1", "2", "3", "4", "5", "6", "7", "8", "9"}
+
 // contentFocus reports whether the model is in one of the reading/content
 // focuses (where the global:reading layer and the per-pane handlers run).
 func (m *Model) contentFocus() bool {
@@ -59,7 +77,24 @@ func (m *Model) inModal() bool {
 		m.summary.active() || m.switcherMode || m.keysSheetMode || m.textPopup.active ||
 		m.templatePicker.active || m.savedPosts.active || m.kaomojiPicker.active || m.preview.active ||
 		m.createChan != nil || m.chanEdit != nil || m.chanConfirm != nil || m.joinChan != nil ||
-		m.gorillas.active || m.kurve.active
+		m.gorillas.active || m.kurve.active || m.keyDebugMode ||
+		m.jiraPicker.active || m.jiraPointsActive || m.jiraCommentActive ||
+		m.glConfirm.active || m.linkConfirm.active
+}
+
+// yesNoConfirm reports whether one of the three y/n confirmations is up: the
+// GitLab approve/merge check, the non-web link warning, and the channel
+// archive/leave/privacy check. They share a handler shape, so they share a
+// context row.
+func (m *Model) yesNoConfirm() bool {
+	return m.glConfirm.active || m.linkConfirm.active || m.chanConfirm != nil
+}
+
+// channelForm reports whether one of the channel modals raised from the "> "
+// palette is up: the create form, the edit form, or the join catalogue. All
+// three are tab-through forms over a text input.
+func (m *Model) channelForm() bool {
+	return m.createChan != nil || m.chanEdit != nil || m.joinChan != nil
 }
 
 // popupOpenInComposer mirrors handleKey's popupOpen guard: the @-mention /
@@ -74,36 +109,140 @@ func (m *Model) popupOpenInComposer() bool {
 // layers that can be reachable for the same keypress.
 var keyContexts = []keyContext{
 	{
+		// Key inspector ("> Debug: key inspector"): echoes every decoded
+		// keystroke instead of acting on it, so it consumes the lot.
+		name:     "modal:key-debug",
+		active:   func(m *Model) bool { return m.keyDebugMode },
+		terminal: true,
+		claims:   func(m *Model) []key.Binding { return []key.Binding{hardwired("close", "esc")} },
+	},
+	{
+		// An open game owns every key — it is a game. Its own controls are
+		// drawn on its board rather than listed here.
+		name:     "modal:game",
+		active:   func(m *Model) bool { return m.gorillas.active || m.kurve.active },
+		terminal: true,
+		claims:   func(m *Model) []key.Binding { return []key.Binding{hardwired("quit the game", "esc", "q")} },
+	},
+	{
 		name:     "modal:delete-confirm",
 		active:   func(m *Model) bool { return m.deleteConfirmPostID != "" },
 		terminal: true,
-		claims:   func(m *Model) []key.Binding { return []key.Binding{m.keys.ConfirmYes, m.keys.ConfirmNo} },
+		claims: func(m *Model) []key.Binding {
+			return []key.Binding{m.keys.ConfirmYes, m.keys.ConfirmNo, hardwired("cancel", "esc", "q")}
+		},
 	},
 	{
 		name:     "modal:reaction-picker",
 		active:   func(m *Model) bool { return m.reactionPickerPostID != "" },
 		terminal: true,
 		typing:   true, // has a free-text search box at its foot
-		claims:   func(m *Model) []key.Binding { return []key.Binding{m.keys.InputUp, m.keys.InputDown} },
+		claims: func(m *Model) []key.Binding {
+			// The digit accelerators only fire while the search box is empty;
+			// once it holds a query every printable key feeds the search.
+			return []key.Binding{
+				m.keys.InputUp, m.keys.InputDown,
+				hardwired("react with the highlighted emoji", "enter"),
+				hardwired("pick from the configured list", digitKeys...),
+				hardwired("close", "esc"),
+			}
+		},
+	},
+	{
+		// Jira field pickers (status / priority / assignee). The assignee list
+		// filters as you type, so it navigates with ↑/↓ + ctrl+p/ctrl+n; the
+		// short fixed lists also take j/k and the digit accelerators.
+		name:     "modal:jira-picker",
+		active:   func(m *Model) bool { return m.jiraPicker.active },
+		terminal: true,
+		typing:   true,
+		claims: func(m *Model) []key.Binding {
+			return []key.Binding{
+				m.keys.Up, m.keys.Down, m.keys.InputUp, m.keys.InputDown,
+				hardwired("apply", "enter"),
+				hardwired("pick from the list", digitKeys...),
+				hardwired("cancel", "esc"),
+			}
+		},
+	},
+	{
+		name:     "modal:jira-points",
+		active:   func(m *Model) bool { return m.jiraPointsActive },
+		terminal: true,
+		typing:   true,
+		claims: func(m *Model) []key.Binding {
+			return []key.Binding{hardwired("save the points", "enter"), hardwired("cancel", "esc")}
+		},
+	},
+	{
+		name:     "modal:jira-comment",
+		active:   func(m *Model) bool { return m.jiraCommentActive },
+		terminal: true,
+		typing:   true,
+		claims: func(m *Model) []key.Binding {
+			return []key.Binding{m.keys.NewLine, hardwired("post the comment", "enter"), hardwired("cancel", "esc")}
+		},
+	},
+	{
+		// The three y/n confirmations: GitLab approve/merge, the non-web link
+		// warning, and the channel archive/leave/privacy check.
+		name:     "modal:confirm",
+		active:   func(m *Model) bool { return m.yesNoConfirm() },
+		terminal: true,
+		claims: func(m *Model) []key.Binding {
+			return []key.Binding{hardwired("confirm", "y", "Y", "enter"), hardwired("cancel", "n", "N", "esc")}
+		},
 	},
 	{
 		name:     "modal:open-picker",
 		active:   func(m *Model) bool { return m.openPickerActive() },
 		terminal: true,
-		claims:   func(m *Model) []key.Binding { return []key.Binding{m.keys.Up, m.keys.Down} },
+		claims: func(m *Model) []key.Binding {
+			return []key.Binding{
+				m.keys.Up, m.keys.Down,
+				hardwired("open the highlighted target", "enter"),
+				hardwired("open by number", digitKeys...),
+				hardwired("close", "esc", "q"),
+			}
+		},
 	},
 	{
 		name:     "modal:code-picker",
 		active:   func(m *Model) bool { return m.codePickerActive() },
 		terminal: true,
-		claims:   func(m *Model) []key.Binding { return []key.Binding{m.keys.Up, m.keys.Down} },
+		claims: func(m *Model) []key.Binding {
+			return []key.Binding{
+				m.keys.Up, m.keys.Down,
+				hardwired("copy the highlighted block", "enter"),
+				hardwired("copy by number", digitKeys...),
+				hardwired("close", "esc", "q"),
+			}
+		},
 	},
 	{
 		name:     "modal:poll-dialog",
 		active:   func(m *Model) bool { return m.pollDialog.open },
 		terminal: true,
 		typing:   true,
-		claims:   func(m *Model) []key.Binding { return []key.Binding{m.keys.Tab, m.keys.ShiftTab} },
+		claims: func(m *Model) []key.Binding {
+			return []key.Binding{m.keys.Tab, m.keys.ShiftTab, hardwired("submit", "enter"), hardwired("cancel", "esc")}
+		},
+	},
+	{
+		// Channel modals raised from the "> " palette: the create form, the
+		// edit form (rename / purpose / header) and the join catalogue.
+		name:     "modal:channel-form",
+		active:   func(m *Model) bool { return m.channelForm() },
+		terminal: true,
+		typing:   true,
+		claims: func(m *Model) []key.Binding {
+			return []key.Binding{
+				hardwired("next field / row", "tab", "down", "ctrl+n"),
+				hardwired("previous field / row", "shift+tab", "up", "ctrl+p"),
+				hardwired("submit", "enter"),
+				hardwired("cancel", "esc"),
+			}
+		},
 	},
 	// The list sheets (saved messages, templates, kaomoji) each own every
 	// keystroke while open: ↑/↓ move, enter picks, esc/q close (hardwired).
@@ -112,7 +251,10 @@ var keyContexts = []keyContext{
 		active:   func(m *Model) bool { return m.savedPosts.active },
 		terminal: true,
 		claims: func(m *Model) []key.Binding {
-			return []key.Binding{m.keys.Up, m.keys.Down, m.keys.InputUp, m.keys.InputDown, m.keys.OpenChannel}
+			return []key.Binding{
+				m.keys.Up, m.keys.Down, m.keys.InputUp, m.keys.InputDown, m.keys.OpenChannel,
+				m.keys.SheetRemove, hardwired("close", "esc", "q"),
+			}
 		},
 	},
 	{
@@ -120,7 +262,10 @@ var keyContexts = []keyContext{
 		active:   func(m *Model) bool { return m.templatePicker.active },
 		terminal: true,
 		claims: func(m *Model) []key.Binding {
-			return []key.Binding{m.keys.Up, m.keys.Down, m.keys.InputUp, m.keys.InputDown, m.keys.OpenChannel}
+			return []key.Binding{
+				m.keys.Up, m.keys.Down, m.keys.InputUp, m.keys.InputDown, m.keys.OpenChannel,
+				m.keys.SheetRemove, hardwired("close", "esc", "q"),
+			}
 		},
 	},
 	{
@@ -128,20 +273,37 @@ var keyContexts = []keyContext{
 		active:   func(m *Model) bool { return m.kaomojiPicker.active },
 		terminal: true,
 		claims: func(m *Model) []key.Binding {
-			return []key.Binding{m.keys.Up, m.keys.Down, m.keys.InputUp, m.keys.InputDown, m.keys.OpenChannel}
+			return []key.Binding{
+				m.keys.Up, m.keys.Down, m.keys.InputUp, m.keys.InputDown, m.keys.OpenChannel,
+				hardwired("close", "esc", "q"),
+			}
 		},
 	},
 	{
 		name:     "modal:history",
 		active:   func(m *Model) bool { return m.historyMode },
 		terminal: true,
-		claims:   func(m *Model) []key.Binding { return []key.Binding{m.keys.ShowHistory} },
+		claims: func(m *Model) []key.Binding {
+			return []key.Binding{m.keys.ShowHistory, viewportScrollKeys, hardwired("close", "esc", "q")}
+		},
 	},
 	{
+		// Channel summary: a duration picker, then the running / result view.
 		name:     "modal:summary",
 		active:   func(m *Model) bool { return m.summary.active() },
 		terminal: true,
-		claims:   func(m *Model) []key.Binding { return nil },
+		claims: func(m *Model) []key.Binding {
+			// The picker matches its keys literally (it is a numeric field, not
+			// a list), so they're declared as they are typed.
+			return []key.Binding{
+				hardwired("previous / next field", "left", "h", "shift+tab", "right", "l", "tab"),
+				hardwired("adjust the field", "up", "k", "+", "=", "down", "j", "-", "_"),
+				hardwired("type a value", append(append([]string{"0"}, digitKeys...), "backspace")...),
+				hardwired("summarize", "enter"),
+				hardwired("fold / unfold the thinking section", "t"),
+				hardwired("close", "esc", "q"),
+			}
+		},
 	},
 	{
 		// Keyboard cheatsheet (switcher "> Keys"): esc/q close, arrows scroll.
@@ -149,13 +311,17 @@ var keyContexts = []keyContext{
 		name:     "modal:keys-sheet",
 		active:   func(m *Model) bool { return m.keysSheetMode },
 		terminal: true,
-		claims:   func(m *Model) []key.Binding { return nil },
+		claims: func(m *Model) []key.Binding {
+			return []key.Binding{viewportScrollKeys, hardwired("close", "esc", "q")}
+		},
 	},
 	{
 		name:     "modal:text-popup",
 		active:   func(m *Model) bool { return m.textPopup.active },
 		terminal: true,
-		claims:   func(m *Model) []key.Binding { return nil },
+		claims: func(m *Model) []key.Binding {
+			return []key.Binding{viewportScrollKeys, hardwired("close", "esc", "q")}
+		},
 	},
 	{
 		// Image-preview modal (space on a message image). The preview key
@@ -165,7 +331,7 @@ var keyContexts = []keyContext{
 		active:   func(m *Model) bool { return m.preview.active },
 		terminal: true,
 		claims: func(m *Model) []key.Binding {
-			return []key.Binding{m.keys.Preview, m.keys.Left, m.keys.Right}
+			return []key.Binding{m.keys.Preview, m.keys.Left, m.keys.Right, hardwired("close", "esc", "q")}
 		},
 	},
 	{
@@ -174,7 +340,11 @@ var keyContexts = []keyContext{
 		terminal: true,
 		typing:   true,
 		claims: func(m *Model) []key.Binding {
-			return []key.Binding{m.keys.Switcher, m.keys.InputUp, m.keys.InputDown, m.keys.OpenChannel}
+			// q types into the query box here, so esc alone dismisses.
+			return []key.Binding{
+				m.keys.Switcher, m.keys.InputUp, m.keys.InputDown, m.keys.OpenChannel,
+				hardwired("cancel", "esc"),
+			}
 		},
 	},
 	{
@@ -184,6 +354,21 @@ var keyContexts = []keyContext{
 		// The switcher owns ctrl+p everywhere; the input_up arms below it bind
 		// ctrl+p too, a deliberate (whitelisted) shadow.
 		shadows: []string{"ctrl+p"},
+	},
+	{
+		// f1 opens the "> " command palette from anywhere — a function key can't
+		// collide with composing, so it needs no typing guard.
+		name:   "global:command-picker",
+		active: func(m *Model) bool { return !m.inModal() },
+		claims: func(m *Model) []key.Binding { return []key.Binding{m.keys.CommandPicker} },
+	},
+	{
+		// alt+1…9 jumps to a team from ANY focus, the composer included: no
+		// alt+digit is an editing key, so handleKey dispatches it above the
+		// typing guards (unlike alt+d / alt+u, which live in global:reading).
+		name:   "global:team-jump",
+		active: func(m *Model) bool { return !m.inModal() },
+		claims: func(m *Model) []key.Binding { return []key.Binding{m.keys.NavTeam} },
 	},
 	{
 		name:   "global:nav",
@@ -214,7 +399,9 @@ var keyContexts = []keyContext{
 		terminal: true,
 		typing:   true,
 		claims: func(m *Model) []key.Binding {
-			return []key.Binding{m.keys.ClearFilter, m.keys.ApplyOpen, m.keys.InputUp, m.keys.InputDown}
+			// esc here is cancel_edit (what handleFilterKey matches), not the
+			// reading layer's clear_filter — same key, different owner.
+			return []key.Binding{m.keys.CancelEdit, m.keys.ApplyOpen, m.keys.InputUp, m.keys.InputDown}
 		},
 	},
 	{
@@ -225,11 +412,16 @@ var keyContexts = []keyContext{
 		claims: func(m *Model) []key.Binding {
 			// InputUp/InputDown are claimed by the mention/emoji popups; the
 			// rest are the composer's own keys.
-			return []key.Binding{
+			bs := []key.Binding{
 				m.keys.Send, m.keys.NewLine, m.keys.Paste, m.keys.LeaveInput,
-				m.keys.ClearInput, m.keys.Tab, m.keys.ShiftTab,
+				m.keys.ClearInput, m.keys.Undo, m.keys.Redo, m.keys.Tab, m.keys.ShiftTab,
 				m.keys.InputUp, m.keys.InputDown,
 			}
+			// The grammar popup's key only exists when the checker is on.
+			if m.grammarEnabled() {
+				bs = append(bs, hardwired("grammar suggestions", "alt+g"))
+			}
+			return bs
 		},
 	},
 	{
@@ -238,7 +430,14 @@ var keyContexts = []keyContext{
 		terminal: true,
 		typing:   true,
 		claims: func(m *Model) []key.Binding {
-			return []key.Binding{m.keys.InputUp, m.keys.InputDown, m.keys.Tab, m.keys.ShiftTab, m.keys.Paste}
+			// pgup/pgdn scroll the results, but PageUp's ctrl+u alias is an
+			// editing key the query box needs, so they stay hardwired here.
+			return []key.Binding{
+				m.keys.InputUp, m.keys.InputDown, m.keys.ApplyOpen,
+				m.keys.Tab, m.keys.ShiftTab, m.keys.Paste,
+				hardwired("scroll results", "pgup", "pgdown"),
+				hardwired("clear the query / leave", "esc"),
+			}
 		},
 	},
 	{
@@ -250,20 +449,10 @@ var keyContexts = []keyContext{
 			// The multi-line editor owns enter (run) and the newline keys; Tab/
 			// ShiftTab cycle focus, Paste pulls the clipboard. Everything else is
 			// raw typing into the textarea.
-			return []key.Binding{m.keys.Send, m.keys.NewLine, m.keys.Tab, m.keys.ShiftTab, m.keys.Paste}
-		},
-	},
-	{
-		name:     "focus:sqlresults",
-		active:   func(m *Model) bool { return m.focus == focusSQLResults },
-		terminal: true,
-		claims: func(m *Model) []key.Binding {
-			// The result list: selection nav + the read-only message actions,
-			// reused from the messages pane. Tab/ShiftTab are owned by global:
-			// reading above, so they're not claimed here.
 			return []key.Binding{
-				m.keys.Up, m.keys.Down, m.keys.Home, m.keys.End, m.keys.PageUp, m.keys.PageDown,
-				m.keys.OpenAttach, m.keys.Download, m.keys.Preview, m.keys.CopyMD, m.keys.CopyCode,
+				m.keys.Send, m.keys.NewLine, m.keys.Tab, m.keys.ShiftTab, m.keys.Paste,
+				hardwired("scroll results", "pgup", "pgdown"),
+				hardwired("clear results / leave", "esc"),
 			}
 		},
 	},
@@ -272,7 +461,7 @@ var keyContexts = []keyContext{
 		active: func(m *Model) bool { return m.contentFocus() && !m.inModal() },
 		claims: func(m *Model) []key.Binding {
 			bs := []key.Binding{
-				m.keys.NavTeam, m.keys.NavDM, m.keys.NavFeed,
+				m.keys.NavDM, m.keys.NavFeed,
 				m.keys.Search, m.keys.Compose,
 				m.keys.Tab, m.keys.ShiftTab, m.keys.Help, m.keys.Quit,
 				m.keys.SearchHere, m.keys.Filter, m.keys.MoveTeamLeft, m.keys.MoveTeamRight,
@@ -298,7 +487,7 @@ var keyContexts = []keyContext{
 		claims: func(m *Model) []key.Binding {
 			return []key.Binding{
 				m.keys.Up, m.keys.Down, m.keys.Home, m.keys.End, m.keys.PageUp, m.keys.PageDown,
-				m.keys.NextHit, m.keys.PrevHit, m.keys.OpenThread, m.keys.ReplyInThread,
+				m.keys.NextHit, m.keys.PrevHit, m.keys.PrevOwnMsg, m.keys.OpenThread, m.keys.ReplyInThread,
 				m.keys.EditPost, m.keys.DeletePost, m.keys.OpenAttach, m.keys.Download, m.keys.OpenRef, m.keys.Preview, m.keys.CopyMD,
 				m.keys.CopyCode, m.keys.ShowHistory, m.keys.React, m.keys.Collapse, m.keys.ChannelInfo,
 			}
@@ -312,6 +501,7 @@ var keyContexts = []keyContext{
 			return []key.Binding{
 				m.keys.Up, m.keys.Down, m.keys.Home, m.keys.End, m.keys.OpenAttach, m.keys.Download, m.keys.OpenRef, m.keys.Preview,
 				m.keys.CopyMD, m.keys.CopyCode, m.keys.ShowHistory, m.keys.EditPost, m.keys.DeletePost, m.keys.React, m.keys.Collapse,
+				m.keys.CloseThread,
 			}
 		},
 	},
@@ -325,10 +515,19 @@ var keyContexts = []keyContext{
 		active:   func(m *Model) bool { return m.focus == focusRef },
 		terminal: true,
 		claims: func(m *Model) []key.Binding {
-			return []key.Binding{
+			bs := []key.Binding{
 				m.keys.Up, m.keys.Down, m.keys.Left, m.keys.Right,
 				m.keys.OpenRef, m.keys.Refresh, m.keys.OpenAttach,
+				hardwired("close", "esc"),
 			}
+			// Provider keys act only once the panel has loaded the issue / MR;
+			// before that they fall through to scrolling it.
+			bs = append(bs,
+				m.keys.JiraStatus, m.keys.JiraPriority, m.keys.JiraPoints, m.keys.JiraAssignee,
+				m.keys.JiraComment, m.keys.JiraReply,
+				m.keys.GitLabApprove, m.keys.GitLabMerge, m.keys.GitLabJobs,
+			)
+			return bs
 		},
 	},
 	{
@@ -342,7 +541,7 @@ var keyContexts = []keyContext{
 		claims: func(m *Model) []key.Binding {
 			return []key.Binding{
 				m.keys.Up, m.keys.Down, m.keys.ChannelInfo, m.keys.OpenAttach, m.keys.OpenChannel,
-				m.keys.Preview, m.keys.Download,
+				m.keys.Preview, m.keys.Download, hardwired("back to the info panel", "esc"),
 			}
 		},
 	},
@@ -353,6 +552,24 @@ var keyContexts = []keyContext{
 		claims: func(m *Model) []key.Binding {
 			return []key.Binding{
 				m.keys.Up, m.keys.Down, m.keys.ChannelInfo, m.keys.OpenAttach, m.keys.OpenChannel,
+				hardwired("close", "esc"),
+			}
+		},
+	},
+	{
+		// The result list sits below global:reading like the other reading panes
+		// (handleKey reaches it through the focus switch at the foot).
+		name:     "focus:sqlresults",
+		active:   func(m *Model) bool { return m.focus == focusSQLResults },
+		terminal: true,
+		claims: func(m *Model) []key.Binding {
+			// Selection nav + the read-only message actions, reused from the
+			// messages pane. Tab/ShiftTab are owned by global:reading above, so
+			// they're not claimed here.
+			return []key.Binding{
+				m.keys.Up, m.keys.Down, m.keys.Home, m.keys.End, m.keys.PageUp, m.keys.PageDown,
+				m.keys.OpenAttach, m.keys.Download, m.keys.Preview, m.keys.CopyMD, m.keys.CopyCode,
+				hardwired("back to the editor", "esc"),
 			}
 		},
 	},
@@ -385,8 +602,10 @@ var keyContexts = []keyContext{
 			// Bare ←/→ no longer switch teams here (ctrl+←/→ does).
 			return []key.Binding{
 				m.keys.Up, m.keys.Down, m.keys.InputUp, m.keys.InputDown,
-				m.keys.Home, m.keys.End, m.keys.OpenChannel, m.keys.MarkRead, m.keys.Refresh,
+				m.keys.Home, m.keys.End, m.keys.PageUp, m.keys.PageDown,
+				m.keys.OpenChannel, m.keys.MarkRead, m.keys.Refresh,
 				m.keys.FeedMuted, m.keys.FeedReply,
+				hardwired("back to the tab strip", "esc"),
 			}
 		},
 	},
@@ -413,6 +632,13 @@ var shadowProbeStates = []struct {
 	{"feed", func(m *Model) { m.focus = focusFeed }},
 	{"filter", func(m *Model) { m.focus = focusMessages; m.filterMode = true }},
 	{"delete-confirm", func(m *Model) { m.deleteConfirmPostID = "x" }},
+	{"key-debug", func(m *Model) { m.keyDebugMode = true }},
+	{"game", func(m *Model) { m.gorillas.active = true }},
+	{"jira-picker", func(m *Model) { m.jiraPicker.active = true }},
+	{"jira-points", func(m *Model) { m.jiraPointsActive = true }},
+	{"jira-comment", func(m *Model) { m.jiraCommentActive = true }},
+	{"confirm", func(m *Model) { m.linkConfirm.active = true }},
+	{"channel-form", func(m *Model) { m.createChan = &createChannelState{} }},
 	{"reaction-picker", func(m *Model) { m.reactionPickerPostID = "x" }},
 	{"open-picker", func(m *Model) { m.openPickerItems = make([]openable, 1) }},
 	{"code-picker", func(m *Model) { m.codePickerBlocks = make([]codeBlock, 1) }},
