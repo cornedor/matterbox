@@ -715,7 +715,7 @@ func (m *Model) hitTest(x, y int) hit {
 // sees is the one selected.
 func (m *Model) hitChannel(y int) hit {
 	bodyH := m.bodyHeight()
-	innerH := bodyH - 1
+	innerH := bodyH
 	if innerH < 1 {
 		innerH = 1
 	}
@@ -1143,10 +1143,10 @@ func (m *Model) messagesGeom() (x0, top, width, height, yoff int) {
 // the editor's total inner width (prompt + content), height its visible rows,
 // and yoff its scroll offset. The composer sits at the bottom of whichever pane
 // is accepting replies — the thread pane when one is open, else the messages
-// pane — so it's anchored from the bottom of the body: the pane's bottom border
-// is the body's last row, and the editor's rows sit just above it. Anchoring from
-// the bottom keeps this correct no matter how tall the attachment chip strip or a
-// mention / emoji / slash popup grows, since those stack above the box.
+// pane — so it's anchored from the bottom of the body: the editor's last row is
+// the body's last row. Anchoring from the bottom keeps this correct no matter how
+// tall the attachment chip strip or a mention / emoji / slash popup grows, since
+// those stack above the box.
 //
 // The body height comes from the cache the last render wrote (see renderViewContent),
 // not a fresh footer render: this runs on the per-motion hover path (via hitTest),
@@ -1161,7 +1161,7 @@ func (m *Model) composerGeom() (x0, top, width, height, yoff int) {
 		return 0, 0, 0, 0, 0
 	}
 	height = m.input.Height()
-	top = tabsHeight + bodyH - 1 - height
+	top = tabsHeight + bodyH - height
 	if m.threadOpen {
 		rightW := m.width - channelsWidth
 		if rightW < 10 {

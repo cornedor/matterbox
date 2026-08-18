@@ -623,7 +623,7 @@ func (m *Model) sqlAuthorName(p *model.Post) string {
 // query editor, a separator rule, then the result viewport. Mirrors
 // renderSearchPane with a textarea instead of a single-line input.
 func (m Model) renderSQLPane(height, width int) string {
-	innerH := height - 1 // bottom border (top connects to the tab strip)
+	innerH := height // no top or bottom border: the tab strip and footer close the pane
 	if innerH < 1 {
 		innerH = 1
 	}
@@ -663,10 +663,14 @@ func (m Model) renderSQLPane(height, width int) string {
 	rule := dim.Render(strings.Repeat("─", width-2))
 	body := m.sql.view.View()
 	rows := []string{titleRow, inputBox, rule, body}
+	// Both rules are section dividers across the pane, so they meet its side
+	// borders as ├ ┤ rather than floating between them.
+	inputRule, bodyRule := contentRows(rows[:1]), contentRows(rows[:2])
 
 	style := lipgloss.NewStyle().
 		Border(border).
 		UnsetBorderTop().
+		UnsetBorderBottom().
 		Width(width).
 		Height(innerH)
 	if m.focus == focusSQL {
@@ -674,7 +678,7 @@ func (m Model) renderSQLPane(height, width int) string {
 	} else {
 		style = style.BorderForeground(dimColor)
 	}
-	return style.Render(strings.Join(rows, "\n"))
+	return joinRuleRows(style.Render(strings.Join(rows, "\n")), inputRule, bodyRule)
 }
 
 // sqlCellString renders a raw driver value for display.

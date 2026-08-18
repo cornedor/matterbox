@@ -1053,11 +1053,11 @@ func (m *Model) renderInfoPane(height, width int) string {
 	if m.focus == focusInfo {
 		borderColor = focusedColor
 	}
-	style := lipgloss.NewStyle().Border(border).UnsetBorderTop().UnsetBorderRight().
+	style := lipgloss.NewStyle().Border(border).UnsetBorderTop().UnsetBorderRight().UnsetBorderBottom().
 		Width(width - 1).Height(innerH).BorderForeground(borderColor)
 	box := style.Render(content)
 
-	rightBorder := renderRightBorder(innerH, 1, m.infoView.Height(), total, pct, borderColor, showScrollbar)
+	rightBorder := renderRightBorder(innerH, 1, m.infoView.Height(), total, pct, borderColor, showScrollbar, -1)
 	return lipgloss.JoinHorizontal(lipgloss.Top, box, rightBorder)
 }
 

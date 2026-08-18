@@ -882,7 +882,7 @@ func (m *Model) feedHints() string {
 // separator rule, then the bubble viewport. Mirrors renderSearchPane
 // without the search input row.
 func (m Model) renderFeedPane(height, width int) string {
-	innerH := height - 1 // bottom border (top connects to the tab strip)
+	innerH := height // no top or bottom border: the tab strip and footer close the pane
 	if innerH < 1 {
 		innerH = 1
 	}
@@ -908,10 +908,14 @@ func (m Model) renderFeedPane(height, width int) string {
 	rule := dim.Render(strings.Repeat("─", width-2))
 	body := m.feed.view.View()
 	rows := []string{titleRow, rule, body}
+	// The rule under the title is a section divider across the pane, so it meets
+	// the side borders as ├ ┤ rather than floating between them.
+	titleRule := contentRows(rows[:1])
 
 	style := lipgloss.NewStyle().
 		Border(border).
 		UnsetBorderTop().
+		UnsetBorderBottom().
 		Width(width).
 		Height(innerH)
 	if m.focus == focusFeed {
@@ -919,5 +923,5 @@ func (m Model) renderFeedPane(height, width int) string {
 	} else {
 		style = style.BorderForeground(dimColor)
 	}
-	return style.Render(strings.Join(rows, "\n"))
+	return joinRuleRows(style.Render(strings.Join(rows, "\n")), titleRule)
 }

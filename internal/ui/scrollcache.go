@@ -172,8 +172,8 @@ type sidebarCache struct {
 }
 
 // scrollbackCache memoizes renderMessagesPane's upper box: the channel title
-// plus the message viewport, framed with the left border only (the lower box —
-// the popup/attachment/compose half — carries the bottom border). That upper
+// plus the message viewport, framed with the left border only (the lower box is
+// the popup/attachment/compose half). That upper
 // box is invariant while you type in the composer below it, yet styling it
 // re-measures the display width of every visible message row — which a pprof of
 // composer typing showed dominating CPU (~half of it in ansi.stringWidth). fp
