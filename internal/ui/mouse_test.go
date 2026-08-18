@@ -64,7 +64,7 @@ func mouseModel(posts []*model.Post) Model {
 	ta := editor.New()
 	ta.SetWidth(40)
 	m.input = ta
-	m.renderTeamTabs()
+	m.renderTeamTabs(nil)
 	m.renderMessages()
 	return m
 }

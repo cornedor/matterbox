@@ -1446,15 +1446,30 @@ func (m *Model) renderViewContent() string {
 		m.vcache.jumpZone = jumpZone{}
 	}
 
+	// joins collects the columns where a pane's vertical border lands on the
+	// body's first row, so the tab strip's bottom rule can join it there rather
+	// than running past it (see renderTeamTabs). Each pane contributes its left
+	// and right border column.
+	var joins []int
+	pane := func(x, w int) {
+		if w > 0 {
+			joins = append(joins, x, x+w-1)
+		}
+	}
+
 	var body string
 	if m.onSearchTab() {
 		body = m.renderSearchPane(bodyH, m.width)
+		pane(0, m.width)
 	} else if m.onFeedTab() {
 		body = m.renderFeedPane(bodyH, m.width)
+		pane(0, m.width)
 	} else if m.onSQLTab() {
 		body = m.renderSQLPane(bodyH, m.width)
+		pane(0, m.width)
 	} else {
 		channelsPane := m.renderChannelsPane(bodyH)
+		pane(0, channelsWidth)
 		rightW := m.width - channelsWidth
 		if rightW < 10 {
 			rightW = 10
@@ -1474,22 +1489,27 @@ func (m *Model) renderViewContent() string {
 			msgsW = rightW - infoW
 		}
 		messagesPane := m.renderMessagesPane(bodyH, msgsW)
+		pane(channelsWidth, msgsW)
 		panes := []string{channelsPane, messagesPane}
 		if m.threadOpen {
 			panes = append(panes, m.renderThreadPane(bodyH, threadW))
+			pane(channelsWidth+msgsW, threadW)
 		} else if m.refOpen {
 			panes = append(panes, m.renderRefPane(bodyH, refW))
+			pane(channelsWidth+msgsW, refW)
 		} else if m.infoOpen {
 			panes = append(panes, m.renderInfoPane(bodyH, infoW))
+			pane(channelsWidth+msgsW, infoW)
 		}
 		body = lipgloss.JoinHorizontal(lipgloss.Top, panes...)
 	}
 	// A full-body overlay replaces everything above it — see bodyOverlays.
 	if ov := m.activeBodyOverlay(); ov != nil {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, ov.render(m, bodyH))
+		joins = nil // nothing but padding under the strip while a popup is up
 	}
 
-	tabs := m.renderTeamTabs()
+	tabs := m.renderTeamTabs(joins)
 
 	return lipgloss.JoinVertical(lipgloss.Left, tabs, body, footer)
 }
@@ -2104,7 +2124,10 @@ func replyWord(n int) string {
 	return "replies"
 }
 
-func (m *Model) renderTeamTabs() string {
+// renderTeamTabs draws the tab strip. joins lists the columns where a pane
+// border starts on the row directly below it; the strip's bottom rule grows a
+// down arm at each so the tabs and the body read as one frame (see ruleLine).
+func (m *Model) renderTeamTabs(joins []int) string {
 	if len(m.teams) == 0 && !m.hasDMs {
 		// Reserve the same vertical space so body math stays consistent.
 		blank := strings.Repeat("\n", tabsHeight-1)
@@ -2127,9 +2150,10 @@ func (m *Model) renderTeamTabs() string {
 	// x-coordinate back to the tab (see hitTest); sticky tabs (DMs/Feed/Search)
 	// and the scrollable team tabs both record it.
 	type teamTab struct {
-		s   string
-		w   int
-		idx int
+		s      string
+		w      int
+		idx    int
+		active bool
 	}
 	var sticky []teamTab
 	stickyW := 0
@@ -2157,7 +2181,6 @@ func (m *Model) renderTeamTabs() string {
 			}
 		}
 
-		isFirst := i == 0
 		isActive := i == m.teamIdx
 
 		var style lipgloss.Style
@@ -2193,20 +2216,8 @@ func (m *Model) renderTeamTabs() string {
 			}
 		}
 
-		// Fix up the leftmost tab's bottom-left so the rule starts cleanly.
-		// The rightmost tab keeps its default ┴ / └ so it flows into the
-		// fill block's continuing horizontal rule.
-		b, _, _, _, _ := style.GetBorder()
-		switch {
-		case isFirst && isActive:
-			b.BottomLeft = "│"
-		case isFirst && !isActive:
-			b.BottomLeft = "├"
-		}
-		style = style.Border(b)
-
 		rendered := style.Render(label)
-		tab := teamTab{s: rendered, w: lipgloss.Width(rendered), idx: i}
+		tab := teamTab{s: rendered, w: lipgloss.Width(rendered), idx: i, active: isActive}
 		if kind == tabTeam {
 			if isActive {
 				activeTeamPos = len(teamTabs)
@@ -2230,10 +2241,16 @@ func (m *Model) renderTeamTabs() string {
 	// Record each tab's horizontal extent as pieces are laid out left to right,
 	// so a click resolves to the right tab without replaying this windowing.
 	var zones []tabZone
+	// The bottom rule is collected cell by cell alongside the pieces instead of
+	// being taken from the rendered tab boxes: a pane border below can meet the
+	// strip anywhere, including mid-tab, which a per-tab lipgloss.Border can't
+	// express. ruleLine paints these cells at the end.
+	var rule []ruleCell
 	xpos := 0
 	place := func(t teamTab) {
 		pieces = append(pieces, t.s)
 		zones = append(zones, tabZone{x0: xpos, x1: xpos + t.w, idx: t.idx})
+		rule = appendTabRule(rule, t.w, t.active)
 		xpos += t.w
 	}
 	for _, t := range sticky {
@@ -2242,6 +2259,7 @@ func (m *Model) renderTeamTabs() string {
 	if leftClip {
 		arrow := scrollArrow("‹")
 		pieces = append(pieces, arrow)
+		rule = append(rule, ruleCell{glyph: '─'})
 		xpos += lipgloss.Width(arrow)
 	}
 	for i := start; i < end; i++ {
@@ -2249,6 +2267,7 @@ func (m *Model) renderTeamTabs() string {
 	}
 	if rightClip {
 		pieces = append(pieces, scrollArrow("›"))
+		rule = append(rule, ruleCell{glyph: '─'})
 	}
 	if m.vcache != nil {
 		m.vcache.tabZones = zones
@@ -2260,11 +2279,166 @@ func (m *Model) renderTeamTabs() string {
 	// bar reads as a single header strip instead of a floating widget.
 	if fill := m.width - lipgloss.Width(row); fill > 0 {
 		blank := strings.Repeat(" ", fill)
-		rule := lipgloss.NewStyle().Foreground(dimColor).Render(strings.Repeat("─", fill))
-		fillBlock := blank + "\n" + blank + "\n" + rule
+		fillBlock := blank + "\n" + blank + "\n" + blank
 		row = lipgloss.JoinHorizontal(lipgloss.Top, row, fillBlock)
+		for i := 0; i < fill; i++ {
+			rule = append(rule, ruleCell{glyph: '─'})
+		}
 	}
-	return row
+
+	// Cells past the terminal's edge are clipped, so the last *visible* column
+	// is where the strip closes — the tabs can overrun m.width on a very narrow
+	// terminal (the sticky DMs/Feed/Search tabs never scroll away).
+	visible := len(rule)
+	if m.width > 0 && m.width < visible {
+		visible = m.width
+	}
+	// The leftmost column always sits on the body's left border, join or not.
+	if len(rule) > 0 {
+		rule[0].glyph = joinGlyph(rule[0].glyph, 0, visible)
+	}
+	for _, c := range joins {
+		if c > 0 && c < len(rule) {
+			rule[c].glyph = joinGlyph(rule[c].glyph, c, visible)
+		}
+	}
+
+	lines := strings.Split(row, "\n")
+	lines[len(lines)-1] = ruleLine(rule, activeColor)
+	return strings.Join(lines, "\n")
+}
+
+// ruleCell is one column of the tab strip's bottom rule: the glyph to draw and
+// whether it belongs to the active tab, which paints it in the accent colour.
+type ruleCell struct {
+	glyph  rune
+	active bool
+}
+
+// appendTabRule appends the w cells one tab contributes to the bottom rule —
+// the same glyphs activeTabBorder / inactiveTabBorder would have drawn. The
+// active tab's bottom is open (blank between its corners) so it merges with
+// the pane below.
+func appendTabRule(rule []ruleCell, w int, active bool) []ruleCell {
+	left, mid, right := '┴', '─', '┴'
+	if active {
+		left, mid, right = '┘', ' ', '└'
+	}
+	for i := 0; i < w; i++ {
+		g := mid
+		switch i {
+		case 0:
+			g = left
+		case w - 1:
+			g = right
+		}
+		rule = append(rule, ruleCell{glyph: g, active: active})
+	}
+	return rule
+}
+
+// Bottom-rule cells are reshaped as sets of arms rather than as glyphs: a pane
+// border meeting the strip adds a down arm, and the strip's own ends drop the
+// arm that would point off-screen — which is one rule each, instead of a
+// substitution table per glyph pair.
+const (
+	armUp = 1 << iota
+	armDown
+	armLeft
+	armRight
+)
+
+// joinGlyph returns glyph with a downward arm added — so the cell hands off to
+// the pane border starting directly beneath it — trimmed of the arm that would
+// dangle when the cell is the first or last column of a width-wide strip. Under
+// the active tab's open bottom (a blank cell) the border simply continues as │.
+func joinGlyph(glyph rune, col, width int) rune {
+	arms := glyphArms(glyph) | armDown
+	if col == 0 {
+		arms &^= armLeft
+	}
+	if col == width-1 {
+		arms &^= armRight
+	}
+	return armsGlyph(arms)
+}
+
+func glyphArms(glyph rune) int {
+	switch glyph {
+	case '─':
+		return armLeft | armRight
+	case '│':
+		return armUp | armDown
+	case '┴':
+		return armUp | armLeft | armRight
+	case '┬':
+		return armDown | armLeft | armRight
+	case '├':
+		return armUp | armDown | armRight
+	case '┤':
+		return armUp | armDown | armLeft
+	case '┼':
+		return armUp | armDown | armLeft | armRight
+	case '┘':
+		return armUp | armLeft
+	case '└':
+		return armUp | armRight
+	case '┐':
+		return armDown | armLeft
+	case '┌':
+		return armDown | armRight
+	}
+	return 0 // blank — the active tab's open bottom
+}
+
+func armsGlyph(arms int) rune {
+	switch arms {
+	case armLeft | armRight, armLeft, armRight:
+		return '─'
+	case armUp | armDown, armUp, armDown:
+		return '│'
+	case armUp | armLeft | armRight:
+		return '┴'
+	case armDown | armLeft | armRight:
+		return '┬'
+	case armUp | armDown | armRight:
+		return '├'
+	case armUp | armDown | armLeft:
+		return '┤'
+	case armUp | armDown | armLeft | armRight:
+		return '┼'
+	case armUp | armLeft:
+		return '┘'
+	case armUp | armRight:
+		return '└'
+	case armDown | armLeft:
+		return '┐'
+	case armDown | armRight:
+		return '┌'
+	}
+	return ' '
+}
+
+// ruleLine renders the collected cells, batching runs of the same colour so a
+// full-width rule costs a handful of styled writes rather than one per column.
+func ruleLine(rule []ruleCell, activeColor color.Color) string {
+	dim := lipgloss.NewStyle().Foreground(dimColor)
+	hot := lipgloss.NewStyle().Foreground(activeColor)
+	var b strings.Builder
+	for i := 0; i < len(rule); {
+		j := i
+		var seg []rune
+		for ; j < len(rule) && rule[j].active == rule[i].active; j++ {
+			seg = append(seg, rule[j].glyph)
+		}
+		st := dim
+		if rule[i].active {
+			st = hot
+		}
+		b.WriteString(st.Render(string(seg)))
+		i = j
+	}
+	return b.String()
 }
 
 // teamTabWindow picks the visible [start,end) slice of the scrollable team
