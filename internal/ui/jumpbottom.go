@@ -100,6 +100,41 @@ func (m *Model) refreshTailBehind() {
 	m.msgsTailBehind = err == nil && newest > last.CreateAt
 }
 
+// msgsStayAtBottom reports whether the render about to run inherits a transcript
+// parked on its newest message and must keep it there. True only when the
+// previous render left the viewport at the bottom of the same window — same tail
+// post, same selection — so whatever height change this render brings is content
+// moving under a stationary reader: a reaction chip appearing on the last
+// message, an edit landing, an emoji image resolving. Left to the ordinary
+// keep-the-selection-visible rules, that extra row slides the newest message
+// under the fold and raises the jump pill on a transcript the user never left.
+//
+// A different tail (new messages arrived) or a moved selection means the frame
+// of reference itself changed; those paths set their own anchors — the live
+// new-post path pins with anchorMsgSelBottom — and are left alone here.
+//
+// Reads the *previous* layout, so it must be called before renderMessages
+// replaces msgRowStarts.
+func (m *Model) msgsStayAtBottom() bool {
+	if len(m.posts) == 0 || len(m.msgRowStarts) == 0 || m.msgsRenderTail == "" {
+		return false
+	}
+	if m.posts[len(m.posts)-1].Id != m.msgsRenderTail {
+		return false
+	}
+	if m.postIdx < 0 || m.postIdx >= len(m.posts) || m.posts[m.postIdx].Id != m.msgsRenderSel {
+		return false
+	}
+	h := m.msgsView.Height()
+	if h <= 0 {
+		return false
+	}
+	// Same test the scrollbar and the pill use: the viewport is at the bottom
+	// when its offset has reached the last screenful of content.
+	total := m.msgRowStarts[len(m.msgRowStarts)-1]
+	return total <= h || m.msgsView.YOffset() >= total-h
+}
+
 // jumpPillFor sizes and centers the pill within the message viewport, or
 // returns the zero jumpPill when it's hidden or the pane is too narrow to hold
 // it without crowding the text it covers.

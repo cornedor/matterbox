@@ -890,6 +890,17 @@ type Model struct {
 	msgRowStarts    []int
 	threadRowStarts []int
 
+	// msgsRenderTail / msgsRenderSel identify the transcript the previous
+	// renderMessages laid out: the newest post in the loaded window and the
+	// selected one. When both still match, this render is drawing the same
+	// window for a reader who hasn't moved, so a height change is content
+	// shifting under them (a reaction chip appearing, an edit landing, an emoji
+	// image resolving) rather than a scroll they asked for — which is what lets
+	// renderMessages keep a bottom-parked transcript parked. See
+	// msgsStayAtBottom.
+	msgsRenderTail string
+	msgsRenderSel  string
+
 	// vcache memoizes layout-heavy render output (scrollbar geometry + the
 	// channels sidebar) that doesn't change on most keystrokes. Behind a
 	// pointer so writes from the value-receiver View path persist across

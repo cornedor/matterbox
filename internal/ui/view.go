@@ -513,6 +513,7 @@ func (m *Model) renderMessages() {
 	if len(m.posts) == 0 {
 		m.msgsView.SetContent(lipgloss.NewStyle().Foreground(dimColor).Render("no messages"))
 		m.msgRowStarts = nil
+		m.msgsRenderTail, m.msgsRenderSel = "", ""
 		m.refreshAnimVisibility() // nothing on screen → stop any animation
 		return
 	}
@@ -523,6 +524,10 @@ func (m *Model) renderMessages() {
 	if m.postIdx < 0 {
 		m.postIdx = 0
 	}
+	// Did the previous render leave this same window parked on its newest
+	// message? Answered before the layout below overwrites msgRowStarts, and
+	// applied to the offset once the new heights are known.
+	stayAtBottom := m.msgsStayAtBottom()
 
 	decorate := m.msgsClaim.bar
 	bar := selectedBarStyle.Render("▎")
@@ -640,11 +645,28 @@ func (m *Model) renderMessages() {
 		case visEnd > off+h:
 			off = visEnd - h
 		}
+		// A transcript that was already parked on the newest message stays
+		// parked, whatever the rules above made of an unchanged selection: the
+		// reaction chip that just appeared on the last message grew the content
+		// under a reader who never scrolled, and without this the newest line
+		// slides under the fold and summons the jump pill. The one-shot anchors
+		// and the intra-message scroll asked for a specific offset, so they win.
+		pinBottom := stayAtBottom && !m.anchorMsgSelTop && !m.anchorMsgSelBottom && !m.keepMsgOffset
+		if pinBottom {
+			off = visAcc - h
+		}
 		if off < 0 {
 			off = 0
 		}
 		m.msgsView.SetYOffset(off)
+		// Free-scroll reads its offset back on the next render; leave it on the
+		// bottom we just pinned rather than the pre-growth row.
+		if pinBottom && m.msgScrollFree {
+			m.msgFreeOffset = off
+		}
 	}
+	m.msgsRenderTail = m.posts[len(m.posts)-1].Id
+	m.msgsRenderSel = m.posts[m.postIdx].Id
 	m.anchorMsgSelTop = false
 	m.anchorMsgSelBottom = false
 	m.keepMsgOffset = false
