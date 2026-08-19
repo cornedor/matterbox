@@ -3243,6 +3243,7 @@ const (
 	wheelSearch
 	wheelFeed
 	wheelSQL
+	wheelModal
 )
 
 // wheelCoalesceDelay is how long accumulated wheel delta waits before being
@@ -3264,6 +3265,15 @@ func wheelFlushCmd() tea.Cmd {
 // synthetic Search / Feed tabs scroll their bubble list even when focus rests on
 // the tab strip. The composer (and anything else) ignores the wheel.
 func (m *Model) wheelTargetForFocus() wheelTarget {
+	// A modal owns the screen, so it owns the wheel: a scrollable sheet gets it,
+	// and any other modal swallows it. Focus is untouched while a modal is up, so
+	// without this the wheel scrolled the pane buried behind the popup.
+	if m.inModal() {
+		if m.modalScrollView() != nil {
+			return wheelModal
+		}
+		return wheelNone
+	}
 	switch m.focus {
 	case focusMessages:
 		return wheelMsgs
@@ -3314,6 +3324,11 @@ func (m *Model) wheelStep(t wheelTarget) int {
 		return m.feed.view.MouseWheelDelta
 	case wheelSQL:
 		return m.sql.view.MouseWheelDelta
+	case wheelModal:
+		if v := m.modalScrollView(); v != nil {
+			return v.MouseWheelDelta
+		}
+		return 0
 	default:
 		return 0
 	}
@@ -3408,6 +3423,13 @@ func (m *Model) applyWheel(t wheelTarget, delta int) {
 		m.feed.view.SetYOffset(m.feed.view.YOffset() + delta)
 	case wheelSQL:
 		m.sql.view.SetYOffset(m.sql.view.YOffset() + delta)
+	case wheelModal:
+		// Resolved again here rather than captured: a sheet closed mid-burst
+		// leaves the pending delta with nowhere to land, which is the right
+		// answer — it must not fall through to the pane behind it.
+		if v := m.modalScrollView(); v != nil {
+			v.SetYOffset(v.YOffset() + delta)
+		}
 	}
 }
 

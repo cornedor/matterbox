@@ -6,6 +6,8 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+
+	"matterbox/internal/viewport"
 )
 
 // modalMaxWidth caps the outer width of the sheet-style modals (keys sheet,
@@ -180,4 +182,24 @@ func listWindow(n, idx, height int) (start, end int) {
 		start = n - height
 	}
 	return start, start + height
+}
+
+// modalScrollView returns the viewport of the scrollable sheet modal that is
+// currently up, or nil when the open modal has nothing to scroll (a picker, a
+// confirm, a game) and when no modal is up at all. Only these sheets scroll
+// with ↑/↓, so only these are what the wheel can drive — see
+// wheelTargetForFocus. The order mirrors activeBodyOverlay's "last active
+// wins", so a sheet raised over another scrolls the one on top.
+func (m *Model) modalScrollView() *viewport.Model {
+	switch {
+	case m.summary.phase == summaryStreaming || m.summary.phase == summaryDone:
+		return &m.summary.view
+	case m.textPopup.active:
+		return m.textPopup.view
+	case m.keysSheetMode:
+		return m.keysSheetView
+	case m.historyMode:
+		return m.historyView
+	}
+	return nil
 }
