@@ -1384,7 +1384,12 @@ func (m *Model) ShortHelp() []key.Binding {
 		// narrow terminal truncates the extras rather than the discovery keys.
 		return []key.Binding{k.Compose, k.OpenThread, k.SearchHere, k.Filter, k.Help, k.CommandPicker, k.ChannelInfo, k.React, k.NavTeam}
 	case m.focus == focusThread:
-		return []key.Binding{k.Compose, k.CloseThread, k.SearchHere, k.Help, k.CommandPicker, k.React, k.NavTeam}
+		// ReplyInThread comes first after Compose: inside a thread it is the one
+		// key that does something the pane can't otherwise express — answer
+		// *this* message rather than the thread (see nestedreply.go) — so it has
+		// to be on screen, not only in the cheatsheet. GotoParent rides along
+		// next to it as the way back up.
+		return []key.Binding{k.Compose, k.ReplyInThread, k.GotoParent, k.CloseThread, k.SearchHere, k.Help, k.CommandPicker, k.React, k.NavTeam}
 	case m.focus == focusRef:
 		return []key.Binding{k.Up, k.Down, k.OpenAttach, k.Refresh, k.OpenRef, k.Help, k.NavTeam}
 	case m.focus == focusInfo && m.infoMode == infoModeMedia:

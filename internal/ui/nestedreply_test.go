@@ -514,3 +514,78 @@ func TestReplyHandlersReturnAValueModel(t *testing.T) {
 		}
 	}
 }
+
+// End to end through Update, the way a user actually does it: put the cursor on a
+// reply, press r, type, send — then let the server's copy come back over the
+// WebSocket and replace the optimistic stub. The nesting has to survive all of
+// it, because every one of those steps is a place it could be dropped.
+func TestNestedReplySurvivesSendAndWSEcho(t *testing.T) {
+	m := nestThreadModel(t)
+	m.threadPosts = m.threadPosts[:3] // root + two flat replies
+	m.posts = append([]*model.Post(nil), m.threadPosts...)
+	m.focus = focusThread
+	m.threadIdx = 1 // bram's "the rendered lines"
+
+	// r targets it.
+	m = asModel(t, m, keyPress('r'))
+	if m.replyParentID != "r1" {
+		t.Fatalf("r through Update didn't target the reply: %q", m.replyParentID)
+	}
+	if m.focus != focusInput {
+		t.Fatalf("focus = %v, want the composer", m.focus)
+	}
+
+	// Type and send.
+	m.input.SetValue("that one")
+	m = asModel(t, m, keyPress(tea.KeyEnter))
+	stub := m.threadPosts[len(m.threadPosts)-1]
+	if stub.Id != "" {
+		t.Fatalf("expected an optimistic stub, got a post with id %q", stub.Id)
+	}
+	if id, ok := replyto.Parse(stub.Message); !ok || id != "r1" {
+		t.Fatalf("the sent body carries parent %q, %v; want r1", id, ok)
+	}
+
+	// The server's copy arrives and replaces the stub, byte for byte.
+	landed := &model.Post{
+		Id: "r9", ChannelId: "c1", UserId: "u1", RootId: "root1",
+		CreateAt: 9000, Message: stub.Message,
+	}
+	m.appendThreadPost(landed)
+	for _, p := range m.threadPosts {
+		if p.Id == "" {
+			t.Fatal("the optimistic stub outlived the server's copy")
+		}
+	}
+	m.posts = append(m.posts, landed)
+
+	// And it draws nested in the thread pane and quoted in the channel.
+	m.renderThread()
+	if got := ansi.Strip(m.threadView.View()); !strings.Contains(got, "↪ bram · the rendered lines") {
+		t.Fatalf("thread pane lost the nesting after the round trip:\n%s", got)
+	}
+	m.msgsView.SetWidth(60)
+	m.msgsView.SetHeight(20)
+	m.renderMessages()
+	if got := ansi.Strip(m.msgsView.View()); !strings.Contains(got, "↪ bram · the rendered lines") {
+		t.Fatalf("channel pane lost the nesting after the round trip:\n%s", got)
+	}
+}
+
+// The reply key has to be *on screen* in the thread pane, not just in the
+// cheatsheet: it is the one key there that does something the pane can't
+// otherwise express, and a key nobody can find is a feature nobody has. It must
+// also survive the footer's truncation on a narrow terminal.
+func TestThreadFooterAdvertisesTheReplyKey(t *testing.T) {
+	for _, w := range []int{80, 100, 140} {
+		m := nestThreadModel(t)
+		m.width, m.height = w, 30
+		m.focus = focusThread
+		got := ansi.Strip(m.renderFooter())
+		for _, want := range []string{"r reply to message", "p jump to parent"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("width %d: footer is missing %q:\n%s", w, want, got)
+			}
+		}
+	}
+}
