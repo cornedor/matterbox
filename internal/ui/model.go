@@ -467,6 +467,10 @@ type Model struct {
 	loading bool
 	status  string
 
+	// splash is the startup progress screen shown until the first transcript
+	// is ready; see splash.go. Inactive (the zero value) at every other time.
+	splash splashState
+
 	ws      *model.WebSocketClient
 	wsRetry int
 
@@ -1277,6 +1281,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		uploadCancel:        map[string]context.CancelFunc{},
 		loading:             true,
 		status:              "loading…",
+		splash:              newSplashState(serverURL),
 		keys:                km,
 		vimNav:              vimNav,
 		help:                h,
@@ -1477,7 +1482,10 @@ func (m Model) Init() tea.Cmd {
 	// it moves away from the page background (see theme.go). The reply lands as
 	// a tea.BackgroundColorMsg; a terminal that never answers keeps the dark
 	// assumption.
-	cmds := []tea.Cmd{m.fetchMe(), m.connectWS(), m.startEmbedder(), tea.RequestBackgroundColor}
+	cmds := []tea.Cmd{
+		m.fetchMe(), m.connectWS(), m.startEmbedder(), tea.RequestBackgroundColor,
+		splashTickCmd(), splashTimeoutCmd(),
+	}
 	if c := m.emojiProbeCmd(); c != nil {
 		cmds = append(cmds, c)
 	}

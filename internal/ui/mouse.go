@@ -1191,11 +1191,15 @@ func (m *Model) composerGeom() (x0, top, width, height, yoff int) {
 // editorCursor returns the absolute screen cell where the real terminal cursor
 // should sit for whichever text-input surface is currently focused and
 // on-screen, or ok == false when none is (so View leaves the cursor hidden).
-// Overlays that carry their own input win first (the channel switcher, then the
-// jira-comment overlay), since they render over any tab; any other body-covering
-// overlay suppresses the cursor; then the Search and SQL tabs, else the composer.
+// The startup splash wins first — it covers the whole screen. Then overlays that
+// carry their own input (the channel switcher, then the jira-comment overlay),
+// since they render over any tab; any other body-covering overlay suppresses the
+// cursor; then the Search and SQL tabs, else the composer.
 func (m *Model) editorCursor() (col, row int, ok bool) {
 	switch {
+	case m.splash.active:
+		// Startup splash: no editing surface is on screen behind it.
+		return 0, 0, false
 	case m.switcherMode:
 		return m.switcherCursor()
 	case m.jiraCommentActive:

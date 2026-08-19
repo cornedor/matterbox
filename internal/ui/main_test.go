@@ -22,3 +22,16 @@ func TestMain(m *testing.M) {
 	os.RemoveAll(dir)
 	os.Exit(code)
 }
+
+// newTestModel builds a Model through New() and then puts it in the state the
+// app is in once startup has finished: no splash, nothing loading. New() arms
+// the startup splash, which covers the whole screen until the first transcript
+// lands (see splash.go) — a test that renders panes, places the cursor, or
+// measures layout is by definition past that point, and would otherwise be
+// looking at the progress list.
+func newTestModel() Model {
+	m := New(nil, nil)
+	m.loading = false
+	m.splash.stop()
+	return m
+}

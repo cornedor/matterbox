@@ -29,7 +29,7 @@ func TestInputGrowthNeverOverflows(t *testing.T) {
 	sizes := []struct{ w, h int }{{120, 40}, {120, 24}, {120, 16}, {100, 16}}
 	for _, thread := range []bool{false, true} {
 		for _, sz := range sizes {
-			m := New(nil, nil)
+			m := newTestModel()
 			m.width, m.height = sz.w, sz.h
 			m.focus = focusInput
 			m.threadOpen = thread
@@ -55,7 +55,7 @@ func TestInputGrowthNeverOverflows(t *testing.T) {
 // message viewport by exactly N — i.e. the input stays pinned to the bottom
 // instead of floating with blank rows beneath it.
 func TestInputBottomAligned(t *testing.T) {
-	m := New(nil, nil)
+	m := newTestModel()
 	m.width, m.height = 120, 40
 	m.focus = focusInput
 	m.resizeMessagesViewport()
@@ -82,7 +82,7 @@ func TestInputBottomAligned(t *testing.T) {
 // Regression: bubbles/v2 textarea's atContentLimit() checks len(value) >= MaxHeight
 // when MaxContentHeight is unset, blocking newlines at 6 lines.
 func TestComposerNewlinePastMaxHeight(t *testing.T) {
-	m := New(nil, nil)
+	m := newTestModel()
 	m.width, m.height = 120, 40
 	m.focus = focusInput
 	m.input.Focus()

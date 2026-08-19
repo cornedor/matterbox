@@ -1535,6 +1535,12 @@ func (m *Model) viewContent() string {
 }
 
 func (m *Model) renderViewContent() string {
+	// Startup: the panes have nothing in them yet, so draw the progress splash
+	// instead of an empty frame that pops into shape one fetch at a time (see
+	// splash.go).
+	if m.splash.active {
+		return m.renderSplash()
+	}
 	// Render footer first so we know its height — full-help mode expands
 	// it from a single line to several, and the body has to shrink to fit.
 	footer := m.renderFooter()

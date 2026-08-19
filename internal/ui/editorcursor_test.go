@@ -36,7 +36,7 @@ func cellAt(t *testing.T, screen string, col, row int) rune {
 // reuses composerGeom, which production already relies on for mouse hit-testing.
 
 func TestSQLCursorLandsOnCaret(t *testing.T) {
-	m := New(nil, nil)
+	m := newTestModel()
 	m.width, m.height = 120, 40
 	m.showSQL = true // register the synthetic SQL tab
 	if cmd := m.openSQLTab(); cmd != nil {
@@ -63,7 +63,7 @@ func TestSQLCursorLandsOnCaret(t *testing.T) {
 }
 
 func TestSearchCursorLandsOnCaret(t *testing.T) {
-	m := New(nil, nil)
+	m := newTestModel()
 	m.width, m.height = 120, 40
 	if cmd := m.openSearchTab(); cmd != nil {
 		cmd() // run the input's Focus command
@@ -89,7 +89,7 @@ func TestSearchCursorLandsOnCaret(t *testing.T) {
 }
 
 func TestSwitcherCursorLandsOnCaret(t *testing.T) {
-	m := New(nil, nil)
+	m := newTestModel()
 	m.width, m.height = 120, 40
 	tm, _ := m.openSwitcher()
 	m = tm.(Model)
@@ -112,7 +112,7 @@ func TestSwitcherCursorLandsOnCaret(t *testing.T) {
 func TestJiraCommentCursorLandsOnCaret(t *testing.T) {
 	// reply=true adds a "replying to" line above the editor, shifting it down.
 	for _, reply := range []bool{false, true} {
-		m := New(nil, nil)
+		m := newTestModel()
 		m.width, m.height = 120, 40
 		m.jiraCommentActive = true
 		m.jiraCommentInput = newCommentTextarea()

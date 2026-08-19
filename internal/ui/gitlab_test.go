@@ -16,7 +16,7 @@ import (
 // returned fetch Cmd is invoked.
 func configuredGitLabModel(t *testing.T) Model {
 	t.Helper()
-	m := New(nil, nil)
+	m := newTestModel()
 	m.width, m.height = 120, 40
 	m.glClient = gitlab.New(gitlab.Config{BaseURL: "https://git.example.com", Token: "tok"})
 	return m

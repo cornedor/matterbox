@@ -60,7 +60,7 @@ func TestBorderSplitIdentity(t *testing.T) {
 // fingerprint gap would surface here as a stale cached frame diverging from the
 // fresh one.
 func TestMsgsPaneCacheMatchesUncached(t *testing.T) {
-	m := New(nil, nil)
+	m := newTestModel()
 	m.width, m.height = 120, 40
 	m.focus = focusInput
 	posts, names := benchPosts(80)

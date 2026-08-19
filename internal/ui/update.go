@@ -62,6 +62,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if fx := nm.maybeStartEffectsAnim(); fx != nil {
 		cmd = tea.Batch(cmd, fx)
 	}
+	// Take the startup splash down as soon as the first transcript is ready,
+	// from whichever open path got there (see splashSettle).
+	nm.splashSettle()
 	// Reconcile the composer's cursor with m.focus *after* the handler ran, so no
 	// focus-changing path can leave the editor visibly focused (or dark) by
 	// forgetting to blur/focus it. Every event funnels through here, so this is
@@ -193,7 +196,25 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// A resize while the image preview or a game is open re-fits + re-transmits it.
 		return m, tea.Batch(m.resizePreview(), m.resizeGorillas(), m.resizeKurve())
 
+	case splashTickMsg:
+		// Spinner frame on the startup splash. The chain dies with the splash:
+		// no re-tick once it's down, so this costs nothing after startup.
+		if !m.splash.active {
+			return m, nil
+		}
+		m.splash.frame++
+		return m, splashTickCmd()
+
+	case splashTimeoutMsg:
+		m.splash.stop()
+		return m, nil
+
 	case tea.KeyPressMsg:
+		// Any keystroke takes the startup splash down. Whatever the user is
+		// reaching for they should see happen rather than type into a blank
+		// screen, and it doubles as the way out if a startup fetch hangs. The
+		// key itself is handled normally, so nothing typed is lost.
+		m.splash.stop()
 		return m.handleKey(msg)
 
 	case tea.FocusMsg:
@@ -372,6 +393,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case meLoadedMsg:
 		m.me = msg.user
 		m.status = "loading teams & channels…"
+		m.splash.finish(splashAccount)
 		return m, tea.Batch(
 			m.fetchTeams(m.me.Id),
 			m.fetchAllChannels(m.me.Id),
@@ -383,6 +405,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.teams = msg.teams
 		m.applyTeamOrder()
 		m.teamsLoaded = true
+		m.splash.finish(splashTeams)
 		return m, tea.Batch(m.maybeFetchInitialPosts(), m.loadDrafts())
 
 	case draftsLoadedMsg:
@@ -400,6 +423,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.bucketChannels(msg.channels)
 		m.channelsLoaded = true
+		m.splash.finish(splashChannels)
 		m.applyUnreadFromMembers()
 		cmds := []tea.Cmd{m.maybeFetchInitialPosts()}
 		// Seed the :-picker's custom-emoji index once (images stay lazy).
@@ -485,6 +509,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case membersLoadedMsg:
 		m.setMembers(msg.members)
 		m.membersLoaded = true
+		m.splash.finish(splashUnread)
 		m.applyUnreadFromMembers()
 		// Startup lands here before the feed exists. A reconnect resync doesn't:
 		// the badges just moved, so an already-built feed would keep showing the
@@ -815,6 +840,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case wsConnectedMsg:
 		m.ws = msg.ws
+		m.splash.finish(splashConnect)
 		// A non-zero retry count means this connect follows a drop, so we were
 		// deaf for a while and have to re-check what changed (see
 		// resyncAfterReconnect). The clean first connect needs nothing — the
@@ -1797,6 +1823,7 @@ func (m *Model) maybeFetchInitialPosts() tea.Cmd {
 	if m.posts != nil {
 		return nil
 	}
+	m.splashOpening(vis[m.channelIdx])
 	return m.openChannelLoadCmd(vis[m.channelIdx].Id)
 }
 

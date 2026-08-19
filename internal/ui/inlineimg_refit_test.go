@@ -55,7 +55,7 @@ func settleRealThumbs(t *testing.T, m *Model, rounds int) int {
 func wideImagePostModel(t *testing.T) *Model {
 	t.Helper()
 	seedWideImage(t, 1600, 400)
-	m := New(nil, nil)
+	m := newTestModel()
 	m.width, m.height = 160, 45
 	m.cellPxW, m.cellPxH = 10, 20
 	m.emojiImg.setProbeOK()

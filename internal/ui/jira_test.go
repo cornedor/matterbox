@@ -14,7 +14,7 @@ import (
 // happens unless the returned fetch Cmd is invoked.
 func configuredJiraModel(t *testing.T, projects ...string) Model {
 	t.Helper()
-	m := New(nil, nil)
+	m := newTestModel()
 	m.width, m.height = 120, 40
 	m.jiraClient = jira.New(jira.Config{
 		BaseURL:  "https://example.atlassian.net",
@@ -83,7 +83,7 @@ func TestOpenReferenceNoIssue(t *testing.T) {
 }
 
 func TestOpenReferenceNotConfigured(t *testing.T) {
-	m := New(nil, nil) // default jira + gitlab clients have no credentials → disabled
+	m := newTestModel() // default jira + gitlab clients have no credentials → disabled
 	m.width, m.height = 120, 40
 	post := &model.Post{Message: "https://example.atlassian.net/browse/ABC-1"}
 

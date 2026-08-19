@@ -27,7 +27,7 @@ func onTeamTab(m *Model) {
 // something to drive.
 func animThumbModel(t *testing.T) *Model {
 	t.Helper()
-	m := New(nil, nil)
+	m := newTestModel()
 	m.width, m.height = 120, 40
 	m.resizeMessagesViewport()
 	m.resizeInput()

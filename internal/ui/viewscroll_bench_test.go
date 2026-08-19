@@ -13,7 +13,7 @@ import (
 // per-message render path bubbletea runs after every event (including every
 // wheel event during a scroll).
 func benchViewModel(n int) Model {
-	m := New(nil, nil)
+	m := newTestModel()
 	m.width, m.height = 120, 40
 	posts, names := benchPosts(n)
 	for k, v := range names {
