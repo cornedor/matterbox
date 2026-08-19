@@ -56,7 +56,7 @@ func slashRegistry() []slashCommand {
 	cmds := []slashCommand{
 		{name: "me", args: "<action>", desc: "send an action / emote message", run: slashMe},
 		{name: "shrug", args: "[message]", desc: `append ¯\_(ツ)_/¯ to your message`, run: slashShrug},
-		{name: "kaomoji", args: "[name]", desc: "insert a kaomoji (no name: pick from the list)",
+		{name: "kaomoji", args: "<name> [message]", desc: "send a kaomoji, appended to your message if you add one",
 			run: slashKaomoji, argValues: kaomojiArgs},
 		{name: "tmpl", aliases: []string{"template"}, args: "[name]", desc: "insert a saved template (no name: pick from the list)",
 			run: slashTemplate, argValues: templateArgs},
@@ -270,11 +270,16 @@ func slashShrug(m *Model, args string) tea.Cmd {
 
 // shrugText appends the shrug kaomoji to the (optional) message text.
 func shrugText(args string) string {
-	const shrug = `¯\_(ツ)_/¯`
-	if text := strings.TrimSpace(args); text != "" {
-		return text + " " + shrug
+	return kaomojiMessage(args, `¯\_(ツ)_/¯`)
+}
+
+// kaomojiMessage puts face after the (optional) message text — the post both
+// /shrug and /kaomoji compose.
+func kaomojiMessage(message, face string) string {
+	if text := strings.TrimSpace(message); text != "" {
+		return text + " " + face
 	}
-	return shrug
+	return face
 }
 
 // slashDM opens (creating if needed) a DM or group DM with the named user(s) and
@@ -286,7 +291,7 @@ func slashDM(m *Model, args string) tea.Cmd {
 		m.status = "usage: /dm @user[,@user…] [message]"
 		return nil
 	}
-	spec, message := splitDMArgs(args)
+	spec, message := splitFirstArg(args)
 	if m.me == nil {
 		m.status = "/dm: user not loaded yet"
 		return nil
@@ -299,13 +304,13 @@ func slashDM(m *Model, args string) tea.Cmd {
 	}
 }
 
-// splitDMArgs separates a /dm argument into the recipient spec (the first
-// whitespace-separated token, e.g. "@alice" or "@a,@b") and the optional
-// trailing message. Usernames carry no spaces, so the first space is an
-// unambiguous boundary.
-func splitDMArgs(args string) (spec, message string) {
+// splitFirstArg separates a command's first whitespace-separated token from
+// the optional trailing message — /dm's recipient spec ("@alice", "@a,@b") and
+// /kaomoji's name. Neither carries whitespace, so the first run of it is an
+// unambiguous boundary (a newline counts: the message may be multi-line).
+func splitFirstArg(args string) (first, message string) {
 	args = strings.TrimSpace(args)
-	if i := strings.IndexAny(args, " \t"); i >= 0 {
+	if i := strings.IndexAny(args, " \t\n"); i >= 0 {
 		return args[:i], strings.TrimSpace(args[i+1:])
 	}
 	return args, ""
@@ -329,13 +334,14 @@ func slashHelp(m *Model, _ string) tea.Cmd {
 	return nil
 }
 
-// slashKaomoji inserts the named kaomoji into the (now empty) composer, or
-// opens the picker when no name was given — the same shape as /tmpl. The name
-// is what the "/kaomoji " argument autocomplete fills in.
+// slashKaomoji sends the named kaomoji as a post, after the optional message
+// that follows the name — /shrug for the whole set. The name is the first
+// argument (what the "/kaomoji " autocomplete fills in); the modal picker,
+// which inserts into the composer instead of sending, lives on the palette.
 func slashKaomoji(m *Model, args string) tea.Cmd {
-	name := strings.TrimSpace(args)
+	name, message := splitFirstArg(args)
 	if name == "" {
-		m.openKaomojiPicker()
+		m.status = "usage: /kaomoji <name> [message]"
 		return nil
 	}
 	it, ok := m.findKaomoji(name)
@@ -343,7 +349,11 @@ func slashKaomoji(m *Model, args string) tea.Cmd {
 		m.status = "kaomoji not found: " + name
 		return nil
 	}
-	return m.insertKaomoji(it)
+	cmd := m.sendComposedText(kaomojiMessage(message, it.text))
+	if cmd == nil { // no channel open; nothing was sent, so don't count a pick
+		return nil
+	}
+	return tea.Batch(cmd, m.bumpKaomojiStat(it.text))
 }
 
 // slashTemplate inserts the named template, or opens the Templates sheet when

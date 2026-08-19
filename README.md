@@ -25,8 +25,9 @@ local LLM.
   excluding muted channels — press `M` (or set `feed_show_muted: true`) to let
   them in, sorted below everything else.
 - **Pins, saved messages, templates** — pin or save a message and browse the
-  saved ones, keep composer templates (`/tmpl`), pick a kaomoji (`/kaomoji`),
-  all from the command palette (`ctrl+p`, then `>`).
+  saved ones, keep composer templates (`/tmpl`), pick a kaomoji, all from the
+  command palette (`ctrl+p`, then `>`). Slash commands autocomplete their
+  argument too, so `/kaomoji ` lists the faces and `/tmpl ` your templates.
 - **Jira integration** — press `v` on a Jira issue link to open a side panel; edit
   Status, Priority, Story points, and Assignee inline without leaving the TUI.
 - **GitLab integration** — press `v` on a GitLab MR link to open a merge-request

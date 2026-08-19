@@ -53,6 +53,25 @@ var defaultKaomoji = []kaomojiItem{
 	{name: "thinking", text: `( -_・)?`},
 }
 
+// kaomojiCommand returns the palette entry that raises the picker, plus
+// whether it applies: the pick is inserted into the composer, so — like the
+// Templates sheet — it's only offered while a channel tab shows one.
+func (m *Model) kaomojiCommand() (switcherCommand, bool) {
+	if !m.composerShown() {
+		return switcherCommand{}, false
+	}
+	return switcherCommand{
+		name: "Kaomoji",
+		desc: "insert a kaomoji at the cursor (enter picks); also /kaomoji <name> to send one",
+		run:  runKaomojiPicker,
+	}, true
+}
+
+func runKaomojiPicker(m *Model, _ string) tea.Cmd {
+	m.openKaomojiPicker()
+	return nil
+}
+
 // openKaomojiPicker raises the modal list over the composer.
 func (m *Model) openKaomojiPicker() {
 	m.kaomojiPicker = kaomojiPickerState{active: true, items: m.kaomojiItems()}

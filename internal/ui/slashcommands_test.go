@@ -63,9 +63,9 @@ func TestSplitDMArgs(t *testing.T) {
 		{"", "", ""},
 	}
 	for _, c := range cases {
-		spec, msg := splitDMArgs(c.in)
+		spec, msg := splitFirstArg(c.in)
 		if spec != c.spec || msg != c.msg {
-			t.Errorf("splitDMArgs(%q) = (%q,%q), want (%q,%q)", c.in, spec, msg, c.spec, c.msg)
+			t.Errorf("splitFirstArg(%q) = (%q,%q), want (%q,%q)", c.in, spec, msg, c.spec, c.msg)
 		}
 	}
 }
@@ -132,6 +132,19 @@ func newSlashTestModel(value string) *Model {
 	m.input = editor.New()
 	m.input.SetWidth(60)
 	m.input.SetValue(value)
+	return m
+}
+
+// newSendTestModel extends newSlashTestModel with what an optimistic post
+// needs: an open channel and a known "me", so a command that sends can be
+// checked by the stub it appends.
+func newSendTestModel() *Model {
+	m := newSlashTestModel("")
+	m.me = &model.User{Id: "u1", Username: "me"}
+	m.userNames = map[string]string{}
+	m.teams = []*model.Team{{Id: "team1", Name: "team1"}}
+	m.teamIdx = 2 // Feed(0), Search(1), team(2) — land on a tab with a composer
+	m.openChannelID = "chan1"
 	return m
 }
 
@@ -207,13 +220,19 @@ func TestSlashKaomojiIsRegistryCommand(t *testing.T) {
 	if !m.slash.active {
 		t.Fatal("typing /kaomoji should keep the slash popup open like every other command")
 	}
+	// The name is required — /kaomoji sends a face, it doesn't open anything.
 	next, _ := m.runSlashCommand("kaomoji", "")
 	got := next.(Model)
-	if !got.kaomojiPicker.active {
-		t.Fatal("running /kaomoji should open the picker")
+	if got.kaomojiPicker.active {
+		t.Fatal("a bare /kaomoji should report its usage, not open the picker")
 	}
-	if got.input.Value() != "" {
-		t.Fatalf("running /kaomoji should consume the composer, left %q", got.input.Value())
+	if !strings.Contains(got.status, "usage:") {
+		t.Fatalf("status = %q, want the usage hint", got.status)
+	}
+	// The picker itself lives on the palette instead.
+	m2 := newSendTestModel()
+	if _, ok := m2.kaomojiCommand(); !ok {
+		t.Fatal("the Kaomoji picker should be offered as a palette command")
 	}
 }
 
@@ -418,26 +437,54 @@ func TestAcceptSlashOpensArgumentPopup(t *testing.T) {
 	}
 }
 
-func TestSlashKaomojiByName(t *testing.T) {
-	// "/kaomoji shrug" inserts straight into the composer; an unknown name is
-	// reported and inserts nothing.
-	m := newSlashTestModel("")
-	m.focus = focusInput
-	if cmd := slashKaomoji(m, "shrug"); cmd == nil {
-		t.Fatal("slashKaomoji returned no Cmd")
+func TestSlashKaomojiSends(t *testing.T) {
+	// /kaomoji posts the face, appended to the optional message that follows
+	// its name — the /shrug shape, for the whole set. It never touches the
+	// composer's contents.
+	const shrug = `¯\_(ツ)_/¯`
+	cases := []struct {
+		args string
+		want string
+	}{
+		{"shrug", shrug},
+		{"shrug well then", "well then " + shrug},
+		{"tableflip", `(╯°□°）╯︵ ┻━┻`},
 	}
-	if got := m.input.Value(); got != `¯\_(ツ)_/¯` {
-		t.Errorf("composer = %q, want the shrug kaomoji", got)
-	}
-	if m.kaomojiPicker.active {
-		t.Error("a named /kaomoji should not open the picker")
+	for _, tc := range cases {
+		m := newSendTestModel()
+		if cmd := slashKaomoji(m, tc.args); cmd == nil {
+			t.Fatalf("slashKaomoji(%q) returned no Cmd", tc.args)
+		}
+		if len(m.posts) != 1 {
+			t.Fatalf("slashKaomoji(%q) posted %d messages, want 1", tc.args, len(m.posts))
+		}
+		if got := m.posts[0].Message; got != tc.want {
+			t.Errorf("slashKaomoji(%q) posted %q, want %q", tc.args, got, tc.want)
+		}
 	}
 
-	m = newSlashTestModel("")
-	slashKaomoji(m, "nosuchface")
-	if m.input.Value() != "" {
-		t.Errorf("unknown name inserted %q, want nothing", m.input.Value())
+	// A pick sent this way counts towards the favourites ordering.
+	m := newSendTestModel()
+	slashKaomoji(m, "shrug hello")
+	if m.kaomojiUsage[shrug] != 1 {
+		t.Errorf("usage[shrug] = %d, want 1", m.kaomojiUsage[shrug])
 	}
+
+	// No name, or an unknown one: report it and post nothing.
+	for _, args := range []string{"", "   ", "nosuchface"} {
+		m := newSendTestModel()
+		if cmd := slashKaomoji(m, args); cmd != nil {
+			t.Errorf("slashKaomoji(%q) should not send", args)
+		}
+		if len(m.posts) != 0 {
+			t.Errorf("slashKaomoji(%q) posted %d messages, want 0", args, len(m.posts))
+		}
+		if m.status == "" {
+			t.Errorf("slashKaomoji(%q) left no status", args)
+		}
+	}
+	m = newSendTestModel()
+	slashKaomoji(m, "nosuchface")
 	if !strings.Contains(m.status, "nosuchface") {
 		t.Errorf("status = %q, want it to name the missing kaomoji", m.status)
 	}

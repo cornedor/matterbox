@@ -531,6 +531,9 @@ func (m Model) allCommands() []switcherCommand {
 	if tmpl, ok := m.templateCommands(); ok {
 		contextual = append(contextual, tmpl...)
 	}
+	if kao, ok := m.kaomojiCommand(); ok {
+		contextual = append(contextual, kao)
+	}
 	if sidebar, ok := m.sidebarUnreadCommand(); ok {
 		contextual = append(contextual, sidebar)
 	}
