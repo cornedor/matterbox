@@ -510,6 +510,14 @@ type Model struct {
 	threadLoading   bool
 	threadView      viewport.Model
 
+	// replyParentID is the message inside the open thread that the composer is
+	// answering — the nested-reply target (see nestedreply.go). "" means the
+	// reply answers the thread as a whole, which is all a plain Mattermost
+	// reply can say. It is composer state, not post state: set by the reply
+	// key, shown above the input, consumed on send, and dropped whenever the
+	// composer's target changes (thread switch, close, edit).
+	replyParentID string
+
 	// Reference side panel (open-reference key `v` on a message naming a Jira
 	// issue or linking a GitLab merge request). refOpen toggles the panel; it's
 	// mutually exclusive with the thread panel — opening one closes the other

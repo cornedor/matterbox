@@ -8,6 +8,9 @@ import (
 	"testing"
 
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/hidden"
+	"matterbox/internal/replyto"
 )
 
 // fakeReplier records Thread/Send calls so the reply threading logic can be
@@ -109,4 +112,34 @@ func TestReply(t *testing.T) {
 			t.Errorf("output %q should name the thread root", out.String())
 		}
 	})
+}
+
+// Replying to a reply records which reply it answers, so a matterbox reader can
+// nest it — while the visible body stays exactly what the caller wrote.
+func TestReplyToAReplyRecordsItsParent(t *testing.T) {
+	f := &fakeReplier{thread: plWith(&model.Post{Id: "reply9", RootId: "root1", ChannelId: "chanA"})}
+	if err := reply(context.Background(), f, "reply9", "on it", &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if f.gotRoot != "root1" {
+		t.Fatalf("reply root = %q, want root1", f.gotRoot)
+	}
+	if got, ok := replyto.Parse(f.gotMessage); !ok || got != "reply9" {
+		t.Fatalf("parent = %q, %v; want reply9", got, ok)
+	}
+	if vis := hidden.Strip(f.gotMessage); vis != "on it" {
+		t.Fatalf("visible body = %q, want it unchanged", vis)
+	}
+}
+
+// Replying to a thread root does not: RootId already says it, and a redundant
+// reference is one more thing that can go stale.
+func TestReplyToARootRecordsNothing(t *testing.T) {
+	f := &fakeReplier{thread: plWith(&model.Post{Id: "root1", ChannelId: "chanA"})}
+	if err := reply(context.Background(), f, "root1", "on it", &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if f.gotMessage != "on it" {
+		t.Fatalf("body = %q, want it untouched", f.gotMessage)
+	}
 }

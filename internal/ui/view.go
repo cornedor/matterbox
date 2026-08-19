@@ -75,6 +75,7 @@ var (
 	attachmentStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))   // cyan
 	selectedBarStyle   = lipgloss.NewStyle().Foreground(focusedColor)          // selected-post left bar
 	replyHintStyle     = lipgloss.NewStyle().Foreground(dimColor)              // ↳ reply, ↪ N replies
+	replyTargetStyle   = lipgloss.NewStyle().Foreground(focusedColor)          // "↪ replying to" above the composer
 	editedStyle        = lipgloss.NewStyle().Foreground(dimColor).Italic(true) // right-aligned "edited" tag
 	deletedStyle       = lipgloss.NewStyle().Foreground(dimColor).Italic(true) // "⊘ message deleted" tombstone
 	collapsedFootStyle = lipgloss.NewStyle().Foreground(dimColor).Italic(true) // "┄┄ N more lines ┄┄" fold footer
@@ -201,7 +202,10 @@ func (m *Model) layoutPanes() {
 			mh = 1
 		}
 		m.msgsView.SetHeight(mh)
-		attBarH := m.attachmentBarHeight(threadW - 2)
+		// Both strips that can sit between the transcript and the composer —
+		// the attachment chips and the nested-reply target — cost the thread
+		// view a row each.
+		attBarH := m.attachmentBarHeight(threadW-2) + m.replyBarHeight()
 		// The compose input lives in the thread pane. Cap its growth so the
 		// thread view keeps at least one row, then size the view to fill the
 		// space above it — the input stays pinned just above the bottom
@@ -541,6 +545,9 @@ func (m *Model) renderMessages() {
 	selVisStart, selVisRows, visAcc := -1, 0, 0
 	rowStarts := make([]int, len(m.posts)+1)
 	dividerDrawn := false
+	// Which posts answer another post rather than the thread as a whole. nil
+	// (nothing nested in the loaded window) is the fast path.
+	nests := m.nestInfos(m.posts)
 	for i, p := range m.posts {
 		var prev *model.Post
 		if i > 0 {
@@ -571,7 +578,11 @@ func (m *Model) renderMessages() {
 		if crossDay {
 			grouped = false
 		}
-		chunk, rows := m.renderPostLines(p, grouped)
+		var nest nestInfo
+		if nests != nil {
+			nest = nests[i]
+		}
+		chunk, rows := m.renderPostLines(p, grouped, nest)
 		if i == m.postIdx {
 			selVisStart = rowStarts[i]
 			if decorate {
@@ -710,13 +721,27 @@ func (m *Model) renderThread() {
 	var allLines []string
 	selVisStart, selVisRows, visAcc := -1, 0, 0
 	rowStarts := make([]int, len(m.threadPosts)+1)
+	// Where each reply sits in the tree the hidden parent references describe.
+	// nil for the flat threads that are still the vast majority.
+	nests := m.nestInfos(m.threadPosts)
 	for i, p := range m.threadPosts {
 		rowStarts[i] = visAcc
 		var prev *model.Post
 		if i > 0 {
 			prev = m.threadPosts[i-1]
 		}
-		chunk, rows := m.renderThreadPostLines(p, i == 0, m.groupWithPrev(p, prev, true))
+		var nest, prevNest nestInfo
+		if nests != nil {
+			nest = nests[i]
+			if i > 0 {
+				prevNest = nests[i-1]
+			}
+		}
+		// A reply that steps to a different indent, or that opens with a quote of
+		// what it answers, starts a new run: folding it into the author line above
+		// would hide the very structure the indent is there to show.
+		grouped := m.groupWithPrev(p, prev, true) && nest.depth == prevNest.depth && !nest.quote
+		chunk, rows := m.renderThreadPostLines(p, i == 0, grouped, nest)
 		if i == m.threadIdx {
 			selVisStart = visAcc
 			if decorate {
@@ -1132,13 +1157,25 @@ func formatPostTime(createAtMillis int64) string {
 // replies omit the reply hint since context makes it obvious. grouped
 // suppresses the name/time header for a reply continuing the author run above
 // it (the root, isRoot, always keeps its header — see groupWithPrev).
-func (m *Model) renderThreadPostLines(p *model.Post, isRoot, grouped bool) ([]string, int) {
-	width := m.threadView.Width()
+//
+// nest is where the post sits in the reply tree (see nestedreply.go): a reply to
+// another reply is wrapped narrower, shifted right under what it answers, and
+// introduced by a dim quote of it. A flat reply — the zero nestInfo — renders
+// exactly as it always did, at the full pane width.
+func (m *Model) renderThreadPostLines(p *model.Post, isRoot, grouped bool, nest nestInfo) ([]string, int) {
+	paneWidth := m.threadView.Width()
+	indent := nest.indent(maxNestDepth(paneWidth))
+	width := paneWidth - indent
+	if width < 8 {
+		// Too narrow to nest into: draw the post flat rather than shred it into
+		// one word per row. The quote line still names what it answers.
+		indent, width = 0, paneWidth
+	}
 	deleted := p.DeleteAt != 0
 	poll := !deleted && isPoll(p)
 	var fp string
 	if !poll && p.Id != "" {
-		fp = m.postLineFingerprint(p, width, true, isRoot, grouped)
+		fp = m.postLineFingerprint(p, width, true, isRoot, grouped) + nestFingerprint(nest, indent)
 		if cached, rows, ok := m.cachedPostLines(p, fp); ok {
 			return cached, rows
 		}
@@ -1187,12 +1224,20 @@ func (m *Model) renderThreadPostLines(p *model.Post, isRoot, grouped bool) ([]st
 			lines = append(lines, "  ")
 		}
 	}
+	if nest.nested() {
+		lines = indentLines(lines, indent)
+		if nest.quote {
+			if q := m.nestQuoteLine(nest, width); q != "" {
+				lines = append([]string{strings.Repeat(" ", indent) + q}, lines...)
+			}
+		}
+	}
 	// Text-effect spans are deliberately left unresolved here: the lines cached
 	// below keep their invisible sentinels, which are width-0 and carry no
 	// colour, so this cache (and every measurement taken from it) is
 	// animation-phase-independent. The spans are painted at the very end of the
 	// render, on the rows actually on screen — see paintEffects / effectsanim.go.
-	rows := postVisualRows(lines, width)
+	rows := postVisualRows(lines, paneWidth)
 	if !poll && p.Id != "" {
 		m.putPostLines(p.Id, fp, lines, rows)
 	}
@@ -1273,13 +1318,19 @@ func (m *Model) postMarks(p *model.Post) string {
 // on body and attachment lines. When grouped is true the post continues
 // the author run above it, so the name/time header is omitted and the body
 // starts straight away (see groupWithPrev).
-func (m *Model) renderPostLines(p *model.Post, grouped bool) ([]string, int) {
+//
+// nest names the message this one answers, when it answers one (see
+// nestedreply.go). The channel transcript quotes that message in a dim line
+// above the reply but does not indent: this pane interleaves whole
+// conversations, and a staircase running through them would obscure the
+// chronology it exists to show. The indented tree lives in the thread pane.
+func (m *Model) renderPostLines(p *model.Post, grouped bool, nest nestInfo) ([]string, int) {
 	width := m.msgsView.Width()
 	deleted := p.DeleteAt != 0
 	poll := !deleted && isPoll(p)
 	var fp string
 	if !poll && p.Id != "" {
-		fp = m.postLineFingerprint(p, width, false, false, grouped)
+		fp = m.postLineFingerprint(p, width, false, false, grouped) + nestFingerprint(nest, 0)
 		if cached, rows, ok := m.cachedPostLines(p, fp); ok {
 			return cached, rows
 		}
@@ -1346,6 +1397,11 @@ func (m *Model) renderPostLines(p *model.Post, grouped bool) ([]string, int) {
 		// shown.
 		if len(lines) == 0 {
 			lines = append(lines, "  ")
+		}
+	}
+	if nest.quote {
+		if q := m.nestQuoteLine(nest, width); q != "" {
+			lines = append([]string{q}, lines...)
 		}
 	}
 	// Text-effect spans are deliberately left unresolved here: the lines cached
@@ -2244,6 +2300,11 @@ func (m *Model) renderThreadPane(height, width int) string {
 	// viewport rows, before the box adds a border (chrome 0).
 	parts := []string{titleStyle.Render(title), m.paintEffects(m.threadView.View(), 0)}
 	if bar := m.renderAttachmentBar(width - 2); bar != "" {
+		parts = append(parts, bar)
+	}
+	// Directly above the composer, so the last thing read before typing is what
+	// the reply will hang under.
+	if bar := m.replyBar(width - 2); bar != "" {
 		parts = append(parts, bar)
 	}
 	ruleRow := contentRows(parts) // the input box's first line is its top rule

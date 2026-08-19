@@ -193,7 +193,7 @@ func TestImgMarksNeverEscape(t *testing.T) {
 			t.Errorf("%s leaked the image marker: %q", name, body)
 		}
 	}
-	lines, _ := m.renderPostLines(p, false)
+	lines, _ := m.renderPostLines(p, false, nestInfo{})
 	if strings.Contains(strings.Join(lines, "\n"), imgIndicatorMark) {
 		t.Errorf("renderPostLines leaked the image marker: %q", lines)
 	}

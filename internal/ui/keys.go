@@ -71,6 +71,7 @@ type keyMap struct {
 	// Messages / thread
 	OpenThread    key.Binding
 	ReplyInThread key.Binding
+	GotoParent    key.Binding
 	OpenAttach    key.Binding
 	Download      key.Binding
 	OpenRef       key.Binding
@@ -215,6 +216,10 @@ var actionDefs = []actionDef{
 
 	{id: "open_thread", field: func(k *keyMap) *key.Binding { return &k.OpenThread }, keys: []string{"enter"}, desc: "open thread", primary: true},
 	{id: "reply_in_thread", field: func(k *keyMap) *key.Binding { return &k.ReplyInThread }, keys: []string{"r"}, desc: "reply in thread"},
+	// Thread pane only: p walks back up a nested reply to the message it
+	// answers. p is the Jira priority key in the reference panel, which the
+	// thread pane never reaches, so the letter is free here.
+	{id: "goto_parent", field: func(k *keyMap) *key.Binding { return &k.GotoParent }, keys: []string{"p"}, desc: "jump to replied-to message"},
 	{id: "open_attachment", field: func(k *keyMap) *key.Binding { return &k.OpenAttach }, keys: []string{"o"}, desc: "open attachment/link"},
 	{id: "download_attachment", field: func(k *keyMap) *key.Binding { return &k.Download }, keys: []string{"s"}, desc: "download attachment(s)"},
 	{id: "open_reference", field: func(k *keyMap) *key.Binding { return &k.OpenRef }, keys: []string{"v"}, desc: "open reference (Jira/GitLab)"},

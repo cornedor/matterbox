@@ -182,6 +182,10 @@ func (m *Model) sendComposedText(text string) tea.Cmd {
 		m.status = "no channel open"
 		return nil
 	}
+	// A /shimmer sent while a nested reply is being composed is still that
+	// reply, so it hangs where the strip above the composer says it will.
+	text = m.attachReplyParent(text, rootID)
+	m.clearReplyParent()
 	m.appendOptimistic(channelID, rootID, text, nil)
 	m.resizeMessagesViewport()
 	if !m.threadOpen {

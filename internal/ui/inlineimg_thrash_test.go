@@ -136,14 +136,14 @@ func TestFailedThumbReleasesItsReservedRows(t *testing.T) {
 
 	p := m.posts[0]
 	m.renderMessages()
-	reserved, _ := m.renderPostLines(p, false)
+	reserved, _ := m.renderPostLines(p, false, nestInfo{})
 	if len(reserved) == 0 {
 		t.Fatal("precondition: the sighted image should have reserved rows")
 	}
 
 	m, _ = m.handleInlineImagesFetched(inlineImagesFetchedMsg{failed: []string{"img0"}})
 
-	after, _ := m.renderPostLines(p, false)
+	after, _ := m.renderPostLines(p, false, nestInfo{})
 	if len(after) >= len(reserved) {
 		t.Errorf("an undecodable image kept its %d reserved rows (post went %d → %d lines): "+
 			"they stay on screen as a blank hole forever, because the post's cached lines "+

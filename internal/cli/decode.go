@@ -15,11 +15,13 @@ import (
 	"matterbox/internal/game"
 	"matterbox/internal/game/kurve"
 	"matterbox/internal/hidden"
+	"matterbox/internal/replyto"
 )
 
 // decode is the window into the invisible half of a matterbox post. Several
 // features smuggle a payload through a post body — the Gorillas game (MBG1),
-// Achtung die Kurve (MBK1) and text effects (MBF1) so far — carried as a run of
+// Achtung die Kurve (MBK1), text effects (MBF1) and nested replies (MBR1) so
+// far — carried as a run of
 // Unicode variation selectors that render as nothing (see internal/hidden). The
 // whole point of that
 // transport is that the state is unreadable in any client, so when one of these
@@ -44,9 +46,10 @@ func newDecodeCmd() *cobra.Command {
 		Short:   "Decode the hidden payload smuggled in a post body",
 		Long: "Decode the invisible payload matterbox smuggles through a post body.\n\n" +
 			"More than one feature rides the same transport — the Gorillas game, Achtung\n" +
-			"die Kurve, and text effects, so far — so this reports whichever channel a body\n" +
-			"actually carries and decodes it: a game world, a controller input, or a set of\n" +
-			"effect spans.\n\n" +
+			"die Kurve, text effects, and nested replies, so far — so this reports whichever\n" +
+			"channel a body actually carries and decodes it: a game world, a controller\n" +
+			"input, a set of effect spans, or the message a reply is answering. A post can\n" +
+			"carry more than one; all of them are reported.\n\n" +
 			"Paste the post body on stdin (end with ctrl-D), pass it as an argument, or\n" +
 			"use --post <id> to fetch it from the server — which is the reliable route if\n" +
 			"the client you copied from ate the invisible runes.",
@@ -206,6 +209,7 @@ var channels = []channel{
 	{game.Magic, "gorillas", decodeGame},
 	{kurve.Magic, "achtung die kurve", decodeKurve},
 	{effects.MagicEffects, "text effects", decodeEffects},
+	{replyto.Magic, "nested reply", decodeReplyTo},
 }
 
 // channelFor returns the channel with this magic, or nil if none is registered
@@ -306,6 +310,15 @@ func printRawBody(out io.Writer, body string) {
 				hid = append(hid, b)
 				continue
 			}
+			if hidden.IsRunSeparator(r) {
+				// Invisible, but carries no byte: spelled out so the boundary
+				// between two channels' runs doesn't read as a blank line.
+				flushVis()
+				flushHid()
+				fmt.Fprintln(out, "  ‹--›  run separator, carries nothing")
+				wrote = true
+				continue
+			}
 			flushHid()
 			vis.WriteRune(r)
 		}
@@ -354,6 +367,26 @@ func decodeEffects(out io.Writer, payload []byte, visible string, _ decodeOpts) 
 	// get these spans, which is the clearest picture of what the effects do — the
 	// braces show the nesting the flat span list can't.
 	fmt.Fprintf(out, "\nmarkup   %s\n", effects.Reconstruct(visible, spans))
+	return nil
+}
+
+// decodeReplyTo explains an MBR1 payload: the id of the message inside the
+// thread this post is answering. There is nothing else in it — the parent is
+// named, never quoted — so the useful thing this can add is the permalink-ish id
+// to go look the parent up with.
+func decodeReplyTo(out io.Writer, payload []byte, _ string, _ decodeOpts) error {
+	parentID, ok := replyto.UnmarshalPayload(payload)
+	if !ok {
+		return errors.New("payload is truncated, or in a format this build doesn't know")
+	}
+	fmt.Fprintln(out, "\nkind     nested reply")
+	if len(payload) > 0 {
+		fmt.Fprintf(out, "version  %d\n", payload[0])
+	}
+	fmt.Fprintf(out, "parent   %s\n", parentID)
+	fmt.Fprintf(out, "\nthis post answers that message rather than the thread as a whole;\n"+
+		"every client but matterbox shows it as an ordinary flat reply.\n"+
+		"look the parent up with: matterbox decode --post %s\n", parentID)
 	return nil
 }
 

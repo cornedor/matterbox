@@ -8,6 +8,7 @@ import (
 	"matterbox/internal/effects"
 	"matterbox/internal/game"
 	"matterbox/internal/hidden"
+	"matterbox/internal/replyto"
 )
 
 // hostBody is the shape of a real host post: a visible header, an ASCII board,
@@ -203,5 +204,34 @@ func TestDecodeKeepsGameDebugAlias(t *testing.T) {
 	}
 	if !slices.Contains(cmd.Aliases, "game-debug") {
 		t.Errorf("game-debug alias missing, aliases = %v", cmd.Aliases)
+	}
+}
+
+// A nested reply carrying text effects as well: the debug view has to report
+// both channels, which is the whole reason hidden.Append parts their runs.
+func TestDecodeNestedReplyAlongsideEffects(t *testing.T) {
+	const parent = "8kq1h9wz3jby7rn5cxtd2fmp4a"
+	spans := []effects.Span{{ID: effects.Shimmer, Start: 0, Len: 4}}
+	body := replyto.Attach("that one"+hidden.Encode(effects.MagicEffects, effects.MarshalPayload(spans)), parent)
+
+	var out strings.Builder
+	if err := inspectPost(&out, body, 0, 0, false); err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"nested reply",
+		"parent   " + parent,
+		"text effects",
+		"shimmer",
+		"that one", // the visible text, once, with neither payload in it
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("decode output is missing %q:\n%s", want, got)
+		}
+	}
+	// Both runs must be reported as their own channel, not one merged smear.
+	if n := strings.Count(got, "payload — "); n != 2 {
+		t.Fatalf("reported %d payloads, want 2:\n%s", n, got)
 	}
 }

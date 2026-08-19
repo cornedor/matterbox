@@ -19,10 +19,11 @@
 // channel its own short magic. Strip is the exception: it is magic-agnostic and
 // removes every payload rune whatever channel wrote it.
 //
-// One caveat: Decode scans maximal runs of payload runes, so it will not
-// separate two different-magic payloads that are directly concatenated with no
-// visible text between them (the merged run only matches its leading magic). In
-// practice a post belongs to one channel, so this does not arise.
+// Decode scans maximal runs of payload runes, so two different-magic payloads
+// concatenated with no visible text between them would merge into one run that
+// only matches its leading magic. Append exists for exactly that case: it parts
+// the two runs with an invisible separator (see sepRune) so each keeps its own
+// identity. Anything that appends a second payload to a body must go through it.
 package hidden
 
 import (
@@ -36,6 +37,14 @@ const (
 	vsHighStart = 0xE0100
 	vsHighEnd   = 0xE01EF
 	vsLowCount  = vsLowEnd - vsLowStart + 1 // 16
+
+	// sepRune parts two adjacent payload runs so each stays a run of its own.
+	// U+2060 WORD JOINER is Default_Ignorable like the selectors themselves —
+	// invisible in every client — but carries no payload byte, which is the
+	// whole point: a rune that ends a run without adding to it. Nothing else
+	// about it matters here; it is never emitted anywhere but between two
+	// payload runes.
+	sepRune = '\u2060'
 )
 
 // encodeByte maps a byte onto its variation selector.
@@ -63,6 +72,12 @@ func IsPayloadRune(r rune) bool {
 	_, ok := decodeRune(r)
 	return ok
 }
+
+// IsRunSeparator reports whether r is the rune Append writes between two
+// payload runs. It carries no byte of its own — a debug view (`matterbox
+// decode`) needs to tell it apart from both payload runes and real text, since
+// it is invisible like the former but empty like neither.
+func IsRunSeparator(r rune) bool { return r == sepRune }
 
 // PayloadByte reports the byte r carries, or ok=false if r is not one of ours.
 // It exists for debug views (`matterbox decode`) that walk a post body rune
@@ -113,18 +128,108 @@ func Decode(magic, msg string) ([]byte, bool) {
 	return flush()
 }
 
+// Append adds a payload to a body that may already carry one. Concatenating two
+// encoded runs directly would merge them into a single run that Decode can only
+// read as its leading channel, so when msg already ends in a payload rune the two
+// are parted by an invisible separator. A body ending in ordinary text needs no
+// separator and gets none, which is why every pre-existing post still decodes
+// byte-for-byte the way it always did.
+//
+// This is the only supported way to put a second channel on one post. Callers
+// building a body from scratch may still concatenate Encode's output onto their
+// own visible text directly.
+func Append(msg, magic string, payload []byte) string {
+	run := Encode(magic, payload)
+	if run == "" {
+		return msg
+	}
+	if endsInPayload(msg) {
+		return msg + string(sepRune) + run
+	}
+	return msg + run
+}
+
+// endsInPayload reports whether msg's last rune carries a payload byte — i.e.
+// whether appending another run would merge with it.
+func endsInPayload(msg string) bool {
+	r, size := utf8.DecodeLastRuneInString(msg)
+	return size > 0 && IsPayloadRune(r)
+}
+
+// Remove takes one channel's payload back off a body and leaves every other
+// channel's alone — the inverse of Append for a single magic. The separator that
+// was parting the removed run from its neighbour goes with it, so what is left
+// is exactly the body that would have been written without that channel.
+//
+// Callers that want the human-readable text want Strip instead. Remove is for
+// rewriting a post that is about to be sent again: an edit re-derives its own
+// payload, so the old one must not ride along behind the new one.
+func Remove(msg, magic string) string {
+	if !strings.Contains(msg, Encode(magic, nil)) {
+		return msg
+	}
+	rs := []rune(msg)
+	// Find the run that opens with magic, as Decode reads it.
+	start := -1
+	var run []byte
+	for i := 0; i <= len(rs); i++ {
+		if i < len(rs) {
+			if b, ok := decodeRune(rs[i]); ok {
+				if start < 0 {
+					start, run = i, run[:0]
+				}
+				run = append(run, b)
+				continue
+			}
+		}
+		if start >= 0 {
+			if len(run) > len(magic) && string(run[:len(magic)]) == magic {
+				from, to := cutRange(rs, start, i)
+				return string(rs[:from]) + string(rs[to:])
+			}
+			start = -1
+		}
+	}
+	return msg
+}
+
+// cutRange widens the span [start,end) of a run about to be removed to swallow
+// the separator parting it from a neighbouring run — whichever side that
+// separator is on. Leaving it behind would strand a lone WORD JOINER in the
+// visible text, since Strip only removes one that still sits between two runs.
+func cutRange(rs []rune, start, end int) (int, int) {
+	switch {
+	case start > 1 && rs[start-1] == sepRune && IsPayloadRune(rs[start-2]):
+		return start - 1, end
+	case end+1 < len(rs) && rs[end] == sepRune && IsPayloadRune(rs[end+1]):
+		return start, end + 1
+	}
+	return start, end
+}
+
 // Strip removes every payload rune from msg, whatever channel wrote it. Callers
 // that want to show or store the human-readable part of a post — the message
 // pane, the SQLite cache, a search index — use this so no invisible blob ever
 // reaches them.
+//
+// A run separator (see Append) goes too, but only where it is doing that job:
+// sitting between two payload runes. A WORD JOINER a human actually typed, or
+// one that arrived in a paste from somewhere else, is left alone — Strip removes
+// matterbox's own scaffolding, not the author's text.
 func Strip(msg string) string {
 	if !strings.ContainsFunc(msg, IsPayloadRune) {
 		return msg
 	}
-	return strings.Map(func(r rune) rune {
+	rs := []rune(msg)
+	out := make([]rune, 0, len(rs))
+	for i, r := range rs {
 		if IsPayloadRune(r) {
-			return -1
+			continue
 		}
-		return r
-	}, msg)
+		if r == sepRune && i > 0 && i+1 < len(rs) && IsPayloadRune(rs[i-1]) && IsPayloadRune(rs[i+1]) {
+			continue
+		}
+		out = append(out, r)
+	}
+	return string(out)
 }

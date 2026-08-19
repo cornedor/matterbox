@@ -145,7 +145,7 @@ func TestRenderPostLinesCollapse(t *testing.T) {
 	p := collapsePost()
 	m := collapseModel([]*model.Post{p})
 
-	collapsed, crows := m.renderPostLines(p, false)
+	collapsed, crows := m.renderPostLines(p, false, nestInfo{})
 	coll := strings.Join(collapsed, "\n")
 	if !strings.Contains(coll, "to expand") {
 		t.Fatalf("collapsed render is missing the fold footer:\n%s", coll)
@@ -158,7 +158,7 @@ func TestRenderPostLinesCollapse(t *testing.T) {
 	}
 
 	m.expandedPosts = map[string]bool{"p1": true}
-	full, frows := m.renderPostLines(p, false)
+	full, frows := m.renderPostLines(p, false, nestInfo{})
 	fl := strings.Join(full, "\n")
 	if strings.Contains(fl, "to expand") {
 		t.Errorf("expanded render should drop the fold footer:\n%s", fl)
@@ -178,7 +178,7 @@ func TestRenderPostLinesCollapseDisabled(t *testing.T) {
 	m := collapseModel([]*model.Post{p})
 	m.collapseRows = 0
 
-	lines, _ := m.renderPostLines(p, false)
+	lines, _ := m.renderPostLines(p, false, nestInfo{})
 	out := strings.Join(lines, "\n")
 	if strings.Contains(out, "to expand") {
 		t.Errorf("collapsing disabled but a fold footer appeared:\n%s", out)
@@ -195,7 +195,7 @@ func TestCollapseKeepsReactions(t *testing.T) {
 	p.Metadata = &model.PostMetadata{Reactions: []*model.Reaction{{EmojiName: "tada", UserId: "u2", PostId: "p1"}}}
 	m := collapseModel([]*model.Post{p})
 
-	lines, _ := m.renderPostLines(p, false)
+	lines, _ := m.renderPostLines(p, false, nestInfo{})
 	footerIdx := -1
 	for i, l := range lines {
 		if strings.Contains(l, "to expand") {
@@ -224,7 +224,7 @@ func TestToggleCollapseKey(t *testing.T) {
 	if !expanded.expandedPosts["p1"] {
 		t.Fatalf("z should expand the selected post")
 	}
-	full, _ := expanded.renderPostLines(p, false)
+	full, _ := expanded.renderPostLines(p, false, nestInfo{})
 	if !strings.Contains(strings.Join(full, "\n"), "row number 39") {
 		t.Errorf("after expand, the full body should render")
 	}
@@ -234,7 +234,7 @@ func TestToggleCollapseKey(t *testing.T) {
 	if refolded.expandedPosts["p1"] {
 		t.Fatalf("a second z should re-collapse the post")
 	}
-	coll, _ := refolded.renderPostLines(p, false)
+	coll, _ := refolded.renderPostLines(p, false, nestInfo{})
 	if !strings.Contains(strings.Join(coll, "\n"), "to expand") {
 		t.Errorf("after re-collapse, the fold footer should return")
 	}

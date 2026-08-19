@@ -120,12 +120,12 @@ func TestRenderPostLinesGrouped(t *testing.T) {
 	m.msgsView.SetWidth(40)
 	m.msgsView.SetHeight(10)
 
-	headed, _ := m.renderPostLines(m.posts[0], false)
+	headed, _ := m.renderPostLines(m.posts[0], false, nestInfo{})
 	if !strings.Contains(strings.Join(headed, "\n"), "john") {
 		t.Fatal("ungrouped post should show the author name")
 	}
 
-	grouped, _ := m.renderPostLines(m.posts[0], true)
+	grouped, _ := m.renderPostLines(m.posts[0], true, nestInfo{})
 	if strings.Contains(strings.Join(grouped, "\n"), "john") {
 		t.Fatal("grouped post should omit the author name header")
 	}

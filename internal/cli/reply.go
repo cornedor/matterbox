@@ -9,6 +9,8 @@ import (
 
 	"github.com/mattermost/mattermost/server/public/model"
 	"github.com/spf13/cobra"
+
+	"matterbox/internal/replyto"
 )
 
 func newReplyCmd() *cobra.Command {
@@ -22,6 +24,9 @@ func newReplyCmd() *cobra.Command {
 			"goes under it, and if the message is already a reply the new one joins the\n" +
 			"same thread (Mattermost threads are one level deep). The channel is taken\n" +
 			"from the message, so you don't name it.\n\n" +
+			"When the message is itself a reply, the new one records that it answers that\n" +
+			"specific message — invisibly, so other clients see the ordinary flat reply\n" +
+			"they always saw, while matterbox draws it nested underneath.\n\n" +
 			"The message body is the remaining arguments joined by spaces; with none it\n" +
 			"is read from standard input, so both forms work:\n\n" +
 			"  matterbox reply 7f3k… \"on it, thanks\"\n" +
@@ -60,9 +65,16 @@ type threadReplier interface {
 
 // reply posts msg into the thread of postID. It fetches the post to learn its
 // channel and thread root, then sends with that root so the reply threads under
-// the original message (or joins its existing thread). A post that already has
-// a RootId reuses it — Mattermost threads don't nest — so replying to a reply
-// lands in the same thread rather than starting a new one off a reply.
+// the original message (or joins its existing thread). A post that already has a
+// RootId reuses it — Mattermost's own threads don't nest — so replying to a
+// reply lands in the same thread rather than starting a new one off a reply.
+//
+// Replying to a reply does, however, record *which* reply it answers, as
+// invisible bytes on the body (see internal/replyto). Nothing changes for other
+// clients — the post is the same flat reply it always was — but matterbox draws
+// it nested under the message named here, which is the message the caller
+// actually pointed at. That matters most for the inline reply on a desktop
+// notification, where the id in hand is the specific message being answered.
 func reply(ctx context.Context, r threadReplier, postID, msg string, out io.Writer) error {
 	postID = strings.TrimSpace(postID)
 	if postID == "" {
@@ -82,6 +94,11 @@ func reply(ctx context.Context, r threadReplier, postID, msg string, out io.Writ
 	root := p.RootId
 	if root == "" {
 		root = p.Id
+	}
+	if p.RootId != "" {
+		// The target is a reply, not a thread root, so "which message" is a
+		// question worth answering; against a root, RootId already says it.
+		msg = replyto.Attach(msg, p.Id)
 	}
 	if _, err := r.Send(ctx, p.ChannelId, root, msg, nil); err != nil {
 		return fmt.Errorf("reply in thread %s: %w", root, err)

@@ -501,7 +501,7 @@ var keyContexts = []keyContext{
 			return []key.Binding{
 				m.keys.Up, m.keys.Down, m.keys.Home, m.keys.End, m.keys.OpenAttach, m.keys.Download, m.keys.OpenRef, m.keys.Preview,
 				m.keys.CopyMD, m.keys.CopyCode, m.keys.ShowHistory, m.keys.EditPost, m.keys.DeletePost, m.keys.React, m.keys.Collapse,
-				m.keys.CloseThread,
+				m.keys.CloseThread, m.keys.ReplyInThread, m.keys.GotoParent,
 			}
 		},
 	},

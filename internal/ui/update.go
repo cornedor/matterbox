@@ -2337,6 +2337,17 @@ func (m Model) handleThreadKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, m.keys.CloseThread):
 		return m, m.closeThread()
+	case key.Matches(msg, m.keys.ReplyInThread):
+		// r means the same thing here as it does in the channel — answer what
+		// the cursor is on — except that inside a thread the answer can name
+		// which message it answers (see nestedreply.go).
+		if m.threadIdx < 0 || m.threadIdx >= len(m.threadPosts) {
+			m.status = "no message selected"
+			return m, nil
+		}
+		return m.setReplyParent(m.threadPosts[m.threadIdx])
+	case key.Matches(msg, m.keys.GotoParent):
+		return m.gotoReplyParent()
 	case key.Matches(msg, m.keys.Up):
 		if m.threadIdx > 0 {
 			m.threadIdx--
@@ -3005,6 +3016,15 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// cancels the in-progress edit (dropping the prefilled text) on the
 		// way out.
 		editing := m.editingPostID != ""
+		// A nested-reply target is the outermost thing escape peels off: the
+		// draft is still there, focus is still here, the reply just goes back to
+		// answering the thread as a whole. A second escape then leaves as usual.
+		// (While editing, the target belongs to the post being edited and goes
+		// with it — cancelEdit drops both.)
+		if !editing && m.clearReplyParent() {
+			m.status = "replying to the thread"
+			return m, nil
+		}
 		m.closeMention()
 		m.closeEmoji()
 		m.closeSlash()
@@ -3048,11 +3068,15 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.closeLang()
 			m.closeEffectPopup()
 			m.clearGrammar()
-			m.restoreInputPrompt()
 			m.status = "saving edit…"
 			// Same compile as a fresh send: the composer holds markup (see
-			// beginEditPost), the wire gets visible text + payload.
-			return m, m.editPost(id, compileEffects(text))
+			// beginEditPost), the wire gets visible text + payload. The edited
+			// post keeps whatever it answers unless the user cleared it, so the
+			// parent reference is re-attached rather than dropped on every edit.
+			wire := m.attachReplyParent(compileEffects(text), m.editRootID(id))
+			m.clearReplyParent()
+			m.restoreInputPrompt()
+			return m, m.editPost(id, wire)
 		}
 		// A leading "/" + letter is a slash command, not a message: handle it
 		// (or forward it to the server) instead of posting the raw text.
@@ -3093,7 +3117,8 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.closeLang()
 		m.closeEffectPopup()
 		m.clearGrammar()
-		wire := compileEffects(text)
+		wire := m.attachReplyParent(compileEffects(text), rootID)
+		m.clearReplyParent()
 		m.appendOptimistic(channelID, rootID, wire, fileIDs)
 		m.clearAttachments()
 		m.resizeMessagesViewport()
@@ -3901,7 +3926,26 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.renderMessages()
 		return m, m.bumpMRFetch()
-	case key.Matches(msg, m.keys.OpenThread), key.Matches(msg, m.keys.ReplyInThread):
+	case key.Matches(msg, m.keys.ReplyInThread):
+		if m.postIdx < 0 || m.postIdx >= len(m.posts) {
+			return m, nil
+		}
+		p := m.posts[m.postIdx]
+		if p.DeleteAt != 0 {
+			// A tombstone keeps its Id/RootId, so without this guard the user
+			// could reply into a removed message's thread.
+			m.status = "message was deleted"
+			return m, nil
+		}
+		// r on a reply answers *that* reply, not just its thread — the same thing
+		// it means in the thread pane. On a root there is nothing to name: a
+		// reply to the root is what a plain Mattermost reply already is.
+		var parent string
+		if p.Id != "" && p.RootId != "" {
+			parent = p.Id
+		}
+		return m.openThreadAnswering(p, parent)
+	case key.Matches(msg, m.keys.OpenThread):
 		if m.postIdx < 0 || m.postIdx >= len(m.posts) {
 			return m, nil
 		}
@@ -4135,6 +4179,15 @@ func (m Model) handleDeleteConfirmKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 // textarea takes focus immediately so the user can start typing a reply
 // without a separate keystroke.
 func (m Model) openThreadForPost(p *model.Post) (tea.Model, tea.Cmd) {
+	return m.openThreadAnswering(p, "")
+}
+
+// openThreadAnswering is openThreadForPost with the composer already aimed at
+// one message inside the thread (see nestedreply.go). parentID "" aims at the
+// thread as a whole, which is what opening a thread to read it means; the reply
+// key passes the selected reply's own id, because "answer this" is what that key
+// has always meant and inside a thread it can now be taken literally.
+func (m Model) openThreadAnswering(p *model.Post, parentID string) (tea.Model, tea.Cmd) {
 	rootID := p.RootId
 	if rootID == "" {
 		rootID = p.Id
@@ -4143,8 +4196,16 @@ func (m Model) openThreadForPost(p *model.Post) (tea.Model, tea.Cmd) {
 		return m, nil // optimistic stub, no canonical Id yet
 	}
 	channelID := p.ChannelId
-	// Same thread already open? Just refocus the input.
+	// Same thread already open? Just refocus the input — re-aiming it only if
+	// the caller asked for a target, so plain "open thread" on an already-open
+	// thread doesn't silently drop the one the user set.
 	if m.threadOpen && m.threadRootID == rootID {
+		if parentID != "" {
+			m.replyParentID = parentID
+			m.restoreInputPrompt()
+			m.layoutPanes()
+			m.status = "replying to " + m.postAuthorName(p)
+		}
 		m.focus = focusInput
 		cmd := m.input.Focus()
 		m.renderMessages()
@@ -4163,6 +4224,9 @@ func (m Model) openThreadForPost(p *model.Post) (tea.Model, tea.Cmd) {
 	m.threadOpen = true
 	m.threadRootID = rootID
 	m.threadChannelID = channelID
+	// A different thread: whatever the composer was answering is no longer on
+	// screen, so it is replaced by whatever this open aims at (usually nothing).
+	m.replyParentID = parentID
 	m.threadPosts = nil
 	m.threadIdx = 0
 	m.threadLoading = true
@@ -4170,7 +4234,10 @@ func (m Model) openThreadForPost(p *model.Post) (tea.Model, tea.Cmd) {
 	// owns the prompt while editingPostID is set, and the patch will
 	// fire on the original post regardless of which pane is open.
 	if m.editingPostID == "" {
-		m.input.SetPromptFunc(2, inputPromptFunc("↳ "))
+		m.restoreInputPrompt()
+	}
+	if parentID != "" {
+		m.status = "replying to " + m.postAuthorName(p)
 	}
 	m.focus = focusInput
 	focusCmd := m.input.Focus()
@@ -4200,6 +4267,7 @@ func (m *Model) closeThread() tea.Cmd {
 	m.threadOpen = false
 	m.threadRootID = ""
 	m.threadChannelID = ""
+	m.replyParentID = ""
 	m.threadPosts = nil
 	m.threadIdx = 0
 	m.threadLoading = false

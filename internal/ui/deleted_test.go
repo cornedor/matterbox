@@ -57,7 +57,7 @@ func TestRenderPostLinesDeleted(t *testing.T) {
 	m.msgsView.SetHeight(10)
 
 	for _, grouped := range []bool{false, true} {
-		lines, _ := m.renderPostLines(p, grouped)
+		lines, _ := m.renderPostLines(p, grouped, nestInfo{})
 		out := strings.Join(lines, "\n")
 		if !strings.Contains(out, "message deleted") {
 			t.Errorf("grouped=%v: tombstone should show the deleted indicator, got %q", grouped, out)
@@ -139,7 +139,7 @@ func TestApplyPostDeletedLeavesTombstone(t *testing.T) {
 		t.Errorf("deleted content lingered: %q", p2.Message)
 	}
 
-	lines, _ := m.renderPostLines(p2, false)
+	lines, _ := m.renderPostLines(p2, false, nestInfo{})
 	out := strings.Join(lines, "\n")
 	if !strings.Contains(out, "message deleted") {
 		t.Errorf("tombstone should render the deleted indicator, got %q", out)

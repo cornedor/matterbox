@@ -10,6 +10,12 @@ local LLM.
 
 - **Terminal UI** — teams, channels, DMs, threads, reactions, attachments, and
   live updates over WebSocket, built on [Bubble Tea](https://github.com/charmbracelet/bubbletea).
+- **Nested replies** — Mattermost threads are flat: every reply hangs off the
+  same root, so "which message are you answering?" is a question the wire format
+  can't ask. matterbox answers it out of band — press `r` on a reply and the id of
+  the message you're answering rides along invisibly, so the thread draws as a
+  tree (`p` walks back up it). Every other client shows the ordinary flat reply it
+  always showed; `matterbox reply <post-id>` records the same thing.
 - **Scriptable CLI** — read, send, and search Mattermost from the shell or scripts,
   with `--json` output on most commands and shell completion for zsh/bash/fish.
 - **Local message cache** — every message you see is stored in a local SQLite

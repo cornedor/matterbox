@@ -3,6 +3,8 @@ package ui
 import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/replyto"
 )
 
 // postEditedMsg lands on the bubbletea loop after a successful
@@ -28,11 +30,19 @@ func (m *Model) beginEditPost(p *model.Post) tea.Cmd {
 	m.closeLang()
 	m.closeEffectPopup()
 	m.editingPostID = p.Id
+	// Adopt the post's own nested-reply target so saving the edit re-attaches it
+	// rather than quietly flattening the reply — and so the strip above the
+	// composer shows what this message answers while you rewrite it. Clearing it
+	// (escape) is then a real, deliberate way to un-nest a reply.
+	m.replyParentID, _ = replyto.Parse(p.Message)
 	m.input.Reset()
 	// Show the markup, not the compiled body: a post sent as \shimmer{today}
 	// would otherwise re-open as the bare word trailed by an invisible payload,
 	// and any edit to the text would shift the offsets out from under it.
-	m.input.SetValue(decompileEffects(p.Message))
+	// Detach first: the parent reference is re-derived on save from
+	// m.replyParentID (above), so the old run must not ride along invisibly
+	// behind the text the user is about to rewrite.
+	m.input.SetValue(decompileEffects(replyto.Detach(p.Message)))
 	m.input.CursorEnd()
 	// Preview the markup we just put back straight away, rather than waiting for
 	// the first keystroke (scheduleGrammarCheck below is a no-op when grammar is
@@ -42,6 +52,10 @@ func (m *Model) beginEditPost(p *model.Post) tea.Cmd {
 	m.focus = focusInput
 	focusCmd := m.input.Focus()
 	m.syncInputHeight()
+	// Adopting the post's reply target may have opened the strip above the
+	// composer, which costs the transcript a row: re-take the geometry before
+	// repainting, since syncInputHeight only reacts to the input's own height.
+	m.layoutPanes()
 	m.renderMessages()
 	m.renderThread()
 	// Check the pre-filled text right away so an edited message is underlined
@@ -57,18 +71,23 @@ func (m *Model) cancelEdit() {
 		return
 	}
 	m.editingPostID = ""
+	m.replyParentID = ""
 	m.input.Reset()
 	m.syncInputHeight()
 	m.restoreInputPrompt()
 }
 
-// restoreInputPrompt sets the textarea prompt back to its mode-default
-// (either thread-reply or normal channel). Called after editing
-// completes or is cancelled.
+// restoreInputPrompt sets the textarea prompt back to its mode-default: "↪ "
+// while the composer is answering one message inside the thread, "↳ " for a
+// reply to the thread as a whole, "> " for a channel post. Called after editing
+// completes or is cancelled, and whenever the nested-reply target changes.
 func (m *Model) restoreInputPrompt() {
-	if m.threadOpen {
+	switch {
+	case m.threadOpen && m.replyParentID != "":
+		m.input.SetPromptFunc(2, inputPromptFunc("↪ "))
+	case m.threadOpen:
 		m.input.SetPromptFunc(2, inputPromptFunc("↳ "))
-	} else {
+	default:
 		m.input.SetPromptFunc(2, inputPromptFunc("> "))
 	}
 }
