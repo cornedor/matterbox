@@ -90,10 +90,11 @@ type keyMap struct {
 	ConfirmNo  key.Binding
 
 	// Feed
-	MarkRead  key.Binding
-	Refresh   key.Binding
-	FeedMuted key.Binding
-	FeedReply key.Binding
+	MarkRead    key.Binding
+	MarkAllRead key.Binding
+	Refresh     key.Binding
+	FeedMuted   key.Binding
+	FeedReply   key.Binding
 
 	// Reference panel, once the provider's data has loaded: the Jira issue
 	// editors and the GitLab MR actions.
@@ -232,6 +233,9 @@ var actionDefs = []actionDef{
 	{id: "confirm_no", field: func(k *keyMap) *key.Binding { return &k.ConfirmNo }, keys: []string{"n", "N"}, desc: "cancel"},
 
 	{id: "mark_read", field: func(k *keyMap) *key.Binding { return &k.MarkRead }, keys: []string{"m"}, desc: "mark read"},
+	// A for "all". The message pane's A is the reference panel's MR-approve key,
+	// which the feed never reaches, so the letter is free here.
+	{id: "feed_mark_all_read", field: func(k *keyMap) *key.Binding { return &k.MarkAllRead }, keys: []string{"A"}, desc: "mark all read"},
 	{id: "refresh", field: func(k *keyMap) *key.Binding { return &k.Refresh }, keys: []string{"r"}, desc: "refresh"},
 	{id: "feed_toggle_muted", field: func(k *keyMap) *key.Binding { return &k.FeedMuted }, keys: []string{"M"}, desc: "show/hide muted channels"},
 	// R, not r: the feed's refresh already sits on r. R is react in the message

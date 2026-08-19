@@ -603,8 +603,8 @@ var keyContexts = []keyContext{
 			return []key.Binding{
 				m.keys.Up, m.keys.Down, m.keys.InputUp, m.keys.InputDown,
 				m.keys.Home, m.keys.End, m.keys.PageUp, m.keys.PageDown,
-				m.keys.OpenChannel, m.keys.MarkRead, m.keys.Refresh,
-				m.keys.FeedMuted, m.keys.FeedReply,
+				m.keys.OpenChannel, m.keys.MarkRead, m.keys.MarkAllRead,
+				m.keys.Refresh, m.keys.FeedMuted, m.keys.FeedReply,
 				hardwired("back to the tab strip", "esc"),
 			}
 		},

@@ -417,6 +417,21 @@ func (m Model) feedMutedCommand() (switcherCommand, bool) {
 	}, true
 }
 
+// feedMarkAllCommand returns the "mark every unread channel in the feed read"
+// action, plus whether it applies — it only does on the Feed tab with bubbles
+// on it. Mirrors the A key and the title row's button; the label carries the
+// count so the palette says how much it is about to clear.
+func (m Model) feedMarkAllCommand() (switcherCommand, bool) {
+	if !m.onFeedTab() || len(m.feed.entries) == 0 {
+		return switcherCommand{}, false
+	}
+	return switcherCommand{
+		name: "Feed: mark all read (" + plural(len(m.feed.entries), "channel", "channels") + ")",
+		desc: "clear the unread state of every channel the feed is showing",
+		run:  func(m *Model, _ string) tea.Cmd { return m.markAllFeedRead() },
+	}, true
+}
+
 // runSetMuted returns a runner that mutes/unmutes the given channel for the
 // current user. The cached member flips optimistically so the feed filter and
 // the command label update immediately; the server patch follows async.
@@ -518,6 +533,9 @@ func (m Model) allCommands() []switcherCommand {
 	}
 	if sidebar, ok := m.sidebarUnreadCommand(); ok {
 		contextual = append(contextual, sidebar)
+	}
+	if feedMarkAll, ok := m.feedMarkAllCommand(); ok {
+		contextual = append(contextual, feedMarkAll)
 	}
 	if feedMuted, ok := m.feedMutedCommand(); ok {
 		contextual = append(contextual, feedMuted)

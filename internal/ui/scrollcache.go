@@ -57,7 +57,11 @@ type viewCache struct {
 	// renderMessagesPane (the only place that knows the viewport's height after a
 	// popup shrinks it) and read back by the mouse layer. Cleared each render, so
 	// a tab that doesn't draw the pill can't leave a stale target behind.
-	jumpZone jumpZone
+	jumpZone rectZone
+	// feedBtnZone is the Feed tab's mark-all-read button's screen rect, written
+	// by renderFeedPane and read back by the mouse layer. Cleared each render
+	// alongside jumpZone, so another tab can't inherit the target.
+	feedBtnZone rectZone
 }
 
 // scrollGeom caches one viewport's total wrapped-row count. That total depends

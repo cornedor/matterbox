@@ -37,6 +37,7 @@ const (
 	hitSQL
 	hitComposer
 	hitJumpBottom
+	hitFeedMarkAll
 )
 
 // hit is the result of hitTest. idx's meaning depends on zone: a tab index
@@ -63,6 +64,7 @@ type tabZone struct {
 // rectangle compare — so per-motion hover never drags the message-pane render
 // onto the hot path. (The pill does live in the memoized upper box, but its
 // state is in that box's fingerprint, so only crossing its edge re-renders.)
+// hitFeedMarkAll is tracked the same way, on its own rectangle.
 type hoverState struct {
 	zone hitZone
 	idx  int
@@ -203,6 +205,8 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		return m.clickComposer(h.line, h.col, count, shift)
 	case hitJumpBottom:
 		return m.clickJumpBottom()
+	case hitFeedMarkAll:
+		return m, m.markAllFeedRead()
 	case hitFeed:
 		return m.clickFeedEntry(h.idx)
 	case hitSearch:
@@ -379,9 +383,9 @@ func (m Model) handleMouseMotion(msg tea.MouseMotionMsg) (tea.Model, tea.Cmd) {
 }
 
 // hoverAt resolves the pointer to a hoverable element — only team tabs, channel
-// rows and the jump-to-bottom pill are tracked, so it skips the message/thread
-// content-coordinate work hitTest does for clicks, keeping the per-motion hover
-// path cheap.
+// rows, the jump-to-bottom pill and the Feed tab's mark-all-read button are
+// tracked, so it skips the message/thread content-coordinate work hitTest does
+// for clicks, keeping the per-motion hover path cheap.
 func (m *Model) hoverAt(x, y int) hoverState {
 	if y < tabsHeight {
 		if m.vcache != nil {
@@ -398,10 +402,15 @@ func (m *Model) hoverAt(x, y int) hoverState {
 			return hoverState{zone: hitChannel, idx: h.idx}
 		}
 	}
-	// The zone is disarmed on any tab that doesn't draw the pill, so this needs
-	// no tab guard of its own.
-	if m.vcache != nil && m.vcache.jumpZone.contains(x, y) {
-		return hoverState{zone: hitJumpBottom}
+	// Both zones are disarmed on any tab that doesn't draw their label, so
+	// neither needs a tab guard of its own.
+	if m.vcache != nil {
+		if m.vcache.jumpZone.contains(x, y) {
+			return hoverState{zone: hitJumpBottom}
+		}
+		if m.vcache.feedBtnZone.contains(x, y) {
+			return hoverState{zone: hitFeedMarkAll}
+		}
 	}
 	return hoverState{}
 }
@@ -656,8 +665,12 @@ func (m *Model) hitTest(x, y int) hit {
 		return hit{zone: hitNone}
 	}
 	// Below the strip. The Search / Feed panes own the whole body on their
-	// synthetic tabs; map the click to the bubble under it.
+	// synthetic tabs; map the click to the bubble under it — or, on the Feed
+	// tab's title row, to the mark-all-read button sitting at its right end.
 	if m.onFeedTab() {
+		if m.vcache != nil && m.vcache.feedBtnZone.contains(x, y) {
+			return hit{zone: hitFeedMarkAll}
+		}
 		return m.hitFeedBubble(y)
 	}
 	if m.onSearchTab() {

@@ -1588,6 +1588,26 @@ func (m Model) markChannelViewed(channelID string) tea.Cmd {
 	}
 }
 
+// markChannelsViewed marks every channel in ids read on the server from a
+// single command. One command, one goroutine: markChannelViewed's value
+// receiver copies the whole Model into its closure, so a mark-all that called
+// it per channel would box the model once per unread channel (see the
+// value-receiver note in CLAUDE.md). Errors are ignored for the same reason
+// they are there — the local counters are already cleared by the caller.
+func (m *Model) markChannelsViewed(ids []string) tea.Cmd {
+	if m.me == nil || len(ids) == 0 {
+		return nil
+	}
+	userID, client, ctx := m.me.Id, m.client, m.ctx
+	ids = append([]string(nil), ids...)
+	return func() tea.Msg {
+		for _, id := range ids {
+			_ = client.ViewChannel(ctx, userID, id)
+		}
+		return nil
+	}
+}
+
 // liveMarkRead is the mark-read decision for a message that just arrived in the
 // channel already on screen: read it only once the open channel's dwell has
 // elapsed (while it's still pending the queued markViewedMsg covers this post

@@ -24,17 +24,18 @@ var (
 	jumpBottomHoverStyle = lipgloss.NewStyle().Foreground(jumpPillFg).Background(jumpPillHoverBg)
 )
 
-// jumpZone is the pill's screen rectangle: columns [x0,x1) on row y. Written by
-// renderMessagesPane (which alone knows the viewport's post-popup height) and
-// read back by the mouse layer, so a click / hover resolves without replaying
-// the pane layout. Cleared every render, re-armed only while the pill shows.
-type jumpZone struct {
+// rectZone is a clickable label's screen rectangle: columns [x0,x1) on row y.
+// Written at render time by whoever placed the label — the jump-to-bottom pill
+// here, the Feed tab's mark-all-read button in feed.go — and read back by the
+// mouse layer, so a click / hover resolves without replaying the pane layout.
+// Cleared every render, re-armed only while the label shows.
+type rectZone struct {
 	x0, x1, y int
 	active    bool
 }
 
-// contains reports whether the screen cell (x,y) falls on the pill.
-func (z jumpZone) contains(x, y int) bool {
+// contains reports whether the screen cell (x,y) falls on the label.
+func (z rectZone) contains(x, y int) bool {
 	return z.active && y == z.y && x >= z.x0 && x < z.x1
 }
 
@@ -165,11 +166,11 @@ func (m *Model) armJumpZone(p jumpPill) {
 		return
 	}
 	if !p.active {
-		m.vcache.jumpZone = jumpZone{}
+		m.vcache.jumpZone = rectZone{}
 		return
 	}
 	x0 := channelsWidth + 1 + p.col0
-	m.vcache.jumpZone = jumpZone{
+	m.vcache.jumpZone = rectZone{
 		x0:     x0,
 		x1:     x0 + lipgloss.Width(p.text),
 		y:      tabsHeight + m.msgsView.Height(),

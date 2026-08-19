@@ -1547,10 +1547,13 @@ func (m *Model) renderViewContent() string {
 	// compose box from the bottom of the body and must do so without re-rendering
 	// the footer (the hover path is alloc-free). Persists via the vcache pointer.
 	// The jump-to-bottom target is disarmed here and re-armed by renderMessagesPane,
-	// which the Search / Feed / SQL tabs below never reach.
+	// which the Search / Feed / SQL tabs below never reach; the Feed tab's
+	// mark-all-read button is disarmed the same way and re-armed by
+	// renderFeedPane, so neither leaves a stale target on another tab.
 	if m.vcache != nil {
 		m.vcache.bodyH = bodyH
-		m.vcache.jumpZone = jumpZone{}
+		m.vcache.jumpZone = rectZone{}
+		m.vcache.feedBtnZone = rectZone{}
 	}
 
 	// joins collects the columns where a pane's vertical border lands on the

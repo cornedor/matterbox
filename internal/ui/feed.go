@@ -488,6 +488,8 @@ func (m Model) handleFeedKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.replyFromFeedEntry()
 	case key.Matches(msg, m.keys.MarkRead):
 		return m.markFeedEntryRead()
+	case key.Matches(msg, m.keys.MarkAllRead):
+		return m, m.markAllFeedRead()
 	case key.Matches(msg, m.keys.Refresh):
 		return m, m.buildFeed()
 	case key.Matches(msg, m.keys.FeedMuted):
@@ -569,6 +571,30 @@ func (m Model) markFeedEntryRead() (tea.Model, tea.Cmd) {
 	m.renderFeedResults()
 	// Reading the last entry reveals the splash — animate it.
 	return m, tea.Batch(m.markChannelViewed(e.channelID), m.maybeStartFeedWaves())
+}
+
+// markAllFeedRead clears every bubble at once: the same thing m does to the
+// selected channel, done to all of them. It marks exactly what the feed shows
+// — muted channels stay unread unless they're on screen (M / feed_show_muted),
+// because the feed is the "things to read" list and the button can only speak
+// for the list it sits above. Bound to A and to the button on the title row.
+func (m *Model) markAllFeedRead() tea.Cmd {
+	if len(m.feed.entries) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(m.feed.entries))
+	for _, e := range m.feed.entries {
+		delete(m.unread, e.channelID)
+		delete(m.mentions, e.channelID)
+		ids = append(ids, e.channelID)
+	}
+	m.feed.entries = nil
+	m.feed.idx = 0
+	m.hover = hoverState{} // the button just vanished from under the pointer
+	m.status = "marked " + plural(len(ids), "channel", "channels") + " read"
+	m.renderFeedResults()
+	// Emptying the feed reveals the splash — animate it.
+	return tea.Batch(m.markChannelsViewed(ids), m.maybeStartFeedWaves())
 }
 
 // removeFeedEntry drops the bubble for channelID and clamps the selection.
@@ -936,7 +962,13 @@ func (m Model) renderFeedPane(height, width int) string {
 		// name the key that lets them in, or the splash is the whole story.
 		meta = dim.Render("  " + m.feedHints())
 	}
-	titleRow := title + meta
+	contentW := width - 2 // the pane's inner width, between its side borders
+	if contentW < 1 {
+		contentW = 1
+	}
+	btn := m.feedMarkAllButton(contentW)
+	m.armFeedButtonZone(btn)
+	titleRow := feedTitleRow(title+meta, contentW, btn)
 
 	rule := dim.Render(strings.Repeat("─", width-2))
 	body := m.feed.view.View()
