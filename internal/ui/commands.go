@@ -140,13 +140,6 @@ func builtinCommands() []switcherCommand {
 			run:  runRejoin,
 		},
 		{
-			name:           "Bouncing ball",
-			desc:           "animate a ball inside a code-block box (socket test)",
-			argPrompt:      "duration(s) fps: ",
-			argPlaceholder: "8 30",
-			run:            runBouncingBall,
-		},
-		{
 			name: "Debug: key inspector",
 			desc: "echo the raw key events the terminal sends (diagnose option/ctrl/shift+arrow)",
 			run:  runKeyDebug,

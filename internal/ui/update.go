@@ -1239,12 +1239,6 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.applyKurveResumed(msg)
 	case kurveFrameMsg:
 		return m, m.applyKurveFrame(msg)
-	case ballStartedMsg:
-		return m, m.applyBallStarted(msg)
-
-	case ballTickMsg:
-		return m, m.applyBallTick(msg)
-
 	case cmdShimmerTickMsg:
 		return m, m.applyCmdShimmerTick()
 
@@ -1545,9 +1539,9 @@ func (m *Model) applyPostEdited(ev *model.WebSocketEvent) tea.Cmd {
 	if cmd := m.kurveWSEdited(p); cmd != nil {
 		return cmd
 	}
-	// Skip persisting frames of a live animation (typing / bouncing
-	// ball) — the per-frame churn would otherwise spam the local edit
-	// history captured by the posts UPDATE trigger.
+	// Skip persisting frames of a live animation — the per-frame churn
+	// would otherwise spam the local edit history captured by the posts
+	// UPDATE trigger.
 	var cmds []tea.Cmd
 	if !m.animatingPost(p.Id) {
 		cmds = append(cmds, m.persistPosts(p))

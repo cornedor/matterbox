@@ -380,10 +380,6 @@ type Model struct {
 	// reveal of a message implemented as a stream of EditPost calls.
 	typing typingAnim
 
-	// ball drives the "Bouncing ball" > command: a ball ricocheting
-	// inside a code-block box, animated by editing one post per frame.
-	ball ballAnim
-
 	// gorillas is the open Gorillas game, if any. See gorillas.go.
 	gorillas gorillasState
 
