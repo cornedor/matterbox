@@ -337,3 +337,123 @@ func TestRenderSlashPopupNoWrap(t *testing.T) {
 		t.Errorf("popup has %d lines, want 3 (one un-wrapped row in a border)", n)
 	}
 }
+
+func TestUpdateSlashArgPopup(t *testing.T) {
+	// A command that declares argValues keeps the popup up over its argument:
+	// "/kaomoji " lists every kaomoji, and typing narrows it.
+	m := newSlashTestModel("/kaomoji ")
+	m.updateSlash()
+	if !m.slash.active || !m.slash.arg {
+		t.Fatalf("/kaomoji + space should open the argument popup (active=%v arg=%v)", m.slash.active, m.slash.arg)
+	}
+	if m.slash.cmd != "kaomoji" {
+		t.Errorf("popup cmd = %q, want %q", m.slash.cmd, "kaomoji")
+	}
+	if len(m.slash.items) == 0 {
+		t.Fatal("empty argument list for /kaomoji")
+	}
+	// The rows are kaomoji names with the kaomoji itself as the hint.
+	if it := m.slash.items[0]; it.trigger == "" || it.desc == "" {
+		t.Errorf("argument row = %+v, want a name and its kaomoji", it)
+	}
+
+	m = newSlashTestModel("/kaomoji tablef")
+	m.updateSlash()
+	if !m.slash.arg || len(m.slash.items) == 0 || m.slash.items[0].trigger != "tableflip" {
+		t.Fatalf(`"/kaomoji tablef" should narrow to tableflip, got %+v`, m.slash.items)
+	}
+
+	// The alias reaches the same argument list as the primary trigger.
+	m = newSlashTestModel("/template ")
+	m.updateSlash()
+	if m.slash.active && m.slash.cmd != "template" {
+		t.Errorf("alias popup cmd = %q, want %q", m.slash.cmd, "template")
+	}
+
+	// A command with free-text arguments keeps the popup closed, as before.
+	for _, text := range []string{"/me waves", "/shimmer hi"} {
+		m := newSlashTestModel(text)
+		m.updateSlash()
+		if m.slash.active {
+			t.Errorf("updateSlash(%q): popup should stay closed for a free-text argument", text)
+		}
+	}
+}
+
+func TestAcceptSlashArgument(t *testing.T) {
+	m := newSlashTestModel("/kaomoji shr")
+	m.updateSlash()
+	if !m.slash.arg {
+		t.Fatal("expected the argument popup")
+	}
+	if m.slash.items[0].trigger != "shrug" {
+		t.Fatalf(`"shr" should rank shrug first, got %+v`, m.slash.items)
+	}
+	if _, ok := m.acceptSlash(); !ok {
+		t.Fatal("acceptSlash returned ok=false")
+	}
+	// The argument is filled in place — no trailing space, so the popup closes
+	// and the next enter runs the command instead of re-accepting.
+	if got := m.input.Value(); got != "/kaomoji shrug" {
+		t.Errorf("after accept, composer = %q, want %q", got, "/kaomoji shrug")
+	}
+	if m.slash.active {
+		t.Error("popup should be closed after accepting an argument")
+	}
+}
+
+func TestAcceptSlashOpensArgumentPopup(t *testing.T) {
+	// Accepting a command that has argValues rolls straight into its argument
+	// list, in the same keypress.
+	m := newSlashTestModel("/kaomo")
+	m.updateSlash()
+	if _, ok := m.acceptSlash(); !ok {
+		t.Fatal("acceptSlash returned ok=false")
+	}
+	if got := m.input.Value(); got != "/kaomoji " {
+		t.Fatalf("after accept, composer = %q, want %q", got, "/kaomoji ")
+	}
+	if !m.slash.active || !m.slash.arg {
+		t.Errorf("accepting /kaomoji should open its argument popup (active=%v arg=%v)", m.slash.active, m.slash.arg)
+	}
+}
+
+func TestSlashKaomojiByName(t *testing.T) {
+	// "/kaomoji shrug" inserts straight into the composer; an unknown name is
+	// reported and inserts nothing.
+	m := newSlashTestModel("")
+	m.focus = focusInput
+	if cmd := slashKaomoji(m, "shrug"); cmd == nil {
+		t.Fatal("slashKaomoji returned no Cmd")
+	}
+	if got := m.input.Value(); got != `¯\_(ツ)_/¯` {
+		t.Errorf("composer = %q, want the shrug kaomoji", got)
+	}
+	if m.kaomojiPicker.active {
+		t.Error("a named /kaomoji should not open the picker")
+	}
+
+	m = newSlashTestModel("")
+	slashKaomoji(m, "nosuchface")
+	if m.input.Value() != "" {
+		t.Errorf("unknown name inserted %q, want nothing", m.input.Value())
+	}
+	if !strings.Contains(m.status, "nosuchface") {
+		t.Errorf("status = %q, want it to name the missing kaomoji", m.status)
+	}
+}
+
+func TestRenderSlashPopupArgumentRows(t *testing.T) {
+	// Argument rows are bare values: no leading "/", no cloud column.
+	m := newSlashTestModel("/kaomoji ")
+	m.slash = slashState{active: true, arg: true, cmd: "kaomoji", items: []slashCandidate{
+		{trigger: "shrug", desc: `¯\_(ツ)_/¯`},
+	}}
+	out := m.renderSlashPopup(60)
+	if !strings.Contains(out, "shrug") || !strings.Contains(out, `¯\_(ツ)_/¯`) {
+		t.Errorf("popup missing the argument row:\n%s", out)
+	}
+	if strings.Contains(out, "/shrug") {
+		t.Errorf("argument rows must not be prefixed with a slash:\n%s", out)
+	}
+}

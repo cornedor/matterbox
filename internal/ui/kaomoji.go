@@ -53,10 +53,16 @@ var defaultKaomoji = []kaomojiItem{
 	{name: "thinking", text: `( -_・)?`},
 }
 
-// openKaomojiPicker builds the list — built-ins then the configured extras —
-// sorted by how often each has been picked (ties by name) so favourites float
-// to the top, like the emoji picker.
+// openKaomojiPicker raises the modal list over the composer.
 func (m *Model) openKaomojiPicker() {
+	m.kaomojiPicker = kaomojiPickerState{active: true, items: m.kaomojiItems()}
+}
+
+// kaomojiItems is the pick list — built-ins then the configured extras —
+// sorted by how often each has been picked (ties by name) so favourites float
+// to the top, like the emoji picker. Shared by the picker and the "/kaomoji "
+// argument autocomplete.
+func (m *Model) kaomojiItems() []kaomojiItem {
 	items := append([]kaomojiItem(nil), defaultKaomoji...)
 	for _, text := range m.kaomojiOptions {
 		text = strings.TrimSpace(text)
@@ -72,7 +78,35 @@ func (m *Model) openKaomojiPicker() {
 		}
 		return items[i].name < items[j].name
 	})
-	m.kaomojiPicker = kaomojiPickerState{active: true, items: items}
+	return items
+}
+
+// kaomojiArgs offers every kaomoji as an argument row for "/kaomoji ",
+// favourites first, with the kaomoji itself as the hint beside its name. (A
+// configured extra is its own name, so it needs no hint.)
+func kaomojiArgs(m *Model) []slashArg {
+	items := m.kaomojiItems()
+	out := make([]slashArg, 0, len(items))
+	for _, it := range items {
+		a := slashArg{value: it.name}
+		if it.text != it.name {
+			a.desc = it.text
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// findKaomoji looks one up by its picker name (case-insensitive) — what
+// "/kaomoji <name>" takes and what its autocomplete fills in.
+func (m *Model) findKaomoji(name string) (kaomojiItem, bool) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for _, it := range m.kaomojiItems() {
+		if strings.ToLower(it.name) == name {
+			return it, true
+		}
+	}
+	return kaomojiItem{}, false
 }
 
 func (m *Model) closeKaomojiPicker() {

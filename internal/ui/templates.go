@@ -83,6 +83,25 @@ func (m *Model) templateNames() []string {
 	return out
 }
 
+// templateArgs offers the saved templates as argument rows for "/tmpl ", with
+// the same one-line body preview the Templates sheet shows.
+func templateArgs(m *Model) []slashArg {
+	names := m.templateNames()
+	out := make([]slashArg, 0, len(names))
+	for _, n := range names {
+		out = append(out, slashArg{value: n, desc: templatePreview(m.templates[n])})
+	}
+	return out
+}
+
+// templatePreview squeezes a template body onto one line for a list row.
+func templatePreview(body string) string {
+	if p := strings.Join(strings.Fields(body), " "); p != "" {
+		return p
+	}
+	return "(empty)"
+}
+
 // templatePickerState is the Templates sheet: enter inserts the selected
 // template into the composer, d deletes it.
 type templatePickerState struct {
@@ -174,11 +193,7 @@ func (m *Model) renderTemplatePicker() string {
 	}
 	names := m.templatePicker.names
 	row := func(i int) string {
-		preview := strings.Join(strings.Fields(m.templates[names[i]]), " ")
-		if preview == "" {
-			preview = "(empty)"
-		}
-		return names[i] + "  " + preview
+		return names[i] + "  " + templatePreview(m.templates[names[i]])
 	}
 	empty := "No templates saved yet.\n\nType a message, then run \"> Templates: save composer as…\" to keep it as a template."
 	return m.renderListModal("Templates", helpKey(m.keys.OpenChannel)+" inserts · "+helpKey(m.keys.SheetRemove)+" deletes · esc closes", empty, len(names), m.templatePicker.idx, row)

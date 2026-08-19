@@ -332,9 +332,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case serverCommandsMsg:
 		if msg.err == nil {
 			m.serverCmds[msg.teamID] = msg.cmds
-			// If the "/" popup is open for this team, fold the freshly-cached
-			// commands in without waiting for the next keystroke.
-			if m.slash.active {
+			// If the "/" popup is open over the command word for this team,
+			// fold the freshly-cached commands in without waiting for the next
+			// keystroke. (In argument mode the rows are the command's own, so
+			// there's nothing to merge.)
+			if m.slash.active && !m.slash.arg {
 				if ch, _ := m.composerTarget(); m.commandTeamID(ch) == msg.teamID {
 					m.slash.items = m.slashMatches(m.slash.query, msg.teamID)
 					if m.slash.idx >= len(m.slash.items) {

@@ -35,6 +35,19 @@ type slashCommand struct {
 	args    string // usage hint shown in /help, e.g. "<action>"
 	desc    string
 	run     func(m *Model, args string) tea.Cmd
+	// argValues, when set, keeps the autocomplete popup up past the command
+	// word: it supplies the rows offered for the command's argument, in
+	// preferred order (the generic code fuzzy-filters and caps them). Commands
+	// whose argument is free text (/me, the effect commands) leave it nil.
+	argValues func(m *Model) []slashArg
+}
+
+// slashArg is one argument-completion row: value is inserted after the command
+// word, desc is the dimmed hint beside it (the kaomoji itself, a template's
+// first line, …).
+type slashArg struct {
+	value string
+	desc  string
 }
 
 // slashRegistry is the ordered list of built-in "/" commands. Order is the
@@ -43,8 +56,10 @@ func slashRegistry() []slashCommand {
 	cmds := []slashCommand{
 		{name: "me", args: "<action>", desc: "send an action / emote message", run: slashMe},
 		{name: "shrug", args: "[message]", desc: `append ¯\_(ツ)_/¯ to your message`, run: slashShrug},
-		{name: "kaomoji", desc: "pick a kaomoji into the composer", run: slashKaomoji},
-		{name: "tmpl", aliases: []string{"template"}, args: "[name]", desc: "insert a saved template (no name: pick from the list)", run: slashTemplate},
+		{name: "kaomoji", args: "[name]", desc: "insert a kaomoji (no name: pick from the list)",
+			run: slashKaomoji, argValues: kaomojiArgs},
+		{name: "tmpl", aliases: []string{"template"}, args: "[name]", desc: "insert a saved template (no name: pick from the list)",
+			run: slashTemplate, argValues: templateArgs},
 		{name: "dm", aliases: []string{"msg"}, args: "@user[,@user…] [message]",
 			desc: "open (creating if new) a DM / group DM, optionally sending a message", run: slashDM},
 		{name: "search", aliases: []string{"find"}, args: "<query>",
@@ -314,11 +329,21 @@ func slashHelp(m *Model, _ string) tea.Cmd {
 	return nil
 }
 
-// slashKaomoji opens the kaomoji picker; the pick lands in the (now empty)
-// composer for the user to send.
-func slashKaomoji(m *Model, _ string) tea.Cmd {
-	m.openKaomojiPicker()
-	return nil
+// slashKaomoji inserts the named kaomoji into the (now empty) composer, or
+// opens the picker when no name was given — the same shape as /tmpl. The name
+// is what the "/kaomoji " argument autocomplete fills in.
+func slashKaomoji(m *Model, args string) tea.Cmd {
+	name := strings.TrimSpace(args)
+	if name == "" {
+		m.openKaomojiPicker()
+		return nil
+	}
+	it, ok := m.findKaomoji(name)
+	if !ok {
+		m.status = "kaomoji not found: " + name
+		return nil
+	}
+	return m.insertKaomoji(it)
 }
 
 // slashTemplate inserts the named template, or opens the Templates sheet when
@@ -376,18 +401,87 @@ type serverCommand struct {
 	hint    string // auto_complete_hint, e.g. "[message]"
 }
 
-// slashState tracks an in-progress "/" command completion. Commands live at
-// the very start of the composer (parseSlash requires it), so there's no
-// captured offset — the "/" is always at line 0, column 0. query is everything
-// between "/" and the cursor (lower-cased). Like the emoji picker it matches
-// from a local set (built-ins + the per-team cache) with no fetch sequence; a
-// cold team cache is filled by a one-shot background fetch (serverCommandsMsg)
-// after which the items are recomputed in place.
+// slashState tracks an in-progress "/" completion. Commands live at the very
+// start of the composer (parseSlash requires it), so there's no captured line —
+// it's always line 0. The popup runs in two modes: over the command word
+// itself (arg false; query is the text between "/" and the cursor), and over a
+// registered command's argument (arg true; cmd names it, query is the argument
+// text up to the cursor). start is the rune index on line 0 where the token
+// being completed begins, so accept knows what to replace. Like the emoji
+// picker it matches from a local set (built-ins + the per-team cache) with no
+// fetch sequence; a cold team cache is filled by a one-shot background fetch
+// (serverCommandsMsg) after which the items are recomputed in place.
 type slashState struct {
 	active bool
+	arg    bool   // completing a command's argument, not its name
+	cmd    string // in arg mode, the command word the rows belong to
+	start  int    // rune index on line 0 where the completed token starts
 	query  string
 	items  []slashCandidate
 	idx    int
+}
+
+// slashLine is the composer's first line parsed around the cursor: the command
+// word, and — once whitespace has ended it — the argument being typed. ok is
+// false whenever the line isn't a "/" command line up to the cursor at all.
+type slashLine struct {
+	runes []rune
+	col   int    // cursor column, clamped into runes
+	name  string // command word (lower-cased); only set in arg mode
+	arg   bool   // the cursor sits in the argument portion
+	start int    // rune index where the token under the cursor begins
+	query string // that token's text up to the cursor, lower-cased
+}
+
+// slashLineAt parses the composer's first line around the cursor for both the
+// popup (updateSlash) and its accept. Pointer receiver: this runs per
+// keystroke, so it must not copy the ~133KB Model.
+func (m *Model) slashLineAt() (slashLine, bool) {
+	row, col := m.input.CursorRowCol()
+	if row != 0 {
+		return slashLine{}, false
+	}
+	lines := strings.Split(m.input.Value(), "\n")
+	if len(lines) == 0 {
+		return slashLine{}, false
+	}
+	runes := []rune(lines[0])
+	if col > len(runes) {
+		col = len(runes)
+	}
+	if len(runes) == 0 || runes[0] != '/' {
+		return slashLine{}, false
+	}
+	if col == 0 {
+		// Cursor sits left of the leading "/" (e.g. after Home/ctrl+a):
+		// nothing of the command word is typed up to the cursor.
+		return slashLine{}, false
+	}
+	sp := -1
+	for i := 1; i < col; i++ {
+		if unicode.IsSpace(runes[i]) {
+			sp = i
+			break
+		}
+	}
+	if sp < 0 {
+		// Still on the command word.
+		return slashLine{runes: runes, col: col, start: 1, query: strings.ToLower(string(runes[1:col]))}, true
+	}
+	// Past it: the argument starts after the whitespace run (which the cursor
+	// may still be inside, giving an empty query — "list everything").
+	start := sp
+	for start < col && unicode.IsSpace(runes[start]) {
+		start++
+	}
+	return slashLine{
+		runes: runes,
+		col:   col,
+		name:  strings.ToLower(string(runes[1:sp])),
+		arg:   true,
+		start: start,
+		query: strings.ToLower(string(runes[start:col])),
+	}, true
 }
 
 // slashCandidate is one popup row: the command word, its description and
@@ -399,12 +493,11 @@ type slashCandidate struct {
 	server  bool
 }
 
-// updateSlash recomputes the "/" command popup after the composer has
-// processed a key. The popup is open only while the command word itself is
-// being typed: the cursor must be on the first line, the line must start with
-// "/", and there must be no whitespace between it and the cursor (once an
-// argument is started the command is locked in, matching parseSlash). A bare
-// "/" lists every command. It's suppressed while editing an existing post,
+// updateSlash recomputes the "/" popup after the composer has processed a key.
+// While the command word is being typed it lists matching commands (a bare "/"
+// lists every one); once whitespace ends the word the command is locked in
+// (matching parseSlash) and a command that declares argValues keeps the popup
+// going over its argument. It's suppressed while editing an existing post,
 // whose leading "/" is literal text. Returns a Cmd that lazily fetches the
 // active team's command list when the cache is cold, or nil.
 func (m *Model) updateSlash() tea.Cmd {
@@ -412,51 +505,93 @@ func (m *Model) updateSlash() tea.Cmd {
 		m.closeSlash()
 		return nil
 	}
-	row, col := m.input.CursorRowCol()
-	if row != 0 {
+	ln, ok := m.slashLineAt()
+	if !ok {
 		m.closeSlash()
 		return nil
 	}
-	lines := strings.Split(m.input.Value(), "\n")
-	if len(lines) == 0 {
-		m.closeSlash()
+	if ln.arg {
+		m.updateSlashArg(ln)
 		return nil
 	}
-	runes := []rune(lines[0])
-	if col > len(runes) {
-		col = len(runes)
-	}
-	if len(runes) == 0 || runes[0] != '/' {
-		m.closeSlash()
-		return nil
-	}
-	if col == 0 {
-		// Cursor sits left of the leading "/" (e.g. after Home/ctrl+a):
-		// nothing of the command word is typed up to the cursor.
-		m.closeSlash()
-		return nil
-	}
-	for _, r := range runes[1:col] {
-		if unicode.IsSpace(r) {
-			m.closeSlash()
-			return nil
-		}
-	}
-	query := strings.ToLower(string(runes[1:col]))
 	ch, _ := m.composerTarget()
 	teamID := m.commandTeamID(ch)
 	cmd := m.ensureServerCommands(teamID)
-	if m.slash.active && m.slash.query == query {
+	if m.slash.active && !m.slash.arg && m.slash.query == ln.query {
 		return cmd
 	}
-	m.slash.active = true
-	m.slash.query = query
-	m.slash.items = m.slashMatches(query, teamID)
-	m.slash.idx = 0
+	m.slash = slashState{active: true, start: ln.start, query: ln.query, items: m.slashMatches(ln.query, teamID)}
 	if len(m.slash.items) == 0 {
 		m.closeSlash()
 	}
 	return cmd
+}
+
+// updateSlashArg drives the popup's second half: the rows a command offers for
+// its argument, e.g. every kaomoji after "/kaomoji ". Commands without
+// argValues — /me, the effect commands, anything server-side — close it so
+// typing a free-text argument is unobstructed.
+func (m *Model) updateSlashArg(ln slashLine) {
+	c, ok := lookupSlash(ln.name)
+	if !ok || c.argValues == nil {
+		m.closeSlash()
+		return
+	}
+	// The @-mention / :emoji pickers are recomputed just before this one and
+	// can legitimately trigger inside an argument ("/tmpl @al"); leave them the
+	// single popup slot, so only one is ever active.
+	if m.mention.active || m.emoji.active {
+		m.closeSlash()
+		return
+	}
+	if m.slash.active && m.slash.arg && m.slash.cmd == ln.name &&
+		m.slash.query == ln.query && m.slash.start == ln.start {
+		return
+	}
+	items := slashArgMatches(ln.query, c.argValues(m))
+	if len(items) == 0 {
+		m.closeSlash()
+		return
+	}
+	m.slash = slashState{active: true, arg: true, cmd: ln.name, start: ln.start, query: ln.query, items: items}
+}
+
+// slashArgMatches fuzzy-filters a command's argument rows against the typed
+// query and caps the popup height. The sort is stable within a match band, so
+// a list the command handed over in a meaningful order (kaomoji: most-used
+// first) keeps it — in particular for the empty query, where everything ties.
+func slashArgMatches(query string, vals []slashArg) []slashCandidate {
+	type cand struct {
+		slashCandidate
+		band  int
+		score int
+	}
+	cands := make([]cand, 0, len(vals))
+	for _, v := range vals {
+		if v.value == "" {
+			continue
+		}
+		band, score, ok := fuzzyScore(strings.ToLower(v.value), query)
+		if !ok {
+			continue
+		}
+		cands = append(cands, cand{slashCandidate{trigger: v.value, desc: v.desc}, band, score})
+	}
+	sort.SliceStable(cands, func(i, j int) bool {
+		a, b := cands[i], cands[j]
+		if a.band != b.band {
+			return a.band < b.band
+		}
+		return a.score < b.score
+	})
+	if len(cands) > slashLimit {
+		cands = cands[:slashLimit]
+	}
+	out := make([]slashCandidate, len(cands))
+	for i, c := range cands {
+		out[i] = c.slashCandidate
+	}
+	return out
 }
 
 // closeSlash clears the popup.
@@ -590,8 +725,11 @@ func bestFuzzy(query string, names []string) (band, score int, ok bool) {
 	return band, score, ok
 }
 
-// acceptSlash replaces the typed "/<query>" with "/<trigger> " (a trailing
-// space so an argument can follow) and closes the popup. Returns (nil, true)
+// acceptSlash takes the highlighted row: over the command word it replaces the
+// typed "/<query>" with "/<trigger> " (a trailing space so an argument can
+// follow, which immediately opens the argument popup for a command that has
+// one); over an argument it fills the value in place, with no trailing space,
+// so the popup closes and the next enter runs the command. Returns (cmd, true)
 // on success, or (nil, false) when there's nothing usable so the caller falls
 // through to the default key handler.
 func (m *Model) acceptSlash() (tea.Cmd, bool) {
@@ -602,25 +740,36 @@ func (m *Model) acceptSlash() (tea.Cmd, bool) {
 	if it.trigger == "" {
 		return nil, false
 	}
+	ln, ok := m.slashLineAt()
+	if !ok || ln.arg != m.slash.arg {
+		return nil, false
+	}
 	lines := strings.Split(m.input.Value(), "\n")
 	if len(lines) == 0 {
 		return nil, false
 	}
-	runes := []rune(lines[0])
-	_, col := m.input.CursorRowCol()
-	if col > len(runes) {
-		col = len(runes)
+	// Keep whatever follows the cursor on the line either way.
+	if ln.arg {
+		lines[0] = string(ln.runes[:ln.start]) + it.trigger + string(ln.runes[ln.col:])
+	} else {
+		lines[0] = "/" + it.trigger + " " + string(ln.runes[ln.col:])
 	}
-	// Replace the command word (leading "/" up to the cursor) with the full
-	// command; keep anything after the cursor on the line.
-	lines[0] = "/" + it.trigger + " " + string(runes[col:])
 	m.history.checkpoint(m.composerContextKey(), m.input.Value())
 	m.input.SetValue(strings.Join(lines, "\n"))
 	m.syncInputHeight()
+	wasArg := m.slash.arg
 	m.closeSlash()
+	if wasArg {
+		// Leave the popup shut: the filled-in argument still matches its own
+		// row, so re-opening here would make the next enter re-accept it
+		// instead of running the command. The next keystroke reopens it.
+		return m.updateCommandHighlight(), true
+	}
 	// The accepted "/trigger " is a recognised command — light it up (bold +
-	// animated) straight away rather than waiting for the next keystroke.
-	return m.updateCommandHighlight(), true
+	// animated) straight away rather than waiting for the next keystroke, and
+	// re-run the popup so a command with argValues offers them in the same
+	// keypress.
+	return tea.Batch(m.updateCommandHighlight(), m.updateSlash()), true
 }
 
 // slashPopupStyle reuses the mention/emoji dropdown frame vocabulary.
@@ -629,12 +778,13 @@ var slashPopupStyle = lipgloss.NewStyle().
 	BorderForeground(focusedColor).
 	Padding(0, 1)
 
-// renderSlashPopup returns the "/" command dropdown, or "" when it shouldn't
-// show. Server/plugin commands are tagged with the cloud glyph (built-ins get
-// a same-width blank so the command column lines up); the description is dimmed
-// to the side. Mirrors renderEmojiPopup. width is the messages-pane width; each
-// row is truncated to fit so a long description stays on one line instead of
-// wrapping (the popup's border+padding eat 4 columns).
+// renderSlashPopup returns the "/" dropdown — commands, or a command's
+// argument values — or "" when it shouldn't show. Server/plugin commands are
+// tagged with the cloud glyph (built-ins get a same-width blank so the command
+// column lines up); the description is dimmed to the side. Mirrors
+// renderEmojiPopup. width is the messages-pane width; each row is truncated to
+// fit so a long description stays on one line instead of wrapping (the popup's
+// border+padding eat 4 columns).
 func (m *Model) renderSlashPopup(width int) string {
 	if !m.slash.active || len(m.slash.items) == 0 {
 		return ""
@@ -646,27 +796,32 @@ func (m *Model) renderSlashPopup(width int) string {
 	dim := lipgloss.NewStyle().Foreground(dimColor)
 	rows := make([]string, 0, len(m.slash.items))
 	for i, it := range m.slash.items {
-		icon := "  " // built-in: blank under the cloud column
-		if it.server {
-			icon = slashCloud + " "
-		}
-		cmd := "/" + it.trigger
-		if it.hint != "" {
-			cmd += " " + it.hint
+		// Argument rows are the bare value (a kaomoji name, a template name);
+		// command rows carry the "/", the cloud column and the usage hint.
+		head := it.trigger
+		if !m.slash.arg {
+			icon := "  " // built-in: blank under the cloud column
+			if it.server {
+				icon = slashCloud + " "
+			}
+			head = icon + "/" + it.trigger
+			if it.hint != "" {
+				head += " " + it.hint
+			}
 		}
 		if i == m.slash.idx {
 			// Don't dim on the highlighted row — the dim foreground against the
 			// selection background is barely legible (as in the emoji popup).
 			// Truncate before styling so the selection bar covers exactly the
 			// visible text.
-			line := icon + cmd
+			line := head
 			if it.desc != "" {
 				line += "  " + it.desc
 			}
 			rows = append(rows, selectedRow.Render(ansi.Truncate(line, maxw, "…")))
 			continue
 		}
-		line := icon + cmd
+		line := head
 		if it.desc != "" {
 			line += "  " + dim.Render(it.desc)
 		}
