@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -119,8 +120,8 @@ func TestSplashClearsWhenTheFirstTranscriptLands(t *testing.T) {
 		}
 	}
 	// The last step names the channel it is waiting on.
-	if cur, _ := got.splash.current(); cur != "opening #General" {
-		t.Errorf("current step = %q; want the channel being opened", cur)
+	if cur, _ := got.splash.current(); cur.label != "opening #General" {
+		t.Errorf("current step = %q; want the channel being opened", cur.label)
 	}
 	n, _ := got.Update(postsLoadedMsg{channelID: "c1", posts: []*model.Post{{Id: "p1", Message: "hi"}}})
 	got = n.(Model)
@@ -183,5 +184,53 @@ func TestSplashFitsAShortTerminal(t *testing.T) {
 	}
 	if got := strings.TrimSpace(ansi.Strip(lines[1])); !strings.HasSuffix(got, "loading channels") {
 		t.Errorf("centre row = %q; want the current step", got)
+	}
+}
+
+// The WebSocket dial is the only startup step that retries, and it does so
+// behind the splash — which covers the footer its status line normally lands
+// on. The step has to carry the wait itself or a 32s backoff looks like a hang.
+func TestSplashShowsTheWebSocketRetry(t *testing.T) {
+	m := New(nil, nil)
+	nm, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	got := nm.(Model)
+	nm, _ = got.Update(wsClosedMsg{err: errors.New("dial tcp: connection refused")})
+	got = nm.(Model)
+
+	if !got.splash.active {
+		t.Fatal("a websocket drop took the splash down; the REST fetches are still running")
+	}
+	cur, _ := got.splash.current()
+	if cur.key != splashConnect || cur.attempt != 1 {
+		t.Fatalf("connect step = %+v; want attempt 1", cur)
+	}
+
+	// Waiting out the backoff: retry glyph, and a countdown rather than a
+	// frozen "in 2s".
+	now := cur.retryAt.Add(-1500 * time.Millisecond)
+	line := strings.TrimSpace(ansi.Strip(strings.Split(got.renderSplashAt(now), "\n")[(got.height-1)/2]))
+	if want := splashRetryGlyph + " connecting — retry 1 in 2s"; line != want {
+		t.Errorf("waiting line = %q; want %q", line, want)
+	}
+
+	// Attempt in flight: back to the spinner, and no stale countdown.
+	nm, _ = got.Update(wsReconnectMsg{})
+	got = nm.(Model)
+	line = strings.TrimSpace(ansi.Strip(strings.Split(got.renderSplashAt(now), "\n")[(got.height-1)/2]))
+	if want := "— attempt 1"; !strings.HasSuffix(line, want) {
+		t.Errorf("in-flight line = %q; want it to end %q", line, want)
+	}
+	if strings.Contains(line, splashRetryGlyph) {
+		t.Errorf("in-flight line still shows the waiting glyph: %q", line)
+	}
+
+	// Connecting clears the retry along with the step.
+	nm, _ = got.Update(wsConnectedMsg{})
+	got = nm.(Model)
+	if cur, _ := got.splash.current(); cur.key == splashConnect {
+		t.Error("connect step still pending after the retry succeeded")
+	}
+	if screen := ansi.Strip(got.renderSplash()); strings.Contains(screen, "attempt") {
+		t.Errorf("retry note outlived the step:\n%s", screen)
 	}
 }

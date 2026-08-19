@@ -870,10 +870,15 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.status = "websocket closed; retry in " + delay.String()
 		}
+		// A drop during startup happens behind the splash, which covers the
+		// footer this status line lives on — the connect step carries the
+		// countdown itself so the wait doesn't look like a hang.
+		m.splash.retrying(splashConnect, m.wsRetry, time.Now().Add(delay))
 		return m, tea.Tick(delay, func(_ time.Time) tea.Msg { return wsReconnectMsg{} })
 
 	case wsReconnectMsg:
 		m.status = "reconnecting…"
+		m.splash.retrying(splashConnect, m.wsRetry, time.Time{})
 		return m, m.connectWS()
 
 	case postSentMsg:

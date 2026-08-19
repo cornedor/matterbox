@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -53,11 +54,23 @@ const (
 
 var splashFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
+// splashRetryGlyph replaces the spinner while a step is sitting out its
+// backoff. Nothing is in flight during that wait, and a spinner would say
+// otherwise.
+const splashRetryGlyph = "↻"
+
 var (
 	// splashCurrentStyle is the step being waited on: the only line at full
 	// contrast.
 	splashCurrentStyle = lipgloss.NewStyle().Foreground(adaptiveColor{
 		light: lipgloss.Color("236"), dark: lipgloss.Color("252"),
+	})
+	// splashNoteStyle is the trailing "retry 2 in 12s" on a step that failed and
+	// is going round again. Amber rather than grey: it is the one thing on the
+	// screen the user may need to act on (wrong server, no network), and grey
+	// reads as decoration.
+	splashNoteStyle = lipgloss.NewStyle().Foreground(adaptiveColor{
+		light: lipgloss.Color("130"), dark: lipgloss.Color("179"),
 	})
 	// splashDoneStyles walk a finished step further into the background the
 	// longer ago it finished; the last entry holds for anything older. The
@@ -78,6 +91,33 @@ type splashStep struct {
 	key   splashKey
 	label string
 	done  bool
+
+	// attempt and retryAt track a step that failed and is going round again —
+	// the WebSocket dial is the only startup step that retries (see wsBackoff).
+	// retryAt is the deadline rather than the wait, so the line counts down
+	// instead of freezing on a stale "in 32s" for half a minute.
+	attempt int
+	retryAt time.Time
+}
+
+// note is the trailing explanation for a step that is retrying: how long until
+// the next attempt while it waits, which attempt this is once one is in flight.
+// Empty for a step that has not failed.
+func (s splashStep) note(now time.Time) string {
+	switch {
+	case s.attempt == 0:
+		return ""
+	case s.retryAt.After(now):
+		return fmt.Sprintf("retry %d in %s", s.attempt, s.retryAt.Sub(now).Round(time.Second))
+	default:
+		return fmt.Sprintf("attempt %d", s.attempt)
+	}
+}
+
+// waiting reports whether the step is sitting out a backoff rather than
+// actually trying, which is what swaps the spinner for the retry glyph.
+func (s splashStep) waiting(now time.Time) bool {
+	return s.attempt > 0 && s.retryAt.After(now)
 }
 
 // splashState is the startup progress list. done records the steps in the
@@ -168,14 +208,31 @@ func (s *splashState) stop() {
 	s.done = nil
 }
 
-// current returns the label of the step being waited on.
-func (s *splashState) current() (string, bool) {
+// retrying records that a step failed and will be tried again at deadline. A
+// zero deadline means the attempt is in flight now. Attempts are shown on the
+// step's own line, so a startup that is quietly backing off says so instead of
+// spinning as if it were still on the first try.
+func (s *splashState) retrying(key splashKey, attempt int, deadline time.Time) {
+	if !s.active {
+		return
+	}
 	for i := range s.steps {
-		if !s.steps[i].done {
-			return s.steps[i].label, true
+		if s.steps[i].key == key && !s.steps[i].done {
+			s.steps[i].attempt = attempt
+			s.steps[i].retryAt = deadline
+			return
 		}
 	}
-	return "", false
+}
+
+// current returns the step being waited on: the first one still pending.
+func (s *splashState) current() (splashStep, bool) {
+	for i := range s.steps {
+		if !s.steps[i].done {
+			return s.steps[i], true
+		}
+	}
+	return splashStep{}, false
 }
 
 // splashTickCmd advances the spinner on the current step.
@@ -209,7 +266,11 @@ func (m *Model) splashOpening(c *model.Channel) {
 
 // renderSplash paints the whole screen: the current step centred, the finished
 // ones stacked above it, everything else blank.
-func (m *Model) renderSplash() string {
+func (m *Model) renderSplash() string { return m.renderSplashAt(time.Now()) }
+
+// renderSplashAt is renderSplash with the clock injected, so a retry countdown
+// can be asserted on.
+func (m *Model) renderSplashAt(now time.Time) string {
 	cur, ok := m.splash.current()
 	if !ok {
 		return ""
@@ -237,15 +298,30 @@ func (m *Model) renderSplash() string {
 		if age >= len(splashDoneStyles) {
 			age = len(splashDoneStyles) - 1
 		}
-		rows = append(rows, m.splashLine(splashDoneStyles[age], "✓ "+label))
+		rows = append(rows, m.splashLine(splashDoneStyles[age].Render("✓ "+label)))
 	}
-	rows = append(rows, m.splashLine(splashCurrentStyle, splashFrames[m.splash.frame%len(splashFrames)]+" "+cur))
+	rows = append(rows, m.splashLine(m.splashCurrentLine(cur, now)))
 	for len(rows) < m.height {
 		rows = append(rows, "")
 	}
 	return strings.Join(rows[:m.height], "\n")
 }
 
-func (m *Model) splashLine(style lipgloss.Style, text string) string {
-	return lipgloss.PlaceHorizontal(m.width, lipgloss.Center, style.Render(text))
+// splashCurrentLine renders the step being waited on: spinner (or the retry
+// glyph, while it waits out a backoff), the label, and any retry note. The note
+// is styled separately and kept last so its colour can't bleed into the label.
+func (m *Model) splashCurrentLine(step splashStep, now time.Time) string {
+	glyph := splashFrames[m.splash.frame%len(splashFrames)]
+	if step.waiting(now) {
+		glyph = splashRetryGlyph
+	}
+	line := splashCurrentStyle.Render(glyph + " " + step.label)
+	if note := step.note(now); note != "" {
+		line += splashNoteStyle.Render(" — " + note)
+	}
+	return line
+}
+
+func (m *Model) splashLine(text string) string {
+	return lipgloss.PlaceHorizontal(m.width, lipgloss.Center, text)
 }
