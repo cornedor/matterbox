@@ -510,6 +510,12 @@ type Model struct {
 	threadLoading   bool
 	threadView      viewport.Model
 
+	// threadSelectID is the reply the thread pane should land on once its posts
+	// arrive — set when a thread is opened *on* a reply, so the cursor ends up on
+	// the message the user acted on rather than on the newest one. Cleared as
+	// soon as it is honoured.
+	threadSelectID string
+
 	// replyParentID is the message inside the open thread that the composer is
 	// answering — the nested-reply target (see nestedreply.go). "" means the
 	// reply answers the thread as a whole, which is all a plain Mattermost
@@ -1912,6 +1918,12 @@ func (m Model) fetchThread(rootID string) tea.Cmd {
 // sorted by CreateAt. The Mattermost API returns the posts as a map +
 // Order slice, but Order is newest-first; we want oldest-first with the
 // root pinned to the top.
+//
+// Then nestSortThread lifts each reply under the message it answers, so the pane
+// renders a tree rather than a flat run (see nestedreply.go). Send order is what
+// it sorts *within* — siblings keep it — and a thread with nothing nested comes
+// back exactly as it went in. This runs in the fetch goroutine, off the render
+// path, which is why the renderer can treat pane order as given.
 func orderedThread(pl *model.PostList, rootID string) []*model.Post {
 	if pl == nil {
 		return nil
@@ -1936,7 +1948,7 @@ func orderedThread(pl *model.PostList, rootID string) []*model.Post {
 		out = append(out, root)
 	}
 	out = append(out, replies...)
-	return out
+	return nestSortThread(out)
 }
 
 // appendOptimistic adds a placeholder post for the user's own outgoing
@@ -1964,8 +1976,17 @@ func (m *Model) appendOptimistic(channelID, rootID, text string, fileIDs []strin
 		m.posts = append(m.posts, stub)
 	}
 	if rootID != "" && m.threadOpen && m.threadRootID == rootID {
-		m.threadPosts = append(m.threadPosts, stub)
+		// Sorted in, not appended: a nested reply belongs under the message it
+		// answers the moment it appears, so the optimistic copy sits exactly
+		// where the server's copy will (see nestSortThread).
+		m.threadPosts = nestSortThread(append(m.threadPosts, stub))
 		m.threadIdx = len(m.threadPosts) - 1
+		for i, p := range m.threadPosts {
+			if p == stub {
+				m.threadIdx = i
+				break
+			}
+		}
 	}
 }
 

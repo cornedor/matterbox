@@ -933,10 +933,16 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.userNames[id] = name
 		}
 		m.threadLoading = false
-		m.threadIdx = len(m.threadPosts) - 1
-		if m.threadIdx < 0 {
-			m.threadIdx = 0
+		// Opening a thread *on* a reply lands on that reply; opening it on the
+		// root means "read this thread", which lands on the newest message.
+		// Newest, not last: tree order separates the two (see nestSortThread).
+		m.threadIdx = newestPostIdx(m.threadPosts)
+		if want := m.threadSelectID; want != "" {
+			if i := indexOfPost(m.threadPosts, want); i >= 0 {
+				m.threadIdx = i
+			}
 		}
+		m.threadSelectID = ""
 		m.renderThread()
 		return m, nil
 
@@ -1512,10 +1518,18 @@ func (m *Model) appendThreadPost(p *model.Post) {
 			break
 		}
 	}
-	wasAtBottom := m.threadIdx >= len(m.threadPosts)-1
-	m.threadPosts = append(m.threadPosts, p)
-	if wasAtBottom {
+	// "Following the conversation" means sitting on the newest message, which in
+	// tree order is not the last row: a reply to an older message lands in the
+	// middle of the pane. Asked before the insert, honoured after it.
+	following := m.threadIdx == newestPostIdx(m.threadPosts)
+	m.threadPosts = nestSortThread(append(m.threadPosts, p))
+	if following {
 		m.threadIdx = len(m.threadPosts) - 1
+		if p.Id != "" {
+			if i := indexOfPost(m.threadPosts, p.Id); i >= 0 {
+				m.threadIdx = i
+			}
+		}
 	}
 }
 
@@ -4200,6 +4214,12 @@ func (m Model) openThreadAnswering(p *model.Post, parentID string) (tea.Model, t
 	// the caller asked for a target, so plain "open thread" on an already-open
 	// thread doesn't silently drop the one the user set.
 	if m.threadOpen && m.threadRootID == rootID {
+		// Already loaded, so land on the acted-on reply straight away.
+		if p.RootId != "" {
+			if i := indexOfPost(m.threadPosts, p.Id); i >= 0 {
+				m.threadIdx = i
+			}
+		}
 		if parentID != "" {
 			m.replyParentID = parentID
 			m.restoreInputPrompt()
@@ -4229,6 +4249,14 @@ func (m Model) openThreadAnswering(p *model.Post, parentID string) (tea.Model, t
 	m.replyParentID = parentID
 	m.threadPosts = nil
 	m.threadIdx = 0
+	// Opening a thread on one of its replies puts the cursor on that reply once
+	// the posts land — acting on a message and then finding the cursor somewhere
+	// else is the kind of small betrayal that makes a key feel broken. Opening on
+	// the root is "read this thread", which has no particular message in mind.
+	m.threadSelectID = ""
+	if p.RootId != "" {
+		m.threadSelectID = p.Id
+	}
 	m.threadLoading = true
 	// Don't clobber a "✎ " prompt the user is mid-edit on — beginEditPost
 	// owns the prompt while editingPostID is set, and the patch will
@@ -4268,6 +4296,7 @@ func (m *Model) closeThread() tea.Cmd {
 	m.threadRootID = ""
 	m.threadChannelID = ""
 	m.replyParentID = ""
+	m.threadSelectID = ""
 	m.threadPosts = nil
 	m.threadIdx = 0
 	m.threadLoading = false

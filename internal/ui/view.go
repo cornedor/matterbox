@@ -547,7 +547,7 @@ func (m *Model) renderMessages() {
 	dividerDrawn := false
 	// Which posts answer another post rather than the thread as a whole. nil
 	// (nothing nested in the loaded window) is the fast path.
-	nests := m.nestInfos(m.posts)
+	nests := m.nestInfos(m.posts, false, 0)
 	for i, p := range m.posts {
 		var prev *model.Post
 		if i > 0 {
@@ -722,8 +722,11 @@ func (m *Model) renderThread() {
 	selVisStart, selVisRows, visAcc := -1, 0, 0
 	rowStarts := make([]int, len(m.threadPosts)+1)
 	// Where each reply sits in the tree the hidden parent references describe.
-	// nil for the flat threads that are still the vast majority.
-	nests := m.nestInfos(m.threadPosts)
+	// nil for the flat threads that are still the vast majority. m.threadPosts is
+	// already in tree order (nestSortThread), so the indent carries the meaning
+	// and only a nest too deep for this width still needs a quote line.
+	maxDepth := maxNestDepth(width)
+	nests := m.nestInfos(m.threadPosts, true, maxDepth)
 	for i, p := range m.threadPosts {
 		rowStarts[i] = visAcc
 		var prev *model.Post
@@ -737,10 +740,12 @@ func (m *Model) renderThread() {
 				prevNest = nests[i-1]
 			}
 		}
-		// A reply that steps to a different indent, or that opens with a quote of
-		// what it answers, starts a new run: folding it into the author line above
-		// would hide the very structure the indent is there to show.
-		grouped := m.groupWithPrev(p, prev, true) && nest.depth == prevNest.depth && !nest.quote
+		// Only a reply continuing the run *under the same parent* may fold into the
+		// author line above it. A step in or out of the tree, a move to another
+		// parent, or a quote line of its own all carry structure that grouping
+		// would swallow.
+		grouped := m.groupWithPrev(p, prev, true) &&
+			nest.depth == prevNest.depth && nest.parentID == prevNest.parentID && !nest.quote
 		chunk, rows := m.renderThreadPostLines(p, i == 0, grouped, nest)
 		if i == m.threadIdx {
 			selVisStart = visAcc
@@ -1175,7 +1180,7 @@ func (m *Model) renderThreadPostLines(p *model.Post, isRoot, grouped bool, nest 
 	poll := !deleted && isPoll(p)
 	var fp string
 	if !poll && p.Id != "" {
-		fp = m.postLineFingerprint(p, width, true, isRoot, grouped) + nestFingerprint(nest, indent)
+		fp = m.postLineFingerprint(p, width, true, isRoot, grouped) + nestFingerprint(nest, indent, nest.quote)
 		if cached, rows, ok := m.cachedPostLines(p, fp); ok {
 			return cached, rows
 		}
@@ -1330,7 +1335,7 @@ func (m *Model) renderPostLines(p *model.Post, grouped bool, nest nestInfo) ([]s
 	poll := !deleted && isPoll(p)
 	var fp string
 	if !poll && p.Id != "" {
-		fp = m.postLineFingerprint(p, width, false, false, grouped) + nestFingerprint(nest, 0)
+		fp = m.postLineFingerprint(p, width, false, false, grouped) + nestFingerprint(nest, 0, nest.quote)
 		if cached, rows, ok := m.cachedPostLines(p, fp); ok {
 			return cached, rows
 		}

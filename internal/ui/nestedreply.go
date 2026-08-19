@@ -18,12 +18,25 @@ import (
 // id of the message it answers as invisible bytes (internal/replyto), and this
 // file turns those ids back into structure on screen.
 //
-// The structure is drawn, never re-ordered. Posts stay in the order they were
-// sent, exactly as every other client shows them, and a reply says what it
-// answers by indenting under it and — when its parent is not the line directly
-// above — quoting one dim line of it. Re-ordering into a true tree would move a
-// new message away from the bottom of the pane, which is where the eye and the
-// unread divider both look for it.
+// The thread pane draws the tree in tree order: every reply sits directly beneath
+// the message it answers, depth first, siblings in the order they were sent (see
+// nestSortThread). That ordering is what makes the indent trustworthy — the
+// parent of an indented reply is always the nearest line above it at one less
+// indent — so the dim quote line is only needed where the indent genuinely can't
+// say it: an off-screen parent, or a nest deeper than the pane's indent cap.
+//
+// Chronological order with indentation was the first attempt and it does not
+// work. Two sub-conversations answered in turn interleave, so a reply's indent
+// is measured against an ancestor that isn't adjacent: the indent then implies a
+// parent the post doesn't have, and only the quote line contradicts it. Wrong
+// structure, stated twice.
+//
+// A flat thread is unaffected: with nothing nested, tree order *is* the order
+// the messages were sent, so nothing moves.
+//
+// The channel transcript is a different case and keeps chronological order. It
+// interleaves whole conversations, so it neither indents nor re-orders; there a
+// nested reply is marked by its quote line alone.
 
 const (
 	// nestIndentStep is how many columns one level of nesting costs. Two: the
@@ -85,18 +98,8 @@ type nestClaim struct {
 // The lookups are linear scans rather than an id index: a pane holds a few
 // hundred posts and a handful of nested replies, so a few hundred pointer
 // compares beat allocating a map of every post in the window on every render.
-func (m *Model) nestInfos(posts []*model.Post) []nestInfo {
-	var claims []nestClaim
-	for i, p := range posts {
-		if p == nil || !replyto.Carries(p.Message) {
-			continue
-		}
-		id, ok := replyto.Parse(p.Message)
-		if !ok || id == p.Id {
-			continue
-		}
-		claims = append(claims, nestClaim{i, id})
-	}
+func (m *Model) nestInfos(posts []*model.Post, treeOrdered bool, maxDepth int) []nestInfo {
+	claims := nestClaims(posts)
 	if claims == nil {
 		return nil
 	}
@@ -113,10 +116,124 @@ func (m *Model) nestInfos(posts []*model.Post) []nestInfo {
 			continue
 		}
 		infos[c.i].parent = posts[j]
-		infos[c.i].quote = j != c.i-1
 		infos[c.i].depth = nestDepthAt(j, posts, claims) + 1
+		switch {
+		case !treeOrdered:
+			// Chronological pane: nothing indents, so the quote is the only
+			// mark there is — except when the parent is the line right above,
+			// where it would only restate what the reader just read.
+			infos[c.i].quote = j != c.i-1
+		default:
+			// Tree order: the indent already names the parent, so quoting is
+			// noise — unless the nest is deeper than the pane can indent, where
+			// a child and its parent draw in the same column.
+			infos[c.i].quote = infos[c.i].depth > maxDepth
+		}
 	}
 	return infos
+}
+
+// nestClaims lists the posts claiming to answer another, in pane order. nil when
+// none does, which is the answer for almost every thread and channel.
+func nestClaims(posts []*model.Post) []nestClaim {
+	var claims []nestClaim
+	for i, p := range posts {
+		if p == nil || !replyto.Carries(p.Message) {
+			continue
+		}
+		id, ok := replyto.Parse(p.Message)
+		if !ok || id == p.Id {
+			continue
+		}
+		claims = append(claims, nestClaim{i, id})
+	}
+	return claims
+}
+
+// nestSortThread reorders a thread so every reply sits directly beneath the
+// message it answers: the root first, then each reply that answers the thread as
+// a whole, each followed immediately by its own descendants, depth first, with
+// siblings kept in the order they arrived. This is what makes an indent mean
+// something (see the package note at the top of this file).
+//
+// posts must arrive root-first and otherwise in send order; the result is that
+// order for any thread with no nesting in it, so a flat thread is returned
+// untouched. Running it on its own output is a no-op, which is what lets the live
+// append path re-sort after every message.
+//
+// A parent naming the root is treated as no parent: every reply already answers
+// the root, so indenting them all one step would say nothing. And nothing is ever
+// dropped — a post whose parent chain loops (only reachable by a hand-written
+// payload) is emitted at the end rather than lost.
+func nestSortThread(posts []*model.Post) []*model.Post {
+	// Two posts can't nest: a root and one reply is the smallest thread there is.
+	if len(posts) < 3 {
+		return posts
+	}
+	claims := nestClaims(posts)
+	if claims == nil {
+		return posts
+	}
+	rootID := ""
+	if posts[0] != nil {
+		rootID = posts[0].Id
+	}
+	parent := make([]int, len(posts))
+	kids := make([][]int, len(posts))
+	for i := range parent {
+		parent[i] = -1
+	}
+	for _, c := range claims {
+		if c.i == 0 || c.id == rootID {
+			continue // the root itself, or a reply to the root: already depth 0
+		}
+		j := indexOfPost(posts, c.id)
+		if j < 0 || j == c.i {
+			continue // parent not in this thread: leave it a sibling of the rest
+		}
+		parent[c.i] = j
+		kids[j] = append(kids[j], c.i)
+	}
+	out := make([]*model.Post, 0, len(posts))
+	seen := make([]bool, len(posts))
+	var emit func(i int)
+	emit = func(i int) {
+		if seen[i] {
+			return // a cycle, or a post reached twice: emit it once
+		}
+		seen[i] = true
+		out = append(out, posts[i])
+		for _, k := range kids[i] {
+			emit(k)
+		}
+	}
+	emit(0) // the root, and anything that answered it directly
+	for i := 1; i < len(posts); i++ {
+		if parent[i] < 0 {
+			emit(i)
+		}
+	}
+	// Anything left is in a parent cycle. Keep it: a corrupt payload must cost a
+	// reply its indent, never its existence.
+	for i := range posts {
+		if !seen[i] {
+			out = append(out, posts[i])
+		}
+	}
+	return out
+}
+
+// newestPostIdx is the index of the most recently sent post, or 0 for an empty
+// slice. Tree order means "newest" and "last" are no longer the same row, so the
+// paths that follow live conversation ask for this rather than len-1.
+func newestPostIdx(posts []*model.Post) int {
+	best, at := int64(-1), 0
+	for i, p := range posts {
+		if p != nil && p.CreateAt >= best {
+			best, at = p.CreateAt, i
+		}
+	}
+	return at
 }
 
 // nestDepthAt counts how many on-screen ancestors sit above the post at index i.
@@ -212,14 +329,14 @@ func (m *Model) nestQuoteText(p *model.Post) string {
 // indent it draws at and the quote line above it. The parent's UpdateAt is in
 // there because the quote shows the parent's text, so editing the parent has to
 // re-render every reply quoting it.
-func nestFingerprint(n nestInfo, indent int) string {
+func nestFingerprint(n nestInfo, indent int, quote bool) string {
 	if !n.nested() {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString("|N")
 	b.WriteString(strconv.Itoa(indent))
-	if n.quote {
+	if quote {
 		b.WriteByte('q')
 		b.WriteString(n.parentID)
 		if n.parent != nil {
