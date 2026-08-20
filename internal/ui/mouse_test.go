@@ -765,3 +765,35 @@ func TestWheelNewerMergeKeepsViewAnchored(t *testing.T) {
 		t.Errorf("view jumped: msgFreeOffset=%d, want %d (m2 row-start)", got.msgFreeOffset, want)
 	}
 }
+
+// Channel-info shares the right slot with the reference panel: a click in the
+// info column at composer height must hit the info pane, not the compose box —
+// including when resizeInput hasn't narrowed the input yet.
+func TestInfoPanelBeatsComposerAtSameHeight(t *testing.T) {
+	m := mouseModel([]*model.Post{{Id: "p", CreateAt: 100, UserId: "u", Message: "x"}})
+	m.raiseChannelInfo()
+	if !m.infoOpen {
+		t.Fatal("expected info panel open")
+	}
+	m.vcache.bodyH = 20
+	m.input.SetWidth(m.width - channelsWidth - 4)
+
+	x0, _, _, _, _ := m.infoGeom()
+	_, top, _, height, _ := m.composerGeom()
+	if height < 1 {
+		t.Fatal("composer has no height")
+	}
+	x, y := x0+2, top
+	if h := m.hitTest(x, y); h.zone != hitInfo {
+		t.Fatalf("hitTest in info column at composer row = zone %v, want hitInfo", h.zone)
+	}
+
+	out, _ := m.handleMouseClick(click(tea.MouseLeft, x, y))
+	got := out.(Model)
+	if got.focus != focusInfo {
+		t.Fatalf("click focus=%v want focusInfo", got.focus)
+	}
+	if got.input.Focused() {
+		t.Fatal("click focused the composer")
+	}
+}

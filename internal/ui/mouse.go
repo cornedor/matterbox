@@ -686,7 +686,9 @@ func (m *Model) hitTest(x, y int) hit {
 	// Read-only right panes (reference / channel-info) own their full column —
 	// including the rows that sit at the same height as the composer under the
 	// messages pane. Check them before inComposer so a link at the bottom of
-	// the side panel isn't stolen by the composer's hit box.
+	// the side panel isn't stolen by the composer's hit box. When the content
+	// mapper has no row (empty/short panel), still return the pane zone so a
+	// click focuses the panel rather than falling through.
 	if !m.threadOpen && (m.refOpen || m.infoOpen) {
 		rightW := m.width - channelsWidth
 		if rightW < 10 {
@@ -695,9 +697,15 @@ func (m *Model) hitTest(x, y int) hit {
 		sideW := splitRightPane(rightW)
 		if x >= channelsWidth+(rightW-sideW) {
 			if m.refOpen {
-				return m.hitRefContent(x, y)
+				if h := m.hitRefContent(x, y); h.zone != hitNone {
+					return h
+				}
+				return hit{zone: hitRef}
 			}
-			return m.hitInfoContent(x, y)
+			if h := m.hitInfoContent(x, y); h.zone != hitNone {
+				return h
+			}
+			return hit{zone: hitInfo}
 		}
 	}
 	// The compose box sits at the bottom of the messages / thread pane on a

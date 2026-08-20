@@ -46,6 +46,17 @@ type glConfirmState struct {
 	repo    string  // GitHub owner/repo
 	number  int     // GitHub issue/PR number
 	title   string
+	// methods is set for GitHub merges (merge commit / squash / rebase). Empty
+	// means a plain y/n confirm (approve, or GitLab's single merge path).
+	methods []mergeMethodChoice
+	method  string // chosen merge method id when applying
+}
+
+// mergeMethodChoice is one merge strategy offered in the confirm modal.
+type mergeMethodChoice struct {
+	ID    string
+	Label string
+	Key   string
 }
 
 var (
@@ -363,16 +374,30 @@ func (m Model) openGitLabMerge() (tea.Model, tea.Cmd) {
 }
 
 // handleGitLabConfirmKey owns every keystroke while the approve/merge confirm
-// is open (GitLab or GitHub): y/enter fires the action, n/esc cancels.
+// is open (GitLab or GitHub). Plain y/n for approve (and GitLab merge). When
+// GitHub offers several merge strategies, each method's key picks it — y/enter
+// deliberately do nothing then so a stray enter cannot pick the wrong strategy.
 func (m Model) handleGitLabConfirmKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
+	pressed := msg.String()
+	switch pressed {
 	case "ctrl+c":
 		return m, tea.Quit
-	case "y", "Y", "enter":
-		return m.applyRefConfirm()
 	case "n", "N", "esc":
 		m.glConfirm = glConfirmState{}
 		return m, nil
+	}
+	if len(m.glConfirm.methods) > 0 {
+		for _, mm := range m.glConfirm.methods {
+			if pressed == mm.Key {
+				m.glConfirm.method = mm.ID
+				return m.applyRefConfirm()
+			}
+		}
+		return m, nil
+	}
+	switch pressed {
+	case "y", "Y", "enter":
+		return m.applyRefConfirm()
 	}
 	return m, nil
 }
@@ -427,7 +452,7 @@ func (m Model) handleGitLabMutated(msg gitlabMutatedMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// renderGitLabConfirm draws the centred yes/no modal for an approve / merge.
+// renderGitLabConfirm draws the centred modal for an approve / merge.
 func (m *Model) renderGitLabConfirm() string {
 	if !m.glConfirm.active {
 		return ""
@@ -444,7 +469,16 @@ func (m *Model) renderGitLabConfirm() string {
 		inner = 1
 	}
 	header := lipgloss.NewStyle().Width(inner).Align(lipgloss.Center).Bold(true).Render(m.glConfirm.title)
-	hint := lipgloss.NewStyle().Width(inner).Align(lipgloss.Center).Foreground(dimColor).Italic(true).Render("y confirm · n cancel")
+	hintTxt := "y confirm · n cancel"
+	if len(m.glConfirm.methods) > 0 {
+		parts := make([]string, 0, len(m.glConfirm.methods)+1)
+		for _, mm := range m.glConfirm.methods {
+			parts = append(parts, mm.Key+" "+mm.Label)
+		}
+		parts = append(parts, "n cancel")
+		hintTxt = strings.Join(parts, " · ")
+	}
+	hint := lipgloss.NewStyle().Width(inner).Align(lipgloss.Center).Foreground(dimColor).Italic(true).Render(hintTxt)
 	body := lipgloss.JoinVertical(lipgloss.Left, header, "", hint)
 	return lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(focusedColor).Padding(1, 3).Render(body)
 }

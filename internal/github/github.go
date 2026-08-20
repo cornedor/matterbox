@@ -146,8 +146,16 @@ type Item struct {
 	SourceBranch   string
 	TargetBranch   string
 	ChangedFiles   int
-	ChecksState    string // combined commit status: success/pending/failure/error/""
+	ChecksState    string // overall CI: success/pending/failure/error/""
 	MergeableState string
+	Approvals      *Approvals // nil when reviews couldn't be read (best-effort)
+}
+
+// Approvals summarizes PR review verdicts (latest per reviewer).
+type Approvals struct {
+	Approved         bool
+	By               []string
+	ChangesRequested []string
 }
 
 // Mergeable reports whether GitHub considers the PR ready to merge.
@@ -158,7 +166,31 @@ func (it *Item) Mergeable() bool {
 	if it.State != "open" || it.Draft {
 		return false
 	}
-	return it.MergeableState == "clean"
+	// clean/has_hooks are ready; unstable means a non-required check failed and
+	// GitHub still allows merge — offer it and let the API refuse if needed.
+	switch it.MergeableState {
+	case "clean", "has_hooks", "unstable":
+		return true
+	default:
+		return false
+	}
+}
+
+// MergeMethods are GitHub's three merge strategies. The repository may disable
+// some; GitHub answers 405 with the reason rather than us guessing from settings.
+func MergeMethods() []MergeMethod {
+	return []MergeMethod{
+		{ID: "merge", Label: "merge commit", Key: "m"},
+		{ID: "squash", Label: "squash", Key: "s"},
+		{ID: "rebase", Label: "rebase", Key: "r"},
+	}
+}
+
+// MergeMethod is one way to merge a pull request.
+type MergeMethod struct {
+	ID    string
+	Label string
+	Key   string
 }
 
 // Invalidate drops the cached item for repo#number.
@@ -228,9 +260,10 @@ func (c *Client) Get(ctx context.Context, repo string, number int) (*Item, error
 			item.State = "merged"
 		}
 		if pr.Head.SHA != "" {
-			if st, serr := c.getCommitStatus(ctx, repo, pr.Head.SHA); serr == nil {
-				item.ChecksState = st
-			}
+			item.ChecksState = c.checksState(ctx, repo, pr.Head.SHA)
+		}
+		if ap, aerr := c.getApprovals(ctx, repo, number); aerr == nil {
+			item.Approvals = ap
 		}
 	}
 
@@ -368,12 +401,167 @@ func (c *Client) getCommitStatus(ctx context.Context, repo, sha string) (string,
 		return "", fmt.Errorf("github: status fetch HTTP %d", resp.StatusCode)
 	}
 	var body struct {
-		State string `json:"state"`
+		State    string `json:"state"`
+		Statuses []any  `json:"statuses"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return "", err
 	}
+	// Combined status stays "pending" with an empty list on Actions-only repos —
+	// ignore that so check runs are the source of truth.
+	if len(body.Statuses) == 0 {
+		return "", nil
+	}
 	return body.State, nil
+}
+
+// checksState folds GitHub Actions check runs with the older commit-status API.
+// Actions posts check runs, not statuses — reading only /status left the panel
+// stuck on "none" for every Actions-only repo.
+func (c *Client) checksState(ctx context.Context, repo, sha string) string {
+	runState, _ := c.getCheckRunsState(ctx, repo, sha)
+	statusState, _ := c.getCommitStatus(ctx, repo, sha)
+	return worseCIState(runState, statusState)
+}
+
+func (c *Client) getCheckRunsState(ctx context.Context, repo, sha string) (string, error) {
+	owner, name := splitRepo(repo)
+	if owner == "" || name == "" {
+		return "", errors.New("github: invalid repo path (expected owner/repo)")
+	}
+	endpoint := fmt.Sprintf("%s/repos/%s/commits/%s/check-runs?per_page=100", c.apiBase, owner+"/"+name, sha)
+	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", fmt.Errorf("github: check-runs fetch HTTP %d", resp.StatusCode)
+	}
+	var body struct {
+		CheckRuns []struct {
+			Status     string `json:"status"`     // queued / in_progress / completed
+			Conclusion string `json:"conclusion"` // success / failure / … when completed
+		} `json:"check_runs"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return "", err
+	}
+	if len(body.CheckRuns) == 0 {
+		return "", nil
+	}
+	overall := "success"
+	for _, r := range body.CheckRuns {
+		st := checkRunState(r.Status, r.Conclusion)
+		overall = worseCIState(overall, st)
+	}
+	return overall, nil
+}
+
+func checkRunState(status, conclusion string) string {
+	switch strings.ToLower(status) {
+	case "queued", "in_progress", "waiting", "requested", "pending":
+		return "pending"
+	}
+	switch strings.ToLower(conclusion) {
+	case "success", "neutral", "skipped":
+		return "success"
+	case "failure", "timed_out", "action_required", "startup_failure":
+		return "failure"
+	case "cancelled", "canceled", "stale":
+		return "error"
+	case "":
+		return "pending"
+	default:
+		return "error"
+	}
+}
+
+// worseCIState picks the more severe of two combined-status vocabulary values.
+func worseCIState(a, b string) string {
+	rank := func(s string) int {
+		switch s {
+		case "failure", "error":
+			return 3
+		case "pending":
+			return 2
+		case "success":
+			return 1
+		default:
+			return 0
+		}
+	}
+	if rank(b) > rank(a) {
+		return b
+	}
+	return a
+}
+
+// getApprovals reads PR reviews and keeps the latest verdict per reviewer.
+func (c *Client) getApprovals(ctx context.Context, repo string, number int) (*Approvals, error) {
+	owner, name := splitRepo(repo)
+	if owner == "" || name == "" || number <= 0 {
+		return nil, errors.New("github: invalid repo/number")
+	}
+	endpoint := fmt.Sprintf("%s/repos/%s/pulls/%d/reviews?per_page=100", c.apiBase, owner+"/"+name, number)
+	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("github: reviews fetch HTTP %d", resp.StatusCode)
+	}
+	var reviews []struct {
+		State string `json:"state"` // APPROVED / CHANGES_REQUESTED / COMMENTED / …
+		User  struct {
+			Login string `json:"login"`
+		} `json:"user"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&reviews); err != nil {
+		return nil, err
+	}
+	latest := map[string]string{}
+	order := []string{}
+	for _, r := range reviews {
+		login := r.User.Login
+		if login == "" {
+			continue
+		}
+		if _, seen := latest[login]; !seen {
+			order = append(order, login)
+		}
+		// COMMENTED does not clear a prior approve/block.
+		if r.State == "COMMENTED" || r.State == "PENDING" || r.State == "DISMISSED" {
+			continue
+		}
+		latest[login] = r.State
+	}
+	ap := &Approvals{}
+	for _, login := range order {
+		switch latest[login] {
+		case "APPROVED":
+			ap.By = append(ap.By, login)
+		case "CHANGES_REQUESTED":
+			ap.ChangesRequested = append(ap.ChangesRequested, login)
+		}
+	}
+	ap.Approved = len(ap.By) > 0 && len(ap.ChangesRequested) == 0
+	return ap, nil
 }
 
 // Approve submits an APPROVE review on the pull request, then invalidates cache.
@@ -393,8 +581,9 @@ func (c *Client) Approve(ctx context.Context, repo string, number int) error {
 	return nil
 }
 
-// Merge merges the pull request, then invalidates cache.
-func (c *Client) Merge(ctx context.Context, repo string, number int) error {
+// Merge merges the pull request with the given method (merge / squash / rebase).
+// An empty method defaults to GitHub's merge commit.
+func (c *Client) Merge(ctx context.Context, repo string, number int, method string) error {
 	if !c.Enabled() {
 		return errNotConfigured
 	}
@@ -403,7 +592,11 @@ func (c *Client) Merge(ctx context.Context, repo string, number int) error {
 		return errors.New("github: invalid repo/number")
 	}
 	path := fmt.Sprintf("%s/repos/%s/pulls/%d/merge", c.apiBase, owner+"/"+name, number)
-	if err := c.doJSON(ctx, http.MethodPut, path, map[string]string{}); err != nil {
+	body := map[string]string{}
+	if method != "" {
+		body["merge_method"] = method
+	}
+	if err := c.doJSON(ctx, http.MethodPut, path, body); err != nil {
 		return err
 	}
 	c.Invalidate(repo, number)

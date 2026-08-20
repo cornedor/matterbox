@@ -146,6 +146,9 @@ func TestGitHubMergeConfirmWhenMergeable(t *testing.T) {
 	if !got.glConfirm.active || got.glConfirm.action != "merge" || got.glConfirm.kind != refGitHub {
 		t.Fatalf("expected merge confirm, got %+v", got.glConfirm)
 	}
+	if len(got.glConfirm.methods) != 3 {
+		t.Fatalf("expected 3 merge methods, got %+v", got.glConfirm.methods)
+	}
 }
 
 func TestGitHubApproveOpensConfirm(t *testing.T) {

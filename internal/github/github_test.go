@@ -39,6 +39,17 @@ const pullJSON = `{
 
 const statusJSON = `{"state": "success"}`
 
+const checkRunsJSON = `{"check_runs": [
+  {"name": "build", "status": "completed", "conclusion": "success"},
+  {"name": "test", "status": "completed", "conclusion": "failure"}
+]}`
+
+const reviewsJSON = `[
+  {"state": "CHANGES_REQUESTED", "user": {"login": "grace"}},
+  {"state": "APPROVED", "user": {"login": "grace"}},
+  {"state": "APPROVED", "user": {"login": "linus"}}
+]`
+
 func newTestClient(srv *httptest.Server) *Client {
 	return New(Config{BaseURL: srv.URL, Token: "ghp_test"})
 }
@@ -75,8 +86,12 @@ func TestGetPullRequest(t *testing.T) {
 			w.Write([]byte(issueAsPRJSON))
 		case strings.HasSuffix(r.URL.Path, "/pulls/7"):
 			w.Write([]byte(pullJSON))
+		case strings.Contains(r.URL.Path, "/check-runs"):
+			w.Write([]byte(checkRunsJSON))
 		case strings.HasSuffix(r.URL.Path, "/commits/abc123/status"):
 			w.Write([]byte(statusJSON))
+		case strings.HasSuffix(r.URL.Path, "/pulls/7/reviews"):
+			w.Write([]byte(reviewsJSON))
 		default:
 			t.Errorf("unexpected path: %s", r.URL.Path)
 			http.NotFound(w, r)
@@ -98,17 +113,53 @@ func TestGetPullRequest(t *testing.T) {
 	if item.ChangedFiles != 5 {
 		t.Errorf("changed_files = %d", item.ChangedFiles)
 	}
-	if item.ChecksState != "success" {
-		t.Errorf("checks = %q", item.ChecksState)
+	// Check runs win over a green commit status when any run failed.
+	if item.ChecksState != "failure" {
+		t.Errorf("checks = %q, want failure from check runs", item.ChecksState)
+	}
+	if item.Approvals == nil || len(item.Approvals.By) != 2 || len(item.Approvals.ChangesRequested) != 0 {
+		t.Errorf("approvals = %+v, want grace+linus approved", item.Approvals)
 	}
 	if !item.Mergeable() {
 		t.Error("expected mergeable PR")
 	}
 }
 
+func TestChecksPreferActionsCheckRuns(t *testing.T) {
+	// Actions-only repos post check runs and leave the legacy status empty —
+	// the panel used to show "none" forever.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/issues/7"):
+			w.Write([]byte(issueAsPRJSON))
+		case strings.HasSuffix(r.URL.Path, "/pulls/7"):
+			w.Write([]byte(pullJSON))
+		case strings.Contains(r.URL.Path, "/check-runs"):
+			w.Write([]byte(`{"check_runs":[{"name":"CI","status":"completed","conclusion":"success"}]}`))
+		case strings.HasSuffix(r.URL.Path, "/status"):
+			w.Write([]byte(`{"state":"pending","statuses":[]}`))
+		case strings.Contains(r.URL.Path, "/reviews"):
+			w.Write([]byte(`[]`))
+		default:
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer srv.Close()
+	item, err := newTestClient(srv).Get(context.Background(), "org/repo", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if item.ChecksState != "success" {
+		t.Fatalf("checks = %q, want success from Actions check runs", item.ChecksState)
+	}
+}
+
 func TestApproveAndMergeHitRightEndpoints(t *testing.T) {
 	var approve, merge bool
+	var mergeBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		buf := make([]byte, r.ContentLength)
+		r.Body.Read(buf)
 		switch {
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/pulls/3/reviews"):
 			approve = true
@@ -116,6 +167,7 @@ func TestApproveAndMergeHitRightEndpoints(t *testing.T) {
 			w.Write([]byte(`{"id": 1}`))
 		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/pulls/3/merge"):
 			merge = true
+			mergeBody = string(buf)
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(`{"merged": true}`))
 		default:
@@ -129,11 +181,14 @@ func TestApproveAndMergeHitRightEndpoints(t *testing.T) {
 	if err := c.Approve(context.Background(), "org/repo", 3); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
-	if err := c.Merge(context.Background(), "org/repo", 3); err != nil {
+	if err := c.Merge(context.Background(), "org/repo", 3, "squash"); err != nil {
 		t.Fatalf("merge: %v", err)
 	}
 	if !approve || !merge {
 		t.Errorf("approve=%v merge=%v", approve, merge)
+	}
+	if !strings.Contains(mergeBody, `"merge_method":"squash"`) {
+		t.Errorf("merge body = %q, want squash method", mergeBody)
 	}
 }
 
@@ -175,6 +230,10 @@ func TestGetPullRequestFailsClosedOnPRFetchError(t *testing.T) {
 			w.Write([]byte(pullJSON))
 		case strings.HasSuffix(r.URL.Path, "/commits/abc123/status"):
 			w.Write([]byte(statusJSON))
+		case strings.Contains(r.URL.Path, "/check-runs"):
+			w.Write([]byte(`{"check_runs":[]}`))
+		case strings.Contains(r.URL.Path, "/reviews"):
+			w.Write([]byte(`[]`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -196,7 +255,7 @@ func TestDoJSONIncludesAPIMessage(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := newTestClient(srv)
-	err := c.Merge(context.Background(), "org/repo", 1)
+	err := c.Merge(context.Background(), "org/repo", 1, "merge")
 	if err == nil || !strings.Contains(err.Error(), "not mergeable") {
 		t.Fatalf("err = %v", err)
 	}

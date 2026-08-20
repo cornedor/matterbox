@@ -89,6 +89,9 @@ func (m *Model) renderGitHubItem(it *github.Item, width int) string {
 		if ms := ghMergeText(it); ms != "" {
 			refMeta(&b, "Merge", ms, 12)
 		}
+		if a := ghApprovalsText(it.Approvals); a != "" {
+			refMeta(&b, "Approvals", a, 12)
+		}
 		if it.ChangedFiles > 0 {
 			refMeta(&b, "Changes", fmt.Sprintf("%d files", it.ChangedFiles), 12)
 		}
@@ -162,11 +165,36 @@ func ghMergeText(it *github.Item) string {
 	case "behind":
 		return ghYellow.Render("behind")
 	case "unstable":
-		return ghRed.Render("checks failing")
+		return ghYellow.Render("mergeable · a check is failing")
 	case "unknown", "":
 		return refDimStyle.Render("unknown")
 	default:
 		return ghYellow.Render(strings.ReplaceAll(it.MergeableState, "_", " "))
+	}
+}
+
+// ghApprovalsText renders review verdicts for the PR panel.
+func ghApprovalsText(a *github.Approvals) string {
+	if a == nil {
+		return ""
+	}
+	switch {
+	case len(a.ChangesRequested) > 0:
+		txt := "changes requested"
+		if len(a.ChangesRequested) > 0 {
+			txt += " (" + strings.Join(a.ChangesRequested, ", ") + ")"
+		}
+		return ghRed.Render(txt)
+	case a.Approved:
+		txt := "approved"
+		if len(a.By) > 0 {
+			txt += " (" + strings.Join(a.By, ", ") + ")"
+		}
+		return ghGreen.Render(txt)
+	case len(a.By) > 0:
+		return ghYellow.Render("partial (" + strings.Join(a.By, ", ") + ")")
+	default:
+		return ""
 	}
 }
 
@@ -201,7 +229,7 @@ func humanGhMergeState(it *github.Item) string {
 	case "behind":
 		return "behind base branch"
 	case "unstable":
-		return "checks failing"
+		return "a check is failing (still mergeable)"
 	case "unknown", "":
 		return "not mergeable"
 	default:
@@ -231,6 +259,8 @@ func (m Model) openGitHubApprove() (tea.Model, tea.Cmd) {
 }
 
 // openGitHubMerge raises the shared confirm when GitHub reports the PR mergeable.
+// The confirm lists merge commit / squash / rebase so squash-only repos don't
+// get a 405 from an unconditional merge-commit request.
 func (m Model) openGitHubMerge() (tea.Model, tea.Cmd) {
 	r := m.currentRef()
 	if r == nil || r.kind != refGitHub || m.ghItem == nil || !m.ghItem.IsPull {
@@ -240,13 +270,18 @@ func (m Model) openGitHubMerge() (tea.Model, tea.Cmd) {
 		m.status = "cannot merge " + r.label() + ": " + humanGhMergeState(m.ghItem)
 		return m, nil
 	}
+	methods := make([]mergeMethodChoice, 0, len(github.MergeMethods()))
+	for _, mm := range github.MergeMethods() {
+		methods = append(methods, mergeMethodChoice{ID: mm.ID, Label: mm.Label, Key: mm.Key})
+	}
 	m.glConfirm = glConfirmState{
-		active: true,
-		action: "merge",
-		kind:   refGitHub,
-		repo:   r.ghRepo,
-		number: r.ghNumber,
-		title:  fmt.Sprintf("Merge %s into %s?", r.label(), m.ghItem.TargetBranch),
+		active:  true,
+		action:  "merge",
+		kind:    refGitHub,
+		repo:    r.ghRepo,
+		number:  r.ghNumber,
+		title:   fmt.Sprintf("Merge %s into %s?", r.label(), m.ghItem.TargetBranch),
+		methods: methods,
 	}
 	return m, nil
 }
@@ -259,7 +294,8 @@ func (m Model) applyGitHubConfirm(c glConfirmState) (tea.Model, tea.Cmd) {
 	case "approve":
 		run = func() error { return client.Approve(ctx, c.repo, c.number) }
 	case "merge":
-		run = func() error { return client.Merge(ctx, c.repo, c.number) }
+		method := c.method
+		run = func() error { return client.Merge(ctx, c.repo, c.number, method) }
 	default:
 		return m, nil
 	}
