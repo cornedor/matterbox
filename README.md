@@ -6,133 +6,67 @@ A fast terminal client for [Mattermost](https://mattermost.com) — a full TUI p
 scriptable CLI, with a local message cache and optional AI features powered by a
 local LLM.
 
-## Features
+Screenshots, the feature tour, and the docs live at **[matterbox.work](https://matterbox.work)**.
 
-- **Terminal UI** — teams, channels, DMs, threads, reactions, attachments, and
-  live updates over WebSocket, built on [Bubble Tea](https://github.com/charmbracelet/bubbletea).
-- **Scriptable CLI** — read, send, and search Mattermost from the shell or scripts,
-  with `--json` output on most commands and shell completion for zsh/bash/fish.
-- **Local message cache** — every message you see is stored in a local SQLite
-  database (`~/.config/matterbox/messages.db`) so reopening a channel is instant
-  and history is searchable offline. An optional read-only **SQL tab**
-  (`sql_tab: true`) lets you query it directly — see [docs/database.md](docs/database.md).
-- **Full-text search** — keyword search over the local cache via SQLite FTS5,
-  available both in the TUI and as `matterbox search`.
-- **Semantic search** — optional vector search over your message history using a
-  local embeddings model (no data leaves your machine). Blended with keyword
-  results via hybrid ranking.
-- **Feed tab** — aggregated view of all unread messages across channels and DMs,
-  excluding muted channels — press `M` (or set `feed_show_muted: true`) to let
-  them in, sorted below everything else.
-- **Pins, saved messages, templates** — pin or save a message and browse the
-  saved ones, keep composer templates (`/tmpl`), pick a kaomoji, all from the
-  command palette (`ctrl+p`, then `>`). Slash commands autocomplete their
-  argument too, so `/kaomoji ` lists the faces and `/tmpl ` your templates.
-- **Jira integration** — press `v` on a Jira issue link to open a side panel; edit
-  Status, Priority, Story points, and Assignee inline without leaving the TUI.
-- **GitLab integration** — press `v` on a GitLab MR link to open a merge-request
-  side panel with pipeline, approvals, and status; approve or merge inline.
-- **AI summaries** — summarize a channel or thread with a local LLM (Ctrl+K in the TUI).
-- **Agentic search** — end a query with `?` on the Search tab and a local model
-  uses tools to dig through your channels to answer it.
-- **Clipboard paste** — paste images and files from the clipboard directly into
-  the composer (macOS and Linux with wl-clipboard/xclip).
-- **Drag and drop** — drag a file onto the terminal and it's attached. Terminals
-  have no drag-and-drop protocol — they deliver a drop by pasting the file's
-  path — so a paste that is nothing but existing file paths becomes an
-  attachment (`attach_on_drop: false` to paste such paths as text instead).
-- **Per-channel drafts** — unsent composer text is saved per channel via
-  Mattermost's server-side drafts API, so each channel keeps its own draft,
-  switching channels never loses what you typed, and a draft started here shows
-  up (and stays in sync) in the webapp, mobile, and across restarts.
-- **Nested replies** — press `r` on a reply and the thread pane draws a tree
-  instead of Mattermost's flat list; other clients still see a normal reply.
-- **Rules engine** — make the `listen` daemon react to what happens on your
-  server: match on team/channel/author/text/mention and run actions (notify, run
-  a local command, POST a webhook, post a message back, react, mark read).
-  Rules can trigger on new messages, edits, deletions, reactions — or on the
-  clock (`cron: "0 9 * * 1-5"`). `matterbox rules test` says which rules a
-  message would fire and why the rest wouldn't. The Telegram bridge is itself
-  just the default rule. See [docs/rules.md](docs/rules.md).
+## What it does
 
-The AI features (summaries, semantic/agentic search) are entirely optional and talk
-to any OpenAI-compatible endpoint — point them at a local
-[llama.cpp](https://github.com/ggml-org/llama.cpp) server, or leave them off.
+- **Terminal UI** — teams, channels, DMs, threads, reactions, attachments, live over
+  WebSocket, built on [Bubble Tea](https://github.com/charmbracelet/bubbletea).
+- **Search that finds things** — every message you see lands in a local SQLite database
+  (`~/.config/matterbox/messages.db`), and FTS5 searches all of it in the TUI or as
+  `matterbox search` — offline, instantly, however far back it goes. The same cache is
+  why reopening a channel is instant. An optional read-only SQL tab queries it directly
+  ([docs/database.md](docs/database.md)).
+- **Animated GIFs, in a terminal** — on one that speaks the Kitty graphics protocol
+  (Ghostty, kitty, WezTerm), images and GIFs are drawn inline in the transcript and
+  actually play, custom emoji included. Short clips too, on a build with video support.
+- **Scriptable CLI** — read, send, and search from the shell, `--json` on most
+  commands, completion for zsh/bash/fish.
+- **Feed** — every unread message across channels and DMs in one list.
+- **Nested replies** — press `r` on a reply and the thread pane draws a tree instead
+  of Mattermost's flat list. Other clients still see a normal reply.
+- **Paste and drop** — paste an image from the clipboard, or drag a file onto the
+  terminal; both become attachments.
+- **Jira and GitLab** — press `v` on an issue or MR link for a side panel: edit status,
+  assignee, or story points, approve or merge, without leaving the TUI.
+- **AI, if you want it** — channel and thread summaries, semantic search over your
+  history, and an agentic search that digs through channels to answer a question. All
+  optional, all against any OpenAI-compatible endpoint, so nothing needs to leave your
+  machine.
+- **Rules engine** — the `listen` daemon reacts to what happens on your server: match
+  on channel, author, text, or mention and notify, run a command, POST a webhook, post
+  back, react, or mark read — on a schedule too. [docs/rules.md](docs/rules.md).
 
-## Requirements
+## Install
 
-- Go 1.26+
-- A Mattermost server and an account on it
-- *(optional, for AI features)* a local OpenAI-compatible LLM server, e.g. llama.cpp
+Prebuilt Linux and macOS binaries (amd64 + arm64) are on the
+[releases page](https://github.com/cornedor/matterbox/releases) — pure Go, so they need
+no toolchain, though they carry no optional features. Drop one in `~/.local/bin`.
 
-## Build & install
+From source, with Go 1.26+:
 
 ```sh
-make            # build ./matterbox
-make install    # build + install to ~/.local/bin and set up shell completion
-make run        # build and launch the TUI
+make install    # build, install to ~/.local/bin, set up shell completion
 ```
 
-Optional features (the `--demo` soundtrack, inline video playback) need C
-libraries; `make` detects what your machine has and compiles in whatever it
-can, so a plain `make install` is all anyone needs. `make tags` shows what was
-picked and how to unlock the rest (e.g. install `ffmpeg-devel` / `libav*-dev`
-for video, then rebuild). Force a set with `make build TAGS=…` (`TAGS=` for
-none).
+Some optional features need C libraries; `make` detects what your machine has and
+compiles in whatever it can, so a plain `make install` is all anyone needs. `make tags`
+shows what was picked and how to unlock the rest. Handing a self-built binary to
+someone else has licensing consequences — see [docs/building.md](docs/building.md).
 
-Two caveats if you plan to *hand someone* a binary you built, rather than just
-run it yourself:
-
-- `-tags demoaudio` links `github.com/gotracker/opl2` (a GPL-2.0-or-later port
-  of DOSBox's OPL synth) by way of the tracker library's core packages, so a
-  demoaudio build is only distributable under the GPL — never under matterbox's
-  Apache-2.0. That one is unavoidable: it comes from the dependency graph.
-- `-tags video` links your system's FFmpeg, and *that* depends on how your
-  FFmpeg was configured. Plain LGPL FFmpeg is fine to ship alongside
-  Apache-2.0; one built `--enable-gpl` (which most distro builds are, because
-  it enables x264 and friends) is not. So the same commit yields a
-  distributable binary on one machine and a non-distributable one on another.
-  `matterbox --version` asks the linked library and tells you which you have.
-
-Build tag-free for anything you share — that is what the release binaries are.
-`make third-party-licenses` writes the license bundle for a build and refuses to
-produce one for a build it can't vouch for, checking both the Go dependency
-graph and the linked FFmpeg.
-
-Or with plain Go (no optional features, no cgo needed):
-
-```sh
-go build -o matterbox .
-```
-
-Every release also ships prebuilt Linux and macOS binaries (amd64 + arm64) on
-the [releases page](https://github.com/cornedor/matterbox/releases) — pure Go,
-so they need no toolchain, but they carry neither optional feature. Drop one in
-`~/.local/bin` and run `matterbox welcome`.
-
-`matterbox --version` names the build, the optional features it was compiled
-with, and the platform — worth pasting into a bug report.
+`matterbox --version` names the build, its optional features, and the platform.
 
 ## Configure & log in
 
 ### Setup tool (recommended)
 
-Run the interactive wizard to set server URL, log in, and pick basic preferences:
+Run the interactive wizard to set the server URL, log in, and pick basic preferences:
 
 ```sh
 matterbox welcome
 ```
 
-`matterbox login` opens your browser for GitLab SSO and saves the token to
-`~/.config/matterbox/mm_token.json`. It hands the token back via an `mmauth://`
-link. On **Linux** matterbox registers itself as the handler so the capture is
-automatic; elsewhere, copy the link from the success page and paste it at the
-prompt. `--show` prints the token path; `--clear` deletes it.
-
-(Or put any valid session token in that file as `{"token": "..."}`.)
-
-Running `matterbox` with no arguments launches the wizard automatically on first
-run.
+Running `matterbox` with no saved login starts it for you.
 
 ### Manual configuration
 
@@ -142,200 +76,126 @@ Edit `~/.config/matterbox/config.yaml` directly for full control. At minimum:
 server_url: https://mattermost.example.com
 ```
 
-Then run `matterbox login` or place a token in `~/.config/matterbox/mm_token.json`
-manually.
+Then `matterbox login` for GitLab SSO. It saves the token to
+`~/.config/matterbox/mm_token.json` — on Linux automatically, elsewhere by pasting the
+link from the success page at the prompt. Any valid session token works if you'd rather
+write that file yourself: `{"token": "..."}`.
 
-Set `MATTERBOX_CONFIG_DIR` to keep all of it (config, token, message cache,
-stats) somewhere else — handy for a second profile.
+The config file is written with every key at its default and a comment explaining it,
+plus a JSON Schema for editor autocomplete; [docs/config.md](docs/config.md) is the full
+reference. `MATTERBOX_CONFIG_DIR` moves config, token, and cache somewhere else — handy
+for a second profile.
 
 ## CLI
 
-Running `matterbox` with no arguments launches the TUI — or, on a first run with
-no saved login, the setup wizard. The subcommands are for setup and scripting:
+Running `matterbox` with no arguments launches the TUI. The subcommands are for setup
+and scripting:
 
 | Command | What it does |
 |---|---|
-| `matterbox welcome` | Run the first-run setup wizard: server URL, sign-in, a few preferences |
-| `matterbox login` | Sign in and save the session token — GitLab SSO, or `--password` |
-| `matterbox send <channel> [message]` | Post a message (`--file` to attach, repeatable) |
-| `matterbox reply <message-id> [message]` | Reply in a message's thread, recording which message you answered |
-| `matterbox react <message-id> <emoji>...` | Add one or more emoji reactions to a message |
-| `matterbox read [channel]` | Print recent messages (`--since`, `--until`, `--from`, `--thread`, `--wait`, `--json`) |
-| `matterbox unread` | List unread messages grouped by channel (`--muted`, `--wait`, `--json`) |
-| `matterbox mark-read <channel>...` | Mark one or more channels/DMs as read (clear unread) |
-| `matterbox open <channel>` | Jump the running TUI to a channel or DM (used by notification clicks) |
-| `matterbox search <query>` | Search the local cache (`--semantic`, `--channel`, `--context`, `--json`) |
-| `matterbox channels` | List all teams and channels with their addresses (`--json`) |
-| `matterbox digest` | Show your own recent messages in a time range (`--since`, `--until`, `--json`) |
-| `matterbox whoami` | Print the authenticated user |
-| `matterbox embed` | Backfill semantic-search embeddings for cached messages |
-| `matterbox listen` | Background daemon: keeps cache warm and bridges @mentions/DMs to Telegram |
-| `matterbox rules` | Inspect, list, and test the `listen` rules (`test`, `list`, `stats`, `state`) |
-| `matterbox keys` | List all keyboard actions, default keys, and your config overrides |
-| `matterbox decode [body]` | Show the hidden payload a matterbox post carries (`--post <id>` fetches it) |
+| `matterbox welcome` | First-run setup: server URL, sign-in, a few preferences |
+| `matterbox login` | Sign in and save the session token |
+| `matterbox send <channel> [message...]` | Post a message, with attachments |
+| `matterbox reply <message-id> [message...]` | Reply in a message's thread |
+| `matterbox react <message-id> <emoji> [emoji...]` | React to a message |
+| `matterbox read [channel]` | Print recent messages |
+| `matterbox unread` | List unread messages, grouped by channel |
+| `matterbox mark-read <channel>...` | Clear unread on one or more channels |
+| `matterbox open <channel>` | Jump the running TUI to a channel |
+| `matterbox search <query>` | Search the local cache, keyword or `--semantic` |
+| `matterbox channels` | List teams and channels with their addresses |
+| `matterbox digest` | Your own recent messages in a time range |
+| `matterbox embed` | Backfill semantic-search embeddings |
+| `matterbox listen` | Background daemon: warm cache, notifications, rules |
+| `matterbox rules` | Inspect, list, and test the `listen` rules |
+| `matterbox keys` | Print every keyboard action and your overrides |
 
-Channels are addressed as `team/channel` (e.g. `eng/general`) or `@username` for a DM.
+Channels are `team/channel` (e.g. `eng/general`), or `@username` for a DM. Every flag is
+in `--help` and at [matterbox.work/docs/cli](https://matterbox.work/docs/cli/).
 
-## Keybindings
+## Keys
 
-The footer shows the primary keys for whatever has the keyboard — the focused
-pane, or the modal on top of it. `?` expands it into every key that works right
-now, grouped by layer; `f1 › Keys` opens the complete, scrollable cheatsheet of
-your effective bindings (`matterbox keys` prints the same list). Three knobs
-under `keybindings:` in `config.yaml` tune them:
+The footer shows the keys for whatever has the keyboard. `?` expands that into
+everything that works right now; `f1 › Keys` — or `matterbox keys` — is the full
+cheatsheet of your effective bindings. Every action can be rebound under `keybindings:`
+in `config.yaml`; [docs/config.md](docs/config.md) lists them.
 
-```yaml
-keybindings:
-  nav_modifier: ctrl     # modifier for arrow-key team/channel nav:
-                         # ctrl (default), alt, shift, super (⌘ / Windows;
-                         # also "cmd"), meta, hyper, or none. On macOS ctrl+arrows
-                         # clash with Mission Control — try shift, or super on a
-                         # Kitty-protocol terminal (Ghostty/kitty/WezTerm).
-  vim_nav: global        # when ctrl+h/j/k/l switch team/channel:
-                         #   global  — from any focus, even while typing (default)
-                         #   reading — only outside text inputs, so ctrl+h / ctrl+k
-                         #             stay as the composer's emacs editing keys
-                         #   off     — never (arrow nav still works in every mode)
-  bindings:              # rebind individual actions (optional)
-    compose: [i, a]      # a single key or a list
-    delete_post: shift+d
-    quit: []             # empty list (or "none") unbinds — ctrl+c always quits
-    channel_next: ctrl+j # rebinding a nav action drops its modifier-arrow alias too
-```
+Two things that bite on day one:
 
-Each `bindings:` value names an **action** (`compose`, `channel_next`,
-`delete_post`, …) and the key or keys that trigger it. Modifiers are
-`ctrl`/`alt`/`shift`/`super`/`meta`/`hyper`. An unknown action id, an
-unparseable chord, or a binding that would collide with another action is
-reported as a startup error (with the full list of valid action ids), so a
-typo fails loud rather than silently shadowing a key.
+- On macOS, `ctrl`+arrows clash with Mission Control. Set `keybindings.nav_modifier: shift`.
+- Some chords need a terminal that speaks the Kitty keyboard protocol. Elsewhere
+  `shift+enter` sends the message instead of inserting a newline — use `alt+enter`.
 
-> Some chords only arrive on terminals that speak the Kitty keyboard protocol
-> (Ghostty, kitty, WezTerm). `shift+enter` for example *sends* the message on a
-> legacy terminal instead of inserting a newline — use `alt+enter` there.
+## Jira & GitLab (optional)
 
-## Jira & GitLab integration (optional)
-
-Press `v` on a message that names a Jira issue or links a GitLab merge request to
-open it in a side panel — read-only by default, with inline editing/actions when
-the token allows it. Both are opt-in and configured in `config.yaml`.
-
-### GitLab
+Press `v` on a message naming a Jira issue or linking a GitLab MR. Read-only by
+default, with inline editing and actions when the token allows it.
 
 ```yaml
 gitlab:
   base_url: https://git.example.com
-  token: glpat-…            # optional — see fallbacks below
-```
+  token: glpat-…          # or $GITLAB_TOKEN, or an existing `glab auth login`
 
-`token` may be a **personal access token** or a **project access token**, with
-these scopes:
-
-| Scope | Covers |
-|---|---|
-| `read_api` | Everything read-only: the MR panel, inline `!iid` badges, pipeline/stage status, approval state. |
-| `api` | The above **plus** the approve and merge actions. GitLab has no narrower scope for MR writes (`write_repository` is git-over-HTTPS only and does **not** cover the MR API). |
-
-Use `read_api` unless you actually approve/merge from the TUI. If `token` is left
-empty, matterbox falls back to the `GITLAB_TOKEN` env var, then to an existing
-`glab` login (the token `glab auth login` stored for this host in
-`~/.config/glab-cli/config.yml`) — so a working `glab` setup needs no secret in
-this file.
-
-### Jira (Cloud only)
-
-```yaml
-jira:
+jira:                     # Cloud only — it uses /rest/api/3
   base_url: https://your-instance.atlassian.net
   email: you@example.com
-  api_token: …             # or the JIRA_API_TOKEN env var
-  projects: [ABC, PROJ]    # optional: enable bare-id detection (ABC-123)
+  api_token: …            # or $JIRA_API_TOKEN
+  projects: [ABC, PROJ]   # optional: detect bare ids like ABC-123
 ```
 
-Authentication is HTTP Basic with your Atlassian account email + an API token
-(id.atlassian.com → Security → API tokens). What you need depends on the **kind**
-of token:
+GitLab needs `read_api` to view and `api` to approve or merge — there is no narrower
+scope for MR writes. Jira runs on your own project permissions with a classic API
+token, or `read:jira-work` + `read:jira-user` (+ `write:jira-work` to edit) with a
+scoped one.
 
-- **Classic API token** (the default) — unscoped; it acts as your user, so access
-  is gated by your Jira **project permissions**, not token scopes. *Browse
-  Projects* is enough to view; *Transition Issues*, *Assign Issues*, and *Edit
-  Issues* enable the inline status / assignee / priority / story-points edits.
-- **Scoped API token** (the newer option) — select `read:jira-work` and
-  `read:jira-user` for viewing, and add `write:jira-work` for the inline edits.
+## AI (optional)
 
-This integration targets Jira **Cloud** — it uses the `/rest/api/3` endpoints, so
-Server/Data Center instances won't work as-is.
+Summaries, semantic search, and agentic search talk to OpenAI-compatible endpoints
+configured under `summary`, `ai_search`, and `embeddings`. The defaults assume a local
+llama.cpp on `127.0.0.1:8321` for chat and `:8322` for embeddings, and
+[`scripts/llama-embeddings.sh`](scripts/llama-embeddings.sh) starts the latter. Build
+the index once with `matterbox embed`, then `matterbox search --semantic`.
 
-## AI features (optional)
-
-Summaries and search use OpenAI-compatible endpoints configured under `summary`,
-`ai_search`, and `embeddings` in `config.yaml` (defaults assume a local llama.cpp on
-`127.0.0.1:8321` for chat and `:8322` for embeddings). A helper script for the
-embeddings server is in [`scripts/llama-embeddings.sh`](scripts/llama-embeddings.sh).
-
-Once an embeddings server is running, build the index with `matterbox embed` (or let
-the TUI index in the background), then search with `matterbox search --semantic`.
+On the Search tab, a query ending in `?` runs the agentic version.
 
 ## listen daemon (optional)
 
-`matterbox listen` holds a persistent WebSocket connection to your Mattermost
-server and writes every incoming message into the local cache — so the TUI
-reopens warm and `search`/`digest` stay fresh without launching the UI.
+`matterbox listen` holds a WebSocket open and writes every incoming message into the
+cache, so the TUI reopens warm and `search`/`digest` stay fresh with the UI closed.
+Configured, it also forwards your mentions and DMs to Telegram — optionally summarised
+first — and takes replies back the other way.
 
-When configured, it also bridges your @mentions and DMs to Telegram, optionally
-summarising the surrounding conversation via the chat model first. Two-way mode
-lets you reply from Telegram back into Mattermost. The daemon also accepts `/ask`
-commands from Telegram to run agentic search against your message history.
+It stays quiet about what you're already reading: before notifying, it asks the TUI on
+this machine what's on screen, and skips the push if that channel is open in a focused
+window.
 
-It stays quiet about whatever you're reading: before notifying it asks the TUI
-on this machine what's on screen, and skips the push if that channel is open in
-a focused window. Rules gate on the same thing with
-[`viewing: false`](docs/rules.md#not-while-youre-reading-it).
-
-Run it under a process supervisor. `make install` drops a disabled service for
-your platform:
+`make install` drops a disabled unit for your platform:
 
 ```sh
-# Linux (systemd --user)
-systemctl --user enable --now matterbox-listen.service
-journalctl --user -u matterbox-listen -f
-
-# macOS (launchd)
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.matterbox.listen.plist
-tail -f ~/Library/Logs/matterbox-listen.log
+systemctl --user enable --now matterbox-listen.service   # Linux
+launchctl bootstrap gui/$(id -u) \                       # macOS
+  ~/Library/LaunchAgents/com.matterbox.listen.plist
 ```
 
-Configure under the `telegram` and `listen` sections in `config.yaml`
-(set `telegram.bot_token` from @BotFather and `telegram.chat_id`). The daemon is
-safe to run alongside the TUI — both write idempotent rows into the WAL-mode store.
+Safe to run alongside the TUI — both write idempotent rows into the WAL-mode store.
 
 ### Rules
 
-What the daemon does is driven by rules. With no `rules:` block it behaves
-exactly as before — forwarding your @mentions and DMs to Telegram (that default
-*is* a rule). Add a `rules:` block to take over: match on team, channel, author,
-message text (including the attachment text integrations hide it in), mention,
-bot, channel type, time of day, or thread status, and run actions — `notify`,
-`exec` (run a local command with the message piped in as JSON), `webhook`,
-`send` (post a message back), `react`, `mark_read`, or `log`.
+What the daemon does is driven by rules — the Telegram bridge is just the default one.
+Match on team, channel, author, text, mention, bot, channel type, time of day, or
+thread status, and run `notify`, `exec`, `webhook`, `send`, `react`, `mark_read`, or
+`log`. Rules fire on new messages, edits, deletions, reactions, or a cron schedule.
 
-A rule reacts to new messages by default; `on:` widens that to edits, deletions,
-reactions, or the clock (`on: schedule` with `cron:`/`every:`). While writing
-one, `matterbox rules test` reports which rules a message would fire and which
-condition stopped the rest, `matterbox rules list`/`stats`/`state` show what
-loaded, what has fired, and what rules have remembered — and
-`systemctl --user reload matterbox-listen` swaps in an edited ruleset without
-dropping the connection. See [docs/rules.md](docs/rules.md) for the full
-reference and examples.
+`matterbox rules test` says which rules a message would fire, and which condition
+stopped the rest. [docs/rules.md](docs/rules.md) is the full reference.
 
 ## License
 
-[Apache License 2.0](LICENSE). Much of the code was written with AI assistance
-under human review.
+[Apache License 2.0](LICENSE). Much of the code was written with AI assistance under
+human review.
 
 Two pieces of art in here belong to other people and keep their own terms, both
-recorded in [NOTICE](NOTICE): the `--demo` soundtrack is "Paradox #3" by
-**dubmood / Razor1911**, and the empty-feed sailing ship is by **Sebastian
-Stöcker (SSt)** — whose terms are why the signature stays on the art. Release
-binaries additionally ship a `THIRD_PARTY_LICENSES` file covering every Go
-module linked into them.
+recorded in [NOTICE](NOTICE): the `--demo` soundtrack is "Paradox #3" by **dubmood /
+Razor1911**, and the empty-feed sailing ship is by **Sebastian Stöcker (SSt)** — whose
+terms are why the signature stays on the art. Release binaries also ship a
+`THIRD_PARTY_LICENSES` file covering every Go module linked into them.
