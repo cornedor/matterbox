@@ -232,8 +232,37 @@ matterbox rules test -m "deploy" --at 03:00               # test a time window
 matterbox rules test --on schedule                        # the timer rules
 ```
 
+Every field of the probe has a flag, so a rule can be tested against a message
+nobody has sent:
+
+| Flag | What it sets |
+|---|---|
+| `-m`, `--message` | The body. It's also what a `mention:` condition reads — put `@you` in the text to test a mention rule. |
+| `--channel` | The channel's display name (what `channel:` globs match). |
+| `--team` | The team's URL name (what `team:` globs match). |
+| `--author` | The sender's username, without the `@`. |
+| `--type` | The conversation kind: `public` (the default), `private`, `dm`, or `group`. |
+| `--dm` | Shorthand for `--type dm`. |
+| `--from-me` | The post is your own — what `from_me: true` matches. |
+| `--bot` | The post comes from a bot or incoming webhook — `from_bot: true`. |
+| `--file` | The post carries an attachment — `has_file: true`. |
+| `--thread` | The post is a thread reply — `is_thread: true`. |
+| `--on` | The trigger kind: `message` (the default), `edit`, `delete`, `reaction`, `reaction_removed`, `schedule`. |
+| `--emoji` | The reaction's shortcode. Needs `--on reaction` (or `reaction_removed`). |
+| `--reactor` | Who reacted. Needs a reaction trigger. |
+| `--at` | The moment the trigger fired: `15:04`, `2006-01-02 15:04`, or RFC3339. |
+
 `--at` moves the clock, which is how a `time:` window or a weekday condition is
 checked without waiting for Tuesday.
+
+With a **real post** the post supplies the body, the attachments and the thread
+position, so `-m`, `--file`, `--thread` and `--bot` have nothing left to add —
+but `--on`, `--emoji`, `--reactor` and `--at` still shape the trigger, which is
+how you ask what an old post would do if someone reacted to it right now.
+
+A probe that couldn't mean what it says is rejected rather than quietly testing
+something else: an unknown `--on` or `--type`, or an `--emoji`/`--reactor`
+without a reaction trigger.
 
 ### Reloading
 
