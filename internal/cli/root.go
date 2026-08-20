@@ -43,10 +43,11 @@ func newRootCmd() *cobra.Command {
 			"login) it opens the `welcome` setup wizard first, so a fresh install is usable\n" +
 			"out of the box. Or use a subcommand (login, send, reply, react, read, unread,\n" +
 			"mark-read, open, search, channels, digest, whoami, embed, listen, rules,\n" +
-			"keys, decode) to work with messages non-interactively for scripting or to run\n" +
+			"keys, decode, version) to work with messages non-interactively for scripting or to run\n" +
 			"the background sync/notification daemon (listen).",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		Version:       versionString(),
 		// No subcommand → open the interactive UI. On a first run (no saved
 		// token) run the setup wizard first, then continue into the TUI with
 		// the login it just created, so new users never hit a "run welcome"
@@ -66,9 +67,12 @@ func newRootCmd() *cobra.Command {
 			return runTUI()
 		},
 	}
+	// Cobra's --version flag prints this template; the `version` subcommand
+	// prints the fuller build/tag/platform block a bug report wants.
+	root.SetVersionTemplate("matterbox {{.Version}}\n")
 	root.Flags().StringVar(&pprofAddr, "pprof", "",
 		"if set (e.g. localhost:6060), serve net/http/pprof on this address")
-	root.AddCommand(newWelcomeCmd(), newLoginCmd(), newURLHandlerCmd(), newRegisterHandlerCmd(), newSendCmd(), newReplyCmd(), newReactCmd(), newReadCmd(), newUnreadCmd(), newMarkReadCmd(), newOpenCmd(), newSearchCmd(), newChannelsCmd(), newDigestCmd(), newWhoamiCmd(), newEmbedCmd(), newListenCmd(), newRulesCmd(), newKeysCmd(), newDecodeCmd())
+	root.AddCommand(newWelcomeCmd(), newLoginCmd(), newURLHandlerCmd(), newRegisterHandlerCmd(), newSendCmd(), newReplyCmd(), newReactCmd(), newReadCmd(), newUnreadCmd(), newMarkReadCmd(), newOpenCmd(), newSearchCmd(), newChannelsCmd(), newDigestCmd(), newWhoamiCmd(), newEmbedCmd(), newListenCmd(), newRulesCmd(), newKeysCmd(), newDecodeCmd(), newVersionCmd())
 	return root
 }
 

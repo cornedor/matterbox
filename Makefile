@@ -39,6 +39,14 @@ BINARY := matterbox
 PKG    := .
 GO     ?= go
 
+# Release name stamped into the binary (`matterbox --version`). Taken from git
+# — the nearest tag, plus a commit suffix when we're past it and "-dirty" when
+# the tree has uncommitted changes. Outside a checkout (a tarball build) it
+# stays empty and the binary falls back to the VCS revision the toolchain
+# records, or "dev". Override with `make build VERSION=v1.2.3`.
+VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null)
+LDFLAGS  := $(if $(VERSION),-X matterbox/internal/cli.version=$(VERSION),)
+
 # Build tags. Auto-detected per machine unless TAGS is given on the command
 # line or in the environment (TAGS= disables every optional feature).
 ifeq ($(origin TAGS),undefined)
@@ -83,7 +91,7 @@ MACOS_LOG     := $(HOME)/Library/Logs/matterbox-listen.log
 .PHONY: build
 build: ## Build the matterbox binary into the repo root (optional features auto-detected, see `make tags`)
 	@$(TAGS_INFO)
-	$(GO) build $(TAGFLAGS) -o $(BINARY) $(PKG)
+	$(GO) build $(TAGFLAGS) $(if $(LDFLAGS),-ldflags "$(LDFLAGS)",) -o $(BINARY) $(PKG)
 
 .PHONY: tags
 tags: ## Show which optional features (build tags) this machine can compile, and why
@@ -205,6 +213,10 @@ fmt: ## Format all Go sources
 .PHONY: run
 run: ## Build and launch the TUI
 	$(GO) run $(TAGFLAGS) $(PKG)
+
+.PHONY: version
+version: ## Show the version string this build would be stamped with
+	@echo "$(if $(VERSION),$(VERSION),(unstamped — falls back to the VCS revision))"
 
 .PHONY: demo
 demo: ## Run the --demo intro with its chiptune soundtrack (silent if demoaudio can't be built here)
