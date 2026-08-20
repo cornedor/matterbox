@@ -60,7 +60,7 @@ func ensureAutocomplete(configPath string, current []byte) {
 		return
 	}
 	updated := append([]byte(schemaModeline), current...)
-	if err := os.WriteFile(configPath, updated, 0o644); err != nil {
+	if err := os.WriteFile(configPath, updated, FileMode); err != nil {
 		fmt.Fprintf(os.Stderr, "matterbox: could not add schema modeline to %s: %v\n", configPath, err)
 	}
 }

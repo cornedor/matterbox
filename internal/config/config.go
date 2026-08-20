@@ -955,6 +955,7 @@ func Load() (*Config, error) {
 	if err := yaml.Unmarshal(b, cfg); err != nil {
 		return nil, fmt.Errorf("parse config %s: %w", p, err)
 	}
+	tightenConfigPerms(p)
 	// An existing config from before the summary feature won't have the
 	// section at all. Detect that (whole section empty), fill the defaults,
 	// and rewrite the file once so the discovered model + prompt show up as
@@ -1181,6 +1182,24 @@ func SaveTeamOrder(order []string) error {
 
 // writeConfig serialises a config to disk with a small header so the file
 // reads as documentation as well as data.
+// tightenConfigPerms drops group/other permissions on an existing config.
+// Configs written by builds before FileMode are world-readable, and this file
+// can hold a GitLab token, a Jira API token and a Telegram bot token — so it
+// is tightened wherever it is read, not only when it happens to be rewritten.
+// Best-effort and silent: a read-only or foreign-owned config still loads.
+func tightenConfigPerms(p string) {
+	fi, err := os.Stat(p)
+	if err != nil || fi.Mode().Perm()&0o077 == 0 {
+		return
+	}
+	_ = os.Chmod(p, fi.Mode().Perm()&^0o077)
+}
+
+// FileMode is the permission bits config.yaml is written with. It holds
+// credentials — gitlab.token, jira.api_token, telegram.bot_token — so it is
+// owner-only, like the session token file next to it.
+const FileMode os.FileMode = 0o600
+
 func writeConfig(p string, cfg *Config) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
@@ -1393,7 +1412,13 @@ func writeConfig(p string, cfg *Config) error {
 		"#             against — en-US, en-GB, nl, … or auto (default) to detect\n" +
 		"#             it per message; picky true enables strict mode (extra\n" +
 		"#             style/typography/grammar rules; default false).\n"
-	if err := os.WriteFile(p, append([]byte(header), body...), 0o644); err != nil {
+	if err := os.WriteFile(p, append([]byte(header), body...), FileMode); err != nil {
+		return err
+	}
+	// WriteFile leaves an existing file's mode alone, so tighten it explicitly:
+	// configs written by older builds (or copied in by hand) are world-readable
+	// and this file can hold GitLab/Jira/Telegram tokens.
+	if err := os.Chmod(p, FileMode); err != nil {
 		return err
 	}
 	// Drop the JSON Schema next to the config so a YAML-aware editor picks up

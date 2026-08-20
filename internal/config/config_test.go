@@ -426,3 +426,67 @@ func TestLegacyAISearchPromptsUnique(t *testing.T) {
 		seen[h] = i
 	}
 }
+
+// TestWriteConfigIsOwnerOnly checks that a written config is not readable by
+// anyone else on the machine — it can hold a GitLab/Jira token and a Telegram
+// bot token, so it gets the same 0600 the session-token file gets. The second
+// half covers the upgrade path: a config left 0644 by an older build is
+// tightened the next time matterbox rewrites it, not left as it was.
+func TestWriteConfigIsOwnerOnly(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+
+	if err := writeConfig(p, &Config{ServerURL: "https://mm.example.com"}); err != nil {
+		t.Fatalf("writeConfig: %v", err)
+	}
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatalf("stat config: %v", err)
+	}
+	if got := fi.Mode().Perm(); got != FileMode {
+		t.Errorf("new config mode = %04o; want %04o", got, FileMode)
+	}
+
+	if err := os.Chmod(p, 0o644); err != nil {
+		t.Fatalf("loosen config: %v", err)
+	}
+	if err := writeConfig(p, &Config{ServerURL: "https://mm.example.com"}); err != nil {
+		t.Fatalf("rewrite config: %v", err)
+	}
+	fi, err = os.Stat(p)
+	if err != nil {
+		t.Fatalf("stat rewritten config: %v", err)
+	}
+	if got := fi.Mode().Perm(); got != FileMode {
+		t.Errorf("rewritten config mode = %04o; want %04o (a world-readable config must be tightened)", got, FileMode)
+	}
+}
+
+// TestLoadTightensWorldReadableConfig covers the upgrade path for a config
+// that is already complete, so Load never rewrites it: the permissions are
+// still tightened, because the file can hold tokens.
+func TestLoadTightensWorldReadableConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("MATTERBOX_CONFIG_DIR", dir)
+	p := filepath.Join(dir, "config.yaml")
+
+	// Seed via writeConfig so the file is complete (no defaults to add), then
+	// loosen it the way an older build would have left it.
+	if err := writeConfig(p, func() *Config { c := &Config{ServerURL: "https://mm.example.com"}; c.fillDefaults(); return c }()); err != nil {
+		t.Fatalf("seed config: %v", err)
+	}
+	if err := os.Chmod(p, 0o644); err != nil {
+		t.Fatalf("loosen config: %v", err)
+	}
+
+	if _, err := Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	fi, err := os.Stat(p)
+	if err != nil {
+		t.Fatalf("stat config: %v", err)
+	}
+	if got := fi.Mode().Perm() & 0o077; got != 0 {
+		t.Errorf("config still readable by group/other after Load: mode %04o", fi.Mode().Perm())
+	}
+}
