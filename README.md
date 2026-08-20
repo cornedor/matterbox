@@ -10,13 +10,6 @@ local LLM.
 
 - **Terminal UI** — teams, channels, DMs, threads, reactions, attachments, and
   live updates over WebSocket, built on [Bubble Tea](https://github.com/charmbracelet/bubbletea).
-- **Nested replies** — Mattermost threads are flat: every reply hangs off the
-  same root, so "which message are you answering?" is a question the wire format
-  can't ask. matterbox answers it out of band — press `r` on a reply and the id of
-  the message you're answering rides along invisibly. The thread pane then draws a
-  real tree, each reply beneath the message it answers (`p` walks back up it),
-  while every other client shows the ordinary flat reply it always showed.
-  `matterbox reply <post-id>` records the same thing.
 - **Scriptable CLI** — read, send, and search Mattermost from the shell or scripts,
   with `--json` output on most commands and shell completion for zsh/bash/fish.
 - **Local message cache** — every message you see is stored in a local SQLite
@@ -52,6 +45,8 @@ local LLM.
   Mattermost's server-side drafts API, so each channel keeps its own draft,
   switching channels never loses what you typed, and a draft started here shows
   up (and stays in sync) in the webapp, mobile, and across restarts.
+- **Nested replies** — press `r` on a reply and the thread pane draws a tree
+  instead of Mattermost's flat list; other clients still see a normal reply.
 - **Rules engine** — make the `listen` daemon react to what happens on your
   server: match on team/channel/author/text/mention and run actions (notify, run
   a local command, POST a webhook, post a message back, react, mark read).
@@ -97,7 +92,7 @@ run it yourself:
   Apache-2.0; one built `--enable-gpl` (which most distro builds are, because
   it enables x264 and friends) is not. So the same commit yields a
   distributable binary on one machine and a non-distributable one on another.
-  `matterbox version` asks the linked library and tells you which you have.
+  `matterbox --version` asks the linked library and tells you which you have.
 
 Build tag-free for anything you share — that is what the release binaries are.
 `make third-party-licenses` writes the license bundle for a build and refuses to
@@ -115,9 +110,8 @@ the [releases page](https://github.com/cornedor/matterbox/releases) — pure Go,
 so they need no toolchain, but they carry neither optional feature. Drop one in
 `~/.local/bin` and run `matterbox welcome`.
 
-`matterbox --version` names the build; `matterbox version` adds the optional
-features it was compiled with and the platform — worth pasting into a bug
-report.
+`matterbox --version` names the build, the optional features it was compiled
+with, and the platform — worth pasting into a bug report.
 
 ## Configure & log in
 
@@ -156,28 +150,29 @@ stats) somewhere else — handy for a second profile.
 
 ## CLI
 
-Running `matterbox` with no arguments launches the TUI. The subcommands are for
-scripting:
+Running `matterbox` with no arguments launches the TUI — or, on a first run with
+no saved login, the setup wizard. The subcommands are for setup and scripting:
 
 | Command | What it does |
 |---|---|
+| `matterbox welcome` | Run the first-run setup wizard: server URL, sign-in, a few preferences |
+| `matterbox login` | Sign in and save the session token — GitLab SSO, or `--password` |
 | `matterbox send <channel> [message]` | Post a message (`--file` to attach, repeatable) |
-| `matterbox reply <post-id> [message]` | Reply in a message's thread, recording which message you answered |
-| `matterbox react <post-id> <emoji>` | Add an emoji reaction to a message |
-| `matterbox read [channel]` | Print recent messages (`--since`, `--from`, `--thread`, `--wait`, `--json`) |
-| `matterbox unread` | List unread messages grouped by channel |
+| `matterbox reply <message-id> [message]` | Reply in a message's thread, recording which message you answered |
+| `matterbox react <message-id> <emoji>...` | Add one or more emoji reactions to a message |
+| `matterbox read [channel]` | Print recent messages (`--since`, `--until`, `--from`, `--thread`, `--wait`, `--json`) |
+| `matterbox unread` | List unread messages grouped by channel (`--muted`, `--wait`, `--json`) |
 | `matterbox mark-read <channel>...` | Mark one or more channels/DMs as read (clear unread) |
 | `matterbox open <channel>` | Jump the running TUI to a channel or DM (used by notification clicks) |
 | `matterbox search <query>` | Search the local cache (`--semantic`, `--channel`, `--context`, `--json`) |
-| `matterbox channels` | List all teams and channels with their addresses |
-| `matterbox digest` | Show your own recent messages in a time range |
+| `matterbox channels` | List all teams and channels with their addresses (`--json`) |
+| `matterbox digest` | Show your own recent messages in a time range (`--since`, `--until`, `--json`) |
 | `matterbox whoami` | Print the authenticated user |
 | `matterbox embed` | Backfill semantic-search embeddings for cached messages |
 | `matterbox listen` | Background daemon: keeps cache warm and bridges @mentions/DMs to Telegram |
 | `matterbox rules` | Inspect, list, and test the `listen` rules (`test`, `list`, `stats`, `state`) |
 | `matterbox keys` | List all keyboard actions, default keys, and your config overrides |
-| `matterbox decode <post-id>` | Show the hidden payload a matterbox post carries (reply target, effects) |
-| `matterbox version` | Print the build, its optional features, and the platform |
+| `matterbox decode [body]` | Show the hidden payload a matterbox post carries (`--post <id>` fetches it) |
 
 Channels are addressed as `team/channel` (e.g. `eng/general`) or `@username` for a DM.
 

@@ -43,11 +43,11 @@ func newRootCmd() *cobra.Command {
 			"login) it opens the `welcome` setup wizard first, so a fresh install is usable\n" +
 			"out of the box. Or use a subcommand (login, send, reply, react, read, unread,\n" +
 			"mark-read, open, search, channels, digest, whoami, embed, listen, rules,\n" +
-			"keys, decode, version) to work with messages non-interactively for scripting or to run\n" +
+			"keys, decode) to work with messages non-interactively for scripting or to run\n" +
 			"the background sync/notification daemon (listen).",
 		SilenceUsage:  true,
 		SilenceErrors: true,
-		Version:       versionString(),
+		Version:       versionBlock(),
 		// No subcommand → open the interactive UI. On a first run (no saved
 		// token) run the setup wizard first, then continue into the TUI with
 		// the login it just created, so new users never hit a "run welcome"
@@ -67,12 +67,17 @@ func newRootCmd() *cobra.Command {
 			return runTUI()
 		},
 	}
-	// Cobra's --version flag prints this template; the `version` subcommand
-	// prints the fuller build/tag/platform block a bug report wants.
-	root.SetVersionTemplate("matterbox {{.Version}}\n")
+	// --version is the only way to ask (there is no `version` subcommand): it
+	// prints the whole build/tag/platform block a bug report wants, which
+	// Version already holds, so the template is a bare substitution.
+	root.SetVersionTemplate("{{.Version}}")
+	// Registered by hand only for the help text: cobra would otherwise add
+	// this flag itself, described as the unhelpful "version for matterbox".
+	root.Flags().BoolP("version", "v", false,
+		"print the build, its optional features, and the platform")
 	root.Flags().StringVar(&pprofAddr, "pprof", "",
 		"if set (e.g. localhost:6060), serve net/http/pprof on this address")
-	root.AddCommand(newWelcomeCmd(), newLoginCmd(), newURLHandlerCmd(), newRegisterHandlerCmd(), newSendCmd(), newReplyCmd(), newReactCmd(), newReadCmd(), newUnreadCmd(), newMarkReadCmd(), newOpenCmd(), newSearchCmd(), newChannelsCmd(), newDigestCmd(), newWhoamiCmd(), newEmbedCmd(), newListenCmd(), newRulesCmd(), newKeysCmd(), newDecodeCmd(), newVersionCmd())
+	root.AddCommand(newWelcomeCmd(), newLoginCmd(), newURLHandlerCmd(), newRegisterHandlerCmd(), newSendCmd(), newReplyCmd(), newReactCmd(), newReadCmd(), newUnreadCmd(), newMarkReadCmd(), newOpenCmd(), newSearchCmd(), newChannelsCmd(), newDigestCmd(), newWhoamiCmd(), newEmbedCmd(), newListenCmd(), newRulesCmd(), newKeysCmd(), newDecodeCmd())
 	return root
 }
 

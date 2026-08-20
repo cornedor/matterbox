@@ -8,7 +8,7 @@ name: Release
 # The binaries are pure Go (CGO_ENABLED=0), so they run anywhere on their
 # platform — but they carry neither optional feature (the --demo soundtrack
 # and inline video need ALSA/ffmpeg at build time). Those still want
-# `make install` from source; `matterbox version` prints which tags a binary
+# `make install` from source; `matterbox --version` prints which tags a binary
 # was built with.
 on:
   push:
