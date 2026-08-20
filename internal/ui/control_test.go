@@ -4,11 +4,12 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+
+	"matterbox/internal/testsock"
 )
 
 // dialAndSend opens the control socket, writes one line, and closes.
@@ -25,7 +26,7 @@ func dialAndSend(t *testing.T, path, line string) {
 }
 
 func TestServeControlSocket_OpenForwardsChannelID(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "tui.sock")
+	path := testsock.Path(t)
 	got := make(chan tea.Msg, 1)
 	stop := serveControlAt(path, func(m tea.Msg) { got <- m })
 	defer stop()
@@ -47,7 +48,7 @@ func TestServeControlSocket_OpenForwardsChannelID(t *testing.T) {
 }
 
 func TestServeControlSocket_IgnoresBlankAndUnknown(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "tui.sock")
+	path := testsock.Path(t)
 	got := make(chan tea.Msg, 4)
 	stop := serveControlAt(path, func(m tea.Msg) { got <- m })
 	defer stop()
@@ -76,7 +77,7 @@ func TestServeControlSocket_IgnoresBlankAndUnknown(t *testing.T) {
 }
 
 func TestServeControlSocket_ReclaimsStaleSocketFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "tui.sock")
+	path := testsock.Path(t)
 	// A leftover non-socket file at the path simulates a crashed instance.
 	if err := os.WriteFile(path, []byte("stale"), 0o600); err != nil {
 		t.Fatal(err)

@@ -48,15 +48,24 @@ Darwin | MINGW* | MSYS* | CYGWIN*)
 	;;
 esac
 
-# video — the pkg-config list mirrors go-astiav's #cgo directive.
+# video — the pkg-config list mirrors go-astiav's #cgo directive, and the
+# version floor mirrors its compatibility promise: astiav binds one ffmpeg
+# release at a time (v0.41 -> n8.0) and against an older API it doesn't fail to
+# link, it fails to compile, naming C functions that don't exist yet. Having the
+# headers is therefore not enough — without this floor a machine with an older
+# ffmpeg (Ubuntu 24.04 ships 6.1) gets the tag turned on and then can't build.
+# libavcodec's soname tracks ffmpeg: 60 is 6.x, 61 is 7.x, 62 is 8.x.
 avpkgs="libavcodec libavdevice libavfilter libavformat libswresample libswscale libavutil"
+avmin=62
 if [ "$cgo" != "1" ]; then
 	say "video:     no — needs cgo"
-elif have_pkgs $avpkgs; then
+elif ! have_pkgs $avpkgs; then
+	say "video:     no — ffmpeg dev libs not found (Fedora: ffmpeg-devel or ffmpeg-free-devel, Debian/Ubuntu: libavcodec-dev libavdevice-dev libavfilter-dev libavformat-dev libswresample-dev libswscale-dev libavutil-dev, macOS: brew install ffmpeg pkg-config); video files keep their 🎬 icon"
+elif ! pkg-config --atleast-version=$avmin libavcodec 2>/dev/null; then
+	say "video:     no — libavcodec $(pkg-config --modversion libavcodec 2>/dev/null) is older than ffmpeg 8.0 ($avmin.x), which go-astiav needs to compile; video files keep their 🎬 icon"
+else
 	tags="${tags:+$tags,}video"
 	say "video:     yes (ffmpeg dev libs found)"
-else
-	say "video:     no — ffmpeg dev libs not found (Fedora: ffmpeg-devel or ffmpeg-free-devel, Debian/Ubuntu: libavcodec-dev libavdevice-dev libavfilter-dev libavformat-dev libswresample-dev libswscale-dev libavutil-dev, macOS: brew install ffmpeg pkg-config); video files keep their 🎬 icon"
 fi
 
 if [ "$verbose" = "-v" ]; then

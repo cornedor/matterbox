@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"net"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -14,6 +13,7 @@ import (
 	"github.com/mattermost/mattermost/server/public/model"
 
 	"matterbox/internal/control"
+	"matterbox/internal/testsock"
 )
 
 // fakeTUI serves a control socket that answers `status` with the given Status,
@@ -22,7 +22,7 @@ import (
 // burst.
 func fakeTUI(t *testing.T, s control.Status, queries *int32) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "tui.sock")
+	path := testsock.Path(t)
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -143,7 +143,7 @@ func TestTUIStatusFailsOpen(t *testing.T) {
 	t.Run("no socket", func(t *testing.T) {
 		e := newStoreEngine(t)
 		e.needsTUIStatus = true
-		e.tuiSocket = filepath.Join(t.TempDir(), "absent.sock")
+		e.tuiSocket = testsock.Path(t)
 		if e.tuiStatus() != (control.Status{}) {
 			t.Error("a missing socket must read as no TUI")
 		}
@@ -161,7 +161,7 @@ func TestTUIStatusFailsOpen(t *testing.T) {
 // New wires the socket and decides whether it's worth asking: a notify-capable
 // ruleset needs it (the gate) even with no viewing condition anywhere.
 func TestNewSetsTUIWiring(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "tui.sock")
+	sock := testsock.Path(t)
 	mk := func(opts Options) *Engine {
 		return New(nil, nil, nil, nil, nil, opts, nil)
 	}

@@ -3,7 +3,6 @@ package ui
 import (
 	"encoding/json"
 	"net"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -11,6 +10,7 @@ import (
 	"github.com/mattermost/mattermost/server/public/model"
 
 	"matterbox/internal/control"
+	"matterbox/internal/testsock"
 )
 
 // blurred marks the terminal as reporting focus, and as not having it — the
@@ -159,7 +159,7 @@ func queryStatus(t *testing.T, path string) control.Status {
 // The published status is what the daemon gates on, so it has to track the
 // conversation actually on screen and the terminal's focus.
 func TestStatusReportsOpenChannelAndFocus(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "tui.sock")
+	path := testsock.Path(t)
 	stop := serveControlAt(path, func(tea.Msg) {})
 	defer stop()
 
@@ -234,7 +234,7 @@ func TestNoteActivityOnlyCountsInput(t *testing.T) {
 // The status verb must not disturb the program: it answers from the snapshot,
 // never by sending a message into the event loop.
 func TestStatusVerbSendsNoMessage(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "tui.sock")
+	path := testsock.Path(t)
 	got := make(chan tea.Msg, 1)
 	stop := serveControlAt(path, func(m tea.Msg) { got <- m })
 	defer stop()
@@ -251,7 +251,7 @@ func TestStatusVerbSendsNoMessage(t *testing.T) {
 // payload — and an unknown verb on the same connection is skipped without
 // derailing it.
 func TestStatusReplyIsOneJSONLine(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "tui.sock")
+	path := testsock.Path(t)
 	stop := serveControlAt(path, func(tea.Msg) {})
 	defer stop()
 
