@@ -78,8 +78,9 @@ func (m *Model) forgeAt(i int) forge.Provider {
 }
 
 // fetchForgeChange fetches (and caches) a change request in the background,
-// returning a forgeLoadedMsg tagged with gen.
-func (m Model) fetchForgeChange(gen, provider int, repo string, number int) tea.Cmd {
+// returning a forgeLoadedMsg tagged with gen. kind is a detect-time hint
+// (forge.KindPull / KindIssue / empty) forwarded to Provider.Get.
+func (m Model) fetchForgeChange(gen, provider int, repo string, number int, kind string) tea.Cmd {
 	p, ctx := m.forgeAt(provider), m.ctx
 	return func() tea.Msg {
 		msg := forgeLoadedMsg{gen: gen, provider: provider, repo: repo, number: number}
@@ -87,7 +88,7 @@ func (m Model) fetchForgeChange(gen, provider int, repo string, number int) tea.
 			msg.err = forge.ErrNotConfigured
 			return msg
 		}
-		msg.change, msg.err = p.Get(ctx, repo, number)
+		msg.change, msg.err = p.Get(ctx, repo, number, kind)
 		return msg
 	}
 }
@@ -106,8 +107,8 @@ func (m Model) handleForgeLoaded(msg forgeLoadedMsg) (tea.Model, tea.Cmd) {
 	} else {
 		m.refErr = nil
 		m.refChange = msg.change
+		m.status = m.refStatusHint(*r, len(m.refs))
 	}
-	m.status = m.refStatusHint(*r, len(m.refs))
 	m.renderRef()
 	return m, nil
 }

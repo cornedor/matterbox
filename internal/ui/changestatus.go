@@ -37,15 +37,17 @@ type changeStatusEntry struct {
 	changeState string // forge.StateOpen / StateMerged / StateClosed / StateLocked
 	draft       bool
 	checkStatus string // normalized CI status, or "" when there is no CI
+	kind        string // forge.Kind* hint for Get
 	postIDs     []string
 }
 
 // changeRef is a sighted change request: which provider it belongs to, and
-// where.
+// where. kind is a detect-time hint forwarded to Provider.Get.
 type changeRef struct {
 	provider int
 	repo     string
 	number   int
+	kind     string
 }
 
 // changeStatusLoadedMsg carries the result of a background badge fetch.
@@ -113,8 +115,10 @@ func (s *changeStatusManager) sighted(r changeRef, postID string) {
 	k := changeKey(r)
 	e, ok := s.entries[k]
 	if !ok {
-		e = &changeStatusEntry{state: changeStatusPending}
+		e = &changeStatusEntry{state: changeStatusPending, kind: r.kind}
 		s.entries[k] = e
+	} else if e.kind == "" && r.kind != "" {
+		e.kind = r.kind
 	}
 	// Track which posts reference this change request so we can invalidate them
 	// when the fetch completes.
@@ -166,7 +170,9 @@ func (s *changeStatusManager) drainPending(n int) []changeRef {
 			continue
 		}
 		e.state = changeStatusFetching
-		out = append(out, parseChangeKey(k))
+		r := parseChangeKey(k)
+		r.kind = e.kind
+		out = append(out, r)
 		if len(out) >= n {
 			break
 		}
@@ -311,7 +317,7 @@ func (m *Model) fetchPendingChangeStatus() tea.Cmd {
 			continue
 		}
 		cmds = append(cmds, func() tea.Msg {
-			ch, err := p.Get(ctx, ref.repo, ref.number)
+			ch, err := p.Get(ctx, ref.repo, ref.number, ref.kind)
 			return changeStatusLoadedMsg{ref: ref, change: ch, err: err}
 		})
 	}
@@ -392,7 +398,7 @@ func (m *Model) matchChangeURL(rawURL string) (changeRef, forge.Provider, bool) 
 		if len(refs) == 0 {
 			continue
 		}
-		return changeRef{provider: i, repo: refs[0].Repo, number: refs[0].Number}, p, true
+		return changeRef{provider: i, repo: refs[0].Repo, number: refs[0].Number, kind: refs[0].Kind}, p, true
 	}
 	return changeRef{}, nil, false
 }

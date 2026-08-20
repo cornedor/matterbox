@@ -186,14 +186,15 @@ type Config struct {
 	Jira JiraConfig `yaml:"jira"`
 	// GitLab configures the merge-request side panel: press the open-reference
 	// key (v) on a message linking a merge request to fetch it from GitLab and
-	// show it inline. An empty base_url (with no usable token) disables the
-	// panel. See internal/gitlab and internal/ui.
+	// show it inline. Disabled without a usable token (config, GITLAB_TOKEN, or
+	// glab). See internal/forge/gitlab and internal/ui.
 	GitLab GitLabConfig `yaml:"gitlab"`
 	// GitHub configures the issue / pull-request side panel: press the
 	// open-reference key (v) on a message naming a GitHub issue or pull
-	// request to fetch it from GitHub and show it inline. An empty base_url
-	// (with no usable token) disables the panel. See internal/github and
-	// internal/ui.
+	// request to fetch it from GitHub and show it inline. Public repositories
+	// are readable without a token (anonymous, 60 requests/hour); a token adds
+	// private repos, approve/merge, and inline badges. See internal/forge/github
+	// and internal/ui.
 	GitHub GitHubConfig `yaml:"github"`
 	// LanguageTool configures the optional grammar/spell checker for the
 	// composer: while you type, the draft is checked against a LanguageTool
@@ -255,10 +256,11 @@ type JiraConfig struct {
 }
 
 // GitHubConfig holds the GitHub connection used by the issue / pull-request
-// side panel. base_url defaults to https://github.com; token may be left empty
-// to fall back to env / an existing `gh` CLI login (same pattern as GitLab +
-// glab). OAuth device flow (`matterbox github login`) is an optional alternative
-// when you don't use gh / a PAT.
+// side panel. base_url defaults to https://github.com. Public repositories are
+// readable without a token (anonymous, 60 requests/hour); token may be left
+// empty to fall back to env / an existing `gh` CLI login (same pattern as
+// GitLab + glab). OAuth device flow (`matterbox github login`) is an optional
+// alternative when you don't use gh / a PAT.
 //
 // ClientID is only needed for that optional device-flow login.
 type GitHubConfig struct {

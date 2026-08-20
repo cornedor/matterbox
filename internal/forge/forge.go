@@ -84,7 +84,9 @@ type Provider interface {
 	// WebURL is the human page for a change request — what the browser key opens.
 	WebURL(repo string, number int) string
 	// Get returns the change request, serving a cached copy when it has one.
-	Get(ctx context.Context, repo string, number int) (*Change, error)
+	// Kind is a detect-time hint from Ref.Kind (KindPull, KindIssue, or empty
+	// when the form was ambiguous). Providers that only have one kind ignore it.
+	Get(ctx context.Context, repo string, number int, kind string) (*Change, error)
 	// Invalidate drops any cached copy so the next Get refetches.
 	Invalidate(repo string, number int)
 	// Approve records an approval (a GitLab approve, a GitHub approving review).
@@ -110,11 +112,23 @@ type MergeMethod struct {
 // GitLab project path, a GitHub owner/repo), its number, and the byte offset of
 // its first appearance — so refs from several forges (and Jira issues) can be
 // ordered by where they appear in the message.
+//
+// Kind is optional detect-time knowledge: KindPull / KindIssue when the link
+// path said so, or empty for ambiguous short forms (owner/repo#N). Providers
+// use it to skip an extra classify round-trip.
 type Ref struct {
 	Repo   string
 	Number int
 	Pos    int
+	Kind   string // KindPull, KindIssue, or empty
 }
+
+// Kind values for Ref.Kind / Provider.Get. Empty means the detector could not
+// tell (short form); the provider then probes.
+const (
+	KindPull  = "pull"
+	KindIssue = "issue"
+)
 
 // Change is the flattened, render-ready change request (or GitHub issue).
 // Description is the forge's own markdown flavour, which the UI renders with
@@ -281,6 +295,10 @@ func DedupeRefs(refs []Ref) []Ref {
 		if i, ok := seen[key]; ok {
 			if r.Pos < out[i].Pos {
 				out[i].Pos = r.Pos
+			}
+			// A URL that names the kind wins over an ambiguous short form.
+			if out[i].Kind == "" && r.Kind != "" {
+				out[i].Kind = r.Kind
 			}
 			continue
 		}

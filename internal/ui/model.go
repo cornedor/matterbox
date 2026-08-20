@@ -24,7 +24,6 @@ import (
 	"matterbox/internal/forge"
 	"matterbox/internal/forge/github"
 	"matterbox/internal/forge/gitlab"
-	"matterbox/internal/githubauth"
 	"matterbox/internal/hidden"
 	"matterbox/internal/jira"
 	"matterbox/internal/languagetool"
@@ -532,17 +531,17 @@ type Model struct {
 	// appearance order); refIdx is the one shown. refGen drops a stale async
 	// fetch the user already cycled/closed past. See ref.go; forge rendering
 	// lives in forge.go.
-	refOpen           bool
-	refView           viewport.Model
-	refs              []reference
-	refIdx            int
-	refLoading        bool
-	refErr            error
-	refGen            int
-	refJobsExpanded   bool // forge CI job list expanded past the per-group cap
-	jiraIssue         *jira.Issue // loaded data when the current ref is a Jira issue
-	jiraClient        *jira.Client
-	jiraProjects      []string
+	refOpen         bool
+	refView         viewport.Model
+	refs            []reference
+	refIdx          int
+	refLoading      bool
+	refErr          error
+	refGen          int
+	refJobsExpanded bool        // forge CI job list expanded past the per-group cap
+	jiraIssue       *jira.Issue // loaded data when the current ref is a Jira issue
+	jiraClient      *jira.Client
+	jiraProjects    []string
 	// forges are the configured code forges (GitLab, GitHub, …), in config order.
 	// A reference remembers its forge by index. Disabled providers are skipped.
 	// refChange is the loaded change request when the current ref is a forge one.
@@ -1193,24 +1192,12 @@ func New(client *mm.Client, cfg *config.Config) Model {
 			gitlabCfg.Token = gitlab.TokenFromGlab(h)
 		}
 	}
-	// GitHub: config/env, then gh CLI, then optional matterbox OAuth token.
-	if env := os.Getenv("GITHUB_TOKEN"); env != "" {
-		githubCfg.Token = env
-	} else if env := os.Getenv("GH_TOKEN"); env != "" {
-		githubCfg.Token = env
-	}
+	// GitHub: shared ResolveToken (env → config → gh CLI → optional OAuth).
 	ghHost := hostFromURL(githubCfg.BaseURL)
 	if ghHost == "" {
 		ghHost = hostFromURL(github.DefaultBaseURL)
 	}
-	if githubCfg.Token == "" {
-		githubCfg.Token = github.TokenFromGH(ghHost)
-	}
-	if githubCfg.Token == "" {
-		if t, _, err := githubauth.ReadTokenForHost(ghHost); err == nil {
-			githubCfg.Token = t
-		}
-	}
+	githubCfg.Token, _ = github.ResolveToken(githubCfg.Token, ghHost)
 	// The provider set, in a fixed order — a reference remembers its forge by
 	// index, so this order is the one refs are resolved against.
 	forges := []forge.Provider{gitlab.New(gitlabCfg), github.New(githubCfg)}

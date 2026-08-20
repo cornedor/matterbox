@@ -40,12 +40,13 @@ const (
 // set; pos is the byte offset of its first appearance in the source message, so
 // refs from both kinds can be ordered together.
 type reference struct {
-	kind    refKind
-	jiraKey string // refJira: issue key, e.g. ABC-123
-	forge   int    // refForge: index into Model.forges
-	repo    string // refForge: project path / owner-repo
-	number  int    // refForge: merge-request iid / pull-request number
-	pos     int
+	kind      refKind
+	jiraKey   string // refJira: issue key, e.g. ABC-123
+	forge     int    // refForge: index into Model.forges
+	repo      string // refForge: project path / owner-repo
+	number    int    // refForge: merge-request iid / pull-request number
+	forgeKind string // refForge: forge.KindPull / KindIssue / empty
+	pos       int
 }
 
 // label is the canonical short id shown in titles and loading text. A forge
@@ -107,7 +108,7 @@ func (m Model) openRefForPost(p *model.Post) (tea.Model, tea.Cmd) {
 			continue
 		}
 		for _, r := range fp.Refs(p.Message) {
-			refs = append(refs, reference{kind: refForge, forge: i, repo: r.Repo, number: r.Number, pos: r.Pos})
+			refs = append(refs, reference{kind: refForge, forge: i, repo: r.Repo, number: r.Number, forgeKind: r.Kind, pos: r.Pos})
 		}
 	}
 	if len(refs) == 0 {
@@ -184,9 +185,15 @@ func (m *Model) refStatusHint(r reference, n int) string {
 func (m *Model) forgeNouns() string {
 	var parts []string
 	for _, p := range m.forges {
-		if p.Enabled() {
-			parts = append(parts, p.Name()+" "+p.Noun())
+		if !p.Enabled() {
+			continue
 		}
+		// GitHub opens issues and PRs; Noun stays "pull request" for approve errors.
+		if p.Name() == "GitHub" {
+			parts = append(parts, "GitHub issue / pull request")
+			continue
+		}
+		parts = append(parts, p.Name()+" "+p.Noun())
 	}
 	if len(parts) == 0 {
 		return "change request"
@@ -252,7 +259,7 @@ func (m *Model) loadCurrentRef() tea.Cmd {
 	case refJira:
 		return m.fetchJira(m.refGen, r.jiraKey)
 	case refForge:
-		return m.fetchForgeChange(m.refGen, r.forge, r.repo, r.number)
+		return m.fetchForgeChange(m.refGen, r.forge, r.repo, r.number, r.forgeKind)
 	}
 	return nil
 }

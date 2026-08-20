@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"matterbox/internal/config"
@@ -78,7 +79,7 @@ func SaveTokenForHost(host, token, user string) error {
 	if host == "" {
 		return errors.New("githubauth: empty host")
 	}
-	token = trimSpace(token)
+	token = strings.TrimSpace(token)
 	if token == "" {
 		return errors.New("githubauth: empty token")
 	}
@@ -144,27 +145,4 @@ func ClearTokenForHost(host string) error {
 		return err
 	}
 	return os.WriteFile(p, append(nb, '\n'), 0o600)
-}
-
-func trimSpace(s string) string {
-	// local helper to keep error-paths simple and avoid pulling strings import
-	// in files that only need whitespace trimming.
-	for len(s) > 0 {
-		switch s[0] {
-		case ' ', '\t', '\n', '\r':
-			s = s[1:]
-		default:
-			goto doneLeft
-		}
-	}
-doneLeft:
-	for len(s) > 0 {
-		switch s[len(s)-1] {
-		case ' ', '\t', '\n', '\r':
-			s = s[:len(s)-1]
-		default:
-			return s
-		}
-	}
-	return s
 }

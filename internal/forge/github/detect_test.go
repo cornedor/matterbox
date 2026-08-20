@@ -38,8 +38,15 @@ func TestRefsURLWrongHost(t *testing.T) {
 
 func TestRefsIssueURL(t *testing.T) {
 	got := Refs("see https://github.com/o/r/issues/7 please", "https://github.com")
-	if len(got) != 1 || short(got[0]) != "o/r#7" {
-		t.Errorf("issue link = %v, want o/r#7", got)
+	if len(got) != 1 || short(got[0]) != "o/r#7" || got[0].Kind != forge.KindIssue {
+		t.Errorf("issue link = %+v, want o/r#7 kind=issue", got)
+	}
+}
+
+func TestRefsURLSetsPullKind(t *testing.T) {
+	got := Refs("https://github.com/o/r/pull/7", "https://github.com")
+	if len(got) != 1 || got[0].Kind != forge.KindPull {
+		t.Errorf("pull link kind = %+v, want pull", got)
 	}
 }
 

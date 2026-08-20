@@ -22,7 +22,9 @@ func (s stubProvider) AutoFetch() bool                                   { retur
 func (s stubProvider) BaseURL() string                                   { return "https://stub.test" }
 func (s stubProvider) Refs(string) []Ref                                 { return nil }
 func (s stubProvider) WebURL(string, int) string                         { return "" }
-func (s stubProvider) Get(context.Context, string, int) (*Change, error) { return nil, nil }
+func (s stubProvider) Get(context.Context, string, int, string) (*Change, error) {
+	return nil, nil
+}
 func (s stubProvider) Invalidate(string, int)                            {}
 func (s stubProvider) Approve(context.Context, string, int) error        { return nil }
 func (s stubProvider) MergeMethods() []MergeMethod                       { return nil }

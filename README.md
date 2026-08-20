@@ -250,7 +250,7 @@ this file.
 ```yaml
 github:
   base_url: https://github.com   # optional; this is the default
-  token: ghp-…                   # optional — see fallbacks below
+  token: ghp_…                   # optional — see fallbacks below
 ```
 
 Auth mirrors GitLab: prefer a PAT in config, otherwise reuse what you already

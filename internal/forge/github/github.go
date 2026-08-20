@@ -100,9 +100,10 @@ func APIRoot(baseURL string) string {
 // Name is the forge's display name, used as the panel title.
 func (c *Client) Name() string { return "GitHub" }
 
-// Noun is what this forge calls a numbered item in status text ("issue / pull
-// request"), covering both shapes owner/repo#N can name.
-func (c *Client) Noun() string { return "issue / pull request" }
+// Noun is what GitHub calls a mergeable change request in action errors
+// ("cannot approve …: pull request is closed"). The "nothing found" line uses
+// forgeNouns, which names issues too.
+func (c *Client) Noun() string { return "pull request" }
 
 // Sigil is the separator in GitHub's short reference form (owner/repo#12).
 func (c *Client) Sigil() string { return "#" }
@@ -215,34 +216,39 @@ func (u *apiUser) display() string {
 // apiIssue mirrors the /issues/{number} response. PullRequest is non-nil when
 // the number is a pull request (GitHub stores that pointer on the issue object).
 type apiIssue struct {
-	Number      int       `json:"number"`
-	Title       string    `json:"title"`
-	State       string    `json:"state"` // open / closed
-	Locked      bool      `json:"locked"`
-	Body        string    `json:"body"`
-	HTMLURL     string    `json:"html_url"`
-	UpdatedAt   string    `json:"updated_at"`
-	User        *apiUser  `json:"user"`
-	Assignees   []apiUser `json:"assignees"`
-	Labels      []struct {
+	Number    int       `json:"number"`
+	Title     string    `json:"title"`
+	State     string    `json:"state"` // open / closed
+	Locked    bool      `json:"locked"`
+	Body      string    `json:"body"`
+	HTMLURL   string    `json:"html_url"`
+	UpdatedAt string    `json:"updated_at"`
+	User      *apiUser  `json:"user"`
+	Assignees []apiUser `json:"assignees"`
+	Labels    []struct {
 		Name string `json:"name"`
 	} `json:"labels"`
 	PullRequest *struct{} `json:"pull_request"`
 }
 
 // Get returns the issue or pull request, serving a cached copy when present.
-// It always starts at /issues/{number} (the shared namespace), then — when the
-// number is a PR — fetches the pull, its check runs, commit statuses and
-// reviews (those extras are best-effort). Use Invalidate (then Get) to force a
-// refetch.
-func (c *Client) Get(ctx context.Context, repo string, number int) (*forge.Change, error) {
+// kind is a detect-time hint (forge.KindPull / KindIssue / empty):
+//
+//   - KindPull: one GET /pulls/{n} (+ best-effort checks/reviews).
+//   - KindIssue: one GET /issues/{n}.
+//   - empty (short owner/repo#N): tries pulls first; on 404 probes issues —
+//     the pre-issue-support explain() path, so PR badges stay at one required
+//     call and Issues:read is only needed for actual issues / ambiguous refs.
+//
+// Use Invalidate (then Get) to force a refetch.
+func (c *Client) Get(ctx context.Context, repo string, number int, kind string) (*forge.Change, error) {
 	if !c.Enabled() {
 		return nil, forge.ErrNotConfigured
 	}
 	if hit, ok := c.cache.Get(repo, number); ok {
 		return hit, nil
 	}
-	item, err := c.fetch(ctx, repo, number)
+	item, err := c.fetch(ctx, repo, number, kind)
 	if err != nil {
 		return nil, err
 	}
@@ -258,29 +264,55 @@ func (c *Client) Invalidate(repo string, number int) {
 	c.cache.Invalidate(repo, number)
 }
 
-func (c *Client) fetch(ctx context.Context, repo string, number int) (*forge.Change, error) {
+func (c *Client) fetch(ctx context.Context, repo string, number int, kind string) (*forge.Change, error) {
+	switch kind {
+	case forge.KindIssue:
+		return c.fetchIssue(ctx, repo, number)
+	case forge.KindPull:
+		return c.fetchPull(ctx, repo, number)
+	}
+	// Ambiguous short form: pulls first (one call for a PR), issues on 404.
+	ch, err := c.fetchPull(ctx, repo, number)
+	if err == nil {
+		return ch, nil
+	}
+	if !isNotFound(err) {
+		return nil, err
+	}
+	issue, ierr := c.fetchIssue(ctx, repo, number)
+	if ierr == nil {
+		return issue, nil
+	}
+	// Prefer the pull-not-found error (with private-repo hint when tokenless).
+	return nil, err
+}
+
+func (c *Client) fetchIssue(ctx context.Context, repo string, number int) (*forge.Change, error) {
 	label := forge.Label(c, repo, number)
 	var issue apiIssue
 	path := fmt.Sprintf("/repos/%s/issues/%d", repo, number)
 	if err := c.rest.Do(ctx, http.MethodGet, path, label, nil, &issue); err != nil {
-		return nil, c.explain(ctx, repo, number, label, err)
+		return nil, c.explain(err)
 	}
-
-	// Plain issue: no PR extras.
-	if issue.PullRequest == nil {
-		ch := toIssueChange(issue, repo)
-		if issue.HTMLURL != "" {
-			ch.WebURL = issue.HTMLURL
-		} else {
-			ch.WebURL = c.WebURL(repo, number)
-		}
-		return ch, nil
+	if issue.PullRequest != nil {
+		// /issues/N URL that is actually a PR — load pull extras.
+		return c.fetchPull(ctx, repo, number)
 	}
+	ch := toIssueChange(issue, repo)
+	if issue.HTMLURL != "" {
+		ch.WebURL = issue.HTMLURL
+	} else {
+		ch.WebURL = c.WebURL(repo, number)
+	}
+	return ch, nil
+}
 
+func (c *Client) fetchPull(ctx context.Context, repo string, number int) (*forge.Change, error) {
+	label := forge.Label(c, repo, number)
 	var a apiPR
-	prPath := fmt.Sprintf("/repos/%s/pulls/%d", repo, number)
-	if err := c.rest.Do(ctx, http.MethodGet, prPath, label, nil, &a); err != nil {
-		return nil, c.explain(ctx, repo, number, label, err)
+	path := fmt.Sprintf("/repos/%s/pulls/%d", repo, number)
+	if err := c.rest.Do(ctx, http.MethodGet, path, label, nil, &a); err != nil {
+		return nil, c.explain(err)
 	}
 	ch := toChange(a, repo)
 	if a.HTMLURL != "" {
@@ -288,15 +320,14 @@ func (c *Client) fetch(ctx context.Context, repo string, number int) (*forge.Cha
 	} else {
 		ch.WebURL = fmt.Sprintf("%s/%s/pull/%d", c.baseURL, repo, number)
 	}
-
 	// Checks (best-effort): the head commit's check runs plus the older commit
-	// statuses, which plenty of CI still posts.
+	// statuses, which plenty of CI still posts. One PR costs up to four calls
+	// total when checks+statuses+reviews all succeed.
 	if a.Head != nil && a.Head.SHA != "" {
 		if checks := c.checks(ctx, repo, a.Head.SHA); checks != nil {
 			ch.Checks = checks
 		}
 	}
-	// Reviews (best-effort): who approved, and who is blocking.
 	if ap, err := c.approvals(ctx, repo, number, a.RequestedReviewers); err == nil {
 		ch.Approvals = ap
 	}
@@ -310,11 +341,7 @@ func (c *Client) fetch(ctx context.Context, repo string, number int) (*forge.Cha
 //     / scopes". Anonymous requests get 60 an hour, so this is the error a
 //     tokenless setup meets first.
 //   - A 404 without a token is as likely to be a private repository as a typo.
-func (c *Client) explain(ctx context.Context, repo string, number int, label string, err error) error {
-	_ = ctx
-	_ = repo
-	_ = number
-	_ = label
+func (c *Client) explain(err error) error {
 	var se *forge.StatusErr
 	if !errors.As(err, &se) {
 		return err
@@ -331,13 +358,18 @@ func (c *Client) explain(ctx context.Context, repo string, number int, label str
 	return err
 }
 
+func isNotFound(err error) bool {
+	var se *forge.StatusErr
+	return errors.As(err, &se) && se.Code == http.StatusNotFound
+}
+
 // toIssueChange flattens a plain issue (not a pull request) into Change.
 func toIssueChange(a apiIssue, repo string) *forge.Change {
 	ch := &forge.Change{
 		Repo:        repo,
 		Number:      a.Number,
 		Title:       a.Title,
-		State:       issueState(a),
+		State:       openClosedState(a.State, false, a.Locked),
 		Author:      a.User.display(),
 		Description: a.Body,
 		IsIssue:     true,
@@ -352,17 +384,6 @@ func toIssueChange(a apiIssue, repo string) *forge.Change {
 		ch.UpdatedAt = t
 	}
 	return ch
-}
-
-func issueState(a apiIssue) string {
-	switch {
-	case a.State == "closed":
-		return forge.StateClosed
-	case a.Locked:
-		return forge.StateLocked
-	default:
-		return forge.StateOpen
-	}
 }
 
 // rateLimited reports whether a refusal is GitHub's rate limiter rather than a
@@ -422,12 +443,16 @@ func toChange(a apiPR, repo string) *forge.Change {
 // state maps GitHub's open/closed plus the merged flag onto the shared
 // vocabulary, so a merged PR reads as merged rather than merely closed.
 func state(a apiPR) string {
+	return openClosedState(a.State, a.Merged, a.Locked)
+}
+
+func openClosedState(state string, merged, locked bool) string {
 	switch {
-	case a.Merged:
+	case merged:
 		return forge.StateMerged
-	case a.State == "closed":
+	case state == "closed":
 		return forge.StateClosed
-	case a.Locked:
+	case locked:
 		return forge.StateLocked
 	default:
 		return forge.StateOpen
@@ -704,7 +729,7 @@ func (c *Client) Approve(ctx context.Context, repo string, number int) error {
 	path := fmt.Sprintf("/repos/%s/pulls/%d/reviews", repo, number)
 	body := map[string]any{"event": "APPROVE"}
 	if err := c.rest.Do(ctx, http.MethodPost, path, "approve", body, nil); err != nil {
-		return c.explain(ctx, repo, number, forge.Label(c, repo, number), err)
+		return c.explain(err)
 	}
 	c.Invalidate(repo, number)
 	return nil
@@ -740,7 +765,7 @@ func (c *Client) Merge(ctx context.Context, repo string, number int, method stri
 	path := fmt.Sprintf("/repos/%s/pulls/%d/merge", repo, number)
 	body := map[string]any{"merge_method": method}
 	if err := c.rest.Do(ctx, http.MethodPut, path, "merge", body, nil); err != nil {
-		return c.explain(ctx, repo, number, forge.Label(c, repo, number), err)
+		return c.explain(err)
 	}
 	c.Invalidate(repo, number)
 	return nil

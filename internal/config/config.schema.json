@@ -522,7 +522,7 @@
     },
     "github": {
       "type": "object",
-      "description": "The GitHub issue / pull-request side panel. Press v on a message naming a GitHub issue or pull request to view it inline. Empty base_url (with no usable token) disables the panel.",
+      "description": "The GitHub issue / pull-request side panel. Press v on a message naming a GitHub issue or pull request to view it inline. Public repositories are readable without a token (anonymous, 60 requests/hour); a token adds private repos, approve/merge, and inline badges.",
       "additionalProperties": false,
       "properties": {
         "base_url": {

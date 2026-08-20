@@ -154,7 +154,8 @@ type apiUser struct {
 // up to three calls: the MR itself (required), its pipeline jobs and its
 // approvals (both best-effort — a failure leaves those sections empty rather
 // than failing the whole fetch). Use Invalidate (then Get) to force a refetch.
-func (c *Client) Get(ctx context.Context, project string, iid int) (*forge.Change, error) {
+func (c *Client) Get(ctx context.Context, project string, iid int, kind string) (*forge.Change, error) {
+	_ = kind
 	if !c.Enabled() {
 		return nil, forge.ErrNotConfigured
 	}

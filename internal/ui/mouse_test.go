@@ -346,7 +346,9 @@ func TestRefPanelBeatsComposerAtSameHeight(t *testing.T) {
 	}
 	if m.inComposer(x, y) {
 		// The overhang is still true for inComposer alone; hitTest must prefer the panel.
-		t.Log("inComposer still true under overhang (expected); hitTest correctly preferred hitRef")
+		// (Documented: inComposer alone is not enough — hitTest must win.)
+	} else {
+		t.Fatal("expected inComposer true under width overhang so this tests the hitTest preference")
 	}
 
 	out, _ := m.handleMouseClick(click(tea.MouseLeft, x, y))

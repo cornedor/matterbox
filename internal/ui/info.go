@@ -529,10 +529,12 @@ func (m *Model) decorateInfo(lines []string, targets []infoTarget, width int) {
 	}
 	content = m.infoHover(content)
 	m.infoTargets = targets
-	// Apply shared text-selection highlight after decoration, same as setRefContent.
-	selLines := strings.Split(content, "\n")
-	m.applyTextSelHighlight(focusInfo, selLines)
-	m.infoView.SetContent(strings.Join(selLines, "\n"))
+	if m.textSel.active && m.textSel.pane == focusInfo {
+		selLines := strings.Split(content, "\n")
+		m.applyTextSelHighlight(focusInfo, selLines)
+		content = strings.Join(selLines, "\n")
+	}
+	m.infoView.SetContent(content)
 
 	if h := m.infoView.Height(); h > 0 && selVisStart >= 0 {
 		visEnd := selVisStart + selVisRows

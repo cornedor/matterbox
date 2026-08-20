@@ -54,8 +54,8 @@ const reviewsJSON = `[
   {"state": "APPROVED", "user": {"login": "mel"}}
 ]`
 
-// prHandler serves the endpoints a full PR fetch touches: the shared issues
-// entry point (with pull_request set), then the pull + checks + reviews.
+// prHandler serves the endpoints a full PR fetch touches when KindPull is known:
+// the pull itself plus checks + reviews (no issues classify round-trip).
 func prHandler(t *testing.T) http.HandlerFunc {
 	t.Helper()
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -66,9 +66,6 @@ func prHandler(t *testing.T) http.HandlerFunc {
 			w.Write([]byte(checkRunsJSON))
 		case strings.HasSuffix(r.URL.Path, "/commits/deadbeef/status"):
 			w.Write([]byte(statusJSON))
-		case strings.HasSuffix(r.URL.Path, "/issues/42"):
-			w.Write([]byte(`{"number": 42, "title": "Fix the widget", "state": "open",
-				"pull_request": {"url": "https://api.github.com/repos/o/r/pulls/42"}}`))
 		case strings.HasSuffix(r.URL.Path, "/pulls/42"):
 			if got := r.Header.Get("Authorization"); got != "Bearer tok" {
 				t.Errorf("Authorization = %q, want Bearer tok", got)
@@ -87,7 +84,7 @@ func TestGetPullRequest(t *testing.T) {
 	srv := httptest.NewServer(prHandler(t))
 	defer srv.Close()
 
-	pr, err := newTestClient(srv).Get(context.Background(), "o/r", 42)
+	pr, err := newTestClient(srv).Get(context.Background(), "o/r", 42, forge.KindPull)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -127,7 +124,7 @@ func TestGetReviewsUseLatestVerdictPerReviewer(t *testing.T) {
 	srv := httptest.NewServer(prHandler(t))
 	defer srv.Close()
 
-	pr, err := newTestClient(srv).Get(context.Background(), "o/r", 42)
+	pr, err := newTestClient(srv).Get(context.Background(), "o/r", 42, forge.KindPull)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -153,15 +150,12 @@ func TestGetCaches(t *testing.T) {
 	var hits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/issues/42"):
-			hits++
-			w.Write([]byte(`{"number": 42, "title": "Fix", "state": "open",
-				"pull_request": {"url": "x"}}`))
 		case strings.HasSuffix(r.URL.Path, "/pulls/42/reviews"):
 			w.Write([]byte(reviewsJSON))
 		case strings.Contains(r.URL.Path, "/check-runs"), strings.HasSuffix(r.URL.Path, "/status"):
 			w.Write([]byte(`{}`))
 		case strings.HasSuffix(r.URL.Path, "/pulls/42"):
+			hits++
 			w.Write([]byte(prJSON))
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
@@ -170,13 +164,13 @@ func TestGetCaches(t *testing.T) {
 	defer srv.Close()
 	c := newTestClient(srv)
 	ctx := context.Background()
-	c.Get(ctx, "o/r", 42)
-	c.Get(ctx, "o/r", 42)
+	c.Get(ctx, "o/r", 42, forge.KindPull)
+	c.Get(ctx, "o/r", 42, forge.KindPull)
 	if hits != 1 {
-		t.Errorf("issue entry fetched %d times, want 1 (cached)", hits)
+		t.Errorf("PR fetched %d times, want 1 (cached)", hits)
 	}
 	c.Invalidate("o/r", 42)
-	c.Get(ctx, "o/r", 42)
+	c.Get(ctx, "o/r", 42, forge.KindPull)
 	if hits != 2 {
 		t.Errorf("after invalidate, hits = %d, want 2", hits)
 	}
@@ -185,9 +179,6 @@ func TestGetCaches(t *testing.T) {
 func TestChecksAndReviewFailuresAreNonFatal(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/issues/42"):
-			w.Write([]byte(`{"number": 42, "title": "Fix", "state": "open",
-				"pull_request": {"url": "x"}}`))
 		case strings.HasSuffix(r.URL.Path, "/pulls/42"):
 			w.Write([]byte(prJSON))
 		default: // check runs, statuses, reviews all fail
@@ -195,7 +186,7 @@ func TestChecksAndReviewFailuresAreNonFatal(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	pr, err := newTestClient(srv).Get(context.Background(), "o/r", 42)
+	pr, err := newTestClient(srv).Get(context.Background(), "o/r", 42, forge.KindPull)
 	if err != nil {
 		t.Fatalf("Get should succeed even when checks/reviews fail: %v", err)
 	}
@@ -254,17 +245,14 @@ func TestMergedPRReportsMerged(t *testing.T) {
   "merged": false`, `"state": "closed", "draft": false,
   "merged": true`)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case strings.HasSuffix(r.URL.Path, "/issues/42"):
-			w.Write([]byte(`{"number": 42, "pull_request": {"url": "x"}}`))
-		case strings.HasSuffix(r.URL.Path, "/pulls/42"):
+		if strings.HasSuffix(r.URL.Path, "/pulls/42") {
 			w.Write([]byte(body))
-		default:
-			w.WriteHeader(http.StatusNotFound)
+			return
 		}
+		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()
-	pr, err := newTestClient(srv).Get(context.Background(), "o/r", 42)
+	pr, err := newTestClient(srv).Get(context.Background(), "o/r", 42, forge.KindPull)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -339,7 +327,7 @@ func TestGetIssue(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	ch, err := newTestClient(srv).Get(context.Background(), "o/r", 42)
+	ch, err := newTestClient(srv).Get(context.Background(), "o/r", 42, forge.KindIssue)
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -361,7 +349,7 @@ func TestMissingNumberStaysNotFound(t *testing.T) {
 		w.Write([]byte(`{"message": "Not Found"}`))
 	}))
 	defer srv.Close()
-	_, err := newTestClient(srv).Get(context.Background(), "o/r", 42)
+	_, err := newTestClient(srv).Get(context.Background(), "o/r", 42, forge.KindPull)
 	if err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Errorf("error = %v, want the not-found message", err)
 	}
@@ -404,7 +392,7 @@ func TestRateLimitErrorIsNotAboutScopes(t *testing.T) {
 		w.Write([]byte(`{"message": "API rate limit exceeded for 203.0.113.7."}`))
 	}))
 	defer srv.Close()
-	_, err := New(Config{BaseURL: srv.URL}).Get(context.Background(), "o/r", 42)
+	_, err := New(Config{BaseURL: srv.URL}).Get(context.Background(), "o/r", 42, forge.KindPull)
 	if err == nil || !strings.Contains(err.Error(), "out of anonymous requests") {
 		t.Errorf("error = %v, want it to name the anonymous rate limit", err)
 	}
@@ -420,7 +408,7 @@ func TestTokenless404MentionsPrivateRepositories(t *testing.T) {
 		w.Write([]byte(`{"message": "Not Found"}`))
 	}))
 	defer srv.Close()
-	_, err := New(Config{BaseURL: srv.URL}).Get(context.Background(), "o/r", 42)
+	_, err := New(Config{BaseURL: srv.URL}).Get(context.Background(), "o/r", 42, forge.KindPull)
 	if err == nil || !strings.Contains(err.Error(), "private repository needs a token") {
 		t.Errorf("error = %v, want the private-repository hint", err)
 	}

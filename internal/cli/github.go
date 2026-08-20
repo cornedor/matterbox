@@ -81,8 +81,6 @@ func newGithubCmd() *cobra.Command {
 	logoutCmd.Flags().StringVar(&hostOverride, "hostname", "", "override the GitHub instance hostname (e.g. github.com, ghe.example.com)")
 
 	cmd.AddCommand(loginCmd, statusCmd, logoutCmd)
-	_ = show  // used in runGithubLogin
-	_ = clear // used in runGithubLogin
 	return cmd
 }
 
@@ -247,7 +245,7 @@ func runGithubLogin(ctx context.Context, out io.Writer, noBrowser bool, hostOver
 
 	scopes := cfg.GitHub.Scopes
 	if len(scopes) == 0 {
-		scopes = []string{"repo"}
+		scopes = []string{"public_repo", "repo:status"}
 	}
 
 	httpClient := &http.Client{Timeout: 20 * time.Second}

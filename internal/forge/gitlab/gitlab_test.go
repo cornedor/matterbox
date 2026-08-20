@@ -58,7 +58,7 @@ func TestGetMergeRequest(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	mr, err := newTestClient(srv).Get(context.Background(), "g/p", 42)
+	mr, err := newTestClient(srv).Get(context.Background(), "g/p", 42, "")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -100,13 +100,13 @@ func TestGetCaches(t *testing.T) {
 	defer srv.Close()
 	c := newTestClient(srv)
 	ctx := context.Background()
-	c.Get(ctx, "g/p", 42)
-	c.Get(ctx, "g/p", 42)
+	c.Get(ctx, "g/p", 42, "")
+	c.Get(ctx, "g/p", 42, "")
 	if hits != 1 {
 		t.Errorf("MR fetched %d times, want 1 (cached)", hits)
 	}
 	c.Invalidate("g/p", 42)
-	c.Get(ctx, "g/p", 42)
+	c.Get(ctx, "g/p", 42, "")
 	if hits != 2 {
 		t.Errorf("after invalidate, hits = %d, want 2", hits)
 	}
@@ -124,7 +124,7 @@ func TestPipelineJobsFailureIsNonFatal(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	mr, err := newTestClient(srv).Get(context.Background(), "g/p", 42)
+	mr, err := newTestClient(srv).Get(context.Background(), "g/p", 42, "")
 	if err != nil {
 		t.Fatalf("Get should succeed even when jobs/approvals fail: %v", err)
 	}

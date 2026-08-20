@@ -226,8 +226,12 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 	case hitRef:
 		m.input.Blur()
 		m.focus = focusRef
-		m.armTextSelMulti(focusRef, h.line, h.col, count, shift)
-		m.renderRef()
+		// line < 0 is the column fallback (empty/chrome rows): focus only,
+		// do not arm a selection that would activate line 0 on release.
+		if h.line >= 0 {
+			m.armTextSelMulti(focusRef, h.line, h.col, count, shift)
+			m.renderRef()
+		}
 		return m, nil
 	case hitInfo:
 		// Same shared text-selection path as the reference panel: arm a drag on
@@ -235,8 +239,10 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		// on release (see handleMouseRelease).
 		m.input.Blur()
 		m.focus = focusInfo
-		m.armTextSelMulti(focusInfo, h.line, h.col, count, shift)
-		m.renderInfo()
+		if h.line >= 0 {
+			m.armTextSelMulti(focusInfo, h.line, h.col, count, shift)
+			m.renderInfo()
+		}
 		return m, nil
 	}
 	return m, nil
@@ -335,7 +341,7 @@ func (m Model) handleMouseRelease(msg tea.MouseReleaseMsg) (tea.Model, tea.Cmd) 
 		if url, ok := m.linkAt(pane, line, col); ok {
 			return m.activateLink(url)
 		}
-		if pane == focusInfo {
+		if pane == focusInfo && line >= 0 {
 			return m.clickInfoTarget(line)
 		}
 		return m, nil
@@ -710,12 +716,12 @@ func (m *Model) hitTest(x, y int) hit {
 				if h := m.hitRefContent(x, y); h.zone != hitNone {
 					return h
 				}
-				return hit{zone: hitRef}
+				return hit{zone: hitRef, line: -1}
 			}
 			if h := m.hitInfoContent(x, y); h.zone != hitNone {
 				return h
 			}
-			return hit{zone: hitInfo}
+			return hit{zone: hitInfo, line: -1}
 		}
 	}
 	// The compose box sits at the bottom of the messages / thread pane on a
