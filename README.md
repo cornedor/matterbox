@@ -145,6 +145,11 @@ server_url: https://mattermost.example.com
 Then run `matterbox login` or place a token in `~/.config/matterbox/mm_token.json`
 manually.
 
+The file is written with every key at its default and a comment explaining it,
+and a JSON Schema next to it gives editors autocomplete and typo warnings.
+[docs/config.md](docs/config.md) is the full reference — every setting, its
+default, and when a change takes effect.
+
 Set `MATTERBOX_CONFIG_DIR` to keep all of it (config, token, message cache,
 stats) somewhere else — handy for a second profile.
 
