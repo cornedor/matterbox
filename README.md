@@ -217,10 +217,11 @@ typo fails loud rather than silently shadowing a key.
 ## Jira, GitLab & GitHub integration (optional)
 
 Press `v` on a message that names a Jira issue or links a GitLab merge request /
-GitHub pull request to open it in a side panel — read-only by default,
+GitHub issue or pull request to open it in a side panel — read-only by default,
 with inline editing/actions when the token allows it. All are opt-in and
 configured in `config.yaml`. GitLab and GitHub share one forge panel and one
-inline badge path; only the API client differs.
+inline badge path; only the API client differs. GitHub issues are read-only in
+the panel (approve/merge apply to pull requests only).
 
 ### GitLab
 

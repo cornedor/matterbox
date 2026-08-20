@@ -107,6 +107,7 @@ func (m Model) handleForgeLoaded(msg forgeLoadedMsg) (tea.Model, tea.Cmd) {
 		m.refErr = nil
 		m.refChange = msg.change
 	}
+	m.status = m.refStatusHint(*r, len(m.refs))
 	m.renderRef()
 	return m, nil
 }
@@ -137,9 +138,11 @@ func (m *Model) renderForgeChange(p forge.Provider, ch *forge.Change, width int)
 	if len(ch.Reviewers) > 0 {
 		refMeta(&b, "Reviewers", strings.Join(ch.Reviewers, ", "), 12)
 	}
-	refMeta(&b, "Merge", mergeText(ch), 12)
-	if a := approvalsText(ch.Approvals); a != "" {
-		refMeta(&b, "Approvals", a, 12)
+	if !ch.IsIssue {
+		refMeta(&b, "Merge", mergeText(ch), 12)
+		if a := approvalsText(ch.Approvals); a != "" {
+			refMeta(&b, "Approvals", a, 12)
+		}
 	}
 	if len(ch.Labels) > 0 {
 		refMeta(&b, "Labels", strings.Join(ch.Labels, ", "), 12)
@@ -151,17 +154,24 @@ func (m *Model) renderForgeChange(p forge.Provider, ch *forge.Change, width int)
 		refMeta(&b, "Updated", ch.UpdatedAt.Format("2006-01-02 15:04"), 12)
 	}
 
-	b.WriteString("\n" + renderChecks(checksHeading(p), ch.Checks, m.refJobsExpanded) + "\n")
+	if !ch.IsIssue {
+		b.WriteString("\n" + renderChecks(checksHeading(p), ch.Checks, m.refJobsExpanded) + "\n")
+	}
 	// Affordance line, in the same static "<key> <action>" style as the Jira
 	// panel. Merge readiness lives in the "Merge:" row above; pressing the merge
 	// key when the forge won't merge reports the reason in the status bar. The
 	// jobs toggle is offered only when some group is actually truncated.
-	hint := helpKey(m.keys.RefApprove) + " approve · " + helpKey(m.keys.RefMerge) + " merge"
-	if hasTruncatedGroup(ch.Checks) {
-		if m.refJobsExpanded {
-			hint += " · " + helpKey(m.keys.RefJobs) + " fewer jobs"
-		} else {
-			hint += " · " + helpKey(m.keys.RefJobs) + " all jobs"
+	var hint string
+	if ch.IsIssue {
+		hint = "issue (read-only)"
+	} else {
+		hint = helpKey(m.keys.RefApprove) + " approve · " + helpKey(m.keys.RefMerge) + " merge"
+		if hasTruncatedGroup(ch.Checks) {
+			if m.refJobsExpanded {
+				hint += " · " + helpKey(m.keys.RefJobs) + " fewer jobs"
+			} else {
+				hint += " · " + helpKey(m.keys.RefJobs) + " all jobs"
+			}
 		}
 	}
 	b.WriteString("\n" + refDimStyle.Render(hint) + "\n")
@@ -354,6 +364,10 @@ func (m Model) openForgeApprove() (tea.Model, tea.Cmd) {
 	if p == nil {
 		return m, nil
 	}
+	if m.refChange.IsIssue {
+		m.status = "cannot approve " + r.label(p) + ": it is an issue, not a pull request"
+		return m, nil
+	}
 	if m.refChange.State != forge.StateOpen {
 		m.status = "cannot approve " + r.label(p) + ": " + p.Noun() + " is " + m.refChange.State
 		return m, nil
@@ -380,6 +394,10 @@ func (m Model) openForgeMerge() (tea.Model, tea.Cmd) {
 	}
 	p := m.forgeAt(r.forge)
 	if p == nil {
+		return m, nil
+	}
+	if m.refChange.IsIssue {
+		m.status = "cannot merge " + r.label(p) + ": it is an issue, not a pull request"
 		return m, nil
 	}
 	if !m.refChange.Mergeable {

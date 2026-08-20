@@ -169,6 +169,9 @@ func (m *Model) refStatusHint(r reference, n int) string {
 		return edit + " edit · " + helpKey(m.keys.JiraComment) + " comment · " +
 			helpKey(m.keys.JiraReply) + " reply · " + shared + refCycleHint(n)
 	case refForge:
+		if m.refChange != nil && m.refChange.IsIssue {
+			return shared + refCycleHint(n)
+		}
 		return helpKey(m.keys.RefApprove) + " approve · " + helpKey(m.keys.RefMerge) +
 			" merge · " + shared + refCycleHint(n)
 	}

@@ -1,6 +1,6 @@
 // Package github is the GitHub implementation of forge.Provider: it fetches
-// pull-request detail from github.com or a GitHub Enterprise host so the TUI can
-// show it inline in the reference side panel. It is the sibling of
+// issue and pull-request detail from github.com or a GitHub Enterprise host so
+// the TUI can show it inline in the reference side panel. It is the sibling of
 // internal/forge/gitlab and, like it, depends on nothing but internal/forge — so
 // it unit-tests against an httptest server with no real instance.
 //
@@ -9,7 +9,9 @@
 // come back as GitHub-flavored markdown, which the UI renders with its shared
 // markdown renderer.
 //
-// Two shapes differ from GitLab and are mapped here rather than in the UI:
+// Numbers live in one namespace (/issues/{n}); Get classifies via that endpoint
+// and only then loads pull-request extras (branches, checks, reviews). Two
+// shapes differ from GitLab and are mapped here rather than in the UI:
 //
 //   - A pull request's state is open/closed, with "merged" a separate flag, so a
 //     merged PR is reported as forge.StateMerged.
@@ -98,8 +100,9 @@ func APIRoot(baseURL string) string {
 // Name is the forge's display name, used as the panel title.
 func (c *Client) Name() string { return "GitHub" }
 
-// Noun is what GitHub calls a change request.
-func (c *Client) Noun() string { return "pull request" }
+// Noun is what this forge calls a numbered item in status text ("issue / pull
+// request"), covering both shapes owner/repo#N can name.
+func (c *Client) Noun() string { return "issue / pull request" }
 
 // Sigil is the separator in GitHub's short reference form (owner/repo#12).
 func (c *Client) Sigil() string { return "#" }
@@ -133,18 +136,20 @@ func (c *Client) BaseURL() string {
 	return c.baseURL
 }
 
-// Refs extracts the pull requests named in text, resolved against this
-// instance. See detect.go for the forms recognised.
+// Refs extracts the issues and pull requests named in text, resolved against
+// this instance. See detect.go for the forms recognised.
 func (c *Client) Refs(text string) []forge.Ref {
 	return Refs(text, c.BaseURL())
 }
 
-// WebURL returns the human pull-request URL (what the browser key opens).
+// WebURL returns a browse URL for the number. GitHub serves both issues and
+// pull requests under /issues/N (PRs redirect to /pull/N), so one form covers
+// both before Get has classified the number.
 func (c *Client) WebURL(repo string, number int) string {
 	if c == nil || c.baseURL == "" {
 		return ""
 	}
-	return fmt.Sprintf("%s/%s/pull/%d", c.baseURL, repo, number)
+	return fmt.Sprintf("%s/%s/issues/%d", c.baseURL, repo, number)
 }
 
 // MergeMethods are GitHub's three merge strategies. The repository may have
@@ -207,10 +212,28 @@ func (u *apiUser) display() string {
 	return u.Login
 }
 
-// Get returns the pull request, serving a cached copy when present. It makes up
-// to four calls: the PR itself (required), its check runs, its commit statuses
-// and its reviews (all best-effort — a failure leaves those sections empty
-// rather than failing the whole fetch). Use Invalidate (then Get) to force a
+// apiIssue mirrors the /issues/{number} response. PullRequest is non-nil when
+// the number is a pull request (GitHub stores that pointer on the issue object).
+type apiIssue struct {
+	Number      int       `json:"number"`
+	Title       string    `json:"title"`
+	State       string    `json:"state"` // open / closed
+	Locked      bool      `json:"locked"`
+	Body        string    `json:"body"`
+	HTMLURL     string    `json:"html_url"`
+	UpdatedAt   string    `json:"updated_at"`
+	User        *apiUser  `json:"user"`
+	Assignees   []apiUser `json:"assignees"`
+	Labels      []struct {
+		Name string `json:"name"`
+	} `json:"labels"`
+	PullRequest *struct{} `json:"pull_request"`
+}
+
+// Get returns the issue or pull request, serving a cached copy when present.
+// It always starts at /issues/{number} (the shared namespace), then — when the
+// number is a PR — fetches the pull, its check runs, commit statuses and
+// reviews (those extras are best-effort). Use Invalidate (then Get) to force a
 // refetch.
 func (c *Client) Get(ctx context.Context, repo string, number int) (*forge.Change, error) {
 	if !c.Enabled() {
@@ -219,15 +242,15 @@ func (c *Client) Get(ctx context.Context, repo string, number int) (*forge.Chang
 	if hit, ok := c.cache.Get(repo, number); ok {
 		return hit, nil
 	}
-	pr, err := c.fetch(ctx, repo, number)
+	item, err := c.fetch(ctx, repo, number)
 	if err != nil {
 		return nil, err
 	}
-	c.cache.Put(repo, number, pr)
-	return pr, nil
+	c.cache.Put(repo, number, item)
+	return item, nil
 }
 
-// Invalidate drops any cached copy of the PR so the next Get refetches.
+// Invalidate drops any cached copy so the next Get refetches.
 func (c *Client) Invalidate(repo string, number int) {
 	if c == nil {
 		return
@@ -237,13 +260,34 @@ func (c *Client) Invalidate(repo string, number int) {
 
 func (c *Client) fetch(ctx context.Context, repo string, number int) (*forge.Change, error) {
 	label := forge.Label(c, repo, number)
+	var issue apiIssue
+	path := fmt.Sprintf("/repos/%s/issues/%d", repo, number)
+	if err := c.rest.Do(ctx, http.MethodGet, path, label, nil, &issue); err != nil {
+		return nil, c.explain(ctx, repo, number, label, err)
+	}
+
+	// Plain issue: no PR extras.
+	if issue.PullRequest == nil {
+		ch := toIssueChange(issue, repo)
+		if issue.HTMLURL != "" {
+			ch.WebURL = issue.HTMLURL
+		} else {
+			ch.WebURL = c.WebURL(repo, number)
+		}
+		return ch, nil
+	}
+
 	var a apiPR
-	path := fmt.Sprintf("/repos/%s/pulls/%d", repo, number)
-	if err := c.rest.Do(ctx, http.MethodGet, path, label, nil, &a); err != nil {
+	prPath := fmt.Sprintf("/repos/%s/pulls/%d", repo, number)
+	if err := c.rest.Do(ctx, http.MethodGet, prPath, label, nil, &a); err != nil {
 		return nil, c.explain(ctx, repo, number, label, err)
 	}
 	ch := toChange(a, repo)
-	ch.WebURL = c.WebURL(repo, number)
+	if a.HTMLURL != "" {
+		ch.WebURL = a.HTMLURL
+	} else {
+		ch.WebURL = fmt.Sprintf("%s/%s/pull/%d", c.baseURL, repo, number)
+	}
 
 	// Checks (best-effort): the head commit's check runs plus the older commit
 	// statuses, which plenty of CI still posts.
@@ -265,11 +309,12 @@ func (c *Client) fetch(ctx context.Context, repo string, number int) (*forge.Cha
 //   - A rate-limit refusal arrives as 403, which otherwise reads as "check token
 //     / scopes". Anonymous requests get 60 an hour, so this is the error a
 //     tokenless setup meets first.
-//   - owner/repo#5 names an issue and a pull request alike and only pull
-//     requests open in this panel, so a 404 asks whether the number is an issue.
-//     That costs one extra call, only ever on the failure path.
 //   - A 404 without a token is as likely to be a private repository as a typo.
 func (c *Client) explain(ctx context.Context, repo string, number int, label string, err error) error {
+	_ = ctx
+	_ = repo
+	_ = number
+	_ = label
 	var se *forge.StatusErr
 	if !errors.As(err, &se) {
 		return err
@@ -280,22 +325,44 @@ func (c *Client) explain(ctx context.Context, repo string, number int, label str
 		}
 		return fmt.Errorf("github: rate limit reached — try again in a few minutes")
 	}
-	if se.Code != http.StatusNotFound {
-		return err
-	}
-	var issue struct {
-		Number      int  `json:"number"`
-		PullRequest *any `json:"pull_request"`
-	}
-	path := fmt.Sprintf("/repos/%s/issues/%d", repo, number)
-	if ierr := c.rest.Do(ctx, http.MethodGet, path, label, nil, &issue); ierr == nil &&
-		issue.Number == number && issue.PullRequest == nil {
-		return fmt.Errorf("github: %s is an issue, not a pull request", label)
-	}
-	if c.token == "" {
+	if se.Code == http.StatusNotFound && c.token == "" {
 		return fmt.Errorf("%w — a private repository needs a token", err)
 	}
 	return err
+}
+
+// toIssueChange flattens a plain issue (not a pull request) into Change.
+func toIssueChange(a apiIssue, repo string) *forge.Change {
+	ch := &forge.Change{
+		Repo:        repo,
+		Number:      a.Number,
+		Title:       a.Title,
+		State:       issueState(a),
+		Author:      a.User.display(),
+		Description: a.Body,
+		IsIssue:     true,
+	}
+	for _, u := range a.Assignees {
+		ch.Assignees = append(ch.Assignees, u.display())
+	}
+	for _, l := range a.Labels {
+		ch.Labels = append(ch.Labels, l.Name)
+	}
+	if t, err := time.Parse(time.RFC3339, a.UpdatedAt); err == nil {
+		ch.UpdatedAt = t
+	}
+	return ch
+}
+
+func issueState(a apiIssue) string {
+	switch {
+	case a.State == "closed":
+		return forge.StateClosed
+	case a.Locked:
+		return forge.StateLocked
+	default:
+		return forge.StateOpen
+	}
 }
 
 // rateLimited reports whether a refusal is GitHub's rate limiter rather than a
@@ -626,10 +693,13 @@ func pendingReviewers(requested []apiUser, verdict map[string]string) int {
 }
 
 // Approve submits an approving review, then invalidates the cache so the next
-// Get reflects it.
+// Get reflects it. Issues cannot be approved this way.
 func (c *Client) Approve(ctx context.Context, repo string, number int) error {
 	if err := c.canWrite(); err != nil {
 		return err
+	}
+	if issue, err := c.isPlainIssue(ctx, repo, number); err == nil && issue {
+		return fmt.Errorf("github: %s is an issue — only pull requests can be approved", forge.Label(c, repo, number))
 	}
 	path := fmt.Sprintf("/repos/%s/pulls/%d/reviews", repo, number)
 	body := map[string]any{"event": "APPROVE"}
@@ -655,10 +725,14 @@ func (c *Client) canWrite() error {
 // Merge merges the pull request with the given method (one of MergeMethods'
 // ids), then invalidates the cache. The source branch is left alone: GitHub
 // deletes it itself when the repository is set to, and deleting it from here
-// would be a second call undoing a repository-level choice.
+// would be a second call undoing a repository-level choice. Issues cannot be
+// merged.
 func (c *Client) Merge(ctx context.Context, repo string, number int, method string) error {
 	if err := c.canWrite(); err != nil {
 		return err
+	}
+	if issue, err := c.isPlainIssue(ctx, repo, number); err == nil && issue {
+		return fmt.Errorf("github: %s is an issue — only pull requests can be merged", forge.Label(c, repo, number))
 	}
 	if method == "" {
 		method = "merge"
@@ -670,4 +744,19 @@ func (c *Client) Merge(ctx context.Context, repo string, number int, method stri
 	}
 	c.Invalidate(repo, number)
 	return nil
+}
+
+// isPlainIssue reports whether number is an issue (not a pull request). Prefer
+// the cache; otherwise one issues GET. Errors leave the caller free to try the
+// write and surface whatever GitHub returns.
+func (c *Client) isPlainIssue(ctx context.Context, repo string, number int) (bool, error) {
+	if hit, ok := c.cache.Get(repo, number); ok {
+		return hit.IsIssue, nil
+	}
+	var issue apiIssue
+	path := fmt.Sprintf("/repos/%s/issues/%d", repo, number)
+	if err := c.rest.Do(ctx, http.MethodGet, path, forge.Label(c, repo, number), nil, &issue); err != nil {
+		return false, err
+	}
+	return issue.PullRequest == nil, nil
 }

@@ -116,9 +116,9 @@ type Ref struct {
 	Pos    int
 }
 
-// Change is the flattened, render-ready change request. Description is the
-// forge's own markdown flavour, which the UI renders with its shared markdown
-// renderer (no conversion needed, unlike Jira's ADF).
+// Change is the flattened, render-ready change request (or GitHub issue).
+// Description is the forge's own markdown flavour, which the UI renders with
+// its shared markdown renderer (no conversion needed, unlike Jira's ADF).
 type Change struct {
 	Repo         string
 	Number       int
@@ -132,6 +132,10 @@ type Change struct {
 	Reviewers    []string
 	Labels       []string
 	ChangesCount string // "44", or "44+" when the forge caps it
+	// IsIssue is true for a GitHub (or similar) issue that is not a pull
+	// request. GitLab merge requests always leave it false. The panel skips
+	// approve/merge/CI when set.
+	IsIssue bool
 	// Mergeable is whether the forge would accept a merge right now — the gate
 	// for offering the merge action. MergeStatus is the human phrase shown
 	// either way ("mergeable", "ci still running", "conflicts").

@@ -36,10 +36,10 @@ func TestRefsURLWrongHost(t *testing.T) {
 	}
 }
 
-func TestRefsIgnoresIssueLinks(t *testing.T) {
-	// /issues/ is a different thing; only pull requests open in this panel.
-	if got := Refs("https://github.com/o/r/issues/7", "https://github.com"); len(got) != 0 {
-		t.Errorf("issue link should not match: %v", got)
+func TestRefsIssueURL(t *testing.T) {
+	got := Refs("see https://github.com/o/r/issues/7 please", "https://github.com")
+	if len(got) != 1 || short(got[0]) != "o/r#7" {
+		t.Errorf("issue link = %v, want o/r#7", got)
 	}
 }
 

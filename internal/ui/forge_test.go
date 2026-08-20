@@ -64,6 +64,8 @@ const mrLink = "see https://git.example.com/g/p/-/merge_requests/5 please"
 
 const prLink = "see https://github.com/o/r/pull/7 please"
 
+const issueLink = "see https://github.com/o/r/issues/11 please"
+
 // sampleMR is a mergeable GitLab merge request with a two-stage pipeline.
 func sampleMR() *forge.Change {
 	return &forge.Change{
@@ -98,6 +100,16 @@ func samplePR() *forge.Change {
 			},
 		},
 		Approvals: &forge.Approvals{Approved: true, By: []string{"linus"}},
+	}
+}
+
+func sampleIssue() *forge.Change {
+	return &forge.Change{
+		Repo: "o/r", Number: 11, Title: "Broken widget", State: forge.StateOpen,
+		Author: "ada", IsIssue: true,
+		WebURL:      "https://github.com/o/r/issues/11",
+		Description: "It does not spin.",
+		Labels:      []string{"bug"},
 	}
 }
 
@@ -192,6 +204,36 @@ func TestForgePanelRendersPullRequest(t *testing.T) {
 	}
 	if strings.Contains(pane, "!7") {
 		t.Error("a pull request must not be labelled with GitLab's ! sigil")
+	}
+}
+
+func TestForgePanelRendersIssue(t *testing.T) {
+	m := openLoadedChange(t, configuredForgeModel(t), forgeGitHub, issueLink, sampleIssue())
+	pane := m.renderRefPane(30, 60)
+	for _, want := range []string{"#11", "GitHub", "Broken widget", "bug", "issue (read-only)"} {
+		if !strings.Contains(pane, want) {
+			t.Errorf("rendered pane missing %q:\n%s", want, pane)
+		}
+	}
+	for _, no := range []string{"Merge:", "Checks:", "approve", "Pipeline:"} {
+		if strings.Contains(pane, no) {
+			t.Errorf("issue pane should not contain %q:\n%s", no, pane)
+		}
+	}
+	if !strings.Contains(m.status, "browser") || strings.Contains(m.status, "approve") {
+		t.Errorf("issue status should omit approve/merge; got %q", m.status)
+	}
+}
+
+func TestForgeApproveRefusedOnIssue(t *testing.T) {
+	m := openLoadedChange(t, configuredForgeModel(t), forgeGitHub, issueLink, sampleIssue())
+	updated, _ := m.handleRefKey(keyStr("A"))
+	got := updated.(Model)
+	if got.refConfirm.active {
+		t.Error("approve confirm should not open for an issue")
+	}
+	if !strings.Contains(got.status, "cannot approve") || !strings.Contains(got.status, "issue") {
+		t.Errorf("status = %q, want an issue refusal", got.status)
 	}
 }
 

@@ -54,7 +54,8 @@ const reviewsJSON = `[
   {"state": "APPROVED", "user": {"login": "mel"}}
 ]`
 
-// prHandler serves the four endpoints a full fetch touches.
+// prHandler serves the endpoints a full PR fetch touches: the shared issues
+// entry point (with pull_request set), then the pull + checks + reviews.
 func prHandler(t *testing.T) http.HandlerFunc {
 	t.Helper()
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -65,6 +66,9 @@ func prHandler(t *testing.T) http.HandlerFunc {
 			w.Write([]byte(checkRunsJSON))
 		case strings.HasSuffix(r.URL.Path, "/commits/deadbeef/status"):
 			w.Write([]byte(statusJSON))
+		case strings.HasSuffix(r.URL.Path, "/issues/42"):
+			w.Write([]byte(`{"number": 42, "title": "Fix the widget", "state": "open",
+				"pull_request": {"url": "https://api.github.com/repos/o/r/pulls/42"}}`))
 		case strings.HasSuffix(r.URL.Path, "/pulls/42"):
 			if got := r.Header.Get("Authorization"); got != "Bearer tok" {
 				t.Errorf("Authorization = %q, want Bearer tok", got)
@@ -149,13 +153,18 @@ func TestGetCaches(t *testing.T) {
 	var hits int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case strings.HasSuffix(r.URL.Path, "/issues/42"):
+			hits++
+			w.Write([]byte(`{"number": 42, "title": "Fix", "state": "open",
+				"pull_request": {"url": "x"}}`))
 		case strings.HasSuffix(r.URL.Path, "/pulls/42/reviews"):
 			w.Write([]byte(reviewsJSON))
 		case strings.Contains(r.URL.Path, "/check-runs"), strings.HasSuffix(r.URL.Path, "/status"):
 			w.Write([]byte(`{}`))
-		default:
-			hits++
+		case strings.HasSuffix(r.URL.Path, "/pulls/42"):
 			w.Write([]byte(prJSON))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
 		}
 	}))
 	defer srv.Close()
@@ -164,7 +173,7 @@ func TestGetCaches(t *testing.T) {
 	c.Get(ctx, "o/r", 42)
 	c.Get(ctx, "o/r", 42)
 	if hits != 1 {
-		t.Errorf("PR fetched %d times, want 1 (cached)", hits)
+		t.Errorf("issue entry fetched %d times, want 1 (cached)", hits)
 	}
 	c.Invalidate("o/r", 42)
 	c.Get(ctx, "o/r", 42)
@@ -176,6 +185,9 @@ func TestGetCaches(t *testing.T) {
 func TestChecksAndReviewFailuresAreNonFatal(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
+		case strings.HasSuffix(r.URL.Path, "/issues/42"):
+			w.Write([]byte(`{"number": 42, "title": "Fix", "state": "open",
+				"pull_request": {"url": "x"}}`))
 		case strings.HasSuffix(r.URL.Path, "/pulls/42"):
 			w.Write([]byte(prJSON))
 		default: // check runs, statuses, reviews all fail
@@ -201,6 +213,9 @@ func TestApproveAndMergeHitRightEndpoints(t *testing.T) {
 		buf := make([]byte, r.ContentLength)
 		r.Body.Read(buf)
 		switch {
+		case strings.HasSuffix(r.URL.Path, "/issues/42") && r.Method == http.MethodGet:
+			// Classify as a pull request so Approve/Merge proceed.
+			w.Write([]byte(`{"number": 42, "pull_request": {"url": "x"}}`))
 		case strings.HasSuffix(r.URL.Path, "/reviews") && r.Method == http.MethodPost:
 			approvePath = r.URL.Path
 			if !strings.Contains(string(buf), `"APPROVE"`) {
@@ -239,11 +254,14 @@ func TestMergedPRReportsMerged(t *testing.T) {
   "merged": false`, `"state": "closed", "draft": false,
   "merged": true`)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/pulls/42") {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/issues/42"):
+			w.Write([]byte(`{"number": 42, "pull_request": {"url": "x"}}`))
+		case strings.HasSuffix(r.URL.Path, "/pulls/42"):
 			w.Write([]byte(body))
-			return
+		default:
+			w.WriteHeader(http.StatusNotFound)
 		}
-		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()
 	pr, err := newTestClient(srv).Get(context.Background(), "o/r", 42)
@@ -289,7 +307,7 @@ func TestAPIRootAndWebURL(t *testing.T) {
 	if c.BaseURL() != DefaultBaseURL {
 		t.Errorf("BaseURL() = %q, want the github.com default", c.BaseURL())
 	}
-	if got := c.WebURL("o/r", 9); got != "https://github.com/o/r/pull/9" {
+	if got := c.WebURL("o/r", 9); got != "https://github.com/o/r/issues/9" {
 		t.Errorf("WebURL = %q", got)
 	}
 }
@@ -306,24 +324,33 @@ func TestStatusErrorSurfacesAPIMessage(t *testing.T) {
 	}
 }
 
-// owner/repo#N names an issue and a pull request alike, so a 404 from the pulls
-// endpoint gets a second look before it reaches the panel.
-func TestIssueNumberSaysSo(t *testing.T) {
+// owner/repo#N names an issue and a pull request alike; Get classifies via the
+// issues endpoint and returns a plain issue without failing.
+func TestGetIssue(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case strings.HasSuffix(r.URL.Path, "/pulls/42"):
-			w.WriteHeader(http.StatusNotFound)
-			w.Write([]byte(`{"message": "Not Found"}`))
 		case strings.HasSuffix(r.URL.Path, "/issues/42"):
-			w.Write([]byte(`{"number": 42, "title": "A plain issue"}`))
+			w.Write([]byte(`{"number": 42, "title": "A plain issue", "state": "open",
+				"body": "Please look", "html_url": "https://github.com/o/r/issues/42",
+				"user": {"login": "ada"}, "assignees": [{"login": "grace"}],
+				"labels": [{"name": "bug"}], "updated_at": "2026-06-15T06:52:20Z"}`))
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
 		}
 	}))
 	defer srv.Close()
-	_, err := newTestClient(srv).Get(context.Background(), "o/r", 42)
-	if err == nil || !strings.Contains(err.Error(), "is an issue, not a pull request") {
-		t.Errorf("error = %v, want it to name the issue/PR mix-up", err)
+	ch, err := newTestClient(srv).Get(context.Background(), "o/r", 42)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !ch.IsIssue || ch.Title != "A plain issue" || ch.Author != "ada" {
+		t.Errorf("issue = %+v", ch)
+	}
+	if ch.WebURL != "https://github.com/o/r/issues/42" {
+		t.Errorf("WebURL = %q", ch.WebURL)
+	}
+	if ch.Checks != nil || ch.Approvals != nil || ch.SourceBranch != "" {
+		t.Errorf("plain issue should not carry PR fields: %+v", ch)
 	}
 }
 
