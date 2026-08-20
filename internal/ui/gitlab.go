@@ -33,14 +33,18 @@ type gitlabMutatedMsg struct {
 	err     error
 }
 
-// glConfirmState is the modal yes/no shown before an approve or merge fires. It
-// owns every keystroke while active (dispatched in update.go before the
-// focus-based routing) and overlays the screen (view.go).
+// glConfirmState is the modal yes/no shown before an approve or merge fires
+// (GitLab MR or GitHub PR). It owns every keystroke while active (dispatched in
+// update.go before the focus-based routing) and overlays the screen (view.go).
+// GitHub reuses this same confirm rather than a parallel modal.
 type glConfirmState struct {
 	active  bool
-	action  string // "approve" / "merge"
-	project string
-	iid     int
+	action  string  // "approve" / "merge"
+	kind    refKind // refGitLab or refGitHub
+	project string  // GitLab project path
+	iid     int     // GitLab MR iid
+	repo    string  // GitHub owner/repo
+	number  int     // GitHub issue/PR number
 	title   string
 }
 
@@ -328,6 +332,7 @@ func (m Model) openGitLabApprove() (tea.Model, tea.Cmd) {
 	m.glConfirm = glConfirmState{
 		active:  true,
 		action:  "approve",
+		kind:    refGitLab,
 		project: r.glProj,
 		iid:     r.glIID,
 		title:   "Approve " + r.label() + "?",
@@ -349,6 +354,7 @@ func (m Model) openGitLabMerge() (tea.Model, tea.Cmd) {
 	m.glConfirm = glConfirmState{
 		active:  true,
 		action:  "merge",
+		kind:    refGitLab,
 		project: r.glProj,
 		iid:     r.glIID,
 		title:   fmt.Sprintf("Merge %s into %s?", r.label(), m.glMR.TargetBranch),
@@ -356,14 +362,14 @@ func (m Model) openGitLabMerge() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleGitLabConfirmKey owns every keystroke while the confirm modal is open:
-// y/enter fires the action, n/esc cancels.
+// handleGitLabConfirmKey owns every keystroke while the approve/merge confirm
+// is open (GitLab or GitHub): y/enter fires the action, n/esc cancels.
 func (m Model) handleGitLabConfirmKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c":
 		return m, tea.Quit
 	case "y", "Y", "enter":
-		return m.applyGitLabConfirm()
+		return m.applyRefConfirm()
 	case "n", "N", "esc":
 		m.glConfirm = glConfirmState{}
 		return m, nil
@@ -371,11 +377,20 @@ func (m Model) handleGitLabConfirmKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 	return m, nil
 }
 
-// applyGitLabConfirm closes the modal and fires the chosen action in the
-// background.
-func (m Model) applyGitLabConfirm() (tea.Model, tea.Cmd) {
+// applyRefConfirm closes the modal and fires the chosen GitLab or GitHub action.
+func (m Model) applyRefConfirm() (tea.Model, tea.Cmd) {
 	c := m.glConfirm
 	m.glConfirm = glConfirmState{}
+	switch c.kind {
+	case refGitHub:
+		return m.applyGitHubConfirm(c)
+	default:
+		return m.applyGitLabConfirm(c)
+	}
+}
+
+// applyGitLabConfirm fires a GitLab approve / merge in the background.
+func (m Model) applyGitLabConfirm(c glConfirmState) (tea.Model, tea.Cmd) {
 	client, ctx := m.glClient, m.ctx
 	var run func() error
 	switch c.action {

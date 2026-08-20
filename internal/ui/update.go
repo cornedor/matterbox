@@ -53,6 +53,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if fetch := nm.fetchPendingMRStatus(); fetch != nil {
 		cmd = tea.Batch(cmd, fetch)
 	}
+	if fetch := nm.fetchPendingGHStatus(); fetch != nil {
+		cmd = tea.Batch(cmd, fetch)
+	}
 	if anim := nm.maybeStartImageAnim(); anim != nil {
 		cmd = tea.Batch(cmd, anim)
 	}
@@ -830,6 +833,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		nm, cmd := m.handleMRStatusLoaded(msg)
 		return nm, cmd
 
+	case ghStatusLoadedMsg:
+		nm, cmd := m.handleGHStatusLoaded(msg)
+		return nm, cmd
+
 	case errMsg:
 		m.loading = false
 		m.loadingOlder = false // a failed fetch must not wedge the wheel guards
@@ -997,6 +1004,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case gitlabLoadedMsg:
 		return m.handleGitLabLoaded(msg)
+
+	case githubLoadedMsg:
+		return m.handleGitHubLoaded(msg)
+
+	case githubMutatedMsg:
+		return m.handleGitHubMutated(msg)
 
 	case gitlabMutatedMsg:
 		return m.handleGitLabMutated(msg)
@@ -2039,7 +2052,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.jiraCommentActive {
 		return m.handleJiraCommentKey(msg)
 	}
-	// GitLab approve/merge confirm owns every keystroke while open.
+	// GitLab/GitHub approve/merge confirm owns every keystroke while open.
 	if m.glConfirm.active {
 		return m.handleGitLabConfirmKey(msg)
 	}

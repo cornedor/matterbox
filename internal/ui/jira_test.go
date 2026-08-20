@@ -77,7 +77,7 @@ func TestOpenReferenceNoIssue(t *testing.T) {
 	if cmd != nil {
 		t.Error("expected no Cmd when nothing to open")
 	}
-	if !strings.Contains(got.status, "no Jira issue or GitLab MR") {
+	if !strings.Contains(got.status, "no Jira issue, GitLab MR or GitHub issue / PR") {
 		t.Errorf("status = %q", got.status)
 	}
 }

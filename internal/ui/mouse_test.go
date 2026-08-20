@@ -3,12 +3,15 @@ package ui
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/mattermost/mattermost/server/public/model"
 
 	"matterbox/internal/editor"
+	"matterbox/internal/gitlab"
 	"matterbox/internal/store"
 )
 
@@ -255,6 +258,108 @@ func TestSelectedTextDropsGutter(t *testing.T) {
 	m.renderMessages()
 	if got := m.selectedText(); got != "hello world" {
 		t.Fatalf("selectedText=%q want %q", got, "hello world")
+	}
+}
+
+func TestRefClickFocusesPaneAndBlursComposer(t *testing.T) {
+	base := mouseModel([]*model.Post{{Id: "p", CreateAt: 100, UserId: "u", Message: "x"}})
+	base.glClient = gitlab.New(gitlab.Config{BaseURL: "https://git.example.com", Token: "tok"})
+	m := openLoadedMR(t, base, sampleMR())
+	m.focus = focusInput
+	m.input.Focus()
+
+	x0, top, _, _, _ := m.refGeom()
+	out, _ := m.handleMouseClick(click(tea.MouseLeft, x0+4, top+2))
+	m = out.(Model)
+	if m.focus != focusRef {
+		t.Fatalf("click focus=%v want focusRef", m.focus)
+	}
+	if m.input.Focused() {
+		t.Fatal("click left the composer focused")
+	}
+	if !m.textSel.dragging || m.textSel.pane != focusRef {
+		t.Fatalf("click did not arm a ref selection: %+v", m.textSel)
+	}
+}
+
+func TestRefDragThenReleaseCopiesSelection(t *testing.T) {
+	base := mouseModel([]*model.Post{{Id: "p", CreateAt: 100, UserId: "u", Message: "x"}})
+	base.glClient = gitlab.New(gitlab.Config{BaseURL: "https://git.example.com", Token: "tok"})
+	mr := sampleMR()
+	mr.Description = "Alpha bravo"
+	m := openLoadedMR(t, base, mr)
+
+	lines, _ := m.ensureWrapIndex(focusRef, m.refView.Width())
+	line, start := -1, -1
+	for i, ln := range lines {
+		if j := strings.Index(ansi.Strip(ln), "Alpha bravo"); j >= 0 {
+			line, start = i, j
+			break
+		}
+	}
+	if line < 0 {
+		t.Fatal("could not find ref-body text")
+	}
+
+	x0, top, width, _, yoff := m.refGeom()
+	x1 := x0 + start%width
+	y1 := top + (line + start/width - yoff)
+	x2 := x0 + (start+5)%width
+	y2 := top + (line + (start+5)/width - yoff)
+
+	out, _ := m.handleMouseClick(click(tea.MouseLeft, x1, y1))
+	m = out.(Model)
+	out, _ = m.handleMouseMotion(motion(tea.MouseLeft, x2, y2))
+	m = out.(Model)
+	if !m.textSel.active || m.textSel.pane != focusRef {
+		t.Fatalf("drag did not activate a ref selection: %+v", m.textSel)
+	}
+	out, cmd := m.handleMouseRelease(release(tea.MouseLeft, x2, y2))
+	m = out.(Model)
+	if cmd == nil {
+		t.Fatal("drag release did not produce a copy command")
+	}
+	if got := m.selectedText(); got != "Alpha" {
+		t.Fatalf("selectedText=%q want %q", got, "Alpha")
+	}
+}
+
+// TestRefPanelBeatsComposerAtSameHeight: a click in the reference panel on the
+// same screen rows as the composer must hit the panel, not the input — even when
+// the composer's width still overhangs (the bug that made bottom-of-panel links
+// focus the text input instead of opening).
+func TestRefPanelBeatsComposerAtSameHeight(t *testing.T) {
+	base := mouseModel([]*model.Post{{Id: "p", CreateAt: 100, UserId: "u", Message: "x"}})
+	base.glClient = gitlab.New(gitlab.Config{BaseURL: "https://git.example.com", Token: "tok"})
+	mr := sampleMR()
+	mr.Description = "see https://example.com/bottom"
+	m := openLoadedMR(t, base, mr)
+	m.vcache.bodyH = 20
+	// Simulate the old bug: input still at full right-pane width after opening
+	// the panel, so its hit box overlaps the side panel's bottom rows.
+	m.input.SetWidth(m.width - channelsWidth - 4)
+
+	x0, _, _, _, _ := m.refGeom()
+	_, top, _, height, _ := m.composerGeom()
+	if height < 1 {
+		t.Fatal("composer has no height")
+	}
+	x, y := x0+2, top
+	if h := m.hitTest(x, y); h.zone != hitRef {
+		t.Fatalf("hitTest in ref column at composer row = zone %v, want hitRef", h.zone)
+	}
+	if m.inComposer(x, y) {
+		// The overhang is still true for inComposer alone; hitTest must prefer the panel.
+		t.Log("inComposer still true under overhang (expected); hitTest correctly preferred hitRef")
+	}
+
+	out, _ := m.handleMouseClick(click(tea.MouseLeft, x, y))
+	got := out.(Model)
+	if got.focus != focusRef {
+		t.Fatalf("click focus=%v want focusRef (composer must not steal it)", got.focus)
+	}
+	if got.input.Focused() {
+		t.Fatal("click focused the composer")
 	}
 }
 

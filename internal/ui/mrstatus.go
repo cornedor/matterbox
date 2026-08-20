@@ -332,29 +332,45 @@ func mrFetchSettleCmd(gen int) tea.Cmd {
 }
 
 // bumpMRFetch increments mrFetchGen and returns a settle cmd. Call from every
-// messages-pane navigation handler so that rapid scrolling defers MR status
-// fetches until the user pauses.
+// messages-pane navigation handler so that rapid scrolling defers MR / GitHub
+// status fetches until the user pauses.
 func (m *Model) bumpMRFetch() tea.Cmd {
-	if m.mrStatus == nil {
+	if m.mrStatus == nil && m.ghStatus == nil {
 		return nil
 	}
 	m.mrFetchGen++
 	return mrFetchSettleCmd(m.mrFetchGen)
 }
 
-// buildMRInlineFn returns the mrInlineFn closure for a post. When GitLab is not
-// configured it returns nil, disabling MR badge substitution.
+// buildMRInlineFn returns the mrInlineFn closure for a post. It rewrites bare
+// GitLab MR URLs and GitHub issue/PR URLs into short status badges. When neither
+// provider is configured it returns nil, disabling badge substitution.
 func (m *Model) buildMRInlineFn(postID string) mrInlineFn {
-	if m.mrStatus == nil || !m.glClient.Enabled() {
+	glOK := m.mrStatus != nil && m.glClient != nil && m.glClient.Enabled()
+	ghOK := m.ghStatus != nil && m.ghClient != nil && m.ghClient.Enabled()
+	if !glOK && !ghOK {
 		return nil
 	}
-	baseURL := m.glClient.BaseURL()
+	var glBase, ghBase string
+	if glOK {
+		glBase = m.glClient.BaseURL()
+	}
+	if ghOK {
+		ghBase = m.ghClient.BaseURL()
+	}
 	return func(rawURL string) (string, bool) {
-		project, iid, ok := parseMRURL(rawURL, baseURL)
-		if !ok {
-			return "", false
+		if glOK {
+			if project, iid, ok := parseMRURL(rawURL, glBase); ok {
+				m.mrStatus.sighted(project, iid, postID)
+				return m.mrStatus.renderMRBadge(project, iid, m.glClient), true
+			}
 		}
-		m.mrStatus.sighted(project, iid, postID)
-		return m.mrStatus.renderMRBadge(project, iid, m.glClient), true
+		if ghOK {
+			if repo, number, isPull, ok := parseGitHubURL(rawURL, ghBase); ok {
+				m.ghStatus.sighted(repo, number, isPull, postID)
+				return m.ghStatus.renderGHBadge(repo, number, m.ghClient), true
+			}
+		}
+		return "", false
 	}
 }

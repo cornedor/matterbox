@@ -108,6 +108,8 @@ type keyMap struct {
 	GitLabApprove key.Binding
 	GitLabMerge   key.Binding
 	GitLabJobs    key.Binding
+	GitHubApprove key.Binding
+	GitHubMerge   key.Binding
 
 	// List sheets (saved messages, templates): drop the selected row.
 	SheetRemove key.Binding
@@ -260,6 +262,8 @@ var actionDefs = []actionDef{
 	{id: "gitlab_approve", field: func(k *keyMap) *key.Binding { return &k.GitLabApprove }, keys: []string{"A"}, desc: "MR: approve"},
 	{id: "gitlab_merge", field: func(k *keyMap) *key.Binding { return &k.GitLabMerge }, keys: []string{"M"}, desc: "MR: merge"},
 	{id: "gitlab_jobs", field: func(k *keyMap) *key.Binding { return &k.GitLabJobs }, keys: []string{"t"}, desc: "MR: all / fewer jobs"},
+	{id: "github_approve", field: func(k *keyMap) *key.Binding { return &k.GitHubApprove }, keys: []string{"A"}, desc: "PR: approve"},
+	{id: "github_merge", field: func(k *keyMap) *key.Binding { return &k.GitHubMerge }, keys: []string{"M"}, desc: "PR: merge"},
 
 	{id: "sheet_remove", field: func(k *keyMap) *key.Binding { return &k.SheetRemove }, keys: []string{"d", "D"}, desc: "remove entry"},
 

@@ -166,11 +166,11 @@ func trimTrailingURLPunct(u string) (clean, trailing string) {
 	return u[:i], u[i:]
 }
 
-// mrInlineFn resolves a bare GitLab MR URL to an inline badge string.
-// When it returns ok=true the badge replaces the raw URL entirely (including
-// any OSC 8 link); when ok=false the URL is rendered as a normal hyperlink.
-// A nil mrInlineFn means MR badge substitution is disabled (e.g. in ref-panel
-// descriptions and tests).
+// mrInlineFn resolves a bare GitLab MR or GitHub issue/PR URL to an inline
+// badge string. When it returns ok=true the badge replaces the raw URL entirely
+// (including any OSC 8 link); when ok=false the URL is rendered as a normal
+// hyperlink. A nil mrInlineFn means badge substitution is disabled (e.g. in
+// ref-panel descriptions and tests).
 type mrInlineFn func(rawURL string) (badge string, ok bool)
 
 // leadingSpaces counts the run of leading space characters in s.

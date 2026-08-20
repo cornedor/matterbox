@@ -21,6 +21,8 @@ import (
 	"matterbox/internal/config"
 	"matterbox/internal/editor"
 	"matterbox/internal/embed"
+	"matterbox/internal/github"
+	"matterbox/internal/githubauth"
 	"matterbox/internal/gitlab"
 	"matterbox/internal/hidden"
 	"matterbox/internal/jira"
@@ -541,7 +543,10 @@ type Model struct {
 	jiraProjects      []string
 	glMR              *gitlab.MR // loaded data when the current ref is a GitLab MR
 	glClient          *gitlab.Client
+	ghItem            *github.Item // loaded data when the current ref is a GitHub issue / PR
+	ghClient          *github.Client
 	mrStatus          *mrStatusManager // inline MR badge state; nil when gitlab not configured
+	ghStatus          *ghStatusManager // inline GitHub issue/PR badge state
 	mrFetchGen        int              // bumped on navigation to debounce scroll fetches
 	mrFetchSettledGen int              // set by settle tick; fetches fire when gen == settledGen
 
@@ -564,8 +569,8 @@ type Model struct {
 	jiraCommentMention *jira.Mention
 	jiraCommentReplyTo string
 
-	// GitLab action confirm, opened with A (approve) / M (merge) while the panel
-	// shows a merge request. Modal — owns every keystroke while open (gitlab.go).
+	// GitLab/GitHub action confirm, opened with A (approve) / M (merge) while the
+	// panel shows an MR or PR. Modal — owns every keystroke while open (gitlab.go).
 	glConfirm glConfirmState
 	// linkConfirm warns before opening a clicked link whose scheme isn't http(s)
 	// — handing a file:/mailto:/custom-scheme target to the OS launcher can do
@@ -1074,6 +1079,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	var jiraCfg jira.Config
 	var jiraProjects []string
 	var gitlabCfg gitlab.Config
+	var githubCfg github.Config
 	var serverURL string
 	var kaomojiOptions []string
 	if cfg != nil {
@@ -1162,6 +1168,10 @@ func New(client *mm.Client, cfg *config.Config) Model {
 			BaseURL: cfg.GitLab.BaseURL,
 			Token:   cfg.GitLab.Token,
 		}
+		githubCfg = github.Config{
+			BaseURL: cfg.GitHub.BaseURL,
+			Token:   "", // filled by ResolveToken below
+		}
 		kaomojiOptions = append(kaomojiOptions, cfg.KaomojiOptions...)
 	}
 	// The GIPHY_API_KEY env var overrides the config key (handy for keeping a
@@ -1187,6 +1197,14 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		}
 	}
 	gitlabClient := gitlab.New(gitlabCfg)
+	// GitHub token resolution: shared ResolveToken (env overrides config, like
+	// GitLab; then gh CLI; then optional matterbox OAuth).
+	cfgTok := ""
+	if cfg != nil {
+		cfgTok = cfg.GitHub.Token
+	}
+	githubCfg.Token, _ = github.ResolveToken(cfgTok, githubauth.HostFromURL(githubCfg.BaseURL))
+	githubClient := github.New(githubCfg)
 	// LanguageTool grammar/spell check for the composer is opt-in; a nil client
 	// keeps every grammar code path inert (grammarEnabled reports false).
 	var ltClient *languagetool.Client
@@ -1270,7 +1288,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		jiraClient:          jiraClient,
 		jiraProjects:        jiraProjects,
 		glClient:            gitlabClient,
+		ghClient:            githubClient,
 		mrStatus:            newMRStatusManager(gitlabCfg.BaseURL),
+		ghStatus:            newGHStatusManager(),
 		historyView:         &historyView,
 		keysSheetView:       &keysSheetView,
 		vcache:              &viewCache{},

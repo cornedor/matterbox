@@ -526,6 +526,7 @@ var keyContexts = []keyContext{
 				m.keys.JiraStatus, m.keys.JiraPriority, m.keys.JiraPoints, m.keys.JiraAssignee,
 				m.keys.JiraComment, m.keys.JiraReply,
 				m.keys.GitLabApprove, m.keys.GitLabMerge, m.keys.GitLabJobs,
+				m.keys.GitHubApprove, m.keys.GitHubMerge,
 			)
 			return bs
 		},

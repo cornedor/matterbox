@@ -11,6 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/mattermost/mattermost/server/public/model"
 
+	"matterbox/internal/github"
 	"matterbox/internal/gitlab"
 	"matterbox/internal/jira"
 )
@@ -32,17 +33,21 @@ type refKind int
 const (
 	refJira refKind = iota
 	refGitLab
+	refGitHub
 )
 
 // reference is one detected, openable target. Only the fields for its kind are
 // set; pos is the byte offset of its first appearance in the source message, so
 // refs from both providers can be ordered together.
 type reference struct {
-	kind    refKind
-	jiraKey string // refJira: issue key, e.g. ABC-123
-	glProj  string // refGitLab: project path, e.g. group/project
-	glIID   int    // refGitLab: merge-request iid
-	pos     int
+	kind     refKind
+	jiraKey  string // refJira: issue key, e.g. ABC-123
+	glProj   string // refGitLab: project path, e.g. group/project
+	glIID    int    // refGitLab: merge-request iid
+	ghRepo   string // refGitHub: repo path, e.g. owner/repo
+	ghNumber int    // refGitHub: issue / PR number
+	ghIsPull bool   // refGitHub: true for /pull/N, false for /issues/N
+	pos      int
 }
 
 // label is the canonical short id shown in titles and loading text.
@@ -52,6 +57,8 @@ func (r reference) label() string {
 		return r.jiraKey
 	case refGitLab:
 		return fmt.Sprintf("%s!%d", r.glProj, r.glIID)
+	case refGitHub:
+		return fmt.Sprintf("%s#%d", r.ghRepo, r.ghNumber)
 	}
 	return ""
 }
@@ -87,8 +94,9 @@ func (m Model) openRefForPost(p *model.Post) (tea.Model, tea.Cmd) {
 	}
 	jiraOK := m.jiraClient.Enabled()
 	glOK := m.glClient.Enabled()
-	if !jiraOK && !glOK {
-		m.status = "no reference provider configured — set jira.* or gitlab.* in config.yaml"
+	ghOK := m.ghClient.Enabled()
+	if !jiraOK && !glOK && !ghOK {
+		m.status = "no reference provider configured — set jira.*, gitlab.* or github.* in config.yaml"
 		return m, nil
 	}
 
@@ -103,8 +111,13 @@ func (m Model) openRefForPost(p *model.Post) (tea.Model, tea.Cmd) {
 			refs = append(refs, reference{kind: refGitLab, glProj: r.Project, glIID: r.IID, pos: r.Pos})
 		}
 	}
+	if ghOK {
+		for _, r := range github.Refs(p.Message, m.ghClient.BaseURL()) {
+			refs = append(refs, reference{kind: refGitHub, ghRepo: r.Repo, ghNumber: r.Number, ghIsPull: r.IsPull, pos: r.Pos})
+		}
+	}
 	if len(refs) == 0 {
-		m.status = "no Jira issue or GitLab MR on this message"
+		m.status = "no Jira issue, GitLab MR or GitHub issue / PR on this message"
 		return m, nil
 	}
 	sort.SliceStable(refs, func(i, j int) bool { return refs[i].pos < refs[j].pos })
@@ -158,6 +171,12 @@ func (m *Model) refStatusHint(r reference, n int) string {
 	case refGitLab:
 		return helpKey(m.keys.GitLabApprove) + " approve · " + helpKey(m.keys.GitLabMerge) +
 			" merge · " + shared + refCycleHint(n)
+	case refGitHub:
+		if r.ghIsPull {
+			return helpKey(m.keys.GitHubApprove) + " approve · " + helpKey(m.keys.GitHubMerge) +
+				" merge · " + shared + refCycleHint(n)
+		}
+		return shared + refCycleHint(n)
 	}
 	return shared + refCycleHint(n)
 }
@@ -175,6 +194,7 @@ func (m *Model) loadCurrentRef() tea.Cmd {
 	m.refErr = nil
 	m.jiraIssue = nil
 	m.glMR = nil
+	m.ghItem = nil
 	m.refView.GotoTop()
 	m.renderRef()
 	switch r.kind {
@@ -182,6 +202,8 @@ func (m *Model) loadCurrentRef() tea.Cmd {
 		return m.fetchJira(m.refGen, r.jiraKey)
 	case refGitLab:
 		return m.fetchGitLabMR(m.refGen, r.glProj, r.glIID)
+	case refGitHub:
+		return m.fetchGitHub(m.refGen, r.ghRepo, r.ghNumber)
 	}
 	return nil
 }
@@ -197,6 +219,7 @@ func (m *Model) closeRef() {
 	m.refIdx = 0
 	m.jiraIssue = nil
 	m.glMR = nil
+	m.ghItem = nil
 	m.refErr = nil
 	m.refLoading = false
 	m.refGen++
@@ -236,6 +259,8 @@ func (m Model) refreshRef() (tea.Model, tea.Cmd) {
 		m.jiraClient.Invalidate(r.jiraKey)
 	case refGitLab:
 		m.glClient.Invalidate(r.glProj, r.glIID)
+	case refGitHub:
+		m.ghClient.Invalidate(r.ghRepo, r.ghNumber)
 	}
 	cmd := m.loadCurrentRef()
 	return m, cmd
@@ -253,6 +278,8 @@ func (m Model) openCurrentRefURL() (tea.Model, tea.Cmd) {
 		o = openable{name: m.jiraIssue.Key, url: m.jiraIssue.URL}
 	case r.kind == refGitLab && m.glMR != nil:
 		o = openable{name: r.label(), url: m.glMR.WebURL}
+	case r.kind == refGitHub && m.ghItem != nil:
+		o = openable{name: r.label(), url: m.ghItem.URL}
 	}
 	if o.url == "" {
 		return m, nil
@@ -325,6 +352,14 @@ func (m Model) handleRefKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
+	if r != nil && r.kind == refGitHub && m.ghItem != nil && m.ghItem.IsPull {
+		switch {
+		case key.Matches(msg, m.keys.GitHubApprove):
+			return m.openGitHubApprove()
+		case key.Matches(msg, m.keys.GitHubMerge):
+			return m.openGitHubMerge()
+		}
+	}
 	var cmd tea.Cmd
 	m.refView, cmd = m.refView.Update(msg)
 	return m, cmd
@@ -349,12 +384,22 @@ func (m *Model) renderRef() {
 		}
 		m.refView.SetContent(refDimStyle.Render("loading " + label + "…"))
 	case r.kind == refJira && m.jiraIssue != nil:
-		m.refView.SetContent(m.refHover(expandTables(m.renderJiraIssue(m.jiraIssue, m.refView.Width()), m.refView.Width())))
+		m.setRefContent(m.refHover(expandTables(m.renderJiraIssue(m.jiraIssue, m.refView.Width()), m.refView.Width())))
 	case r.kind == refGitLab && m.glMR != nil:
-		m.refView.SetContent(m.refHover(expandTables(m.renderGitLabMR(m.glMR, m.refView.Width()), m.refView.Width())))
+		m.setRefContent(m.refHover(expandTables(m.renderGitLabMR(m.glMR, m.refView.Width()), m.refView.Width())))
+	case r.kind == refGitHub && m.ghItem != nil:
+		m.setRefContent(m.refHover(expandTables(m.renderGitHubItem(m.ghItem, m.refView.Width()), m.refView.Width())))
 	default:
 		m.refView.SetContent(refDimStyle.Render("loading…"))
 	}
+}
+
+// setRefContent installs panel content and applies any active text selection
+// that belongs to the reference pane.
+func (m *Model) setRefContent(content string) {
+	lines := strings.Split(content, "\n")
+	m.applyTextSelHighlight(focusRef, lines)
+	m.refView.SetContentLines(lines)
 }
 
 // refHover paints the hovered link's background when the pointer rests on a
@@ -424,10 +469,12 @@ func (m *Model) refPaneTitle() string {
 			name = "Jira"
 		case refGitLab:
 			name = "GitLab"
+		case refGitHub:
+			name = "GitHub"
 		}
 	}
 	switch {
-	case m.refLoading && m.jiraIssue == nil && m.glMR == nil:
+	case m.refLoading && m.jiraIssue == nil && m.glMR == nil && m.ghItem == nil:
 		return name + " (loading…)"
 	case len(m.refs) > 1:
 		return fmt.Sprintf("%s · %d/%d", name, m.refIdx+1, len(m.refs))

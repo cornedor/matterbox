@@ -189,6 +189,12 @@ type Config struct {
 	// show it inline. An empty base_url (with no usable token) disables the
 	// panel. See internal/gitlab and internal/ui.
 	GitLab GitLabConfig `yaml:"gitlab"`
+	// GitHub configures the issue / pull-request side panel: press the
+	// open-reference key (v) on a message naming a GitHub issue or pull
+	// request to fetch it from GitHub and show it inline. An empty base_url
+	// (with no usable token) disables the panel. See internal/github and
+	// internal/ui.
+	GitHub GitHubConfig `yaml:"github"`
 	// LanguageTool configures the optional grammar/spell checker for the
 	// composer: while you type, the draft is checked against a LanguageTool
 	// server and mistakes are underlined in place (alt+g surfaces the
@@ -246,6 +252,35 @@ type JiraConfig struct {
 	// instance's field metadata — set this only if auto-detection picks the
 	// wrong field.
 	StoryPointsField string `yaml:"story_points_field"`
+}
+
+// GitHubConfig holds the GitHub connection used by the issue / pull-request
+// side panel. base_url defaults to https://github.com; token may be left empty
+// to fall back to env / an existing `gh` CLI login (same pattern as GitLab +
+// glab). OAuth device flow (`matterbox github login`) is an optional alternative
+// when you don't use gh / a PAT.
+//
+// ClientID is only needed for that optional device-flow login.
+type GitHubConfig struct {
+	// BaseURL is the instance root, e.g. https://github.com or
+	// https://ghe.example.com. Also used to recognize issue/pull URLs that
+	// point at this instance.
+	BaseURL string `yaml:"base_url"`
+	// Token is an optional personal access token. Empty falls back through
+	// GITHUB_TOKEN / GH_TOKEN (which override this when set, like GitLab),
+	// then `gh auth login` for this host, then optional matterbox OAuth from
+	// `matterbox github login`.
+	Token string `yaml:"token"`
+
+	// ClientID configures GitHub OAuth device-flow login. Only needed for the
+	// optional `matterbox github login` command — not for normal TUI use when
+	// a PAT / gh CLI token is available.
+	ClientID string `yaml:"client_id"`
+
+	// Scopes are the OAuth scopes requested during `matterbox github login`.
+	// If unset, defaults to ["repo"]. Prefer a narrower set if you only need
+	// public read + PR review/merge on selected repos.
+	Scopes []string `yaml:"scopes"`
 }
 
 // GitLabConfig holds the GitLab connection used by the merge-request side
@@ -985,6 +1020,9 @@ func (c *Config) fillDefaults() {
 	if c.ServerURL == "" {
 		c.ServerURL = defaultServerURL
 	}
+	if c.GitHub.BaseURL == "" {
+		c.GitHub.BaseURL = "https://github.com"
+	}
 	if len(c.Reactions) == 0 {
 		c.Reactions = append([]string(nil), defaultReactions...)
 	}
@@ -1403,6 +1441,11 @@ func writeConfig(p string, cfg *Config) error {
 		"#             token is a personal/project access token (read_api to view,\n" +
 		"#             api to approve/merge). Empty token falls back to GITLAB_TOKEN\n" +
 		"#             or an existing glab CLI login for the same host.\n" +
+		"# github:     the issue / pull-request side panel. Same open key (v).\n" +
+		"#             base_url defaults to https://github.com. Empty token falls\n" +
+		"#             back to GITHUB_TOKEN/GH_TOKEN, then an existing `gh auth\n" +
+		"#             login`, then optional `matterbox github login` OAuth.\n" +
+		"#             client_id is only needed for that optional device-flow login.\n" +
 		"# language_tool: composer grammar/spell check (off by default). enabled\n" +
 		"#             true turns it on; while you type the draft is checked against\n" +
 		"#             a LanguageTool server and mistakes are underlined in place —\n" +

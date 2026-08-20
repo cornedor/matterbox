@@ -100,8 +100,10 @@ func TestRefPanelLinkIsClickable(t *testing.T) {
 
 	out, _ := m.handleMouseClick(click(tea.MouseLeft, x, y))
 	got := out.(Model)
+	out, _ = got.handleMouseRelease(release(tea.MouseLeft, x, y))
+	got = out.(Model)
 	if !strings.Contains(got.status, "opening") || !strings.Contains(got.status, url) {
-		t.Fatalf("clicking the ref link did not open it; status=%q", got.status)
+		t.Fatalf("clicking the ref link did not open it on release; status=%q", got.status)
 	}
 	if got.linkConfirm.active {
 		t.Fatal("a web link in the ref panel should open without the warning modal")

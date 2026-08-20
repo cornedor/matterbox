@@ -114,6 +114,10 @@ const tabsHeight = 3
 // renderAllPanes() to a settle tick (see the WindowSizeMsg handler).
 func (m *Model) resizeMessagesViewport() {
 	m.layoutPanes()
+	// Keep the composer width in sync with the messages/thread/ref/info split —
+	// otherwise opening the reference panel leaves the input's old full-width
+	// hit box overhanging the side panel and stealing clicks from its bottom rows.
+	m.resizeInput()
 	m.renderAllPanes()
 }
 
@@ -318,9 +322,9 @@ func (m *Model) resizeInput() {
 		m.input.SetWidth(w)
 		return
 	}
-	if m.refOpen {
+	if m.refOpen || m.infoOpen {
 		// The composer stays under the (now narrower) messages pane; match its
-		// width to the reference split so the input doesn't overhang the pane above.
+		// width to the right-slot split so the input doesn't overhang the pane above.
 		rightW := m.width - channelsWidth - 2
 		if rightW < 10 {
 			rightW = 10

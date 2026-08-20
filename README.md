@@ -214,11 +214,12 @@ typo fails loud rather than silently shadowing a key.
 > (Ghostty, kitty, WezTerm). `shift+enter` for example *sends* the message on a
 > legacy terminal instead of inserting a newline — use `alt+enter` there.
 
-## Jira & GitLab integration (optional)
+## Jira, GitLab & GitHub integration (optional)
 
-Press `v` on a message that names a Jira issue or links a GitLab merge request to
-open it in a side panel — read-only by default, with inline editing/actions when
-the token allows it. Both are opt-in and configured in `config.yaml`.
+Press `v` on a message that names a Jira issue or links a GitLab merge request /
+GitHub issue or pull request to open it in a side panel — read-only by default,
+with inline editing/actions when the token allows it. All are opt-in and
+configured in `config.yaml`.
 
 ### GitLab
 
@@ -241,6 +242,30 @@ empty, matterbox falls back to the `GITLAB_TOKEN` env var, then to an existing
 `glab` login (the token `glab auth login` stored for this host in
 `~/.config/glab-cli/config.yml`) — so a working `glab` setup needs no secret in
 this file.
+
+### GitHub
+
+```yaml
+github:
+  base_url: https://github.com   # optional; this is the default
+  token: ghp-…                   # optional — see fallbacks below
+```
+
+Auth mirrors GitLab: prefer a PAT in config, otherwise reuse what you already
+have. Resolution order (env overrides config, like `GITLAB_TOKEN`):
+
+1. `GITHUB_TOKEN` or `GH_TOKEN` env var
+2. `github.token` in config
+3. An existing `gh auth login` for this host (`~/.config/gh/hosts.yml`)
+4. Optional matterbox OAuth token from `matterbox github login` (device flow)
+
+So a working `gh` setup needs no secret in this file. Device-flow OAuth is an
+alternative when you don't use the GitHub CLI — it needs an OAuth App
+`client_id` (`github.client_id` or `GITHUB_CLIENT_ID`) and:
+
+```bash
+matterbox github login
+```
 
 ### Jira (Cloud only)
 
