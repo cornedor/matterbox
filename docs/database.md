@@ -1,57 +1,62 @@
-# The message database (SQL tab)
+# The message database
 
-matterbox keeps every message it has ever shown you in a local SQLite database at
-`~/.config/matterbox/messages.db`. The **SQL tab** is a read-only SQL editor over
-that database — point arbitrary `SELECT`s at your own chat history, from simple
-"show me the last 50 posts" to aggregates, full-text search, and digging into the
-raw Mattermost JSON.
+matterbox keeps every message it has ever shown you in a local SQLite database.
+The SQL tab is a read-only editor over it.
 
-This document describes the schema and gives a pile of copy-pasteable example
-queries.
+The database lives at `~/.config/matterbox/messages.db`, and the **SQL tab**
+points arbitrary `SELECT`s at your own chat history — from "show me the last 50
+posts" to aggregates, full-text search, and digging into the raw Mattermost
+JSON. What follows is the schema and a pile of copy-pasteable queries.
 
 ## Opening the SQL tab
 
 The tab is **hidden by default**. Turn it on by setting `sql_tab: true` in
 `~/.config/matterbox/config.yaml`, then restart matterbox.
 
-Once enabled it's the yellow **SQL** tab in the tab strip, next to **Feed** and
-**Search**. Jump to it the same way you switch teams (the nav-modifier + arrows,
-the team jump keys, or just click it). Then:
+```yaml
+sql_tab: true
+```
+
+Once enabled it is the yellow **SQL** tab in the tab strip, next to **Feed** and
+**Search**. Jump to it the same way you switch teams — the nav modifier plus
+arrows, the team jump keys, or just click it. Then:
 
 - Type a query and press **Enter** to run it. (`alt+↵` / `shift+↵` inserts a
   newline, so multi-line SQL works.)
-- Results render as chat messages — see [How results are rendered](#how-results-are-rendered).
-- When a query returns rows, focus drops into the result list. Use the arrow keys
-  to move the selection; the read-only message actions work on the selected row
-  (open/preview/download attachments, copy markdown, copy code blocks) exactly as
-  they do in a channel.
-- **Esc** clears the results (and a second Esc leaves the editor); **i** / Esc
+- Results render as chat messages — see
+  [How results are rendered](#how-results-are-rendered).
+- When a query returns rows, focus drops into the result list. Use the arrow
+  keys to move the selection; the read-only message actions work on the selected
+  row (open, preview or download attachments, copy markdown, copy code blocks)
+  exactly as they do in a channel.
+- **Esc** clears the results, and a second Esc leaves the editor; **i** or Esc
   hops back up to the editor to refine the query.
 
 ### It is strictly read-only
 
 The tab runs every query on a separate SQLite handle opened with
 `PRAGMA query_only`, so **nothing you type can modify the cache** — writes fail
-with *"attempt to write a readonly database"* rather than touching your data. As a
-friendly shortcut, queries that *start* with a write verb (`INSERT`, `UPDATE`,
+with *"attempt to write a readonly database"* rather than touching your data. As
+a friendly shortcut, queries that *start* with a write verb (`INSERT`, `UPDATE`,
 `DELETE`, `DROP`, `CREATE`, `ALTER`, `REPLACE`, `TRUNCATE`, `VACUUM`, …) are
-rejected up front with an explanation. You get `SELECT`, `EXPLAIN`, `PRAGMA`, and
-`WITH … SELECT`.
+rejected up front with an explanation. You get `SELECT`, `EXPLAIN`, `PRAGMA`,
+and `WITH … SELECT`.
 
 Two other guardrails:
 
-- **Row cap:** at most **1000 rows** are pulled into the view. If a query matches
-  more, the tab tells you the result was clipped — add a tighter `WHERE` or an
-  aggregate.
-- **Timeout:** a single query is cancelled after **20 seconds**, so a runaway scan
-  can't wedge the tab.
+- **Row cap:** at most **1000 rows** are pulled into the view. If a query
+  matches more, the tab tells you the result was clipped — add a tighter `WHERE`
+  or an aggregate.
+- **Timeout:** a single query is cancelled after **20 seconds**, so a runaway
+  scan cannot wedge the tab.
 
-## How results are rendered
+### How results are rendered
 
 Each result row is drawn as a chat message. If the row carries the usual post
-columns (`message`, `user_id`, `channel_id`, `create_at`, …) you get a normal-looking
-message: the markdown body, attachments and reactions, with the author prefixed by
-its `Team › #channel` (or `DMs › @user`) breadcrumb and a timestamp.
+columns (`message`, `user_id`, `channel_id`, `create_at`, …) you get a
+normal-looking message: the markdown body, attachments and reactions, with the
+author prefixed by its `Team › #channel` (or `DMs › @user`) breadcrumb and a
+timestamp.
 
 Any **other** selected column — an aggregate count, a computed value, a
 `json_extract` — is appended as a dim `name=value` line under the row. So:
@@ -61,26 +66,27 @@ Any **other** selected column — an aggregate count, a computed value, a
   channel breadcrumb with `n=…` beside it.
 
 > **Names are resolved for display only.** The breadcrumb (`Team › #channel`,
-> `@user`) is filled in by the TUI from the teams/channels it currently has
-> loaded. The database itself stores only opaque 26-character IDs — there is **no
-> users table and no channels table** (see [What's *not* here](#whats-not-here)).
-> So a row for a channel you've never opened falls back to a short id, and you
-> can't `JOIN` on a human name in SQL.
+> `@user`) is filled in by the TUI from the teams and channels it currently has
+> loaded. The database itself stores only opaque 26-character IDs — there is
+> **no users table and no channels table** (see [What's not
+> here](#whats-not-here)). So a row for a channel you have never opened falls
+> back to a short id, and you cannot `JOIN` on a human name in SQL.
 
 ## Schema overview
 
 | Table | What's in it |
 |---|---|
-| **`posts`** | Every cached message. This is the table you want 99% of the time. |
-| **`posts_fts`** | FTS5 full-text index over `posts.message` (kept in sync by triggers). |
-| **`post_revisions`** | Prior versions of edited posts that matterbox happened to observe. |
-| **`post_vectors`** | Semantic-search embeddings (one per post). Binary; not useful in raw SQL. |
-| **`meta`** | Tiny key/value store for the `listen` daemon (e.g. its catch-up cursor). |
-| **`notif_targets`** | Maps a sent Telegram notification back to its Mattermost post. |
+| `posts` | Every cached message. This is the table you want 99% of the time. |
+| `posts_fts` | FTS5 full-text index over `posts.message`, kept in sync by triggers. |
+| `post_revisions` | Prior versions of edited posts that matterbox happened to observe. |
+| `post_vectors` | Semantic-search embeddings, one per post. Binary; not useful in raw SQL. |
+| `rule_state` | The [rules ledger](rules.md#persistent-state-the-ledger) — the key/value store rules read and write. |
+| `meta` | Tiny key/value store for the `listen` daemon, e.g. its catch-up cursor. |
+| `notif_targets` | Maps a sent Telegram notification back to its Mattermost post. |
 
-### `posts` — the message table
+### The `posts` table
 
-```
+```sql
 id          TEXT PRIMARY KEY     -- 26-char Mattermost post id
 channel_id  TEXT                 -- 26-char channel id (no names table; see below)
 user_id     TEXT                 -- 26-char author id ('' for some system posts)
@@ -93,28 +99,28 @@ message     TEXT                 -- the markdown body (also the FTS source)
 raw_json    BLOB                 -- the FULL Mattermost post object as JSON (see below)
 ```
 
-Indexes: `(channel_id, create_at)` and `(root_id)`. Queries that filter/sort on
-those stay fast; everything else is a table scan over ~hundreds of thousands of
-rows (still sub-second, but mind the 20 s cap on heavy `json_extract` scans).
+Indexes: `(channel_id, create_at)` and `(root_id)`. Queries that filter or sort
+on those stay fast; everything else is a table scan over a few hundred thousand
+rows — still sub-second, but mind the 20 s cap on heavy `json_extract` scans.
 
 Four conventions matter for almost every query:
 
 1. **Timestamps are UNIX MILLISECONDS.** Divide by 1000 before handing them to
    SQLite's date functions:
-   `datetime(create_at/1000, 'unixepoch', 'localtime')`. To go the other way (a
-   cutoff for a `WHERE`), multiply: `strftime('%s','now','-7 days') * 1000`.
+   `datetime(create_at/1000, 'unixepoch', 'localtime')`. To go the other way — a
+   cutoff for a `WHERE` — multiply: `strftime('%s','now','-7 days') * 1000`.
 2. **`delete_at = 0` means "not deleted."** Add `WHERE delete_at = 0` unless you
    specifically want deleted posts.
-3. **`root_id = ''` is a top-level post**; a non-empty `root_id` is a thread reply
-   pointing at its parent post's id.
-4. **`message` vs `raw_json`.** `message` is the plain markdown text (and what FTS
-   indexes). `raw_json` is the entire serialized post — use `json_extract` to reach
-   anything the column set doesn't expose (see next).
+3. **`root_id = ''` is a top-level post**; a non-empty `root_id` is a thread
+   reply pointing at its parent post's id.
+4. **`message` vs `raw_json`.** `message` is the plain markdown text, and what
+   FTS indexes. `raw_json` is the entire serialized post — use `json_extract` to
+   reach anything the column set does not expose.
 
 ### Digging into `raw_json`
 
 `raw_json` is the complete Mattermost post object, stored as JSON. SQLite's JSON
-functions work on it directly. Useful paths (all verified against a real cache):
+functions work on it directly. Useful paths, all verified against a real cache:
 
 | Path | Meaning |
 |---|---|
@@ -125,42 +131,43 @@ functions work on it directly. Useful paths (all verified against a real cache):
 | `$.file_ids` | JSON array of attached file ids. |
 | `$.metadata.reactions` | JSON array of reaction objects (`emoji_name`, `user_id`, …). |
 | `$.metadata.files` | JSON array of file metadata (name, size, mime type, …). |
-| `$.props` | Webhook/bot/system properties (e.g. bot attachments, override username). |
+| `$.props` | Webhook, bot and system properties — e.g. bot attachments, override username. |
 | `$.hashtags` | Space-separated hashtags found in the message. |
 
-`json_extract(raw_json, '$.type')`, `json_each(raw_json, '$.file_ids')`, and
-`json_array_length(...)` are the workhorses — there are examples below.
+`json_extract(raw_json, '$.type')`, `json_each(raw_json, '$.file_ids')` and
+`json_array_length(…)` are the workhorses — there are examples below.
 
 ### The other tables
 
 - **`posts_fts`** — an FTS5 index over `posts.message`, using a *Porter*-stemmed
   `unicode61` tokenizer. Stemming means `MATCH 'deploy'` also matches `deployed`
-  and `deployment` (in both directions). Query it by joining back to `posts` on
-  the shared `rowid`, and rank with `bm25(posts_fts)` (smaller = more relevant).
-  You never write to it directly — triggers keep it in sync.
-- **`post_revisions`** — when matterbox sees a post change (a WebSocket edit event,
-  or an `edit_at` that advanced between fetches) it archives the *old* version here:
-  `post_id`, `channel_id`, `user_id`, `edit_at`, `update_at`, `captured_at`,
-  `message`, `raw_json`. Note this only contains edits matterbox actually
-  witnessed — Mattermost's API doesn't expose full edit history.
-- **`post_vectors`** — `post_id`, `vec` (an int8-quantized embedding BLOB), `dim`,
-  `model`, `created_at`. The vectors are binary and meant for the in-app semantic
-  search; about the only useful SQL here is coverage counting (how many posts are
-  embedded, under which model).
-- **`meta`** / **`notif_targets`** — internal bookkeeping for the `listen` daemon;
-  rarely interesting from the SQL tab.
+  and `deployment`, in both directions. Query it by joining back to `posts` on
+  the shared `rowid`, and rank with `bm25(posts_fts)` — smaller is more
+  relevant. You never write to it directly; triggers keep it in sync.
+- **`post_revisions`** — when matterbox sees a post change (a WebSocket edit
+  event, or an `edit_at` that advanced between fetches) it archives the *old*
+  version here: `post_id`, `channel_id`, `user_id`, `edit_at`, `update_at`,
+  `captured_at`, `message`, `raw_json`. This only contains edits matterbox
+  actually witnessed — Mattermost's API does not expose full edit history.
+- **`post_vectors`** — `post_id`, `vec` (an int8-quantized embedding BLOB),
+  `dim`, `model`, `created_at`. The vectors are binary and meant for the in-app
+  semantic search; about the only useful SQL here is coverage counting: how many
+  posts are embedded, under which model.
+- **`rule_state`** — where the
+  [rules ledger](rules.md#persistent-state-the-ledger) lives. Readable here, but
+  `matterbox rules state` is the tool for it.
+- **`meta`** and **`notif_targets`** — internal bookkeeping for the `listen`
+  daemon; rarely interesting from the SQL tab.
 
 ### What's *not* here
 
 This database stores **posts only**. There is no users table, no channels table,
-no teams table, no membership/read-state table. So:
+no teams table, no membership or read-state table. So:
 
-- You **cannot** translate a `user_id` or `channel_id` into a name *in SQL* — only
-  the running TUI can, and it does so when it renders a result row.
-- Read/unread state, channel membership, and team metadata live elsewhere (in
-  memory and in `channel_stats.json`), not in this database.
-
----
+- You **cannot** translate a `user_id` or `channel_id` into a name *in SQL* —
+  only the running TUI can, and it does so when it renders a result row.
+- Read/unread state, channel membership and team metadata live elsewhere — in
+  memory and in `channel_stats.json` — not in this database.
 
 ## Example queries
 
@@ -404,13 +411,15 @@ WHERE v.post_id IS NULL AND p.delete_at = 0 AND p.message <> '';
 
 - **See the query plan** without running the whole thing:
   `EXPLAIN QUERY PLAN SELECT … ;` — a `SEARCH … USING INDEX` is good; a `SCAN`
-  over `posts` plus a per-row `json_extract` is the slow shape to watch for under
-  the 20 s cap.
-- **Lean on the indexes.** Filtering by `channel_id` (and sorting by `create_at`)
-  or by `root_id` uses an index; filtering by a `json_extract` value does not.
-- **Copy IDs out of rendered rows.** There's no name lookup in SQL, so the usual
-  flow is: run a broad query, read the breadcrumbs the TUI rendered, then paste the
-  `channel_id` / `user_id` / post `id` you care about into a follow-up query.
-- **Mind the 1000-row clip.** If the tab says the result was truncated, you're
+  over `posts` plus a per-row `json_extract` is the slow shape to watch for
+  under the 20 s cap.
+- **Lean on the indexes.** Filtering by `channel_id` (and sorting by
+  `create_at`) or by `root_id` uses an index; filtering by a `json_extract`
+  value does not.
+- **Copy IDs out of rendered rows.** There is no name lookup in SQL, so the
+  usual flow is: run a broad query, read the breadcrumbs the TUI rendered, then
+  paste the `channel_id` / `user_id` / post `id` you care about into a follow-up
+  query.
+- **Mind the 1000-row clip.** If the tab says the result was truncated, you are
   seeing the first 1000 rows in whatever order you asked for — add `LIMIT`,
   tighten the `WHERE`, or aggregate.

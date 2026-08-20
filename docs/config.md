@@ -32,7 +32,7 @@ The rest of the directory:
 | `config.yaml` | this file — mode `0600`, it holds tokens |
 | `config.schema.json` | JSON Schema for editor autocomplete, rewritten to match the running build |
 | `mm_token.json` | the Mattermost session token (`matterbox login` writes it) |
-| `messages.db` | the local message cache + FTS5 index + embeddings — see [database.md](database.md) |
+| `messages.db` | the local message cache + FTS5 index + embeddings — see [the message database](database.md) |
 | `templates.json` | composer templates (`/tmpl`) |
 | `channel_stats.json`, `picker_stats.json` | usage counts that order the channel switcher and pickers |
 | `tui.sock` | control socket a running TUI listens on (`matterbox open`, the daemon's "are you reading this?" check) |
@@ -135,7 +135,7 @@ treat a `server_url` still equal to it as "not configured yet" and send you to
 | `date_separators` | `true` | Draw a labelled rule (`Today`, `Yesterday`, or a date) above the first message of each local calendar day. |
 | `feed_show_muted` | `false` | Let muted channels into the unread Feed and its tab badge. This is only the *startup* state — `M` on the Feed tab toggles it for the session. |
 | `mouse` | `true` | Mouse support: wheel-scroll the transcript/thread/result lists, click a tab, channel or message to select it, drag to select text, hover to highlight. Set `false` to keep your terminal's native click-drag selection, which capturing the mouse otherwise replaces (most terminals fall back to shift-drag). |
-| `sql_tab` | `false` | Add the read-only SQL tab — a query editor over the local message cache whose result rows render as chat messages. See [database.md](database.md). |
+| `sql_tab` | `false` | Add the read-only SQL tab — a query editor over the local message cache whose result rows render as chat messages. See [the message database](database.md). |
 | `kaomoji_options` | *(empty)* | Extra entries for the `/kaomoji` picker, listed after the built-in set. |
 | `code_theme` | `monokai` | Chroma style used to highlight fenced code blocks: `dracula`, `github-dark`, `gruvbox`, `nord`, `onedark`, `catppuccin-mocha`, `tokyonight-night`, … plus the bundled `everforest-dark`. An unknown name falls back to the default; `NO_COLOR` disables code colour entirely. |
 
@@ -354,7 +354,7 @@ on new messages, edits, deletions, reactions, or on the clock
 (`cron: "0 9 * * 1-5"`).
 
 It is the largest thing in the config by far and has its own reference:
-**[docs/rules.md](rules.md)**. `matterbox rules test` says which rules a message
+**[the rules engine](rules.md)**. `matterbox rules test` says which rules a message
 would fire and why the rest wouldn't, and `matterbox rules list` / `stats` /
 `state` show what loaded, what has fired, and what the ledger remembers.
 
