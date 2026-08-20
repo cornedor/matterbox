@@ -1,0 +1,139 @@
+#!/bin/sh
+# Collect the license texts of every Go module linked into the matterbox binary
+# and print them as one THIRD_PARTY_LICENSES file on stdout.
+#
+# Why this exists: matterbox itself is Apache-2.0 (see LICENSE), but a compiled
+# binary statically links ~90 third-party modules, and the MIT/BSD/ISC/Apache
+# licenses they carry all require their notices to travel with a *binary*
+# distribution. The source repo has no such duty (it vendors nothing), so this
+# file is generated at release time and dropped into the tarball next to the
+# binary rather than checked in — that way it can never drift from go.mod.
+#
+#   scripts/third-party-licenses > THIRD_PARTY_LICENSES
+#   TAGS=demoaudio,video scripts/third-party-licenses   # match a tagged build
+#
+# The module set follows the build being described, so GOOS/GOARCH/TAGS matter:
+# a linux binary links x/sys/unix and charmbracelet/x/termios, a darwin one
+# doesn't. Run it with the same environment as the `go build` it accompanies.
+# Test-only dependencies (testify, go-spew, …) are excluded — they aren't in the
+# binary. Output is sorted by module path and carries no timestamps, so the same
+# inputs always produce a byte-identical file.
+#
+# It also fails the build if a GPL/AGPL module has crept into the link, because
+# such a binary cannot be distributed under Apache-2.0. Today that catches
+# exactly one thing: `-tags demoaudio` pulls in github.com/gotracker/opl2 (a
+# GPL-2.0-or-later port of DOSBox's dbopl) through gotracker/playback's core
+# packages, so a demoaudio binary is only conveyable under GPLv3. The release
+# workflow builds tag-free and stays clean. Set ALLOW_COPYLEFT=1 to generate
+# the file anyway for a local build you are not going to hand to anyone.
+
+set -eu
+
+GO=${GO:-go}
+TAGS=${TAGS:-}
+ALLOW_COPYLEFT=${ALLOW_COPYLEFT:-0}
+tagflag=""
+[ -n "$TAGS" ] && tagflag="-tags=$TAGS"
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT INT TERM
+
+# Every module reachable from the main package, i.e. everything the linker sees.
+# .Module.Dir points straight at the module root in the module cache, which
+# saves us re-implementing the cache's !uppercase path escaping by hand.
+"$GO" list -deps $tagflag -f '{{with .Module}}{{.Path}}|{{.Version}}|{{.Dir}}{{end}}' . |
+	grep -v '^$' | grep -v '^matterbox|' | sort -u -t'|' -k1,1 > "$work/mods"
+
+[ -s "$work/mods" ] || { echo "third-party-licenses: go list returned no modules" >&2; exit 1; }
+
+cat <<'EOF'
+                        THIRD-PARTY SOFTWARE NOTICES
+
+matterbox is licensed under the Apache License, Version 2.0 — see the LICENSE
+and NOTICE files distributed alongside this one.
+
+The matterbox binary is statically linked, so it contains code from the
+third-party Go modules listed below. Each module remains under its own license,
+reproduced in full here, and each copyright holder retains their rights. This
+file is provided to satisfy the notice-retention requirements of those licenses
+(among them Apache-2.0 sections 4(a) and 4(d), and the MIT/BSD/ISC clauses
+requiring the copyright notice and permission text to accompany binary
+redistributions).
+
+Mozilla Public License 2.0 — written offer of source code
+---------------------------------------------------------
+Some of the modules below are covered by the Mozilla Public License 2.0. As
+required by MPL-2.0 section 3.2, the complete corresponding source code of
+those modules is available at no charge from the Go module proxy, which serves
+the exact versions linked into this binary:
+
+    https://proxy.golang.org/<module-path>/@v/<version>.zip
+
+for example, using the module path and version printed in each section below.
+The same versions can be fetched with `go mod download <module-path>@<version>`
+or retrieved from each project's upstream repository.
+
+EOF
+
+# Read from a file rather than a pipe: a `while read` on the right-hand side of
+# a pipe runs in a subshell, so the copyleft tally below (and any exit) would be
+# thrown away with it.
+while IFS='|' read -r path version dir; do
+	[ -d "$dir" ] || {
+		echo "third-party-licenses: no module dir for $path@$version (run 'go mod download')" >&2
+		exit 1
+	}
+
+	# License and notice files live at the module root in almost every module,
+	# but a few (golang.org/x/*, grpc) also carry PATENTS or a NOTICE.txt, and
+	# some monorepo submodules keep theirs one level up in the extracted zip.
+	find "$dir" -maxdepth 2 \
+		\( -iname 'LICENSE' -o -iname 'LICENSE.*' -o -iname 'LICENCE' \
+		-o -iname 'LICENCE.*' -o -iname 'COPYING' -o -iname 'COPYING.*' \
+		-o -iname 'NOTICE' -o -iname 'NOTICE.*' -o -iname 'PATENTS' \) \
+		-type f 2>/dev/null | sort > "$work/files"
+
+	if [ ! -s "$work/files" ]; then
+		echo "third-party-licenses: $path@$version ships no license file" >&2
+		exit 1
+	fi
+
+	# Classify from the licence title in the first few lines, not a full-text
+	# grep: the MPL-2.0 text names the GPL/LGPL/AGPL in its "Secondary License"
+	# definition, so grepping whole files would flag every hashicorp module.
+	primary=$(head -1 "$work/files")
+	if head -8 "$primary" | grep -qiE 'GNU (AFFERO )?GENERAL PUBLIC LICENSE' &&
+		! head -8 "$primary" | grep -qi 'LESSER'; then
+		echo "$path@$version" >> "$work/copyleft"
+	fi
+
+	echo "================================================================================"
+	echo "$path"
+	echo "  version: $version"
+	echo "================================================================================"
+	echo
+
+	while IFS= read -r f; do
+		# Label each text by filename so a NOTICE isn't mistaken for the license
+		# itself (Apache 4(d) notices must be reproduced, but they are not grants).
+		echo "--- $(basename "$f") ---"
+		echo
+		cat "$f"
+		echo
+	done < "$work/files"
+done < "$work/mods"
+
+echo "third-party-licenses: $(wc -l < "$work/mods" | tr -d ' ') modules${TAGS:+ (tags: $TAGS)}" >&2
+
+if [ -f "$work/copyleft" ]; then
+	echo >&2
+	echo "third-party-licenses: GPL/AGPL module(s) linked into this build:" >&2
+	sed 's/^/    /' "$work/copyleft" >&2
+	echo >&2
+	echo "  A binary containing these cannot be distributed under Apache-2.0." >&2
+	echo "  Build without the offending tag, or do not distribute this binary." >&2
+	if [ "$ALLOW_COPYLEFT" != "1" ]; then
+		echo "  (set ALLOW_COPYLEFT=1 to generate anyway for local use)" >&2
+		exit 1
+	fi
+fi

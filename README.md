@@ -85,6 +85,14 @@ picked and how to unlock the rest (e.g. install `ffmpeg-devel` / `libav*-dev`
 for video, then rebuild). Force a set with `make build TAGS=…` (`TAGS=` for
 none).
 
+One caveat if you plan to *hand someone* a binary you built: `-tags demoaudio`
+links `github.com/gotracker/opl2` (a GPL-2.0-or-later port of DOSBox's OPL
+synth) by way of the tracker library's core packages, so a demoaudio build is
+only distributable under the GPL — not under matterbox's Apache-2.0. Build
+tag-free for anything you share, which is what the release binaries are.
+`make third-party-licenses` writes the license bundle for a build and refuses
+to produce one that has GPL code linked in.
+
 Or with plain Go (no optional features, no cgo needed):
 
 ```sh
@@ -318,3 +326,10 @@ reference and examples.
 
 [Apache License 2.0](LICENSE). Much of the code was written with AI assistance
 under human review.
+
+Two pieces of art in here belong to other people and keep their own terms, both
+recorded in [NOTICE](NOTICE): the `--demo` soundtrack is "Paradox #3" by
+**dubmood / Razor1911**, and the empty-feed sailing ship is by **Sebastian
+Stöcker (SSt)** — whose terms are why the signature stays on the art. Release
+binaries additionally ship a `THIRD_PARTY_LICENSES` file covering every Go
+module linked into them.

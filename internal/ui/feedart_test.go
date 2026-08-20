@@ -235,3 +235,31 @@ func TestFeedWaveLoopGuard(t *testing.T) {
 		t.Fatal("wave loop kept ticking while the feed was loading")
 	}
 }
+
+// TestFeedArtKeepsArtistSignature guards a licensing condition, not a feature.
+// The ship is Sebastian Stöcker's, used under his terms: free to copy "as long
+// as you leave them intact and - of course - the initials (SSt) on them" (see
+// NOTICE). The signature sits on the last wave row, so a future refactor of the
+// wave layer could plausibly drift a '~' over it or drop the row entirely —
+// that would put the project out of compliance, silently. Assert the signature
+// survives in the raw art and in the rendered scene at every wave phase.
+func TestFeedArtKeepsArtistSignature(t *testing.T) {
+	const sig = "SSt"
+
+	if !strings.Contains(feedArtRaw, sig) {
+		t.Fatalf("the %q signature is gone from feedart.txt — the art may not be used without it", sig)
+	}
+
+	// One full sway cycle: waveOffset's phase term is 0.18 rad/frame, so ~35
+	// frames covers 2π. Check the static compositor and the full scene (with
+	// the gull overlaid, which stamps glyphs of its own).
+	for phase := 0; phase < 40; phase++ {
+		if !strings.Contains(boatRunes(phase), sig) {
+			t.Fatalf("phase %d: %q missing from the composited art rows", phase, sig)
+		}
+		scene := stripANSI(renderFeedScene(90, 30, phase, true, phase, 0))
+		if !strings.Contains(scene, sig) {
+			t.Fatalf("phase %d: %q missing from the rendered scene", phase, sig)
+		}
+	}
+}

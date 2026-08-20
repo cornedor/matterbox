@@ -214,6 +214,16 @@ fmt: ## Format all Go sources
 run: ## Build and launch the TUI
 	$(GO) run $(TAGFLAGS) $(PKG)
 
+.PHONY: third-party-licenses
+third-party-licenses: ## Write THIRD_PARTY_LICENSES for a release build (LICENSE_TAGS=… to describe a tagged one)
+	@TAGS='$(LICENSE_TAGS)' scripts/third-party-licenses > THIRD_PARTY_LICENSES
+	@echo "wrote THIRD_PARTY_LICENSES ($(if $(LICENSE_TAGS),tags: $(LICENSE_TAGS),tag-free, as released))"
+
+# Deliberately NOT $(TAGS): release tarballs are built tag-free, so that's what
+# this describes by default. Auto-detected tags would make the target fail on
+# any machine that can build demoaudio (which links GPL code — see the script).
+LICENSE_TAGS ?=
+
 .PHONY: version
 version: ## Show the version string this build would be stamped with
 	@echo "$(if $(VERSION),$(VERSION),(unstamped — falls back to the VCS revision))"

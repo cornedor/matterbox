@@ -53,8 +53,13 @@ jobs:
           go build -trimpath \
             -ldflags "-s -w -X matterbox/internal/cli.version=${VERSION}" \
             -o dist/pkg/matterbox .
-          cp README.md dist/pkg/
-          [ -f LICENSE ] && cp LICENSE dist/pkg/ || true
+          cp README.md LICENSE NOTICE dist/pkg/
+          # The binary is statically linked, so the tarball has to carry the
+          # licenses of everything linked into it. Generated per-platform (the
+          # module set differs between linux and darwin) and tag-free, matching
+          # the build above — the script fails the job if a GPL module ever
+          # lands in the link.
+          scripts/third-party-licenses > dist/pkg/THIRD_PARTY_LICENSES
           tar -czf "dist/matterbox_${VERSION}_${GOOS}_${GOARCH}.tar.gz" -C dist/pkg .
       - uses: actions/upload-artifact@v4
         with:

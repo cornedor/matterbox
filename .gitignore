@@ -19,6 +19,11 @@
 # (Mattermost's default FileSettings.Directory layout: data/files/<id>/…)
 /data/
 
+# Generated at release time from go.mod (see scripts/third-party-licenses) and
+# shipped in the tarball, not checked in — a committed copy would silently go
+# stale the next time a dependency changes.
+/THIRD_PARTY_LICENSES
+
 # Local project notes, not part of the release
 /PLAN.md
 
