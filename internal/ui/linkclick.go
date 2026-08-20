@@ -103,7 +103,7 @@ func (m Model) handleLinkConfirmKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 // renderLinkConfirm draws the centred warning shown before a non-web link is
-// handed to the OS. Mirrors the GitLab/delete confirm dialogs but flags the
+// handed to the OS. Mirrors the forge/delete confirm dialogs but flags the
 // scheme in warning yellow.
 func (m *Model) renderLinkConfirm() string {
 	if !m.linkConfirm.active {

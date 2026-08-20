@@ -46,7 +46,7 @@ var (
 	// the channel-info / ref panels, and for a hovered hyperlink in a message.
 	panelHoverBg = adaptiveColor{light: lipgloss.Color("253"), dark: lipgloss.Color("238")}
 
-	// chipBg fills the little pills — reaction chips and inline MR badges. It
+	// chipBg fills the little pills — reaction chips and inline change badges. It
 	// also paints their powerline caps (as a foreground), so the pill reads as
 	// one rounded shape against the terminal background.
 	chipBg = adaptiveColor{light: lipgloss.Color("253"), dark: lipgloss.Color("238")}

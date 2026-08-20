@@ -37,8 +37,9 @@ local LLM.
   argument too, so `/kaomoji ` lists the faces and `/tmpl ` your templates.
 - **Jira integration** — press `v` on a Jira issue link to open a side panel; edit
   Status, Priority, Story points, and Assignee inline without leaving the TUI.
-- **GitLab integration** — press `v` on a GitLab MR link to open a merge-request
-  side panel with pipeline, approvals, and status; approve or merge inline.
+- **GitLab & GitHub integration** — press `v` on a merge-request or pull-request
+  link to open a side panel with CI, approvals, and merge readiness; approve or
+  merge inline (GitHub asks which strategy).
 - **AI summaries** — summarize a channel or thread with a local LLM (Ctrl+K in the TUI).
 - **Agentic search** — end a query with `?` on the Search tab and a local model
   uses tools to dig through your channels to answer it.
@@ -219,11 +220,16 @@ typo fails loud rather than silently shadowing a key.
 > (Ghostty, kitty, WezTerm). `shift+enter` for example *sends* the message on a
 > legacy terminal instead of inserting a newline — use `alt+enter` there.
 
-## Jira & GitLab integration (optional)
+## Jira, GitLab & GitHub integration (optional)
 
-Press `v` on a message that names a Jira issue or links a GitLab merge request to
+Press `v` on a message that names a Jira issue or links a merge/pull request to
 open it in a side panel — read-only by default, with inline editing/actions when
-the token allows it. Both are opt-in and configured in `config.yaml`.
+the token allows it. All three are opt-in and configured in `config.yaml`.
+
+The two forges share one panel and one set of keys: `A` approves, `M` merges, `t`
+expands the CI breakdown. A message that links several of them (mixed with Jira
+issues) opens them all — `←`/`→` cycle, in the order they appear in the message.
+Bare `!iid` links also get an inline status pill in the transcript.
 
 ### GitLab
 
@@ -246,6 +252,38 @@ empty, matterbox falls back to the `GITLAB_TOKEN` env var, then to an existing
 `glab` login (the token `glab auth login` stored for this host in
 `~/.config/glab-cli/config.yml`) — so a working `glab` setup needs no secret in
 this file.
+
+### GitHub
+
+```yaml
+github:
+  base_url: https://github.com   # optional — the default; set an Enterprise host here
+  token: github_pat_…            # optional — see fallbacks below
+```
+
+Both fields are optional. With an existing `gh auth login` you need no `github:`
+block at all: matterbox reads the `GITHUB_TOKEN` or `GH_TOKEN` env var, then the
+token `gh` holds for the host — from `~/.config/gh/hosts.yml`, or via
+`gh auth token` when it lives in your system keyring.
+
+A token is required even for public repositories: unauthenticated GitHub allows
+60 calls/hour per IP, which the panel would exhaust immediately. Read access to
+the repository is enough to view; write access is needed to approve or merge.
+
+`M` asks which strategy to use — `m` merge commit, `s` squash, `r` rebase — since
+GitHub offers all three and repositories disable the ones they don't want. If the
+repository has disabled the one you pick, GitHub's refusal is shown in the status
+bar. The source branch is left alone after a merge: GitHub deletes it itself when
+the repository is set to.
+
+For a GitHub Enterprise host, `base_url` is the browse root; its API is read from
+`/api/v3` on the same host.
+
+Recognised in messages: `/pull/N` links on the configured host, and short
+`owner/repo#N` references. A bare `#N` is not — chat has no repository context,
+and it would fire on ordinary prose. Since GitHub numbers issues and pull
+requests in one sequence, a short ref that turns out to be an issue is reported
+as such (only pull requests open in this panel).
 
 ### Jira (Cloud only)
 

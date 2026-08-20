@@ -216,5 +216,5 @@ func (m Model) clickJumpBottom() (tea.Model, tea.Cmd) {
 	m.msgScrollFree = false
 	m.selectLastMessage()
 	m.renderMessages()
-	return m, m.bumpMRFetch()
+	return m, m.bumpChangeFetch()
 }

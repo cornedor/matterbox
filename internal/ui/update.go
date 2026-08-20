@@ -50,7 +50,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if frames := nm.buildVisibleThumbFrames(); frames != nil {
 		cmd = tea.Batch(cmd, frames)
 	}
-	if fetch := nm.fetchPendingMRStatus(); fetch != nil {
+	if fetch := nm.fetchPendingChangeStatus(); fetch != nil {
 		cmd = tea.Batch(cmd, fetch)
 	}
 	if anim := nm.maybeStartImageAnim(); anim != nil {
@@ -816,18 +816,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewSettled = true
 		return m, m.markChannelViewed(msg.channelID)
 
-	case mrFetchSettleMsg:
-		if msg.gen != m.mrFetchGen {
+	case changeFetchSettleMsg:
+		if msg.gen != m.changeFetchGen {
 			return m, nil // stale tick from an earlier nav burst
 		}
 		// Gen matched: scrolling has paused. Mark settled so the next outer
-		// Update wrapper call to fetchPendingMRStatus drains the accumulated
+		// Update wrapper call to fetchPendingChangeStatus drains the accumulated
 		// pending sightings.
-		m.mrFetchSettledGen = m.mrFetchGen
+		m.changeFetchSettledGen = m.changeFetchGen
 		return m, nil
 
-	case mrStatusLoadedMsg:
-		nm, cmd := m.handleMRStatusLoaded(msg)
+	case changeStatusLoadedMsg:
+		nm, cmd := m.handleChangeStatusLoaded(msg)
 		return nm, cmd
 
 	case errMsg:
@@ -995,11 +995,11 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case jiraMutatedMsg:
 		return m.handleJiraMutated(msg)
 
-	case gitlabLoadedMsg:
-		return m.handleGitLabLoaded(msg)
+	case forgeLoadedMsg:
+		return m.handleForgeLoaded(msg)
 
-	case gitlabMutatedMsg:
-		return m.handleGitLabMutated(msg)
+	case forgeMutatedMsg:
+		return m.handleForgeMutated(msg)
 
 	case fileInfosLoadedMsg:
 		var persistCmd tea.Cmd
@@ -2039,9 +2039,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.jiraCommentActive {
 		return m.handleJiraCommentKey(msg)
 	}
-	// GitLab approve/merge confirm owns every keystroke while open.
-	if m.glConfirm.active {
-		return m.handleGitLabConfirmKey(msg)
+	// The forge approve/merge confirm owns every keystroke while open.
+	if m.refConfirm.active {
+		return m.handleRefConfirmKey(msg)
 	}
 	// Link warning (clicked a non-web link) owns every keystroke while open.
 	if m.linkConfirm.active {
@@ -3791,7 +3791,7 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	switch {
 	case key.Matches(msg, m.keys.Up):
-		settle := m.bumpMRFetch()
+		settle := m.bumpChangeFetch()
 		// Tall selected post with content hidden above: scroll within it
 		// before moving the selection to the previous post.
 		if m.scrollSelWithin(-1, 1) {
@@ -3835,7 +3835,7 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.loadingOlder = true
 		return m, tea.Batch(settle, m.fetchOlder(m.openChannelID, oldestID))
 	case key.Matches(msg, m.keys.Down):
-		settle := m.bumpMRFetch()
+		settle := m.bumpChangeFetch()
 		// Tall selected post with content hidden below: scroll within it
 		// before moving the selection to the next post.
 		if m.scrollSelWithin(1, 1) {
@@ -3887,11 +3887,11 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Home):
 		m.postIdx = 0
 		m.renderMessages()
-		return m, m.bumpMRFetch()
+		return m, m.bumpChangeFetch()
 	case key.Matches(msg, m.keys.End):
 		m.selectLastMessage()
 		m.renderMessages()
-		return m, m.bumpMRFetch()
+		return m, m.bumpChangeFetch()
 	case key.Matches(msg, m.keys.PageDown):
 		if len(m.posts) == 0 {
 			return m, nil
@@ -3899,7 +3899,7 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// Page through a tall selected post before advancing the selection.
 		if m.scrollSelWithin(1, m.viewportPageStep()) {
 			m.renderMessages()
-			return m, m.bumpMRFetch()
+			return m, m.bumpChangeFetch()
 		}
 		m.postIdx += m.messagesPageStep()
 		if m.postIdx > len(m.posts)-1 {
@@ -3907,14 +3907,14 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.anchorSelOnLand(1)
 		m.renderMessages()
-		return m, m.bumpMRFetch()
+		return m, m.bumpChangeFetch()
 	case key.Matches(msg, m.keys.PageUp):
 		if len(m.posts) == 0 {
 			return m, nil
 		}
 		if m.scrollSelWithin(-1, m.viewportPageStep()) {
 			m.renderMessages()
-			return m, m.bumpMRFetch()
+			return m, m.bumpChangeFetch()
 		}
 		m.postIdx -= m.messagesPageStep()
 		if m.postIdx < 0 {
@@ -3922,7 +3922,7 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		m.anchorSelOnLand(-1)
 		m.renderMessages()
-		return m, m.bumpMRFetch()
+		return m, m.bumpChangeFetch()
 	case key.Matches(msg, m.keys.NextHit):
 		return m.gotoSearchHit(1)
 	case key.Matches(msg, m.keys.PrevHit):
@@ -3933,7 +3933,7 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.renderMessages()
-		return m, m.bumpMRFetch()
+		return m, m.bumpChangeFetch()
 	case key.Matches(msg, m.keys.ReplyInThread):
 		if m.postIdx < 0 || m.postIdx >= len(m.posts) {
 			return m, nil

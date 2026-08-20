@@ -65,17 +65,17 @@ func TestGetMergeRequest(t *testing.T) {
 	if mr.Title != "Fix the widget" || mr.Author != "Ada Lovelace" {
 		t.Errorf("MR basics wrong: %+v", mr)
 	}
-	if !mr.Mergeable() {
-		t.Errorf("expected mergeable, dms=%q", mr.DetailedMergeStatus)
+	if !mr.Mergeable {
+		t.Errorf("expected mergeable, merge status = %q", mr.MergeStatus)
 	}
-	if mr.Pipeline == nil || mr.Pipeline.Label != "passed" {
-		t.Fatalf("pipeline = %+v", mr.Pipeline)
+	if mr.Checks == nil || mr.Checks.Label != "passed" {
+		t.Fatalf("pipeline = %+v", mr.Checks)
 	}
-	if len(mr.Pipeline.Stages) != 2 {
-		t.Fatalf("stages = %+v, want 2 (build, test)", mr.Pipeline.Stages)
+	if len(mr.Checks.Groups) != 2 {
+		t.Fatalf("stages = %+v, want 2 (build, test)", mr.Checks.Groups)
 	}
-	if mr.Pipeline.Stages[1].Name != "test" || len(mr.Pipeline.Stages[1].Jobs) != 2 {
-		t.Errorf("test stage = %+v", mr.Pipeline.Stages[1])
+	if mr.Checks.Groups[1].Name != "test" || len(mr.Checks.Groups[1].Jobs) != 2 {
+		t.Errorf("test stage = %+v", mr.Checks.Groups[1])
 	}
 	if mr.Approvals == nil || !mr.Approvals.Approved || len(mr.Approvals.By) != 1 {
 		t.Errorf("approvals = %+v", mr.Approvals)
@@ -128,8 +128,8 @@ func TestPipelineJobsFailureIsNonFatal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get should succeed even when jobs/approvals fail: %v", err)
 	}
-	if mr.Pipeline == nil || len(mr.Pipeline.Stages) != 0 {
-		t.Errorf("pipeline stages should be empty on jobs failure: %+v", mr.Pipeline)
+	if mr.Checks == nil || len(mr.Checks.Groups) != 0 {
+		t.Errorf("pipeline stages should be empty on jobs failure: %+v", mr.Checks)
 	}
 	if mr.Approvals != nil {
 		t.Errorf("approvals should be nil when unavailable: %+v", mr.Approvals)
@@ -156,7 +156,7 @@ func TestApproveAndMergeHitRightEndpoints(t *testing.T) {
 	if err := c.Approve(ctx, "g/p", 42); err != nil {
 		t.Fatalf("Approve: %v", err)
 	}
-	if err := c.Merge(ctx, "g/p", 42, true); err != nil {
+	if err := c.Merge(ctx, "g/p", 42, ""); err != nil {
 		t.Fatalf("Merge: %v", err)
 	}
 	if !strings.HasSuffix(gotApprove, "/merge_requests/42/approve") {
@@ -175,7 +175,7 @@ func TestNewNormalizesBaseURL(t *testing.T) {
 		t.Errorf("BaseURL() = %q, want https://git.example.com", c.BaseURL())
 	}
 	refs := Refs("https://git.example.com/g/p/-/merge_requests/9", c.BaseURL())
-	if len(refs) != 1 || refs[0].String() != "g/p!9" {
+	if len(refs) != 1 || short(refs[0]) != "g/p!9" {
 		t.Errorf("scheme-less base should still detect the link, got %v", refs)
 	}
 	if c.WebURL("g/p", 9) != "https://git.example.com/g/p/-/merge_requests/9" {
@@ -189,7 +189,7 @@ func TestStatusErrorMessage(t *testing.T) {
 		w.Write([]byte(`{"message": "405 Method Not Allowed"}`))
 	}))
 	defer srv.Close()
-	err := newTestClient(srv).Merge(context.Background(), "g/p", 42, false)
+	err := newTestClient(srv).Merge(context.Background(), "g/p", 42, "")
 	if err == nil || !strings.Contains(err.Error(), "405 Method Not Allowed") {
 		t.Errorf("error = %v, want it to surface the API message", err)
 	}

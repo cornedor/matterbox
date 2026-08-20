@@ -1732,7 +1732,7 @@ func init() {
 		{func(m *Model) bool { return m.jiraPicker.active }, func(m *Model, h int) string { return m.renderJiraPicker(h) }},
 		{func(m *Model) bool { return m.jiraPointsActive }, func(m *Model, _ int) string { return m.renderJiraPointsInput() }},
 		{func(m *Model) bool { return m.jiraCommentActive }, func(m *Model, _ int) string { return m.renderJiraCommentInput() }},
-		{func(m *Model) bool { return m.glConfirm.active }, func(m *Model, _ int) string { return m.renderGitLabConfirm() }},
+		{func(m *Model) bool { return m.refConfirm.active }, func(m *Model, _ int) string { return m.renderRefConfirm() }},
 		{func(m *Model) bool { return m.linkConfirm.active }, func(m *Model, _ int) string { return m.renderLinkConfirm() }},
 		{(*Model).openPickerActive, func(m *Model, _ int) string { return m.renderOpenPicker() }},
 		{(*Model).codePickerActive, func(m *Model, _ int) string { return m.renderCodePicker() }},

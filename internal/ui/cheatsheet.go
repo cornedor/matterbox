@@ -32,7 +32,7 @@ var keysSheetSections = []struct {
 	{title: "Sidebar navigation", contexts: []string{"global:nav"}, rows: (*Model).navSheetRows},
 	{title: "Messages", contexts: []string{"focus:messages"}},
 	{title: "Thread", contexts: []string{"focus:thread"}},
-	{title: "Reference (Jira / GitLab)", contexts: []string{"focus:ref"}},
+	{title: "Reference (Jira / GitLab / GitHub)", contexts: []string{"focus:ref"}},
 	{title: "Jira editors", contexts: []string{"modal:jira-picker", "modal:jira-points", "modal:jira-comment"}},
 	{title: "Channel info / media", contexts: []string{"focus:info", "focus:info-media"}},
 	// The preview modal's dismiss keys are hardwired in handlePreviewKey, so the

@@ -96,7 +96,7 @@ func effectsPreprocess(raw string) string {
 //
 // The extra pass runs only for posts that carry effects, and only on a miss of
 // the (width-independent) markdown cache above it.
-func renderMarkdownEffects(raw string, ei *emojiImages, mr mrInlineFn, self string) string {
+func renderMarkdownEffects(raw string, ei *emojiImages, mr changeInlineFn, self string) string {
 	marked := effectsPreprocess(raw)
 	if marked == raw {
 		return renderMarkdown(raw, ei, mr, self) // no effects — the ordinary path

@@ -176,6 +176,9 @@
     "gitlab": {
       "$ref": "#/definitions/gitlab"
     },
+    "github": {
+      "$ref": "#/definitions/github"
+    },
     "language_tool": {
       "$ref": "#/definitions/languageTool"
     }
@@ -514,6 +517,22 @@
         "token": {
           "type": "string",
           "description": "Personal or project access token (read_api to view; api to approve/merge). Empty falls back to the GITLAB_TOKEN env var, then to an existing glab CLI login for the host."
+        }
+      }
+    },
+    "github": {
+      "type": "object",
+      "description": "The GitHub pull-request side panel. Press v on a message linking a pull request to view it inline. No token (config, environment or gh CLI) disables the panel.",
+      "additionalProperties": false,
+      "properties": {
+        "base_url": {
+          "type": "string",
+          "description": "Instance root. Empty means https://github.com; an Enterprise host (https://github.example.com) is served from /api/v3. Also used to recognise /pull/N links.",
+          "format": "uri"
+        },
+        "token": {
+          "type": "string",
+          "description": "Personal access token (repo read to view; write to approve/merge). Empty falls back to the GITHUB_TOKEN or GH_TOKEN env var, then to an existing gh CLI login for the host."
         }
       }
     },

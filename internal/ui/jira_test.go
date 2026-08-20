@@ -77,13 +77,13 @@ func TestOpenReferenceNoIssue(t *testing.T) {
 	if cmd != nil {
 		t.Error("expected no Cmd when nothing to open")
 	}
-	if !strings.Contains(got.status, "no Jira issue or GitLab MR") {
+	if !strings.Contains(got.status, "no Jira issue or") {
 		t.Errorf("status = %q", got.status)
 	}
 }
 
 func TestOpenReferenceNotConfigured(t *testing.T) {
-	m := newTestModel() // default jira + gitlab clients have no credentials → disabled
+	m := newTestModel() // default jira client + no forges → nothing configured
 	m.width, m.height = 120, 40
 	post := &model.Post{Message: "https://example.atlassian.net/browse/ABC-1"}
 

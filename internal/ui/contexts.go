@@ -79,15 +79,15 @@ func (m *Model) inModal() bool {
 		m.createChan != nil || m.chanEdit != nil || m.chanConfirm != nil || m.joinChan != nil ||
 		m.gorillas.active || m.kurve.active || m.keyDebugMode ||
 		m.jiraPicker.active || m.jiraPointsActive || m.jiraCommentActive ||
-		m.glConfirm.active || m.linkConfirm.active
+		m.refConfirm.active || m.linkConfirm.active
 }
 
 // yesNoConfirm reports whether one of the three y/n confirmations is up: the
-// GitLab approve/merge check, the non-web link warning, and the channel
+// forge approve/merge check, the non-web link warning, and the channel
 // archive/leave/privacy check. They share a handler shape, so they share a
 // context row.
 func (m *Model) yesNoConfirm() bool {
-	return m.glConfirm.active || m.linkConfirm.active || m.chanConfirm != nil
+	return m.refConfirm.active || m.linkConfirm.active || m.chanConfirm != nil
 }
 
 // channelForm reports whether one of the channel modals raised from the "> "
@@ -184,7 +184,7 @@ var keyContexts = []keyContext{
 		},
 	},
 	{
-		// The three y/n confirmations: GitLab approve/merge, the non-web link
+		// The three y/n confirmations: a forge approve/merge, the non-web link
 		// warning, and the channel archive/leave/privacy check.
 		name:     "modal:confirm",
 		active:   func(m *Model) bool { return m.yesNoConfirm() },
@@ -507,9 +507,9 @@ var keyContexts = []keyContext{
 	},
 	{
 		// Reference side panel (open-reference key on a message naming a Jira
-		// issue or GitLab MR). The open-reference key toggles it shut, ←/→ cycle
+		// issue or forge change request). The open-reference key toggles it shut, ←/→ cycle
 		// references, r refetches, o opens it in a browser; esc (hardwired) also
-		// closes. Provider keys (Jira s/p/P/a, GitLab A/M) and scrolling fall
+		// closes. Provider keys (Jira s/p/P/a, forge A/M) and scrolling fall
 		// through to the focused handler / viewport.
 		name:     "focus:ref",
 		active:   func(m *Model) bool { return m.focus == focusRef },
@@ -520,12 +520,12 @@ var keyContexts = []keyContext{
 				m.keys.OpenRef, m.keys.Refresh, m.keys.OpenAttach,
 				hardwired("close", "esc"),
 			}
-			// Provider keys act only once the panel has loaded the issue / MR;
+			// Provider keys act only once the panel has loaded the issue / change;
 			// before that they fall through to scrolling it.
 			bs = append(bs,
 				m.keys.JiraStatus, m.keys.JiraPriority, m.keys.JiraPoints, m.keys.JiraAssignee,
 				m.keys.JiraComment, m.keys.JiraReply,
-				m.keys.GitLabApprove, m.keys.GitLabMerge, m.keys.GitLabJobs,
+				m.keys.RefApprove, m.keys.RefMerge, m.keys.RefJobs,
 			)
 			return bs
 		},

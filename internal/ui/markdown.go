@@ -9,8 +9,6 @@ import (
 	"charm.land/lipgloss/v2"
 	emoji "github.com/kyokomi/emoji/v2"
 
-	"matterbox/internal/gitlab"
-
 	"matterbox/internal/game"
 )
 
@@ -166,12 +164,13 @@ func trimTrailingURLPunct(u string) (clean, trailing string) {
 	return u[:i], u[i:]
 }
 
-// mrInlineFn resolves a bare GitLab MR URL to an inline badge string.
+// changeInlineFn resolves a bare change-request URL (a GitLab merge request, a
+// GitHub pull request) to an inline badge string.
 // When it returns ok=true the badge replaces the raw URL entirely (including
 // any OSC 8 link); when ok=false the URL is rendered as a normal hyperlink.
-// A nil mrInlineFn means MR badge substitution is disabled (e.g. in ref-panel
+// A nil changeInlineFn means badge substitution is disabled (e.g. in ref-panel
 // descriptions and tests).
-type mrInlineFn func(rawURL string) (badge string, ok bool)
+type changeInlineFn func(rawURL string) (badge string, ok bool)
 
 // leadingSpaces counts the run of leading space characters in s.
 func leadingSpaces(s string) int {
@@ -319,8 +318,8 @@ func expandTabs(s string, tabWidth int) string {
 // renderMarkdown renders a Mattermost message body. Each output line is
 // already indented with the two-space message gutter. ei (may be nil) resolves
 // custom server emoji to inline Kitty-graphics placeholders; mr (may be nil)
-// rewrites GitLab MR URLs to inline badge pills.
-func renderMarkdown(msg string, ei *emojiImages, mr mrInlineFn, self string) string {
+// rewrites change-request URLs to inline badge pills.
+func renderMarkdown(msg string, ei *emojiImages, mr changeInlineFn, self string) string {
 	// A game post carries its state as invisible variation selectors. They render
 	// as nothing, but they are still runes the wrapper would have to account for —
 	// strip them before anything measures or lays out the body.
@@ -398,7 +397,7 @@ func renderMarkdown(msg string, ei *emojiImages, mr mrInlineFn, self string) str
 // charset; code spans are already stashed before this runs.
 var emojiShortcodeRe = regexp.MustCompile(`:([a-zA-Z0-9_+\-]+):`)
 
-func renderInline(s string, ei *emojiImages, mr mrInlineFn, self string) string {
+func renderInline(s string, ei *emojiImages, mr changeInlineFn, self string) string {
 	if s == "" {
 		return ""
 	}
@@ -446,8 +445,8 @@ func renderInline(s string, ei *emojiImages, mr mrInlineFn, self string) string 
 	// so the styling passes don't run on URLs already claimed by a
 	// markdown link. They're restored as OSC 8 hyperlinks at the end.
 	//
-	// Bare GitLab MR URLs are handled specially: when mr is set and the URL
-	// matches a merge-request link, it is replaced with an inline badge pill
+	// Bare change-request URLs are handled specially: when mr is set and the URL
+	// matches a merge/pull-request link, it is replaced with an inline badge pill
 	// rather than a plain hyperlink. The badge is inserted directly (not
 	// stashed) so its ANSI escapes survive the later styling passes unchanged.
 	type linkEntry struct{ url, text string }
@@ -529,7 +528,7 @@ func renderInline(s string, ei *emojiImages, mr mrInlineFn, self string) string 
 // Each cell is inline-styled here so the width-independent markdown cache holds
 // the styled content; the wrap stage only lays it out. ok is false when the two
 // lines don't form a table, so the caller falls back to normal line handling.
-func parseTable(lines []string, i int, ei *emojiImages, mr mrInlineFn, self string) (encoded string, next int, ok bool) {
+func parseTable(lines []string, i int, ei *emojiImages, mr changeInlineFn, self string) (encoded string, next int, ok bool) {
 	if i+1 >= len(lines) {
 		return "", 0, false
 	}
@@ -637,14 +636,4 @@ func splitTableCells(s string) []string {
 		cells = cells[:len(cells)-1]
 	}
 	return cells
-}
-
-// parseMRURL parses a raw URL and returns its GitLab project path and MR iid
-// when the URL matches the configured instance. Used by mrInlineFn closures.
-func parseMRURL(rawURL, baseURL string) (project string, iid int, ok bool) {
-	refs := gitlab.Refs(rawURL, baseURL)
-	if len(refs) == 0 {
-		return "", 0, false
-	}
-	return refs[0].Project, refs[0].IID, true
 }

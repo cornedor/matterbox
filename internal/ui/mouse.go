@@ -139,7 +139,7 @@ var (
 func (m *Model) mouseBlocked() bool {
 	return !m.mouseEnabled || m.inModal() || m.keyDebugMode ||
 		m.jiraPicker.active || m.jiraPointsActive || m.jiraCommentActive ||
-		m.glConfirm.active || m.linkConfirm.active
+		m.refConfirm.active || m.linkConfirm.active
 }
 
 // multiClickInterval is the window within which successive presses at (about)
@@ -1221,7 +1221,7 @@ func (m *Model) editorCursor() (col, row int, ok bool) {
 // (see jiraCommentCursor) — editorCursor handles it ahead of this check.
 func (m *Model) bodyOverlayActive() bool {
 	return m.inModal() || m.jiraPointsActive || m.jiraPicker.active ||
-		m.glConfirm.active || m.linkConfirm.active
+		m.refConfirm.active || m.linkConfirm.active
 }
 
 // composerCursor maps the compose editor's own (col,row) — past the prompt

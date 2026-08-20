@@ -187,8 +187,12 @@ type Config struct {
 	// GitLab configures the merge-request side panel: press the open-reference
 	// key (v) on a message linking a merge request to fetch it from GitLab and
 	// show it inline. An empty base_url (with no usable token) disables the
-	// panel. See internal/gitlab and internal/ui.
+	// panel. See internal/forge/gitlab and internal/ui.
 	GitLab GitLabConfig `yaml:"gitlab"`
+	// GitHub configures the same panel for pull requests. No token (in config,
+	// in the environment, or held by the gh CLI) disables it. See
+	// internal/forge/github and internal/ui.
+	GitHub GitHubConfig `yaml:"github"`
 	// LanguageTool configures the optional grammar/spell checker for the
 	// composer: while you type, the draft is checked against a LanguageTool
 	// server and mistakes are underlined in place (alt+g surfaces the
@@ -260,6 +264,24 @@ type GitLabConfig struct {
 	// GITLAB_TOKEN env var, then to the token glab stored for this host in
 	// ~/.config/glab-cli/config.yml — so an existing `glab auth login` just
 	// works without copying the secret into this file.
+	Token string `yaml:"token"`
+}
+
+// GitHubConfig holds the GitHub connection used by the pull-request side panel.
+// Both fields are optional: base_url defaults to github.com, and token may be
+// left empty to fall back to the environment or an existing gh CLI login.
+type GitHubConfig struct {
+	// BaseURL is the instance root. Empty means https://github.com; set it to an
+	// Enterprise host (https://github.example.com), whose API is served from
+	// /api/v3 on the same host. Also used to recognise /pull/N links that point
+	// at this instance.
+	BaseURL string `yaml:"base_url"`
+	// Token is a personal access token: repo read access is enough to view, and
+	// write access is needed for the approve/merge actions. Empty falls back to
+	// the GITHUB_TOKEN or GH_TOKEN env var, then to the token the gh CLI holds
+	// for this host (in ~/.config/gh/hosts.yml, or the system keyring via
+	// `gh auth token`) — so an existing `gh auth login` just works without
+	// copying the secret into this file.
 	Token string `yaml:"token"`
 }
 
@@ -1403,6 +1425,12 @@ func writeConfig(p string, cfg *Config) error {
 		"#             token is a personal/project access token (read_api to view,\n" +
 		"#             api to approve/merge). Empty token falls back to GITLAB_TOKEN\n" +
 		"#             or an existing glab CLI login for the same host.\n" +
+		"# github:     the same panel for pull requests. base_url is optional and\n" +
+		"#             defaults to https://github.com — set it to a GitHub\n" +
+		"#             Enterprise host to use that instead. token is a personal\n" +
+		"#             access token (repo read to view, write to approve/merge);\n" +
+		"#             empty falls back to GITHUB_TOKEN / GH_TOKEN, then to an\n" +
+		"#             existing gh CLI login for the same host.\n" +
 		"# language_tool: composer grammar/spell check (off by default). enabled\n" +
 		"#             true turns it on; while you type the draft is checked against\n" +
 		"#             a LanguageTool server and mistakes are underlined in place —\n" +
