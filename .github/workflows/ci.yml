@@ -96,6 +96,20 @@ jobs:
           fi
           echo "ok: the licence guard rejects the demoaudio build, naming opl2"
 
+      # The video tag's licensing depends on the runner's ffmpeg, not on go.mod,
+      # so assert only that the probe compiles, runs and reaches a verdict —
+      # never which verdict. Ubuntu ships a GPL-configured ffmpeg today, but
+      # that is the distro's choice to change, and a check that breaks when
+      # Ubuntu reconfigures would be testing apt, not matterbox.
+      - name: the ffmpeg licence probe must reach a verdict
+        run: |
+          go run -tags video ./internal/libav/probe | tee /tmp/libav.txt
+          grep -qE '^linked=1$' /tmp/libav.txt \
+            || { echo "probe did not report a linked libav"; exit 1; }
+          grep -qE '^class=(lgpl|gpl|nonfree)$' /tmp/libav.txt \
+            || { echo "probe could not classify the linked ffmpeg's licence"; exit 1; }
+          echo "ok: the probe classified the runner's ffmpeg"
+
   # Prove the release targets still compile. Same matrix as release.yml, so a
   # tag never fails on something a PR could have caught.
   cross-build:

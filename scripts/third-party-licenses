@@ -125,6 +125,86 @@ done < "$work/mods"
 
 echo "third-party-licenses: $(wc -l < "$work/mods" | tr -d ' ') modules${TAGS:+ (tags: $TAGS)}" >&2
 
+# The module scan above cannot see the `video` tag's real dependency. go-astiav
+# is MIT, but it is only cgo bindings — the code that ends up in the binary is
+# the system's ffmpeg, whose licence depends on how that ffmpeg was configured
+# (LGPL by default, GPL with --enable-gpl, unredistributable with
+# --enable-nonfree). So ask the linked library itself; see internal/libav.
+case ",$(printf '%s' "$TAGS" | tr ' ' ',')," in
+*,video,*)
+	if ! "$GO" run -tags "$TAGS" ./internal/libav/probe > "$work/libav" 2>"$work/libaverr"; then
+		echo >&2
+		echo "third-party-licenses: could not determine the linked ffmpeg's licence:" >&2
+		sed 's/^/    /' "$work/libaverr" >&2
+		echo "  Refusing to vouch for a build whose ffmpeg licence is unknown." >&2
+		exit 1
+	fi
+	# Read the fields rather than sourcing them: the licence string contains
+	# spaces, so `. "$work/libav"` would run "version" and "3" as commands.
+	field() { sed -n "s/^$1=//p" "$work/libav"; }
+	av_version=$(field version)
+	av_license=$(field license)
+	av_class=$(field class)
+	av_ok=$(field distributable)
+
+	echo "third-party-licenses: ffmpeg $av_version, $av_license (class: $av_class)" >&2
+
+	if [ "$av_ok" != "1" ]; then
+		echo >&2
+		echo "third-party-licenses: this build links ffmpeg under \"$av_license\"." >&2
+		echo "  A binary containing it cannot be distributed under Apache-2.0." >&2
+		echo "  Build against an LGPL ffmpeg (configured without --enable-gpl)," >&2
+		echo "  drop -tags video, or do not distribute this binary." >&2
+		if [ "$ALLOW_COPYLEFT" != "1" ]; then
+			echo "  (set ALLOW_COPYLEFT=1 to generate anyway for local use)" >&2
+			exit 1
+		fi
+	fi
+
+	# An LGPL ffmpeg may ship with an Apache-2.0 binary, but not silently: LGPL
+	# 2.1 section 4 wants the library named, its licence text available, and its
+	# source obtainable. Emit that section so a video build's bundle is complete
+	# rather than merely un-refused.
+	echo "================================================================================"
+	echo "FFmpeg (libav*) — linked C libraries, not a Go module"
+	echo "  version: $av_version"
+	echo "================================================================================"
+	echo
+	echo "This binary was built with -tags video, which links the FFmpeg libraries"
+	echo "(libavcodec, libavformat, libavutil, libswscale, …) through the MIT-licensed"
+	echo "cgo bindings github.com/asticode/go-astiav, whose own licence appears above."
+	echo "FFmpeg itself is separate software with its own terms, and the libraries"
+	echo "linked here report:"
+	echo
+	echo "    $av_license"
+	echo
+	echo "Source code for FFmpeg, including the exact release linked here, is available"
+	echo "from https://ffmpeg.org/download.html and https://git.ffmpeg.org/ffmpeg.git ."
+	echo "The full licence texts, and FFmpeg's own notes on which configurations produce"
+	echo "which licence, are at https://www.ffmpeg.org/legal.html ."
+	echo
+	# Distros ship the text on disk; include it verbatim when we can find it,
+	# since a pointer is weaker than the copy the licence asks for.
+	for d in /usr/share/licenses/ffmpeg-libs /usr/share/licenses/ffmpeg \
+		/usr/share/doc/libavutil* /usr/share/doc/ffmpeg; do
+		[ -d "$d" ] || continue
+		# No cap: a distro ships several (GPLv2, GPLv3, LGPLv2.1, LGPLv3) and
+		# quietly dropping one would leave the bundle short of a licence text
+		# it claims to carry.
+		found=$(find "$d" -maxdepth 1 -type f \
+			\( -iname 'COPYING*' -o -iname 'LICENSE*' \) 2>/dev/null | sort)
+		[ -n "$found" ] || continue
+		for f in $found; do
+			echo "--- $(basename "$f") (from $d) ---"
+			echo
+			cat "$f"
+			echo
+		done
+		break
+	done
+	;;
+esac
+
 if [ -f "$work/copyleft" ]; then
 	echo >&2
 	echo "third-party-licenses: GPL/AGPL module(s) linked into this build:" >&2

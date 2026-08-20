@@ -85,13 +85,24 @@ picked and how to unlock the rest (e.g. install `ffmpeg-devel` / `libav*-dev`
 for video, then rebuild). Force a set with `make build TAGS=…` (`TAGS=` for
 none).
 
-One caveat if you plan to *hand someone* a binary you built: `-tags demoaudio`
-links `github.com/gotracker/opl2` (a GPL-2.0-or-later port of DOSBox's OPL
-synth) by way of the tracker library's core packages, so a demoaudio build is
-only distributable under the GPL — not under matterbox's Apache-2.0. Build
-tag-free for anything you share, which is what the release binaries are.
-`make third-party-licenses` writes the license bundle for a build and refuses
-to produce one that has GPL code linked in.
+Two caveats if you plan to *hand someone* a binary you built, rather than just
+run it yourself:
+
+- `-tags demoaudio` links `github.com/gotracker/opl2` (a GPL-2.0-or-later port
+  of DOSBox's OPL synth) by way of the tracker library's core packages, so a
+  demoaudio build is only distributable under the GPL — never under matterbox's
+  Apache-2.0. That one is unavoidable: it comes from the dependency graph.
+- `-tags video` links your system's FFmpeg, and *that* depends on how your
+  FFmpeg was configured. Plain LGPL FFmpeg is fine to ship alongside
+  Apache-2.0; one built `--enable-gpl` (which most distro builds are, because
+  it enables x264 and friends) is not. So the same commit yields a
+  distributable binary on one machine and a non-distributable one on another.
+  `matterbox version` asks the linked library and tells you which you have.
+
+Build tag-free for anything you share — that is what the release binaries are.
+`make third-party-licenses` writes the license bundle for a build and refuses to
+produce one for a build it can't vouch for, checking both the Go dependency
+graph and the linked FFmpeg.
 
 Or with plain Go (no optional features, no cgo needed):
 

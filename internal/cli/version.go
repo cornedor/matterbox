@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"matterbox/internal/libav"
 )
 
 // version is the release name, stamped at link time by the Makefile:
@@ -109,6 +111,14 @@ func newVersionCmd() *cobra.Command {
 				tags = "(none)"
 			}
 			fmt.Fprintf(out, "tags:   %s\n", tags)
+			// A `video` build links the system's ffmpeg, whose license depends
+			// on how that ffmpeg was configured — so two binaries from the same
+			// commit can differ on whether they may be handed to anyone. Only
+			// the binary itself knows, so it says. Omitted entirely when no
+			// libav is linked, which is every release build.
+			if s := libav.Linked().Summary(); s != "" {
+				fmt.Fprintf(out, "ffmpeg: %s\n", s)
+			}
 			fmt.Fprintf(out, "go:     %s %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
 			return nil
 		},
