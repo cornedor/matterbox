@@ -176,6 +176,9 @@
     "gitlab": {
       "$ref": "#/definitions/gitlab"
     },
+    "github": {
+      "$ref": "#/definitions/github"
+    },
     "language_tool": {
       "$ref": "#/definitions/languageTool"
     }
@@ -514,6 +517,38 @@
         "token": {
           "type": "string",
           "description": "Personal or project access token (read_api to view; api to approve/merge). Empty falls back to the GITLAB_TOKEN env var, then to an existing glab CLI login for the host."
+        }
+      }
+    },
+    "github": {
+      "type": "object",
+      "description": "The GitHub issue / pull-request side panel. Press v on a message naming a GitHub issue or pull request to view it inline. Public repositories are readable without a token (anonymous, 60 requests/hour); a token adds private repos, approve/merge, and inline badges.",
+      "additionalProperties": false,
+      "properties": {
+        "base_url": {
+          "type": "string",
+          "description": "Instance root, e.g. https://github.com or https://ghe.example.com. Also used to recognize issue / pull URLs that point at this instance.",
+          "format": "uri",
+          "default": "https://github.com"
+        },
+        "token": {
+          "type": "string",
+          "description": "Optional personal access token. When unset, falls back to GITHUB_TOKEN / GH_TOKEN (env overrides config, like GitLab), then an existing gh CLI login for the host, then optional matterbox OAuth from `matterbox github login`."
+        },
+        "client_id": {
+          "type": "string",
+          "description": "OAuth application's client_id for optional device-flow login (`matterbox github login`). Not needed when using a PAT or gh CLI token."
+        },
+        "scopes": {
+          "type": "array",
+          "description": "OAuth scopes for `matterbox github login`. Default [\"public_repo\", \"repo:status\"] covers public read + commit statuses without a broad private-repo write grant.",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "public_repo",
+            "repo:status"
+          ]
         }
       }
     },

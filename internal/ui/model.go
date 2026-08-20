@@ -21,7 +21,9 @@ import (
 	"matterbox/internal/config"
 	"matterbox/internal/editor"
 	"matterbox/internal/embed"
-	"matterbox/internal/gitlab"
+	"matterbox/internal/forge"
+	"matterbox/internal/forge/github"
+	"matterbox/internal/forge/gitlab"
 	"matterbox/internal/hidden"
 	"matterbox/internal/jira"
 	"matterbox/internal/languagetool"
@@ -146,7 +148,8 @@ type Model struct {
 
 	// hover is the clickable element the pointer is currently over (a team tab
 	// or a channel row), painted with a hover style; textSel is an in-progress
-	// or just-finished click-drag text selection in the message / thread pane.
+	// or just-finished click-drag text selection in the message, thread,
+	// reference, or channel-info pane.
 	// wrapIdx caches one pane's content split into logical lines plus each line's
 	// visual-row start, keyed by content version, so a drag maps screen cells to
 	// content coordinates without re-measuring every line per motion event. All
@@ -521,29 +524,32 @@ type Model struct {
 	replyParentID string
 
 	// Reference side panel (open-reference key `v` on a message naming a Jira
-	// issue or linking a GitLab merge request). refOpen toggles the panel; it's
-	// mutually exclusive with the thread panel — opening one closes the other
-	// (the right slot hosts one detail pane). refs are the references found on
-	// the source post (←/→ cycle them, across both providers in appearance
-	// order); refIdx is the one shown. refGen drops a stale async fetch the user
-	// already cycled/closed past. refLoading/refErr are the shared load state of
-	// whichever ref is current. See ref.go; the per-provider data + rendering
-	// live in jira.go and gitlab.go.
-	refOpen           bool
-	refView           viewport.Model
-	refs              []reference
-	refIdx            int
-	refLoading        bool
-	refErr            error
-	refGen            int
-	jiraIssue         *jira.Issue // loaded data when the current ref is a Jira issue
-	jiraClient        *jira.Client
-	jiraProjects      []string
-	glMR              *gitlab.MR // loaded data when the current ref is a GitLab MR
-	glClient          *gitlab.Client
-	mrStatus          *mrStatusManager // inline MR badge state; nil when gitlab not configured
-	mrFetchGen        int              // bumped on navigation to debounce scroll fetches
-	mrFetchSettledGen int              // set by settle tick; fetches fire when gen == settledGen
+	// issue or linking a change request on a configured forge). refOpen toggles
+	// the panel; it's mutually exclusive with the thread panel — opening one
+	// closes the other (the right slot hosts one detail pane). refs are the
+	// references found on the source post (←/→ cycle them, across providers in
+	// appearance order); refIdx is the one shown. refGen drops a stale async
+	// fetch the user already cycled/closed past. See ref.go; forge rendering
+	// lives in forge.go.
+	refOpen         bool
+	refView         viewport.Model
+	refs            []reference
+	refIdx          int
+	refLoading      bool
+	refErr          error
+	refGen          int
+	refJobsExpanded bool        // forge CI job list expanded past the per-group cap
+	jiraIssue       *jira.Issue // loaded data when the current ref is a Jira issue
+	jiraClient      *jira.Client
+	jiraProjects    []string
+	// forges are the configured code forges (GitLab, GitHub, …), in config order.
+	// A reference remembers its forge by index. Disabled providers are skipped.
+	// refChange is the loaded change request when the current ref is a forge one.
+	refChange             *forge.Change
+	forges                []forge.Provider
+	changeStatus          *changeStatusManager // inline badge state; nil only in bare test models
+	changeFetchGen        int                  // bumped on navigation to debounce scroll fetches
+	changeFetchSettledGen int                  // set by settle tick; fetches fire when gen == settledGen
 
 	// Jira field editors, opened with s/p/a/P while the panel shows a Jira
 	// issue. jiraPicker is the modal list picker for Status / Priority /
@@ -564,18 +570,13 @@ type Model struct {
 	jiraCommentMention *jira.Mention
 	jiraCommentReplyTo string
 
-	// GitLab action confirm, opened with A (approve) / M (merge) while the panel
-	// shows a merge request. Modal — owns every keystroke while open (gitlab.go).
-	glConfirm glConfirmState
+	// Forge action confirm, opened with A (approve) / M (merge) while the panel
+	// shows a change request. Modal — owns every keystroke while open (forge.go).
+	refConfirm refConfirmState
 	// linkConfirm warns before opening a clicked link whose scheme isn't http(s)
 	// — handing a file:/mailto:/custom-scheme target to the OS launcher can do
 	// more than open a browser tab. Modal (linkclick.go).
 	linkConfirm linkConfirmState
-	// glJobsExpanded toggles (with `t`) between showing the first few jobs per
-	// pipeline stage and all of them — long pipelines stay readable by default,
-	// and each stage header carries an aggregate status so a hidden failing job
-	// is never missed.
-	glJobsExpanded bool
 
 	// Channel-info side panel (open with the channel-info key on a channel/DM
 	// tab). Like the reference panel it hosts the single right slot, so opening
@@ -1074,6 +1075,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	var jiraCfg jira.Config
 	var jiraProjects []string
 	var gitlabCfg gitlab.Config
+	var githubCfg github.Config
 	var serverURL string
 	var kaomojiOptions []string
 	if cfg != nil {
@@ -1162,6 +1164,10 @@ func New(client *mm.Client, cfg *config.Config) Model {
 			BaseURL: cfg.GitLab.BaseURL,
 			Token:   cfg.GitLab.Token,
 		}
+		githubCfg = github.Config{
+			BaseURL: cfg.GitHub.BaseURL,
+			Token:   cfg.GitHub.Token,
+		}
 		kaomojiOptions = append(kaomojiOptions, cfg.KaomojiOptions...)
 	}
 	// The GIPHY_API_KEY env var overrides the config key (handy for keeping a
@@ -1186,7 +1192,15 @@ func New(client *mm.Client, cfg *config.Config) Model {
 			gitlabCfg.Token = gitlab.TokenFromGlab(h)
 		}
 	}
-	gitlabClient := gitlab.New(gitlabCfg)
+	// GitHub: shared ResolveToken (env → config → gh CLI → optional OAuth).
+	ghHost := hostFromURL(githubCfg.BaseURL)
+	if ghHost == "" {
+		ghHost = hostFromURL(github.DefaultBaseURL)
+	}
+	githubCfg.Token, _ = github.ResolveToken(githubCfg.Token, ghHost)
+	// The provider set, in a fixed order — a reference remembers its forge by
+	// index, so this order is the one refs are resolved against.
+	forges := []forge.Provider{gitlab.New(gitlabCfg), github.New(githubCfg)}
 	// LanguageTool grammar/spell check for the composer is opt-in; a nil client
 	// keeps every grammar code path inert (grammarEnabled reports false).
 	var ltClient *languagetool.Client
@@ -1269,8 +1283,8 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		infoHoverIdx:        -1,
 		jiraClient:          jiraClient,
 		jiraProjects:        jiraProjects,
-		glClient:            gitlabClient,
-		mrStatus:            newMRStatusManager(gitlabCfg.BaseURL),
+		forges:              forges,
+		changeStatus:        newChangeStatusManager(),
 		historyView:         &historyView,
 		keysSheetView:       &keysSheetView,
 		vcache:              &viewCache{},

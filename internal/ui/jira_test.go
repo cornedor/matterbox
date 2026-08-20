@@ -77,26 +77,30 @@ func TestOpenReferenceNoIssue(t *testing.T) {
 	if cmd != nil {
 		t.Error("expected no Cmd when nothing to open")
 	}
-	if !strings.Contains(got.status, "no Jira issue or GitLab MR") {
+	if !strings.Contains(got.status, "no Jira issue or") {
 		t.Errorf("status = %q", got.status)
 	}
 }
 
+// A Jira link with no Jira credentials opens nothing. A default model still has
+// GitHub (public repositories read without a token), so the panel reports that
+// the message named nothing it can open — and says which providers are off, the
+// hint a user who has configured none of them needs.
 func TestOpenReferenceNotConfigured(t *testing.T) {
-	m := newTestModel() // default jira + gitlab clients have no credentials → disabled
+	m := newTestModel() // no jira credentials, no gitlab; anonymous GitHub only
 	m.width, m.height = 120, 40
 	post := &model.Post{Message: "https://example.atlassian.net/browse/ABC-1"}
 
 	updated, cmd := m.openRefForPost(post)
 	got := updated.(Model)
 	if got.refOpen {
-		t.Error("expected panel to stay closed when no provider is configured")
+		t.Error("expected panel to stay closed when no provider can open the link")
 	}
 	if cmd != nil {
 		t.Error("expected no Cmd when unconfigured")
 	}
-	if !strings.Contains(got.status, "no reference provider configured") {
-		t.Errorf("status = %q", got.status)
+	if !strings.Contains(got.status, "Jira") || !strings.Contains(got.status, "not configured") {
+		t.Errorf("status = %q, want it to say Jira isn't configured", got.status)
 	}
 }
 

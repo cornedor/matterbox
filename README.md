@@ -126,15 +126,23 @@ Two things that bite on day one:
 - Some chords need a terminal that speaks the Kitty keyboard protocol. Elsewhere
   `shift+enter` sends the message instead of inserting a newline — use `alt+enter`.
 
-## Jira & GitLab (optional)
+## Jira, GitLab & GitHub (optional)
 
-Press `v` on a message naming a Jira issue or linking a GitLab MR. Read-only by
-default, with inline editing and actions when the token allows it.
+Press `v` on a message naming a Jira issue or linking a GitLab MR / GitHub issue
+or pull request. Read-only by default, with inline editing and actions when the
+token allows it. GitLab and GitHub share one forge panel; GitHub issues are
+read-only (approve/merge are pull requests only). Public GitHub repos work
+without a token (60 requests/hour anonymous).
 
 ```yaml
 gitlab:
   base_url: https://git.example.com
   token: glpat-…          # or $GITLAB_TOKEN, or an existing `glab auth login`
+
+github:
+  base_url: https://github.com   # optional default
+  token: ghp_…                   # or $GITHUB_TOKEN/$GH_TOKEN, or `gh auth login`
+  # client_id: …               # only for optional `matterbox github login`
 
 jira:                     # Cloud only — it uses /rest/api/3
   base_url: https://your-instance.atlassian.net

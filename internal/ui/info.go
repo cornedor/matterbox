@@ -529,6 +529,11 @@ func (m *Model) decorateInfo(lines []string, targets []infoTarget, width int) {
 	}
 	content = m.infoHover(content)
 	m.infoTargets = targets
+	if m.textSel.active && m.textSel.pane == focusInfo {
+		selLines := strings.Split(content, "\n")
+		m.applyTextSelHighlight(focusInfo, selLines)
+		content = strings.Join(selLines, "\n")
+	}
 	m.infoView.SetContent(content)
 
 	if h := m.infoView.Height(); h > 0 && selVisStart >= 0 {

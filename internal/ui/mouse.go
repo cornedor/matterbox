@@ -80,7 +80,8 @@ const (
 	granLine
 )
 
-// textSel is a click-drag text selection in the message or thread pane. anchor
+// textSel is a click-drag text selection in a transcript or side pane
+// (messages, thread, reference, or channel-info). anchor
 // is where the drag began, head where it currently ends, both in (logical line,
 // display column) content coordinates. dragging is true while the button is
 // held; active turns true once the drag spans a non-empty range, so a bare
@@ -139,7 +140,7 @@ var (
 func (m *Model) mouseBlocked() bool {
 	return !m.mouseEnabled || m.inModal() || m.keyDebugMode ||
 		m.jiraPicker.active || m.jiraPointsActive || m.jiraCommentActive ||
-		m.glConfirm.active || m.linkConfirm.active
+		m.refConfirm.active || m.linkConfirm.active
 }
 
 // multiClickInterval is the window within which successive presses at (about)
@@ -223,20 +224,26 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.clickSQLRow(h.idx)
 	case hitRef:
-		// The reference panel has no post selection or text drag, so a click
-		// just opens the link under it (if any) — mirroring what the terminal
-		// would do natively via OSC 8 were mouse reporting off.
-		if url, ok := m.linkAt(focusRef, h.line, h.col); ok {
-			return m.activateLink(url)
+		m.input.Blur()
+		m.focus = focusRef
+		// line < 0 is the column fallback (empty/chrome rows): focus only,
+		// do not arm a selection that would activate line 0 on release.
+		if h.line >= 0 {
+			m.armTextSelMulti(focusRef, h.line, h.col, count, shift)
+			m.renderRef()
 		}
 		return m, nil
 	case hitInfo:
-		// A click on a link opens it; otherwise a click within a pinned message
-		// selects that target and jumps the main pane to it (the same as ↵ on it).
-		if url, ok := m.linkAt(focusInfo, h.line, h.col); ok {
-			return m.activateLink(url)
+		// Same shared text-selection path as the reference panel: arm a drag on
+		// mousedown; a bare click (no drag) opens a link or activates the target
+		// on release (see handleMouseRelease).
+		m.input.Blur()
+		m.focus = focusInfo
+		if h.line >= 0 {
+			m.armTextSelMulti(focusInfo, h.line, h.col, count, shift)
+			m.renderInfo()
 		}
-		return m.clickInfoTarget(h.line)
+		return m, nil
 	}
 	return m, nil
 }
@@ -334,6 +341,9 @@ func (m Model) handleMouseRelease(msg tea.MouseReleaseMsg) (tea.Model, tea.Cmd) 
 		if url, ok := m.linkAt(pane, line, col); ok {
 			return m.activateLink(url)
 		}
+		if pane == focusInfo && line >= 0 {
+			return m.clickInfoTarget(line)
+		}
 		return m, nil
 	}
 	text := m.selectedText()
@@ -425,9 +435,14 @@ func (m Model) dragTextSel(x, y int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.extendTextSelTo(line, col)
-	if pane == focusThread {
+	switch pane {
+	case focusThread:
 		m.renderThread()
-	} else {
+	case focusRef:
+		m.renderRef()
+	case focusInfo:
+		m.renderInfo()
+	default:
 		m.renderMessages()
 	}
 	return m, nil
@@ -585,8 +600,13 @@ func (m *Model) lineColBounds(pane focus, line int) (int, int) {
 // cached split selectedText and contentCoord read).
 func (m *Model) paneLines(pane focus) []string {
 	width := m.msgsView.Width()
-	if pane == focusThread {
+	switch pane {
+	case focusThread:
 		width = m.threadView.Width()
+	case focusRef:
+		width = m.refView.Width()
+	case focusInfo:
+		width = m.infoView.Width()
 	}
 	lines, _ := m.ensureWrapIndex(pane, width)
 	return lines
@@ -679,6 +699,31 @@ func (m *Model) hitTest(x, y int) hit {
 	if m.onSQLTab() {
 		return m.hitSQLRow(x, y)
 	}
+	// Read-only right panes (reference / channel-info) own their full column —
+	// including the rows that sit at the same height as the composer under the
+	// messages pane. Check them before inComposer so a link at the bottom of
+	// the side panel isn't stolen by the composer's hit box. When the content
+	// mapper has no row (empty/short panel), still return the pane zone so a
+	// click focuses the panel rather than falling through.
+	if !m.threadOpen && (m.refOpen || m.infoOpen) {
+		rightW := m.width - channelsWidth
+		if rightW < 10 {
+			rightW = 10
+		}
+		sideW := splitRightPane(rightW)
+		if x >= channelsWidth+(rightW-sideW) {
+			if m.refOpen {
+				if h := m.hitRefContent(x, y); h.zone != hitNone {
+					return h
+				}
+				return hit{zone: hitRef, line: -1}
+			}
+			if h := m.hitInfoContent(x, y); h.zone != hitNone {
+				return h
+			}
+			return hit{zone: hitInfo, line: -1}
+		}
+	}
 	// The compose box sits at the bottom of the messages / thread pane on a
 	// normal channel view (the Feed / Search / SQL tabs returned above). A click
 	// in it focuses the editor and seeds a drag-select.
@@ -705,18 +750,6 @@ func (m *Model) hitTest(x, y int) hit {
 		if x >= channelsWidth+msgsW {
 			tx0, top, w, h, yoff := m.threadGeom()
 			return m.hitViewportPost(x, y, top, tx0, w, h, yoff, focusThread, m.threadRowStarts, len(m.threadPosts))
-		}
-	} else if m.refOpen {
-		refW := splitRightPane(rightW)
-		msgsW = rightW - refW
-		if x >= channelsWidth+msgsW {
-			return m.hitRefContent(x, y)
-		}
-	} else if m.infoOpen {
-		infoW := splitRightPane(rightW)
-		msgsW = rightW - infoW
-		if x >= channelsWidth+msgsW {
-			return m.hitInfoContent(x, y)
 		}
 	}
 	mx0, top, w, h, yoff := m.messagesGeom()
@@ -946,9 +979,14 @@ func (m *Model) hitRefContent(x, y int) hit {
 // content / geometry yet.
 func (m *Model) cellToContent(pane focus, x, y int) (line, col int, ok bool) {
 	var x0, top, width, height, yoff int
-	if pane == focusThread {
+	switch pane {
+	case focusThread:
 		x0, top, width, height, yoff = m.threadGeom()
-	} else {
+	case focusRef:
+		x0, top, width, height, yoff = m.refGeom()
+	case focusInfo:
+		x0, top, width, height, yoff = m.infoGeom()
+	default:
 		x0, top, width, height, yoff = m.messagesGeom()
 	}
 	if width <= 0 || height <= 0 {
@@ -1081,8 +1119,13 @@ func contentLeft(line string) int {
 // contentLeft) so copied text isn't indented by the chrome.
 func (m *Model) selectedText() string {
 	width := m.msgsView.Width()
-	if m.textSel.pane == focusThread {
+	switch m.textSel.pane {
+	case focusThread:
 		width = m.threadView.Width()
+	case focusRef:
+		width = m.refView.Width()
+	case focusInfo:
+		width = m.infoView.Width()
 	}
 	lines, _ := m.ensureWrapIndex(m.textSel.pane, width)
 	l0, c0, l1, c1 := m.textSel.normalized()
@@ -1221,7 +1264,7 @@ func (m *Model) editorCursor() (col, row int, ok bool) {
 // (see jiraCommentCursor) — editorCursor handles it ahead of this check.
 func (m *Model) bodyOverlayActive() bool {
 	return m.inModal() || m.jiraPointsActive || m.jiraPicker.active ||
-		m.glConfirm.active || m.linkConfirm.active
+		m.refConfirm.active || m.linkConfirm.active
 }
 
 // composerCursor maps the compose editor's own (col,row) — past the prompt
