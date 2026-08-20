@@ -91,6 +91,15 @@ Or with plain Go (no optional features, no cgo needed):
 go build -o matterbox .
 ```
 
+Every release also ships prebuilt Linux and macOS binaries (amd64 + arm64) on
+the [releases page](https://github.com/cornedor/matterbox/releases) — pure Go,
+so they need no toolchain, but they carry neither optional feature. Drop one in
+`~/.local/bin` and run `matterbox welcome`.
+
+`matterbox --version` names the build; `matterbox version` adds the optional
+features it was compiled with and the platform — worth pasting into a bug
+report.
+
 ## Configure & log in
 
 ### Setup tool (recommended)
@@ -134,16 +143,22 @@ scripting:
 | Command | What it does |
 |---|---|
 | `matterbox send <channel> [message]` | Post a message (`--file` to attach, repeatable) |
+| `matterbox reply <post-id> [message]` | Reply in a message's thread, recording which message you answered |
+| `matterbox react <post-id> <emoji>` | Add an emoji reaction to a message |
 | `matterbox read [channel]` | Print recent messages (`--since`, `--from`, `--thread`, `--wait`, `--json`) |
 | `matterbox unread` | List unread messages grouped by channel |
 | `matterbox mark-read <channel>...` | Mark one or more channels/DMs as read (clear unread) |
+| `matterbox open <channel>` | Jump the running TUI to a channel or DM (used by notification clicks) |
 | `matterbox search <query>` | Search the local cache (`--semantic`, `--channel`, `--context`, `--json`) |
 | `matterbox channels` | List all teams and channels with their addresses |
 | `matterbox digest` | Show your own recent messages in a time range |
 | `matterbox whoami` | Print the authenticated user |
 | `matterbox embed` | Backfill semantic-search embeddings for cached messages |
 | `matterbox listen` | Background daemon: keeps cache warm and bridges @mentions/DMs to Telegram |
+| `matterbox rules` | Inspect, list, and test the `listen` rules (`test`, `list`, `stats`, `state`) |
 | `matterbox keys` | List all keyboard actions, default keys, and your config overrides |
+| `matterbox decode <post-id>` | Show the hidden payload a matterbox post carries (reply target, effects) |
+| `matterbox version` | Print the build, its optional features, and the platform |
 
 Channels are addressed as `team/channel` (e.g. `eng/general`) or `@username` for a DM.
 
@@ -298,3 +313,8 @@ loaded, what has fired, and what rules have remembered — and
 `systemctl --user reload matterbox-listen` swaps in an edited ruleset without
 dropping the connection. See [docs/rules.md](docs/rules.md) for the full
 reference and examples.
+
+## License
+
+[Apache License 2.0](LICENSE). Much of the code was written with AI assistance
+under human review.

@@ -5,8 +5,8 @@ A from-scratch **Go TUI Mattermost client** (terminal, bubbletea). Module `matte
 ## Layout
 - `internal/ui` — the bubbletea TUI (the bulk of the app)
 - `internal/mm` — Mattermost API/WS client · `internal/store` — SQLite message cache
-- `internal/cli` — cobra subcommands · `internal/listen` — `matterbox listen` daemon · `internal/web` — `matterbox serve` web UI
-- `main.go` — entry point · `server/` — **a PoC, NOT a reference for real Mattermost behavior**
+- `internal/cli` — cobra subcommands · `internal/listen` — `matterbox listen` daemon
+- `main.go` — entry point
 
 ## Build & test
 - `make` build · `make test` · `make run` · `make install` (per-user, no root)
