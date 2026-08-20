@@ -257,16 +257,15 @@ have. Resolution order (env overrides config, like `GITLAB_TOKEN`):
 1. `GITHUB_TOKEN` or `GH_TOKEN` env var
 2. `github.token` in config
 3. An existing `gh auth login` for this host (`~/.config/gh/hosts.yml`)
+4. Optional matterbox OAuth token from `matterbox github login` (device flow)
 
-So a working `gh` setup needs no secret in this file:
+So a working `gh` setup needs no secret in this file. Device-flow OAuth is an
+alternative when you don't use the GitHub CLI — it needs an OAuth App
+`client_id` (`github.client_id` or `GITHUB_CLIENT_ID`) and:
 
 ```bash
-gh auth login
-matterbox github status
+matterbox github login
 ```
-
-`matterbox github login` only prints those instructions (no OAuth App / device
-flow — register your own app if you insist, but `gh` already covers it).
 
 ### Jira (Cloud only)
 

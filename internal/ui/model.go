@@ -148,7 +148,8 @@ type Model struct {
 
 	// hover is the clickable element the pointer is currently over (a team tab
 	// or a channel row), painted with a hover style; textSel is an in-progress
-	// or just-finished click-drag text selection in the message / thread pane.
+	// or just-finished click-drag text selection in the message, thread,
+	// reference, or channel-info pane.
 	// wrapIdx caches one pane's content split into logical lines plus each line's
 	// visual-row start, keyed by content version, so a drag maps screen cells to
 	// content coordinates without re-measuring every line per motion event. All

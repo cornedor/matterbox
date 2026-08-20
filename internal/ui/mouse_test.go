@@ -797,3 +797,45 @@ func TestInfoPanelBeatsComposerAtSameHeight(t *testing.T) {
 		t.Fatal("click focused the composer")
 	}
 }
+
+// Channel-info uses the same text-selection path as the reference panel.
+func TestInfoDragThenReleaseCopiesSelection(t *testing.T) {
+	m := mouseModel([]*model.Post{{Id: "p", CreateAt: 100, UserId: "u", Message: "x"}})
+	m.raiseChannelInfo()
+	m.renderInfo()
+
+	const needle = "Members"
+	lines, _ := m.ensureWrapIndex(focusInfo, m.infoView.Width())
+	line, start := -1, -1
+	for i, ln := range lines {
+		if j := strings.Index(ansi.Strip(ln), needle); j >= 0 {
+			line, start = i, j
+			break
+		}
+	}
+	if line < 0 {
+		t.Fatal("could not find info-body text")
+	}
+
+	x0, top, width, _, yoff := m.infoGeom()
+	x1 := x0 + start%width
+	y1 := top + (line + start/width - yoff)
+	x2 := x0 + (start+len(needle))%width
+	y2 := top + (line + (start+len(needle))/width - yoff)
+
+	out, _ := m.handleMouseClick(click(tea.MouseLeft, x1, y1))
+	m = out.(Model)
+	out, _ = m.handleMouseMotion(motion(tea.MouseLeft, x2, y2))
+	m = out.(Model)
+	if !m.textSel.active || m.textSel.pane != focusInfo {
+		t.Fatalf("drag did not activate an info selection: %+v", m.textSel)
+	}
+	out, cmd := m.handleMouseRelease(release(tea.MouseLeft, x2, y2))
+	m = out.(Model)
+	if cmd == nil {
+		t.Fatal("drag release did not produce a copy command")
+	}
+	if got := m.selectedText(); got != needle {
+		t.Fatalf("selectedText=%q want %q", got, needle)
+	}
+}

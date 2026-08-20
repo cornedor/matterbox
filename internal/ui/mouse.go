@@ -80,7 +80,8 @@ const (
 	granLine
 )
 
-// textSel is a click-drag text selection in the message or thread pane. anchor
+// textSel is a click-drag text selection in a transcript or side pane
+// (messages, thread, reference, or channel-info). anchor
 // is where the drag began, head where it currently ends, both in (logical line,
 // display column) content coordinates. dragging is true while the button is
 // held; active turns true once the drag spans a non-empty range, so a bare
@@ -229,12 +230,14 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		m.renderRef()
 		return m, nil
 	case hitInfo:
-		// A click on a link opens it; otherwise a click within a pinned message
-		// selects that target and jumps the main pane to it (the same as ↵ on it).
-		if url, ok := m.linkAt(focusInfo, h.line, h.col); ok {
-			return m.activateLink(url)
-		}
-		return m.clickInfoTarget(h.line)
+		// Same shared text-selection path as the reference panel: arm a drag on
+		// mousedown; a bare click (no drag) opens a link or activates the target
+		// on release (see handleMouseRelease).
+		m.input.Blur()
+		m.focus = focusInfo
+		m.armTextSelMulti(focusInfo, h.line, h.col, count, shift)
+		m.renderInfo()
+		return m, nil
 	}
 	return m, nil
 }
@@ -332,6 +335,9 @@ func (m Model) handleMouseRelease(msg tea.MouseReleaseMsg) (tea.Model, tea.Cmd) 
 		if url, ok := m.linkAt(pane, line, col); ok {
 			return m.activateLink(url)
 		}
+		if pane == focusInfo {
+			return m.clickInfoTarget(line)
+		}
 		return m, nil
 	}
 	text := m.selectedText()
@@ -428,6 +434,8 @@ func (m Model) dragTextSel(x, y int) (tea.Model, tea.Cmd) {
 		m.renderThread()
 	case focusRef:
 		m.renderRef()
+	case focusInfo:
+		m.renderInfo()
 	default:
 		m.renderMessages()
 	}
@@ -591,6 +599,8 @@ func (m *Model) paneLines(pane focus) []string {
 		width = m.threadView.Width()
 	case focusRef:
 		width = m.refView.Width()
+	case focusInfo:
+		width = m.infoView.Width()
 	}
 	lines, _ := m.ensureWrapIndex(pane, width)
 	return lines
@@ -968,6 +978,8 @@ func (m *Model) cellToContent(pane focus, x, y int) (line, col int, ok bool) {
 		x0, top, width, height, yoff = m.threadGeom()
 	case focusRef:
 		x0, top, width, height, yoff = m.refGeom()
+	case focusInfo:
+		x0, top, width, height, yoff = m.infoGeom()
 	default:
 		x0, top, width, height, yoff = m.messagesGeom()
 	}
@@ -1106,6 +1118,8 @@ func (m *Model) selectedText() string {
 		width = m.threadView.Width()
 	case focusRef:
 		width = m.refView.Width()
+	case focusInfo:
+		width = m.infoView.Width()
 	}
 	lines, _ := m.ensureWrapIndex(m.textSel.pane, width)
 	l0, c0, l1, c1 := m.textSel.normalized()
