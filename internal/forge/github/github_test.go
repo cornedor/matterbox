@@ -340,12 +340,61 @@ func TestMissingNumberStaysNotFound(t *testing.T) {
 	}
 }
 
-func TestNotConfigured(t *testing.T) {
+// Without a token GitHub still reads public repositories, so the panel is
+// offered — but nothing may fetch on its own, and the write actions refuse
+// before spending a call.
+func TestTokenlessIsReadOnlyAndOnRequest(t *testing.T) {
 	c := New(Config{})
-	if c.Enabled() {
-		t.Fatal("a tokenless client must not report Enabled")
+	if !c.Enabled() {
+		t.Error("a tokenless client should still be readable")
 	}
-	if _, err := c.Get(context.Background(), "o/r", 1); err == nil {
-		t.Error("Get on an unconfigured client should fail")
+	if c.AutoFetch() {
+		t.Error("a tokenless client must not be fetched automatically")
+	}
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"approve", c.Approve(context.Background(), "o/r", 1)},
+		{"merge", c.Merge(context.Background(), "o/r", 1, "merge")},
+	} {
+		if tc.err == nil || !strings.Contains(tc.err.Error(), "needs a token") {
+			t.Errorf("%s without a token: err = %v, want it to ask for a token", tc.name, tc.err)
+		}
+	}
+	// With one, both are on.
+	if withTok := New(Config{Token: "tok"}); !withTok.AutoFetch() {
+		t.Error("a token should enable automatic fetches")
+	}
+}
+
+// The rate limiter answers 403, which would otherwise read as a permissions
+// problem — the one error a tokenless setup is most likely to meet.
+func TestRateLimitErrorIsNotAboutScopes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"message": "API rate limit exceeded for 203.0.113.7."}`))
+	}))
+	defer srv.Close()
+	_, err := New(Config{BaseURL: srv.URL}).Get(context.Background(), "o/r", 42)
+	if err == nil || !strings.Contains(err.Error(), "out of anonymous requests") {
+		t.Errorf("error = %v, want it to name the anonymous rate limit", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "scopes") {
+		t.Errorf("error = %v, should not blame token scopes", err)
+	}
+}
+
+// A 404 without a token is as likely to be a private repository as a typo.
+func TestTokenless404MentionsPrivateRepositories(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"message": "Not Found"}`))
+	}))
+	defer srv.Close()
+	_, err := New(Config{BaseURL: srv.URL}).Get(context.Background(), "o/r", 42)
+	if err == nil || !strings.Contains(err.Error(), "private repository needs a token") {
+		t.Errorf("error = %v, want the private-repository hint", err)
 	}
 }

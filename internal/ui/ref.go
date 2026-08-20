@@ -91,8 +91,7 @@ func (m Model) openRefForPost(p *model.Post) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	jiraOK := m.jiraClient.Enabled()
-	forgeOK := m.anyForgeEnabled()
-	if !jiraOK && !forgeOK {
+	if !jiraOK && !m.anyForgeEnabled() {
 		m.status = "no reference provider configured — set jira.*, gitlab.* or github.* in config.yaml"
 		return m, nil
 	}
@@ -118,7 +117,7 @@ func (m Model) openRefForPost(p *model.Post) (tea.Model, tea.Cmd) {
 			m.status = missing + " has no token — set its token in config.yaml (or log in with its CLI)"
 			return m, nil
 		}
-		m.status = "no Jira issue or " + m.forgeNouns() + " on this message"
+		m.status = "no Jira issue or " + m.forgeNouns() + " on this message" + m.unconfiguredHint()
 		return m, nil
 	}
 	sort.SliceStable(refs, func(i, j int) bool { return refs[i].pos < refs[j].pos })
@@ -190,6 +189,27 @@ func (m *Model) forgeNouns() string {
 		return "change request"
 	}
 	return strings.Join(parts, " / ")
+}
+
+// unconfiguredHint tails the "nothing found" line with the providers that are
+// switched off, so a user who has configured none of them learns that rather
+// than concluding the panel is broken. GitHub reads public repositories without
+// a token, so it is never in this list — which is why the line has to carry the
+// others.
+func (m *Model) unconfiguredHint() string {
+	var off []string
+	if !m.jiraClient.Enabled() {
+		off = append(off, "Jira")
+	}
+	for _, p := range m.forges {
+		if !p.Enabled() {
+			off = append(off, p.Name())
+		}
+	}
+	if len(off) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(off, ", ") + " not configured)"
 }
 
 // unconfiguredForges names the forges whose own host appears in msg but which

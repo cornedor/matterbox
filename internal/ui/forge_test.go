@@ -191,30 +191,61 @@ func TestForgePanelRendersPullRequest(t *testing.T) {
 	}
 }
 
-// A pull-request link with no GitHub token must say the forge has no token —
-// reporting "nothing on this message" would send the user looking for the wrong
-// problem.
+// A merge-request link on an instance with no token must say the forge has no
+// token — reporting "nothing on this message" would send the user looking for
+// the wrong problem.
 func TestForgeWithoutTokenSaysSo(t *testing.T) {
 	m := newTestModel()
 	m.width, m.height = 120, 40
 	m.forges = []forge.Provider{
-		gitlab.New(gitlab.Config{BaseURL: "https://git.example.com", Token: "tok"}),
-		github.New(github.Config{}), // no token: enabled() is false
+		gitlab.New(gitlab.Config{BaseURL: "https://git.example.com"}), // no token
+		github.New(github.Config{Token: "tok"}),
 	}
-	post := &model.Post{Message: prLink}
-	updated, cmd := m.openRefForPost(post)
+	updated, cmd := m.openRefForPost(&model.Post{Message: mrLink})
 	got := updated.(Model)
 	if got.refOpen || cmd != nil {
 		t.Fatal("the panel must not open for a forge that cannot fetch")
 	}
-	if !strings.Contains(got.status, "GitHub has no token") {
-		t.Errorf("status = %q, want it to name GitHub as unconfigured", got.status)
+	if !strings.Contains(got.status, "GitLab has no token") {
+		t.Errorf("status = %q, want it to name GitLab as unconfigured", got.status)
 	}
-	// A message that names nothing still gets the plain not-found line, and an
-	// unconfigured forge whose host isn't mentioned doesn't volunteer itself.
+	// A message that names nothing gets the plain not-found line, which still
+	// mentions what is switched off — but an unconfigured forge whose host isn't
+	// in the message doesn't claim the message was about it.
 	updated, _ = m.openRefForPost(&model.Post{Message: "just some plain text"})
-	if s := updated.(Model).status; !strings.Contains(s, "no Jira issue or") {
-		t.Errorf("status = %q, want the not-found line", s)
+	s := updated.(Model).status
+	if !strings.Contains(s, "no Jira issue or") || !strings.Contains(s, "GitLab not configured") {
+		t.Errorf("status = %q, want the not-found line naming what is off", s)
+	}
+	if strings.Contains(s, "has no token") {
+		t.Errorf("status = %q, should not blame a forge the message never named", s)
+	}
+}
+
+// Without a token GitHub still opens in the panel (public repositories read
+// anonymously), but it draws no inline badges — those fetch on their own, and
+// 60 requests an hour is not a budget to spend unasked.
+func TestTokenlessGitHubOpensButDrawsNoBadges(t *testing.T) {
+	m := newTestModel()
+	m.width, m.height = 120, 40
+	m.forges = []forge.Provider{github.New(github.Config{})} // no token
+	m.changeStatus = newChangeStatusManager()
+
+	updated, cmd := m.openRefForPost(&model.Post{Message: prLink})
+	got := updated.(Model)
+	if !got.refOpen || cmd == nil {
+		t.Fatalf("the panel should open and fetch anonymously; open=%v cmd=%v", got.refOpen, cmd != nil)
+	}
+	if _, _, ok := m.matchChangeURL("https://github.com/o/r/pull/7"); ok {
+		t.Error("a tokenless forge must not be badge-fetched")
+	}
+	if m.buildChangeInlineFn("post-1") != nil {
+		t.Error("badge substitution should be off when no forge accepts automatic fetches")
+	}
+	// A token turns both back on.
+	m.forges = []forge.Provider{github.New(github.Config{Token: "tok"})}
+	if _, _, ok := m.matchChangeURL("https://github.com/o/r/pull/7"); !ok {
+		t.Error("with a token the badge path should match again")
 	}
 }
 

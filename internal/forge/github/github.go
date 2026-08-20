@@ -72,7 +72,9 @@ func New(cfg Config) *Client {
 		baseURL: base,
 		token:   token,
 		rest: forge.NewREST(APIRoot(base), "github", func(r *http.Request) {
-			r.Header.Set("Authorization", "Bearer "+token)
+			if token != "" {
+				r.Header.Set("Authorization", "Bearer "+token)
+			}
 			r.Header.Set("Accept", "application/vnd.github+json")
 			r.Header.Set("X-GitHub-Api-Version", apiVersion)
 		}),
@@ -105,13 +107,21 @@ func (c *Client) Sigil() string { return "#" }
 // ChecksHeading: GitHub calls them checks, whoever produced them.
 func (c *Client) ChecksHeading() string { return "Checks" }
 
-// Enabled reports whether the client has a token — the base URL always has a
-// default, so the token is what decides whether a fetch can succeed. Unlike
-// GitLab, public repositories would answer unauthenticated requests, but at 60
-// calls/hour per IP the panel would spend most of its life rate-limited, so a
-// token is required rather than optional.
+// Enabled: GitHub answers read-only requests for public repositories without
+// any credentials, so the panel is offered with or without a token. What a
+// token adds is private repositories, the approve/merge actions, and a rate
+// limit worth having (see AutoFetch).
 func (c *Client) Enabled() bool {
-	return c != nil && c.baseURL != "" && c.token != ""
+	return c != nil && c.baseURL != ""
+}
+
+// AutoFetch: only with a token. Anonymous GitHub allows 60 requests an hour per
+// IP address and one pull request costs up to four of them, so a scroll through
+// a feed full of links would spend the hour's budget on badges nobody asked for
+// — and leave the panel rate-limited when someone did ask. Tokenless, fetching
+// stays user-initiated.
+func (c *Client) AutoFetch() bool {
+	return c.Enabled() && c.token != ""
 }
 
 // BaseURL returns the configured instance root (no trailing slash). Used to
@@ -230,7 +240,7 @@ func (c *Client) fetch(ctx context.Context, repo string, number int) (*forge.Cha
 	var a apiPR
 	path := fmt.Sprintf("/repos/%s/pulls/%d", repo, number)
 	if err := c.rest.Do(ctx, http.MethodGet, path, label, nil, &a); err != nil {
-		return nil, c.explain404(ctx, repo, number, label, err)
+		return nil, c.explain(ctx, repo, number, label, err)
 	}
 	ch := toChange(a, repo)
 	ch.WebURL = c.WebURL(repo, number)
@@ -249,14 +259,28 @@ func (c *Client) fetch(ctx context.Context, repo string, number int) (*forge.Cha
 	return ch, nil
 }
 
-// explain404 improves the error for the one ambiguity GitHub's numbering
-// creates: owner/repo#5 names an issue and a pull request alike, and only pull
-// requests open in this panel. On a 404 it asks whether the number is an issue
-// and, if so, says that instead of "not found (or no access)" — otherwise the
-// original error stands. One extra call, only ever on the failure path.
-func (c *Client) explain404(ctx context.Context, repo string, number int, label string, err error) error {
+// explain rewrites the errors whose plain HTTP meaning would send a user looking
+// for the wrong problem:
+//
+//   - A rate-limit refusal arrives as 403, which otherwise reads as "check token
+//     / scopes". Anonymous requests get 60 an hour, so this is the error a
+//     tokenless setup meets first.
+//   - owner/repo#5 names an issue and a pull request alike and only pull
+//     requests open in this panel, so a 404 asks whether the number is an issue.
+//     That costs one extra call, only ever on the failure path.
+//   - A 404 without a token is as likely to be a private repository as a typo.
+func (c *Client) explain(ctx context.Context, repo string, number int, label string, err error) error {
 	var se *forge.StatusErr
-	if !errors.As(err, &se) || se.Code != http.StatusNotFound {
+	if !errors.As(err, &se) {
+		return err
+	}
+	if rateLimited(se) {
+		if c.token == "" {
+			return fmt.Errorf("github: out of anonymous requests (60 an hour) — add a token to keep reading")
+		}
+		return fmt.Errorf("github: rate limit reached — try again in a few minutes")
+	}
+	if se.Code != http.StatusNotFound {
 		return err
 	}
 	var issue struct {
@@ -264,13 +288,27 @@ func (c *Client) explain404(ctx context.Context, repo string, number int, label 
 		PullRequest *any `json:"pull_request"`
 	}
 	path := fmt.Sprintf("/repos/%s/issues/%d", repo, number)
-	if ierr := c.rest.Do(ctx, http.MethodGet, path, label, nil, &issue); ierr != nil {
-		return err
-	}
-	if issue.Number == number && issue.PullRequest == nil {
+	if ierr := c.rest.Do(ctx, http.MethodGet, path, label, nil, &issue); ierr == nil &&
+		issue.Number == number && issue.PullRequest == nil {
 		return fmt.Errorf("github: %s is an issue, not a pull request", label)
 	}
+	if c.token == "" {
+		return fmt.Errorf("%w — a private repository needs a token", err)
+	}
 	return err
+}
+
+// rateLimited reports whether a refusal is GitHub's rate limiter rather than a
+// permission problem. The remaining-requests header is authoritative; the
+// message is the fallback for the secondary limits, which don't set it.
+func rateLimited(se *forge.StatusErr) bool {
+	if se.Code != http.StatusForbidden && se.Code != http.StatusTooManyRequests {
+		return false
+	}
+	if se.Header.Get("X-RateLimit-Remaining") == "0" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(se.Msg), "rate limit")
 }
 
 // toChange flattens the API response into the render-ready change (minus the
@@ -590,15 +628,27 @@ func pendingReviewers(requested []apiUser, verdict map[string]string) int {
 // Approve submits an approving review, then invalidates the cache so the next
 // Get reflects it.
 func (c *Client) Approve(ctx context.Context, repo string, number int) error {
-	if !c.Enabled() {
-		return forge.ErrNotConfigured
+	if err := c.canWrite(); err != nil {
+		return err
 	}
 	path := fmt.Sprintf("/repos/%s/pulls/%d/reviews", repo, number)
 	body := map[string]any{"event": "APPROVE"}
 	if err := c.rest.Do(ctx, http.MethodPost, path, "approve", body, nil); err != nil {
-		return err
+		return c.explain(ctx, repo, number, forge.Label(c, repo, number), err)
 	}
 	c.Invalidate(repo, number)
+	return nil
+}
+
+// canWrite refuses the actions that need credentials before spending a call on
+// them: reading is anonymous-friendly, approving and merging are not.
+func (c *Client) canWrite() error {
+	if !c.Enabled() {
+		return forge.ErrNotConfigured
+	}
+	if c.token == "" {
+		return errors.New("github: this needs a token — set github.token, GITHUB_TOKEN, or run `gh auth login`")
+	}
 	return nil
 }
 
@@ -607,8 +657,8 @@ func (c *Client) Approve(ctx context.Context, repo string, number int) error {
 // deletes it itself when the repository is set to, and deleting it from here
 // would be a second call undoing a repository-level choice.
 func (c *Client) Merge(ctx context.Context, repo string, number int, method string) error {
-	if !c.Enabled() {
-		return forge.ErrNotConfigured
+	if err := c.canWrite(); err != nil {
+		return err
 	}
 	if method == "" {
 		method = "merge"
@@ -616,7 +666,7 @@ func (c *Client) Merge(ctx context.Context, repo string, number int, method stri
 	path := fmt.Sprintf("/repos/%s/pulls/%d/merge", repo, number)
 	body := map[string]any{"merge_method": method}
 	if err := c.rest.Do(ctx, http.MethodPut, path, "merge", body, nil); err != nil {
-		return err
+		return c.explain(ctx, repo, number, forge.Label(c, repo, number), err)
 	}
 	c.Invalidate(repo, number)
 	return nil

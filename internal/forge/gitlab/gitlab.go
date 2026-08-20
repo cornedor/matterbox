@@ -80,6 +80,11 @@ func (c *Client) Enabled() bool {
 	return c != nil && c.baseURL != "" && c.token != ""
 }
 
+// AutoFetch: every GitLab fetch is authenticated (there is no anonymous mode
+// here — the API needs the token), so the inline badges are free to fetch
+// whenever the panel could.
+func (c *Client) AutoFetch() bool { return c.Enabled() }
+
 // BaseURL returns the configured instance root (no trailing slash). Used to
 // recognise merge-request links pointing at this instance.
 func (c *Client) BaseURL() string {

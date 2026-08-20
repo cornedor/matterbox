@@ -85,7 +85,7 @@ func (r *REST) DoRaw(ctx context.Context, method, path, what string, body any) (
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, StatusError(r.label, resp.StatusCode, what, respBody)
+		return nil, StatusError(r.label, resp.StatusCode, what, respBody, resp.Header)
 	}
 	return respBody, nil
 }
@@ -110,18 +110,19 @@ func (r *REST) Do(ctx context.Context, method, path, what string, body, out any)
 // can act on the status — a 404 in particular, which is ambiguous enough to be
 // worth a second look (see the github provider's issue-vs-pull-request check).
 type StatusErr struct {
-	Label string // forge name, e.g. "github"
-	Code  int    // HTTP status
-	What  string // what was being fetched: a reference, or an action name
-	Msg   string // the forge's own message, when it sent one
+	Label  string      // forge name, e.g. "github"
+	Code   int         // HTTP status
+	What   string      // what was being fetched: a reference, or an action name
+	Msg    string      // the forge's own message, when it sent one
+	Header http.Header // response headers, for the ones that carry a reason (rate limits)
 }
 
 // StatusError turns a non-2xx into an error carrying a message the panel can
 // show, special-casing the cases a user can act on. Both GitLab and GitHub answer
 // with a {"message": …} body; we surface it when present, since it carries the
 // reason a merge or approve was refused.
-func StatusError(label string, code int, what string, body []byte) error {
-	e := &StatusErr{Label: label, Code: code, What: what, Msg: APIMessage(body)}
+func StatusError(label string, code int, what string, body []byte, header http.Header) error {
+	e := &StatusErr{Label: label, Code: code, What: what, Msg: APIMessage(body), Header: header}
 	if e.Msg == "" {
 		if txt := strings.TrimSpace(string(body)); txt != "" {
 			if len(txt) > 200 {

@@ -69,6 +69,12 @@ type Provider interface {
 	// Enabled reports whether the provider has enough configuration to fetch.
 	// A disabled provider is skipped entirely — never asked for Refs.
 	Enabled() bool
+	// AutoFetch reports whether the UI may fetch from this forge on its own, for
+	// the inline badges it draws beside every change-request link on screen.
+	// False when the forge is readable but on a budget too small to spend
+	// unasked (anonymous GitHub: 60 requests an hour), leaving those fetches to
+	// a keypress. A provider that can fetch at all usually returns Enabled().
+	AutoFetch() bool
 	// BaseURL is the configured instance root (no trailing slash), for
 	// recognising links that point at this forge.
 	BaseURL() string

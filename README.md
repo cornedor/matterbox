@@ -229,7 +229,8 @@ the token allows it. All three are opt-in and configured in `config.yaml`.
 The two forges share one panel and one set of keys: `A` approves, `M` merges, `t`
 expands the CI breakdown. A message that links several of them (mixed with Jira
 issues) opens them all — `←`/`→` cycle, in the order they appear in the message.
-Bare `!iid` links also get an inline status pill in the transcript.
+Links also get an inline status pill in the transcript wherever the forge has a
+token.
 
 ### GitLab
 
@@ -261,14 +262,19 @@ github:
   token: github_pat_…            # optional — see fallbacks below
 ```
 
-Both fields are optional. With an existing `gh auth login` you need no `github:`
-block at all: matterbox reads the `GITHUB_TOKEN` or `GH_TOKEN` env var, then the
-token `gh` holds for the host — from `~/.config/gh/hosts.yml`, or via
-`gh auth token` when it lives in your system keyring.
+Both fields are optional, and so is the whole block: **public pull requests open
+with no configuration at all.** With no token matterbox reads GitHub
+anonymously, which is enough for public repositories but comes with GitHub's
+60-requests-an-hour limit per IP — so in that mode only pressing `v` fetches.
+Inline `#N` status pills, which fetch by themselves for every link on screen,
+stay off until there's a token, and approving or merging says so rather than
+spending a call to be refused.
 
-A token is required even for public repositories: unauthenticated GitHub allows
-60 calls/hour per IP, which the panel would exhaust immediately. Read access to
-the repository is enough to view; write access is needed to approve or merge.
+A token gets you private repositories, the badges and the actions. Set it in
+`token`, or in `GITHUB_TOKEN` / `GH_TOKEN`, or just run `gh auth login` — the
+token `gh` holds for the host is picked up from `~/.config/gh/hosts.yml`, or via
+`gh auth token` when it lives in your system keyring. Read access to the
+repository is enough to view; write access is needed to approve or merge.
 
 `M` asks which strategy to use — `m` merge commit, `s` squash, `r` rebase — since
 GitHub offers all three and repositories disable the ones they don't want. If the

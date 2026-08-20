@@ -291,7 +291,7 @@ func changeStateStyle(e *changeStatusEntry) (string, lipgloss.Style) {
 // when no forge is configured, nothing is pending, or the scroll debounce is
 // still active (changeFetchGen != changeFetchSettledGen).
 func (m *Model) fetchPendingChangeStatus() tea.Cmd {
-	if m.changeStatus == nil || !m.anyForgeEnabled() {
+	if m.changeStatus == nil || !m.anyForgeAutoFetch() {
 		return nil
 	}
 	// Debounce: suppress fetches while the user is scrolling quickly. Navigation
@@ -362,9 +362,10 @@ func (m *Model) bumpChangeFetch() tea.Cmd {
 }
 
 // buildChangeInlineFn returns the changeInlineFn closure for a post. When no
-// forge is configured it returns nil, disabling badge substitution.
+// forge accepts automatic fetches it returns nil, so the link renders as an
+// ordinary hyperlink and nothing is fetched behind the user's back.
 func (m *Model) buildChangeInlineFn(postID string) changeInlineFn {
-	if m.changeStatus == nil || !m.anyForgeEnabled() {
+	if m.changeStatus == nil || !m.anyForgeAutoFetch() {
 		return nil
 	}
 	return func(rawURL string) (string, bool) {
@@ -377,12 +378,14 @@ func (m *Model) buildChangeInlineFn(postID string) changeInlineFn {
 	}
 }
 
-// matchChangeURL asks each configured forge whether a raw URL is one of its
-// change requests, first match winning. Providers only claim links on their own
-// host, so at most one can answer.
+// matchChangeURL asks each forge that accepts automatic fetches whether a raw
+// URL is one of its change requests, first match winning. Providers only claim
+// links on their own host, so at most one can answer. A forge that reads only
+// on request (anonymous GitHub) declines here: badges are drawn from fetches,
+// and it isn't taking any.
 func (m *Model) matchChangeURL(rawURL string) (changeRef, forge.Provider, bool) {
 	for i, p := range m.forges {
-		if !p.Enabled() {
+		if !p.AutoFetch() {
 			continue
 		}
 		refs := p.Refs(rawURL)
@@ -394,10 +397,22 @@ func (m *Model) matchChangeURL(rawURL string) (changeRef, forge.Provider, bool) 
 	return changeRef{}, nil, false
 }
 
-// anyForgeEnabled reports whether at least one configured forge can fetch.
+// anyForgeEnabled reports whether at least one configured forge can fetch at
+// all — what the reference panel needs.
 func (m *Model) anyForgeEnabled() bool {
 	for _, p := range m.forges {
 		if p.Enabled() {
+			return true
+		}
+	}
+	return false
+}
+
+// anyForgeAutoFetch reports whether at least one forge accepts the fetches the
+// UI makes on its own, for the inline badges.
+func (m *Model) anyForgeAutoFetch() bool {
+	for _, p := range m.forges {
+		if p.AutoFetch() {
 			return true
 		}
 	}

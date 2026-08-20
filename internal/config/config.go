@@ -268,8 +268,10 @@ type GitLabConfig struct {
 }
 
 // GitHubConfig holds the GitHub connection used by the pull-request side panel.
-// Both fields are optional: base_url defaults to github.com, and token may be
-// left empty to fall back to the environment or an existing gh CLI login.
+// Every field is optional, and so is the whole block: with no token GitHub is
+// read anonymously, which serves public repositories (and, at 60 requests an
+// hour, only when the user actually presses the key — see the github provider's
+// AutoFetch).
 type GitHubConfig struct {
 	// BaseURL is the instance root. Empty means https://github.com; set it to an
 	// Enterprise host (https://github.example.com), whose API is served from
@@ -281,7 +283,9 @@ type GitHubConfig struct {
 	// the GITHUB_TOKEN or GH_TOKEN env var, then to the token the gh CLI holds
 	// for this host (in ~/.config/gh/hosts.yml, or the system keyring via
 	// `gh auth token`) — so an existing `gh auth login` just works without
-	// copying the secret into this file.
+	// copying the secret into this file. With no token anywhere, public
+	// repositories still open; private ones, the inline status pills and the
+	// approve/merge actions need one.
 	Token string `yaml:"token"`
 }
 
@@ -1425,9 +1429,12 @@ func writeConfig(p string, cfg *Config) error {
 		"#             token is a personal/project access token (read_api to view,\n" +
 		"#             api to approve/merge). Empty token falls back to GITLAB_TOKEN\n" +
 		"#             or an existing glab CLI login for the same host.\n" +
-		"# github:     the same panel for pull requests. base_url is optional and\n" +
-		"#             defaults to https://github.com — set it to a GitHub\n" +
-		"#             Enterprise host to use that instead. token is a personal\n" +
+		"# github:     the same panel for pull requests. Both fields are optional:\n" +
+		"#             base_url defaults to https://github.com (set a GitHub\n" +
+		"#             Enterprise host to use that instead), and with no token\n" +
+		"#             public pull requests are read anonymously — enough to view\n" +
+		"#             them, though at 60 requests an hour the inline status pills\n" +
+		"#             stay off and only pressing v fetches. token is a personal\n" +
 		"#             access token (repo read to view, write to approve/merge);\n" +
 		"#             empty falls back to GITHUB_TOKEN / GH_TOKEN, then to an\n" +
 		"#             existing gh CLI login for the same host.\n" +

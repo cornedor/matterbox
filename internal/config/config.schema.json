@@ -522,7 +522,7 @@
     },
     "github": {
       "type": "object",
-      "description": "The GitHub pull-request side panel. Press v on a message linking a pull request to view it inline. No token (config, environment or gh CLI) disables the panel.",
+      "description": "The GitHub pull-request side panel. Press v on a message linking a pull request to view it inline. Optional: with no token, public pull requests are read anonymously (60 requests an hour, so no inline status pills and no approve/merge).",
       "additionalProperties": false,
       "properties": {
         "base_url": {
@@ -532,7 +532,7 @@
         },
         "token": {
           "type": "string",
-          "description": "Personal access token (repo read to view; write to approve/merge). Empty falls back to the GITHUB_TOKEN or GH_TOKEN env var, then to an existing gh CLI login for the host."
+          "description": "Personal access token (repo read to view; write to approve/merge). Empty falls back to the GITHUB_TOKEN or GH_TOKEN env var, then to an existing gh CLI login for the host, then to anonymous read-only access to public repositories."
         }
       }
     },

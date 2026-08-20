@@ -18,6 +18,7 @@ func (s stubProvider) Noun() string                                      { retur
 func (s stubProvider) Sigil() string                                     { return s.sigil }
 func (s stubProvider) ChecksHeading() string                             { return "Checks" }
 func (s stubProvider) Enabled() bool                                     { return true }
+func (s stubProvider) AutoFetch() bool                                   { return true }
 func (s stubProvider) BaseURL() string                                   { return "https://stub.test" }
 func (s stubProvider) Refs(string) []Ref                                 { return nil }
 func (s stubProvider) WebURL(string, int) string                         { return "" }
