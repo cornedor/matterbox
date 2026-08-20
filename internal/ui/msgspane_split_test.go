@@ -16,11 +16,11 @@ import (
 // so the bottom pad must land in the same place) cases.
 func TestBorderSplitIdentity(t *testing.T) {
 	cases := []struct{ w, h, upperRows, nLower int }{
-		{60, 20, 12, 4},   // slack: 16 content rows in a 19-row inner area
-		{40, 10, 6, 3},    // exact fill
-		{100, 30, 20, 9},  // exact fill, wide
-		{30, 8, 5, 1},     // tiny lower
-		{80, 25, 10, 2},   // slack, large gap
+		{60, 20, 12, 4},  // slack: 16 content rows in a 19-row inner area
+		{40, 10, 6, 3},   // exact fill
+		{100, 30, 20, 9}, // exact fill, wide
+		{30, 8, 5, 1},    // tiny lower
+		{80, 25, 10, 2},  // slack, large gap
 	}
 	mk := func(prefix string, n int) []string {
 		s := make([]string, n)
@@ -35,14 +35,14 @@ func TestBorderSplitIdentity(t *testing.T) {
 		all := append(append([]string{}, upperLines...), lowerLines...)
 
 		single := lipgloss.NewStyle().Border(border).UnsetBorderTop().UnsetBorderRight().
-			Width(c.w-1).Height(c.h).BorderForeground(dimColor).
+			Width(c.w - 1).Height(c.h).BorderForeground(dimColor).
 			Render(lipgloss.JoinVertical(lipgloss.Left, all...))
 
 		upper := lipgloss.NewStyle().Border(border).UnsetBorderTop().UnsetBorderRight().UnsetBorderBottom().
-			Width(c.w-1).Height(c.upperRows).BorderForeground(dimColor).
+			Width(c.w - 1).Height(c.upperRows).BorderForeground(dimColor).
 			Render(lipgloss.JoinVertical(lipgloss.Left, upperLines...))
 		lower := lipgloss.NewStyle().Border(border).UnsetBorderTop().UnsetBorderRight().
-			Width(c.w-1).Height(c.h-c.upperRows).BorderForeground(dimColor).
+			Width(c.w - 1).Height(c.h - c.upperRows).BorderForeground(dimColor).
 			Render(lipgloss.JoinVertical(lipgloss.Left, lowerLines...))
 		split := upper + "\n" + lower
 

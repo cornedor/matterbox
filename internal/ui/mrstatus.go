@@ -25,11 +25,11 @@ const (
 // for rendering the inline pill are stored — the full gitlab.MR lives in the
 // ref panel's glMR field.
 type mrStatusEntry struct {
-	state       mrStatusState
-	mrState     string // "opened" / "merged" / "closed" / "locked"
-	draft       bool
-	pipeStatus  string // pipeline status or "" when no pipeline
-	postIDs     []string
+	state      mrStatusState
+	mrState    string // "opened" / "merged" / "closed" / "locked"
+	draft      bool
+	pipeStatus string // pipeline status or "" when no pipeline
+	postIDs    []string
 }
 
 // mrStatusLoadedMsg carries the result of a background MR status fetch.

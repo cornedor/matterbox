@@ -337,4 +337,3 @@ func readPasteInto(ctx context.Context, r io.Reader, ch chan<- string) {
 		return
 	}
 }
-
