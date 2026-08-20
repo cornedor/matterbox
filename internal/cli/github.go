@@ -14,7 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"matterbox/internal/config"
-	"matterbox/internal/github"
+	"matterbox/internal/forge/github"
 	"matterbox/internal/githubauth"
 	"matterbox/internal/opener"
 )

@@ -1,12 +1,10 @@
 package gitlab
 
 import (
-	"fmt"
-	"net/url"
 	"regexp"
-	"sort"
 	"strconv"
-	"strings"
+
+	"matterbox/internal/forge"
 )
 
 // mrURLRe pulls the project path and MR iid out of a merge-request link:
@@ -24,18 +22,6 @@ var mrURLRe = regexp.MustCompile(`https?://([^/\s]+)/(\S+?)/-/merge_requests/(\d
 // project submatch start gives the appearance offset.
 var mrRefRe = regexp.MustCompile(`(?:^|[\s(\[<])([a-zA-Z0-9][a-zA-Z0-9._-]*(?:/[a-zA-Z0-9._-]+)+)!(\d+)\b`)
 
-// Ref is a detected merge-request reference: the project path, the iid, and the
-// byte offset of its first appearance (so the UI can order refs across
-// providers by where they appear in the message).
-type Ref struct {
-	Project string
-	IID     int
-	Pos     int
-}
-
-// String renders the canonical short form, group/project!iid.
-func (r Ref) String() string { return fmt.Sprintf("%s!%d", r.Project, r.IID) }
-
 // Refs extracts the merge-request references named in text, in order of first
 // appearance, deduplicated. Two forms are detected:
 //
@@ -47,31 +33,19 @@ func (r Ref) String() string { return fmt.Sprintf("%s!%d", r.Project, r.IID) }
 //
 // baseURL gives the instance host that URL links must match; an empty baseURL
 // matches no URLs (but short refs still resolve).
-func Refs(text, baseURL string) []Ref {
-	baseHost := hostOf(baseURL)
-	seen := map[string]int{} // canonical key → index into out
-	var out []Ref
-	add := func(project string, iid, pos int) {
-		key := strings.ToLower(project) + "!" + strconv.Itoa(iid)
-		if i, ok := seen[key]; ok {
-			if pos < out[i].Pos {
-				out[i].Pos = pos
-			}
-			return
-		}
-		seen[key] = len(out)
-		out = append(out, Ref{Project: project, IID: iid, Pos: pos})
-	}
+func Refs(text, baseURL string) []forge.Ref {
+	baseHost := forge.HostOf(baseURL)
+	var out []forge.Ref
 
 	for _, m := range mrURLRe.FindAllStringSubmatchIndex(text, -1) {
 		host := text[m[2]:m[3]]
-		project := strings.Trim(text[m[4]:m[5]], "/")
+		project := trimSlashes(text[m[4]:m[5]])
 		iid, err := strconv.Atoi(text[m[6]:m[7]])
 		if err != nil || project == "" {
 			continue
 		}
-		if hostMatches(host, baseHost) {
-			add(project, iid, m[0])
+		if forge.HostMatches(host, baseHost) {
+			out = append(out, forge.Ref{Repo: project, Number: iid, Pos: m[0]})
 		}
 	}
 
@@ -81,29 +55,19 @@ func Refs(text, baseURL string) []Ref {
 		if err != nil {
 			continue
 		}
-		add(project, iid, m[2])
+		out = append(out, forge.Ref{Repo: project, Number: iid, Pos: m[2]})
 	}
 
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Pos < out[j].Pos })
-	return out
+	return forge.DedupeRefs(out)
 }
 
-// hostOf returns the lowercased host of a URL, or "" if it doesn't parse to one.
-func hostOf(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return ""
+// trimSlashes drops leading/trailing "/" from a captured project path.
+func trimSlashes(s string) string {
+	for len(s) > 0 && s[0] == '/' {
+		s = s[1:]
 	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
-		return ""
+	for len(s) > 0 && s[len(s)-1] == '/' {
+		s = s[:len(s)-1]
 	}
-	return strings.ToLower(u.Host)
-}
-
-// hostMatches reports whether a URL host is the configured instance (exact,
-// case-insensitive). Unlike Jira there's no cloud-wildcard fallback — a
-// self-hosted instance has no shared suffix to recognise.
-func hostMatches(host, baseHost string) bool {
-	return baseHost != "" && strings.ToLower(host) == baseHost
+	return s
 }

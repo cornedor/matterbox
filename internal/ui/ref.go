@@ -11,54 +11,52 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/mattermost/mattermost/server/public/model"
 
-	"matterbox/internal/github"
-	"matterbox/internal/gitlab"
+	"matterbox/internal/forge"
 	"matterbox/internal/jira"
 )
 
 // The reference side panel. Press the open-reference key (v by default) on a
-// message that names a Jira issue or links a GitLab merge request to fetch it
-// and read it inline. It mirrors the thread sidebar's layout (a right-side pane
-// that splits the messages area) and hosts the single right slot, so opening it
-// closes the thread pane (and vice-versa). When a post names several references
-// — Jira and GitLab mixed, in order of appearance — ←/→ cycle them, each
-// rendered by its provider; r refetches; o opens it in a browser; esc or v
-// closes. Provider-specific loading/rendering/keys live in jira.go and
-// gitlab.go; this file owns the shared panel machinery.
+// message that names a Jira issue or links a change request on a configured
+// forge (a GitLab merge request, a GitHub pull request) to fetch it and read it
+// inline. It mirrors the thread sidebar's layout (a right-side pane that splits
+// the messages area) and hosts the single right slot, so opening it closes the
+// thread pane (and vice-versa). When a post names several references — Jira and
+// forge links mixed, in order of appearance — ←/→ cycle them, each rendered by
+// its provider; r refetches; o opens it in a browser; esc or v closes.
+// Provider-specific loading/rendering/keys live in jira.go and forge.go; this
+// file owns the shared panel machinery.
 
-// refKind identifies which provider a reference targets, selecting the loader,
-// renderer and key set used for it.
+// refKind identifies which kind of provider a reference targets, selecting the
+// loader, renderer and key set used for it. Every forge shares one kind — they
+// differ behind forge.Provider, not here.
 type refKind int
 
 const (
 	refJira refKind = iota
-	refGitLab
-	refGitHub
+	refForge
 )
 
 // reference is one detected, openable target. Only the fields for its kind are
 // set; pos is the byte offset of its first appearance in the source message, so
-// refs from both providers can be ordered together.
+// refs from both kinds can be ordered together.
 type reference struct {
-	kind     refKind
-	jiraKey  string // refJira: issue key, e.g. ABC-123
-	glProj   string // refGitLab: project path, e.g. group/project
-	glIID    int    // refGitLab: merge-request iid
-	ghRepo   string // refGitHub: repo path, e.g. owner/repo
-	ghNumber int    // refGitHub: issue / PR number
-	ghIsPull bool   // refGitHub: true for /pull/N, false for /issues/N
-	pos      int
+	kind    refKind
+	jiraKey string // refJira: issue key, e.g. ABC-123
+	forge   int    // refForge: index into Model.forges
+	repo    string // refForge: project path / owner-repo
+	number  int    // refForge: merge-request iid / pull-request number
+	pos     int
 }
 
-// label is the canonical short id shown in titles and loading text.
-func (r reference) label() string {
+// label is the canonical short id shown in titles and loading text. A forge
+// reference is written the way that forge's users write it, so p is the provider
+// the reference belongs to (nil falls back to a "#" sigil).
+func (r reference) label(p forge.Provider) string {
 	switch r.kind {
 	case refJira:
 		return r.jiraKey
-	case refGitLab:
-		return fmt.Sprintf("%s!%d", r.glProj, r.glIID)
-	case refGitHub:
-		return fmt.Sprintf("%s#%d", r.ghRepo, r.ghNumber)
+	case refForge:
+		return forge.Label(p, r.repo, r.number)
 	}
 	return ""
 }
@@ -71,7 +69,7 @@ var (
 )
 
 // hostFromURL returns the lowercased host of raw, or "" — used to resolve a
-// glab token for the configured GitLab instance.
+// forge CLI's stored token for the configured instance.
 func hostFromURL(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -84,8 +82,8 @@ func hostFromURL(raw string) string {
 	return strings.ToLower(u.Host)
 }
 
-// openRefForPost raises the reference panel for every Jira issue and GitLab
-// merge request named in p, ordered by where they appear. With no provider
+// openRefForPost raises the reference panel for every Jira issue and forge
+// change request named in p, ordered by where they appear. With no provider
 // configured it points the user at the config; with nothing detected it says
 // so. The first ref loads immediately; ←/→ cycle the rest.
 func (m Model) openRefForPost(p *model.Post) (tea.Model, tea.Cmd) {
@@ -93,9 +91,7 @@ func (m Model) openRefForPost(p *model.Post) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	jiraOK := m.jiraClient.Enabled()
-	glOK := m.glClient.Enabled()
-	ghOK := m.ghClient.Enabled()
-	if !jiraOK && !glOK && !ghOK {
+	if !jiraOK && !m.anyForgeEnabled() {
 		m.status = "no reference provider configured — set jira.*, gitlab.* or github.* in config.yaml"
 		return m, nil
 	}
@@ -106,18 +102,22 @@ func (m Model) openRefForPost(p *model.Post) (tea.Model, tea.Cmd) {
 			refs = append(refs, reference{kind: refJira, jiraKey: r.Key, pos: r.Pos})
 		}
 	}
-	if glOK {
-		for _, r := range gitlab.Refs(p.Message, m.glClient.BaseURL()) {
-			refs = append(refs, reference{kind: refGitLab, glProj: r.Project, glIID: r.IID, pos: r.Pos})
+	for i, fp := range m.forges {
+		if !fp.Enabled() {
+			continue
 		}
-	}
-	if ghOK {
-		for _, r := range github.Refs(p.Message, m.ghClient.BaseURL()) {
-			refs = append(refs, reference{kind: refGitHub, ghRepo: r.Repo, ghNumber: r.Number, ghIsPull: r.IsPull, pos: r.Pos})
+		for _, r := range fp.Refs(p.Message) {
+			refs = append(refs, reference{kind: refForge, forge: i, repo: r.Repo, number: r.Number, pos: r.Pos})
 		}
 	}
 	if len(refs) == 0 {
-		m.status = "no Jira issue, GitLab MR or GitHub issue / PR on this message"
+		// A link can belong to a forge that simply has no token: say so, rather
+		// than reporting that the message names nothing.
+		if missing := m.unconfiguredForges(p.Message); missing != "" {
+			m.status = missing + " has no token — set its token in config.yaml (or log in with its CLI)"
+			return m, nil
+		}
+		m.status = "no Jira issue or " + m.forgeNouns() + " on this message" + m.unconfiguredHint()
 		return m, nil
 	}
 	sort.SliceStable(refs, func(i, j int) bool { return refs[i].pos < refs[j].pos })
@@ -168,17 +168,66 @@ func (m *Model) refStatusHint(r reference, n int) string {
 		}, "/")
 		return edit + " edit · " + helpKey(m.keys.JiraComment) + " comment · " +
 			helpKey(m.keys.JiraReply) + " reply · " + shared + refCycleHint(n)
-	case refGitLab:
-		return helpKey(m.keys.GitLabApprove) + " approve · " + helpKey(m.keys.GitLabMerge) +
+	case refForge:
+		return helpKey(m.keys.RefApprove) + " approve · " + helpKey(m.keys.RefMerge) +
 			" merge · " + shared + refCycleHint(n)
-	case refGitHub:
-		if r.ghIsPull {
-			return helpKey(m.keys.GitHubApprove) + " approve · " + helpKey(m.keys.GitHubMerge) +
-				" merge · " + shared + refCycleHint(n)
-		}
-		return shared + refCycleHint(n)
 	}
 	return shared + refCycleHint(n)
+}
+
+// forgeNouns names the configured forges' change requests for the "nothing
+// found" message, so it says what was actually looked for ("GitLab merge
+// request", "GitLab merge request / GitHub pull request").
+func (m *Model) forgeNouns() string {
+	var parts []string
+	for _, p := range m.forges {
+		if p.Enabled() {
+			parts = append(parts, p.Name()+" "+p.Noun())
+		}
+	}
+	if len(parts) == 0 {
+		return "change request"
+	}
+	return strings.Join(parts, " / ")
+}
+
+// unconfiguredHint tails the "nothing found" line with the providers that are
+// switched off, so a user who has configured none of them learns that rather
+// than concluding the panel is broken. GitHub reads public repositories without
+// a token, so it is never in this list — which is why the line has to carry the
+// others.
+func (m *Model) unconfiguredHint() string {
+	var off []string
+	if !m.jiraClient.Enabled() {
+		off = append(off, "Jira")
+	}
+	for _, p := range m.forges {
+		if !p.Enabled() {
+			off = append(off, p.Name())
+		}
+	}
+	if len(off) == 0 {
+		return ""
+	}
+	return " (" + strings.Join(off, ", ") + " not configured)"
+}
+
+// unconfiguredForges names the forges whose own host appears in msg but which
+// can't fetch — github.com links with no GitHub token, say. Only a host match
+// counts as evidence: a short group/project!1 reference is too easy to write by
+// accident to go advertising a config block over.
+func (m *Model) unconfiguredForges(msg string) string {
+	var parts []string
+	for _, p := range m.forges {
+		if p.Enabled() {
+			continue
+		}
+		host := hostFromURL(p.BaseURL())
+		if host != "" && strings.Contains(strings.ToLower(msg), host) {
+			parts = append(parts, p.Name())
+		}
+	}
+	return strings.Join(parts, " / ")
 }
 
 // loadCurrentRef puts the panel into its loading state for the current ref and
@@ -193,17 +242,14 @@ func (m *Model) loadCurrentRef() tea.Cmd {
 	m.refLoading = true
 	m.refErr = nil
 	m.jiraIssue = nil
-	m.glMR = nil
-	m.ghItem = nil
+	m.refChange = nil
 	m.refView.GotoTop()
 	m.renderRef()
 	switch r.kind {
 	case refJira:
 		return m.fetchJira(m.refGen, r.jiraKey)
-	case refGitLab:
-		return m.fetchGitLabMR(m.refGen, r.glProj, r.glIID)
-	case refGitHub:
-		return m.fetchGitHub(m.refGen, r.ghRepo, r.ghNumber)
+	case refForge:
+		return m.fetchForgeChange(m.refGen, r.forge, r.repo, r.number)
 	}
 	return nil
 }
@@ -218,8 +264,7 @@ func (m *Model) closeRef() {
 	m.refs = nil
 	m.refIdx = 0
 	m.jiraIssue = nil
-	m.glMR = nil
-	m.ghItem = nil
+	m.refChange = nil
 	m.refErr = nil
 	m.refLoading = false
 	m.refGen++
@@ -227,8 +272,8 @@ func (m *Model) closeRef() {
 	m.closeJiraPicker()
 	m.closeJiraPoints()
 	m.closeJiraComment()
-	m.glConfirm = glConfirmState{}
-	m.glJobsExpanded = false
+	m.refConfirm = refConfirmState{}
+	m.refJobsExpanded = false
 	if m.focus == focusRef {
 		m.focus = focusMessages
 	}
@@ -257,10 +302,10 @@ func (m Model) refreshRef() (tea.Model, tea.Cmd) {
 	switch r.kind {
 	case refJira:
 		m.jiraClient.Invalidate(r.jiraKey)
-	case refGitLab:
-		m.glClient.Invalidate(r.glProj, r.glIID)
-	case refGitHub:
-		m.ghClient.Invalidate(r.ghRepo, r.ghNumber)
+	case refForge:
+		if p := m.forgeAt(r.forge); p != nil {
+			p.Invalidate(r.repo, r.number)
+		}
 	}
 	cmd := m.loadCurrentRef()
 	return m, cmd
@@ -276,10 +321,8 @@ func (m Model) openCurrentRefURL() (tea.Model, tea.Cmd) {
 	switch {
 	case r.kind == refJira && m.jiraIssue != nil:
 		o = openable{name: m.jiraIssue.Key, url: m.jiraIssue.URL}
-	case r.kind == refGitLab && m.glMR != nil:
-		o = openable{name: r.label(), url: m.glMR.WebURL}
-	case r.kind == refGitHub && m.ghItem != nil:
-		o = openable{name: r.label(), url: m.ghItem.URL}
+	case r.kind == refForge && m.refChange != nil:
+		o = openable{name: r.label(m.forgeAt(r.forge)), url: m.refChange.WebURL}
 	}
 	if o.url == "" {
 		return m, nil
@@ -339,25 +382,17 @@ func (m Model) handleRefKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
-	if r != nil && r.kind == refGitLab && m.glMR != nil {
+	if r != nil && r.kind == refForge && m.refChange != nil {
 		switch {
-		case key.Matches(msg, m.keys.GitLabApprove):
-			return m.openGitLabApprove()
-		case key.Matches(msg, m.keys.GitLabMerge):
-			return m.openGitLabMerge()
-		case key.Matches(msg, m.keys.GitLabJobs):
-			m.glJobsExpanded = !m.glJobsExpanded
+		case key.Matches(msg, m.keys.RefApprove):
+			return m.openForgeApprove()
+		case key.Matches(msg, m.keys.RefMerge):
+			return m.openForgeMerge()
+		case key.Matches(msg, m.keys.RefJobs):
+			m.refJobsExpanded = !m.refJobsExpanded
 			m.refView.GotoTop()
 			m.renderRef()
 			return m, nil
-		}
-	}
-	if r != nil && r.kind == refGitHub && m.ghItem != nil && m.ghItem.IsPull {
-		switch {
-		case key.Matches(msg, m.keys.GitHubApprove):
-			return m.openGitHubApprove()
-		case key.Matches(msg, m.keys.GitHubMerge):
-			return m.openGitHubMerge()
 		}
 	}
 	var cmd tea.Cmd
@@ -380,26 +415,17 @@ func (m *Model) renderRef() {
 	case m.refLoading || r == nil:
 		label := ""
 		if r != nil {
-			label = r.label()
+			label = r.label(m.forgeAt(r.forge))
 		}
 		m.refView.SetContent(refDimStyle.Render("loading " + label + "…"))
 	case r.kind == refJira && m.jiraIssue != nil:
-		m.setRefContent(m.refHover(expandTables(m.renderJiraIssue(m.jiraIssue, m.refView.Width()), m.refView.Width())))
-	case r.kind == refGitLab && m.glMR != nil:
-		m.setRefContent(m.refHover(expandTables(m.renderGitLabMR(m.glMR, m.refView.Width()), m.refView.Width())))
-	case r.kind == refGitHub && m.ghItem != nil:
-		m.setRefContent(m.refHover(expandTables(m.renderGitHubItem(m.ghItem, m.refView.Width()), m.refView.Width())))
+		m.refView.SetContent(m.refHover(expandTables(m.renderJiraIssue(m.jiraIssue, m.refView.Width()), m.refView.Width())))
+	case r.kind == refForge && m.refChange != nil:
+		rendered := m.renderForgeChange(m.forgeAt(r.forge), m.refChange, m.refView.Width())
+		m.refView.SetContent(m.refHover(expandTables(rendered, m.refView.Width())))
 	default:
 		m.refView.SetContent(refDimStyle.Render("loading…"))
 	}
-}
-
-// setRefContent installs panel content and applies any active text selection
-// that belongs to the reference pane.
-func (m *Model) setRefContent(content string) {
-	lines := strings.Split(content, "\n")
-	m.applyTextSelHighlight(focusRef, lines)
-	m.refView.SetContentLines(lines)
 }
 
 // refHover paints the hovered link's background when the pointer rests on a
@@ -467,14 +493,14 @@ func (m *Model) refPaneTitle() string {
 		switch r.kind {
 		case refJira:
 			name = "Jira"
-		case refGitLab:
-			name = "GitLab"
-		case refGitHub:
-			name = "GitHub"
+		case refForge:
+			if p := m.forgeAt(r.forge); p != nil {
+				name = p.Name()
+			}
 		}
 	}
 	switch {
-	case m.refLoading && m.jiraIssue == nil && m.glMR == nil && m.ghItem == nil:
+	case m.refLoading && m.jiraIssue == nil && m.refChange == nil:
 		return name + " (loading…)"
 	case len(m.refs) > 1:
 		return fmt.Sprintf("%s · %d/%d", name, m.refIdx+1, len(m.refs))

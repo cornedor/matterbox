@@ -13,6 +13,6 @@ func BenchmarkUpdatePostDispatch(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_ = m.resolveUnknownSenders()
 		_ = m.fetchPendingEmoji()
-		_ = m.fetchPendingMRStatus()
+		_ = m.fetchPendingChangeStatus()
 	}
 }

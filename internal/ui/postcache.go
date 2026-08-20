@@ -259,7 +259,7 @@ func (m *Model) markdownBodyMarked(p *model.Post) string {
 	if m.me != nil {
 		self = m.me.Username
 	}
-	mr := m.buildMRInlineFn(p.Id)
+	mr := m.buildChangeInlineFn(p.Id)
 	if p.Id == "" {
 		return renderMarkdownEffects(p.Message, m.emojiImg, mr, self)
 	}

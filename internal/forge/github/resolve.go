@@ -30,7 +30,7 @@ func ResolveToken(configToken, host string) (token, source string) {
 	if host == "" {
 		return "", ""
 	}
-	if t := TokenFromGh(host); t != "" {
+	if t := TokenFromGH(host); t != "" {
 		return t, "gh CLI (~/.config/gh/hosts.yml)"
 	}
 	if t, _, err := githubauth.ReadTokenForHost(host); err == nil && strings.TrimSpace(t) != "" {

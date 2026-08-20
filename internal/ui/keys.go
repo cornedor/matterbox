@@ -98,18 +98,16 @@ type keyMap struct {
 	FeedReply   key.Binding
 
 	// Reference panel, once the provider's data has loaded: the Jira issue
-	// editors and the GitLab MR actions.
-	JiraStatus    key.Binding
-	JiraPriority  key.Binding
-	JiraPoints    key.Binding
-	JiraAssignee  key.Binding
-	JiraComment   key.Binding
-	JiraReply     key.Binding
-	GitLabApprove key.Binding
-	GitLabMerge   key.Binding
-	GitLabJobs    key.Binding
-	GitHubApprove key.Binding
-	GitHubMerge   key.Binding
+	// editors and the merge/pull-request actions.
+	JiraStatus   key.Binding
+	JiraPriority key.Binding
+	JiraPoints   key.Binding
+	JiraAssignee key.Binding
+	JiraComment  key.Binding
+	JiraReply    key.Binding
+	RefApprove   key.Binding
+	RefMerge     key.Binding
+	RefJobs      key.Binding
 
 	// List sheets (saved messages, templates): drop the selected row.
 	SheetRemove key.Binding
@@ -224,7 +222,7 @@ var actionDefs = []actionDef{
 	{id: "goto_parent", field: func(k *keyMap) *key.Binding { return &k.GotoParent }, keys: []string{"p"}, desc: "jump to parent"},
 	{id: "open_attachment", field: func(k *keyMap) *key.Binding { return &k.OpenAttach }, keys: []string{"o"}, desc: "open attachment/link"},
 	{id: "download_attachment", field: func(k *keyMap) *key.Binding { return &k.Download }, keys: []string{"s"}, desc: "download attachment(s)"},
-	{id: "open_reference", field: func(k *keyMap) *key.Binding { return &k.OpenRef }, keys: []string{"v"}, desc: "open reference (Jira/GitLab)"},
+	{id: "open_reference", field: func(k *keyMap) *key.Binding { return &k.OpenRef }, keys: []string{"v"}, desc: "open reference (Jira/GitLab/GitHub)"},
 	{id: "preview_image", field: func(k *keyMap) *key.Binding { return &k.Preview }, keys: []string{"space"}, desc: "preview image"},
 	{id: "copy_markdown", field: func(k *keyMap) *key.Binding { return &k.CopyMD }, keys: []string{"y"}, desc: "copy markdown"},
 	{id: "copy_code_block", field: func(k *keyMap) *key.Binding { return &k.CopyCode }, keys: []string{"Y"}, desc: "copy code block"},
@@ -240,7 +238,7 @@ var actionDefs = []actionDef{
 	{id: "confirm_no", field: func(k *keyMap) *key.Binding { return &k.ConfirmNo }, keys: []string{"n", "N"}, desc: "cancel"},
 
 	{id: "mark_read", field: func(k *keyMap) *key.Binding { return &k.MarkRead }, keys: []string{"m"}, desc: "mark read"},
-	// A for "all". The message pane's A is the reference panel's MR-approve key,
+	// A for "all". The message pane's A is the reference panel's approve key,
 	// which the feed never reaches, so the letter is free here.
 	{id: "feed_mark_all_read", field: func(k *keyMap) *key.Binding { return &k.MarkAllRead }, keys: []string{"A"}, desc: "mark all read"},
 	{id: "refresh", field: func(k *keyMap) *key.Binding { return &k.Refresh }, keys: []string{"r"}, desc: "refresh"},
@@ -250,7 +248,7 @@ var actionDefs = []actionDef{
 	{id: "feed_reply", field: func(k *keyMap) *key.Binding { return &k.FeedReply }, keys: []string{"R"}, desc: "reply in thread"},
 
 	// Reference-panel provider keys. They only act once the panel has loaded
-	// the issue / MR (otherwise they fall through to scrolling it), but they
+	// the issue / change request (otherwise they fall through to scrolling it), but they
 	// are registry actions like any other so the cheatsheet lists them and a
 	// user can rebind one that collides with their terminal.
 	{id: "jira_status", field: func(k *keyMap) *key.Binding { return &k.JiraStatus }, keys: []string{"s"}, desc: "Jira: change status"},
@@ -259,11 +257,9 @@ var actionDefs = []actionDef{
 	{id: "jira_assignee", field: func(k *keyMap) *key.Binding { return &k.JiraAssignee }, keys: []string{"a"}, desc: "Jira: change assignee"},
 	{id: "jira_comment", field: func(k *keyMap) *key.Binding { return &k.JiraComment }, keys: []string{"c"}, desc: "Jira: add comment"},
 	{id: "jira_reply", field: func(k *keyMap) *key.Binding { return &k.JiraReply }, keys: []string{"R"}, desc: "Jira: reply to comment"},
-	{id: "gitlab_approve", field: func(k *keyMap) *key.Binding { return &k.GitLabApprove }, keys: []string{"A"}, desc: "MR: approve"},
-	{id: "gitlab_merge", field: func(k *keyMap) *key.Binding { return &k.GitLabMerge }, keys: []string{"M"}, desc: "MR: merge"},
-	{id: "gitlab_jobs", field: func(k *keyMap) *key.Binding { return &k.GitLabJobs }, keys: []string{"t"}, desc: "MR: all / fewer jobs"},
-	{id: "github_approve", field: func(k *keyMap) *key.Binding { return &k.GitHubApprove }, keys: []string{"A"}, desc: "PR: approve"},
-	{id: "github_merge", field: func(k *keyMap) *key.Binding { return &k.GitHubMerge }, keys: []string{"M"}, desc: "PR: merge"},
+	{id: "ref_approve", field: func(k *keyMap) *key.Binding { return &k.RefApprove }, keys: []string{"A"}, desc: "MR/PR: approve"},
+	{id: "ref_merge", field: func(k *keyMap) *key.Binding { return &k.RefMerge }, keys: []string{"M"}, desc: "MR/PR: merge"},
+	{id: "ref_jobs", field: func(k *keyMap) *key.Binding { return &k.RefJobs }, keys: []string{"t"}, desc: "MR/PR: all / fewer checks"},
 
 	{id: "sheet_remove", field: func(k *keyMap) *key.Binding { return &k.SheetRemove }, keys: []string{"d", "D"}, desc: "remove entry"},
 

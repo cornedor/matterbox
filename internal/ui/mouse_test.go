@@ -11,7 +11,6 @@ import (
 	"github.com/mattermost/mattermost/server/public/model"
 
 	"matterbox/internal/editor"
-	"matterbox/internal/gitlab"
 	"matterbox/internal/store"
 )
 
@@ -262,9 +261,8 @@ func TestSelectedTextDropsGutter(t *testing.T) {
 }
 
 func TestRefClickFocusesPaneAndBlursComposer(t *testing.T) {
-	base := mouseModel([]*model.Post{{Id: "p", CreateAt: 100, UserId: "u", Message: "x"}})
-	base.glClient = gitlab.New(gitlab.Config{BaseURL: "https://git.example.com", Token: "tok"})
-	m := openLoadedMR(t, base, sampleMR())
+	base := withForges(mouseModel([]*model.Post{{Id: "p", CreateAt: 100, UserId: "u", Message: "x"}}))
+	m := openLoadedChange(t, base, forgeGitLab, mrLink, sampleMR())
 	m.focus = focusInput
 	m.input.Focus()
 
@@ -283,11 +281,10 @@ func TestRefClickFocusesPaneAndBlursComposer(t *testing.T) {
 }
 
 func TestRefDragThenReleaseCopiesSelection(t *testing.T) {
-	base := mouseModel([]*model.Post{{Id: "p", CreateAt: 100, UserId: "u", Message: "x"}})
-	base.glClient = gitlab.New(gitlab.Config{BaseURL: "https://git.example.com", Token: "tok"})
+	base := withForges(mouseModel([]*model.Post{{Id: "p", CreateAt: 100, UserId: "u", Message: "x"}}))
 	mr := sampleMR()
 	mr.Description = "Alpha bravo"
-	m := openLoadedMR(t, base, mr)
+	m := openLoadedChange(t, base, forgeGitLab, mrLink, mr)
 
 	lines, _ := m.ensureWrapIndex(focusRef, m.refView.Width())
 	line, start := -1, -1
@@ -329,11 +326,10 @@ func TestRefDragThenReleaseCopiesSelection(t *testing.T) {
 // the composer's width still overhangs (the bug that made bottom-of-panel links
 // focus the text input instead of opening).
 func TestRefPanelBeatsComposerAtSameHeight(t *testing.T) {
-	base := mouseModel([]*model.Post{{Id: "p", CreateAt: 100, UserId: "u", Message: "x"}})
-	base.glClient = gitlab.New(gitlab.Config{BaseURL: "https://git.example.com", Token: "tok"})
+	base := withForges(mouseModel([]*model.Post{{Id: "p", CreateAt: 100, UserId: "u", Message: "x"}}))
 	mr := sampleMR()
 	mr.Description = "see https://example.com/bottom"
-	m := openLoadedMR(t, base, mr)
+	m := openLoadedChange(t, base, forgeGitLab, mrLink, mr)
 	m.vcache.bodyH = 20
 	// Simulate the old bug: input still at full right-pane width after opening
 	// the panel, so its hit box overlaps the side panel's bottom rows.
