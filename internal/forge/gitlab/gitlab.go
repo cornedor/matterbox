@@ -68,6 +68,9 @@ func (c *Client) Name() string { return "GitLab" }
 // Noun is what GitLab calls a change request.
 func (c *Client) Noun() string { return "merge request" }
 
+// ItemNouns matches Noun — GitLab only opens merge requests in this panel.
+func (c *Client) ItemNouns() string { return c.Noun() }
+
 // Sigil is the separator in GitLab's short reference form (group/project!12).
 func (c *Client) Sigil() string { return "!" }
 

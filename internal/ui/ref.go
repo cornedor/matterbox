@@ -185,15 +185,9 @@ func (m *Model) refStatusHint(r reference, n int) string {
 func (m *Model) forgeNouns() string {
 	var parts []string
 	for _, p := range m.forges {
-		if !p.Enabled() {
-			continue
+		if p.Enabled() {
+			parts = append(parts, p.Name()+" "+p.ItemNouns())
 		}
-		// GitHub opens issues and PRs; Noun stays "pull request" for approve errors.
-		if p.Name() == "GitHub" {
-			parts = append(parts, "GitHub issue / pull request")
-			continue
-		}
-		parts = append(parts, p.Name()+" "+p.Noun())
 	}
 	if len(parts) == 0 {
 		return "change request"

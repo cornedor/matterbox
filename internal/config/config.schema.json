@@ -541,12 +541,13 @@
         },
         "scopes": {
           "type": "array",
-          "description": "OAuth scopes for `matterbox github login`. Default [\"repo\"] is broad; narrow if you only need public read + PR actions.",
+          "description": "OAuth scopes for `matterbox github login`. Default [\"public_repo\", \"repo:status\"] covers public read + commit statuses without a broad private-repo write grant.",
           "items": {
             "type": "string"
           },
           "default": [
-            "repo"
+            "public_repo",
+            "repo:status"
           ]
         }
       }

@@ -57,8 +57,12 @@ type Provider interface {
 	// title and in error text.
 	Name() string
 	// Noun is what this forge calls a change request ("merge request", "pull
-	// request"), used in the status line so the panel speaks the user's dialect.
+	// request"), used in action errors so the panel speaks the user's dialect.
 	Noun() string
+	// ItemNouns is the phrase used in "nothing found" status text for this
+	// forge ("merge request", "issue / pull request"). Distinct from Noun when
+	// the forge opens more than one kind of numbered item.
+	ItemNouns() string
 	// Sigil is the separator in the forge's own short reference form: "!" for
 	// GitLab (group/project!12), "#" for GitHub (owner/repo#12). Label builds
 	// the full short form from it.

@@ -67,7 +67,7 @@ func newGithubCmd() *cobra.Command {
 		Long:  "Clears only the token saved by `matterbox github login`. Does not touch `gh` or config/env tokens.",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runGithubLogout(cmd.Context(), cmd.OutOrStdout(), hostOverride)
+			return runGithubLogout(cmd.OutOrStdout(), hostOverride)
 		},
 	}
 
@@ -128,8 +128,7 @@ func runGithubStatus(ctx context.Context, out io.Writer, hostOverride string) er
 	return nil
 }
 
-func runGithubLogout(ctx context.Context, out io.Writer, hostOverride string) error {
-	_ = ctx
+func runGithubLogout(out io.Writer, hostOverride string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err

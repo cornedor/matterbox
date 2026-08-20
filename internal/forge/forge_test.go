@@ -13,22 +13,23 @@ type stubProvider struct{ sigil string }
 
 var _ Provider = stubProvider{}
 
-func (s stubProvider) Name() string                                      { return "Stub" }
-func (s stubProvider) Noun() string                                      { return "change request" }
-func (s stubProvider) Sigil() string                                     { return s.sigil }
-func (s stubProvider) ChecksHeading() string                             { return "Checks" }
-func (s stubProvider) Enabled() bool                                     { return true }
-func (s stubProvider) AutoFetch() bool                                   { return true }
-func (s stubProvider) BaseURL() string                                   { return "https://stub.test" }
-func (s stubProvider) Refs(string) []Ref                                 { return nil }
-func (s stubProvider) WebURL(string, int) string                         { return "" }
+func (s stubProvider) Name() string              { return "Stub" }
+func (s stubProvider) Noun() string              { return "change request" }
+func (s stubProvider) ItemNouns() string         { return s.Noun() }
+func (s stubProvider) Sigil() string             { return s.sigil }
+func (s stubProvider) ChecksHeading() string     { return "Checks" }
+func (s stubProvider) Enabled() bool             { return true }
+func (s stubProvider) AutoFetch() bool           { return true }
+func (s stubProvider) BaseURL() string           { return "https://stub.test" }
+func (s stubProvider) Refs(string) []Ref         { return nil }
+func (s stubProvider) WebURL(string, int) string { return "" }
 func (s stubProvider) Get(context.Context, string, int, string) (*Change, error) {
 	return nil, nil
 }
-func (s stubProvider) Invalidate(string, int)                            {}
-func (s stubProvider) Approve(context.Context, string, int) error        { return nil }
-func (s stubProvider) MergeMethods() []MergeMethod                       { return nil }
-func (s stubProvider) Merge(context.Context, string, int, string) error  { return nil }
+func (s stubProvider) Invalidate(string, int)                           {}
+func (s stubProvider) Approve(context.Context, string, int) error       { return nil }
+func (s stubProvider) MergeMethods() []MergeMethod                      { return nil }
+func (s stubProvider) Merge(context.Context, string, int, string) error { return nil }
 
 func TestLabelUsesTheForgeSigil(t *testing.T) {
 	if got := Label(stubProvider{"!"}, "group/proj", 12); got != "group/proj!12" {

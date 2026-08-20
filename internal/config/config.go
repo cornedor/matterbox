@@ -280,8 +280,8 @@ type GitHubConfig struct {
 	ClientID string `yaml:"client_id"`
 
 	// Scopes are the OAuth scopes requested during `matterbox github login`.
-	// If unset, defaults to ["repo"]. Prefer a narrower set if you only need
-	// public read + PR review/merge on selected repos.
+	// If unset, defaults to ["public_repo", "repo:status"] — enough to view
+	// public repos and PR checks without a broad private-repo write grant.
 	Scopes []string `yaml:"scopes"`
 }
 

@@ -101,9 +101,11 @@ func APIRoot(baseURL string) string {
 func (c *Client) Name() string { return "GitHub" }
 
 // Noun is what GitHub calls a mergeable change request in action errors
-// ("cannot approve …: pull request is closed"). The "nothing found" line uses
-// forgeNouns, which names issues too.
+// ("cannot approve …: pull request is closed").
 func (c *Client) Noun() string { return "pull request" }
+
+// ItemNouns covers both shapes owner/repo#N can name in "nothing found" text.
+func (c *Client) ItemNouns() string { return "issue / pull request" }
 
 // Sigil is the separator in GitHub's short reference form (owner/repo#12).
 func (c *Client) Sigil() string { return "#" }
