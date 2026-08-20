@@ -191,6 +191,33 @@ func TestForgePanelRendersPullRequest(t *testing.T) {
 	}
 }
 
+// A pull-request link with no GitHub token must say the forge has no token —
+// reporting "nothing on this message" would send the user looking for the wrong
+// problem.
+func TestForgeWithoutTokenSaysSo(t *testing.T) {
+	m := newTestModel()
+	m.width, m.height = 120, 40
+	m.forges = []forge.Provider{
+		gitlab.New(gitlab.Config{BaseURL: "https://git.example.com", Token: "tok"}),
+		github.New(github.Config{}), // no token: enabled() is false
+	}
+	post := &model.Post{Message: prLink}
+	updated, cmd := m.openRefForPost(post)
+	got := updated.(Model)
+	if got.refOpen || cmd != nil {
+		t.Fatal("the panel must not open for a forge that cannot fetch")
+	}
+	if !strings.Contains(got.status, "GitHub has no token") {
+		t.Errorf("status = %q, want it to name GitHub as unconfigured", got.status)
+	}
+	// A message that names nothing still gets the plain not-found line, and an
+	// unconfigured forge whose host isn't mentioned doesn't volunteer itself.
+	updated, _ = m.openRefForPost(&model.Post{Message: "just some plain text"})
+	if s := updated.(Model).status; !strings.Contains(s, "no Jira issue or") {
+		t.Errorf("status = %q, want the not-found line", s)
+	}
+}
+
 func TestForgeChecksCapJobsPerGroup(t *testing.T) {
 	mr := sampleMR()
 	// A group with more than the cap, the failing one hidden below the cut.

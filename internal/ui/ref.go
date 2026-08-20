@@ -112,6 +112,12 @@ func (m Model) openRefForPost(p *model.Post) (tea.Model, tea.Cmd) {
 		}
 	}
 	if len(refs) == 0 {
+		// A link can belong to a forge that simply has no token: say so, rather
+		// than reporting that the message names nothing.
+		if missing := m.unconfiguredForges(p.Message); missing != "" {
+			m.status = missing + " has no token — set its token in config.yaml (or log in with its CLI)"
+			return m, nil
+		}
 		m.status = "no Jira issue or " + m.forgeNouns() + " on this message"
 		return m, nil
 	}
@@ -182,6 +188,24 @@ func (m *Model) forgeNouns() string {
 	}
 	if len(parts) == 0 {
 		return "change request"
+	}
+	return strings.Join(parts, " / ")
+}
+
+// unconfiguredForges names the forges whose own host appears in msg but which
+// can't fetch — github.com links with no GitHub token, say. Only a host match
+// counts as evidence: a short group/project!1 reference is too easy to write by
+// accident to go advertising a config block over.
+func (m *Model) unconfiguredForges(msg string) string {
+	var parts []string
+	for _, p := range m.forges {
+		if p.Enabled() {
+			continue
+		}
+		host := hostFromURL(p.BaseURL())
+		if host != "" && strings.Contains(strings.ToLower(msg), host) {
+			parts = append(parts, p.Name())
+		}
 	}
 	return strings.Join(parts, " / ")
 }
