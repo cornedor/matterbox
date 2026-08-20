@@ -4,17 +4,18 @@ import (
 	"bufio"
 	"encoding/json"
 	"net"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"matterbox/internal/testsock"
 )
 
 // serveStatus stands in for a running TUI: it answers `status` with the given
 // Status and ignores anything else, exactly like handleControlConn.
 func serveStatus(t *testing.T, s Status) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "tui.sock")
+	path := testsock.Path(t)
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -58,7 +59,7 @@ func TestQueryRoundTrip(t *testing.T) {
 // No socket at all is the everyday case for a daemon on another machine (and
 // for anyone not running the TUI). It must read as "no TUI", promptly.
 func TestQueryNoSocket(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "absent.sock")
+	path := testsock.Path(t)
 	if s, ok := Query(path, time.Second); ok || s != (Status{}) {
 		t.Fatalf("Query on a missing socket = %+v, %t; want zero, false", s, ok)
 	}
@@ -67,7 +68,7 @@ func TestQueryNoSocket(t *testing.T) {
 // A socket that accepts but never answers (a wedged TUI) must not hold the
 // caller past the timeout — a notification is waiting behind it.
 func TestQuerySilentPeerTimesOut(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "tui.sock")
+	path := testsock.Path(t)
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatalf("listen: %v", err)

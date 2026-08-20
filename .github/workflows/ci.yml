@@ -50,10 +50,10 @@ jobs:
           cache: true
       - run: go test ./...
 
-  # The demoaudio and video code paths are compiled out of every other job, so
-  # without this nothing would ever catch a break in them. Compile-only: the
-  # runners have no sound card or GPU.
-  optional-features:
+  # The demoaudio code path is compiled out of every other job, so without this
+  # nothing would ever catch a break in it. Compile-only: the runners have no
+  # sound card.
+  demoaudio:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -61,18 +61,15 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: install ALSA + ffmpeg headers
+      - name: install ALSA headers
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config libasound2-dev \
-            libavcodec-dev libavdevice-dev libavfilter-dev \
-            libavformat-dev libavutil-dev libswresample-dev libswscale-dev
-      - name: build with every optional feature
+          sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev
+      - name: build with the demoaudio tag
         run: |
           make tags
-          go build -tags demoaudio,video ./...
-          go vet -tags demoaudio,video ./...
+          go build -tags demoaudio ./...
+          go vet -tags demoaudio ./...
 
       # Compiling the GPL path is fine — only distributing it isn't, and nothing
       # here is distributed. What this checks is that the release-time guard
@@ -80,10 +77,12 @@ jobs:
       # (GPL-2.0-or-later) through the tracker library's core packages, so the
       # licence bundler MUST refuse this build. If it ever stops refusing, opl2
       # left the dependency graph and the Apache-2.0 caveat in the README (plus
-      # this check) can go.
+      # this check) can go. demoaudio alone, deliberately: add video and the
+      # guard stops at the linked ffmpeg's licence instead of reaching the Go
+      # module tally, which is the video job's check, not this one.
       - name: the audio build must still be rejected by the licence guard
         run: |
-          if TAGS=demoaudio,video scripts/third-party-licenses \
+          if TAGS=demoaudio scripts/third-party-licenses \
               >/dev/null 2>/tmp/guard-err.txt; then
             echo "the GPL guard accepted a demoaudio build — it should have refused."
             echo "if gotracker/opl2 is gone, remove this check and the README caveat."
@@ -96,19 +95,100 @@ jobs:
           fi
           echo "ok: the licence guard rejects the demoaudio build, naming opl2"
 
-      # The video tag's licensing depends on the runner's ffmpeg, not on go.mod,
-      # so assert only that the probe compiles, runs and reaches a verdict —
-      # never which verdict. Ubuntu ships a GPL-configured ffmpeg today, but
-      # that is the distro's choice to change, and a check that breaks when
-      # Ubuntu reconfigures would be testing apt, not matterbox.
-      - name: the ffmpeg licence probe must reach a verdict
+  # `video` binds ffmpeg through go-astiav, and astiav tracks exactly one ffmpeg
+  # release (v0.41 -> n8.0): against an older API it doesn't fail to link, it
+  # fails to compile, because the C functions it names don't exist yet. No apt
+  # repo has ffmpeg 8 — noble ships 6.1 — so build it once and cache it, the way
+  # astiav's own CI does. A cache hit makes this job as cheap as the others.
+  video:
+    runs-on: ubuntu-latest
+    env:
+      # The version astiav declares compatibility with. Bump both together.
+      FFMPEG_VERSION: n8.0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Also needed on a cache hit: cgo finds the restored libs through
+      # pkg-config, and `make tags` decides with it.
+      - name: make sure pkg-config is there
+        run: |
+          command -v pkg-config >/dev/null || {
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends pkg-config
+          }
+
+      - name: restore the ffmpeg build
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/ffmpeg
+          key: ffmpeg-${{ env.FFMPEG_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+
+      # Shared libraries, so cgo's plain `pkg-config --libs` is enough (a static
+      # ffmpeg needs its Libs.private, which cgo never asks for). Default codec
+      # set: the video tests decode a real h264/mp4 clip, and a stripped ffmpeg
+      # would make this job pass on something no user runs. No programs, docs or
+      # debug info — nothing here invokes ffmpeg(1), and it keeps the cache small.
+      - name: build ffmpeg ${{ env.FFMPEG_VERSION }}
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nasm
+          git clone --depth 1 --branch "$FFMPEG_VERSION" \
+            https://github.com/FFmpeg/FFmpeg "$RUNNER_TEMP/ffmpeg-src"
+          cd "$RUNNER_TEMP/ffmpeg-src"
+          ./configure --prefix="$HOME/ffmpeg" \
+            --enable-shared --disable-static \
+            --disable-programs --disable-doc --disable-debug
+          make -j"$(nproc)"
+          make install
+
+      - name: point pkg-config and the linker at it
+        run: |
+          echo "PKG_CONFIG_PATH=$HOME/ffmpeg/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$HOME/ffmpeg/lib" >> "$GITHUB_ENV"
+
+      # `make tags` has to agree that this machine can do video: it enforces the
+      # same 8.0 floor, so if it says no here, the detection and the build we
+      # just made have drifted apart.
+      - name: build and test with the video tag
+        run: |
+          # `make tags` explains itself on stderr, so redirect before grepping.
+          make tags 2>&1 | tee /tmp/tags.txt
+          grep -q '^video:     yes' /tmp/tags.txt \
+            || { echo "detection rejected the ffmpeg we just built"; exit 1; }
+          go build -tags video ./...
+          go vet -tags video ./...
+          go test -tags video ./...
+
+      # The only job where the decoder exists, so also the only place the licence
+      # classifier meets a real libav. We configure ffmpeg above without
+      # --enable-gpl or --enable-nonfree, so lgpl is the one right answer; change
+      # the configure and this expectation changes with it.
+      - name: the ffmpeg licence probe must classify this build as LGPL
         run: |
           go run -tags video ./internal/libav/probe | tee /tmp/libav.txt
           grep -qE '^linked=1$' /tmp/libav.txt \
             || { echo "probe did not report a linked libav"; exit 1; }
-          grep -qE '^class=(lgpl|gpl|nonfree)$' /tmp/libav.txt \
-            || { echo "probe could not classify the linked ffmpeg's licence"; exit 1; }
-          echo "ok: the probe classified the runner's ffmpeg"
+          grep -qE '^class=lgpl$' /tmp/libav.txt \
+            || { echo "probe did not classify our LGPL ffmpeg as lgpl"; exit 1; }
+          echo "ok: the probe classified the ffmpeg we built"
+
+      # The other half of the same question, and the one release.yml would ask:
+      # an LGPL ffmpeg may ship inside an Apache-2.0 binary, so the guard must
+      # accept this build *and* carry FFmpeg's notice into the bundle. Nothing
+      # exercises this path anywhere else — without an ffmpeg to link, the guard
+      # can't even run the probe.
+      - name: a video build against an LGPL ffmpeg must pass the licence guard
+        run: |
+          TAGS=video scripts/third-party-licenses > /tmp/bundle.txt
+          grep -q 'FFmpeg (libav\*)' /tmp/bundle.txt \
+            || { echo "the bundle carries no FFmpeg notice"; exit 1; }
+          echo "ok: the guard accepts the build and names FFmpeg in the bundle"
 
   # Prove the release targets still compile. Same matrix as release.yml, so a
   # tag never fails on something a PR could have caught.
