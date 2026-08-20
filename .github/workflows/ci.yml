@@ -74,6 +74,28 @@ jobs:
           go build -tags demoaudio,video ./...
           go vet -tags demoaudio,video ./...
 
+      # Compiling the GPL path is fine — only distributing it isn't, and nothing
+      # here is distributed. What this checks is that the release-time guard
+      # still recognises the situation: demoaudio links gotracker/opl2
+      # (GPL-2.0-or-later) through the tracker library's core packages, so the
+      # licence bundler MUST refuse this build. If it ever stops refusing, opl2
+      # left the dependency graph and the Apache-2.0 caveat in the README (plus
+      # this check) can go.
+      - name: the audio build must still be rejected by the licence guard
+        run: |
+          if TAGS=demoaudio,video scripts/third-party-licenses \
+              >/dev/null 2>/tmp/guard-err.txt; then
+            echo "the GPL guard accepted a demoaudio build — it should have refused."
+            echo "if gotracker/opl2 is gone, remove this check and the README caveat."
+            exit 1
+          fi
+          if ! grep -q 'github.com/gotracker/opl2' /tmp/guard-err.txt; then
+            echo "the guard refused, but not because of opl2:"
+            cat /tmp/guard-err.txt
+            exit 1
+          fi
+          echo "ok: the licence guard rejects the demoaudio build, naming opl2"
+
   # Prove the release targets still compile. Same matrix as release.yml, so a
   # tag never fails on something a PR could have caught.
   cross-build:
@@ -97,4 +119,11 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
-        run: go build -o /dev/null .
+        run: |
+          go build -o /dev/null .
+          # release.yml does more than compile: it bundles the licences of every
+          # module linked into the binary, and that step can fail (a dependency
+          # arriving without a licence file, GPL code entering the default
+          # build). Run it here too, tag-free like the release, so a tag never
+          # fails on something a PR could have caught.
+          scripts/third-party-licenses > /dev/null
