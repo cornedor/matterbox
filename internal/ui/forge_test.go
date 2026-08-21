@@ -495,9 +495,18 @@ func TestInlineBadgeUsesTheOwningForge(t *testing.T) {
 	if !strings.Contains(pill, "open") || !strings.Contains(pill, "✓") {
 		t.Errorf("ready badge should show state and check status, got %q", pill)
 	}
-	// A GitLab link on the same feed resolves to the other provider.
-	glRef, _, ok := m.matchChangeURL("https://git.example.com/g/p/-/merge_requests/5")
+	if !strings.Contains(pill, p.Icon()) {
+		t.Errorf("ready badge should lead with the GitHub mark, got %q", pill)
+	}
+	// A GitLab link on the same feed resolves to the other provider — and its
+	// badge carries the other forge's mark, which is the point of the icon.
+	glRef, glP, ok := m.matchChangeURL("https://git.example.com/g/p/-/merge_requests/5")
 	if !ok || glRef.provider != forgeGitLab {
-		t.Errorf("merge-request URL matched %+v, want the GitLab provider", glRef)
+		t.Fatalf("merge-request URL matched %+v, want the GitLab provider", glRef)
+	}
+	m.changeStatus.markReady(glRef, samplePR())
+	glPill := m.changeStatus.renderChangeBadge(glRef, glP)
+	if !strings.Contains(glPill, glP.Icon()) || strings.Contains(glPill, p.Icon()) {
+		t.Errorf("GitLab badge should carry only the GitLab mark, got %q", glPill)
 	}
 }

@@ -223,12 +223,13 @@ var changeChipCapStyle = lipgloss.NewStyle().Foreground(changeChipBg)
 
 // renderChangeBadge returns the inline pill for one change request. When the
 // status is not yet available, it returns the plain styled reference ("!42",
-// "#42") with an OSC 8 link. When ready, it renders "#42 open ●" inside a
-// powerline-capped pill.
+// "#42") with an OSC 8 link. When ready, it renders " #42 open ●" inside a
+// powerline-capped pill — the leading glyph is the forge's own mark, so a feed
+// mixing GitLab and GitHub badges says which is which without reading the URL.
 func (s *changeStatusManager) renderChangeBadge(r changeRef, p forge.Provider) string {
-	sigil := "#"
+	sigil, icon := "#", ""
 	if p != nil {
-		sigil = p.Sigil()
+		sigil, icon = p.Sigil(), p.Icon()
 	}
 	numStr := sigil + strconv.Itoa(r.number)
 	webURL := ""
@@ -249,6 +250,10 @@ func (s *changeStatusManager) renderChangeBadge(r changeRef, p forge.Provider) s
 	// Build the chip content: each part sets its own chip background so that
 	// ANSI resets between parts don't leave unstyled gaps.
 	bg := changeChipBg
+	iconPart := ""
+	if icon != "" {
+		iconPart = refDimStyle.Background(bg).Render(icon + " ")
+	}
 	numPart := refKeyStyle.Background(bg).Render(numStr)
 
 	stateLabel, stateCol := changeStateStyle(e)
@@ -260,7 +265,7 @@ func (s *changeStatusManager) renderChangeBadge(r changeRef, p forge.Provider) s
 		checkPart = gs.Background(bg).Render(" " + g)
 	}
 
-	inner := numPart + statePart + checkPart
+	inner := iconPart + numPart + statePart + checkPart
 	pill := changeChipCapStyle.Render(reactionCapLeft) +
 		inner +
 		changeChipCapStyle.Render(reactionCapRight)

@@ -17,6 +17,7 @@ func (s stubProvider) Name() string              { return "Stub" }
 func (s stubProvider) Noun() string              { return "change request" }
 func (s stubProvider) ItemNouns() string         { return s.Noun() }
 func (s stubProvider) Sigil() string             { return s.sigil }
+func (s stubProvider) Icon() string              { return "" }
 func (s stubProvider) ChecksHeading() string     { return "Checks" }
 func (s stubProvider) Enabled() bool             { return true }
 func (s stubProvider) AutoFetch() bool           { return true }

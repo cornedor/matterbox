@@ -110,6 +110,9 @@ func (c *Client) ItemNouns() string { return "issue / pull request" }
 // Sigil is the separator in GitHub's short reference form (owner/repo#12).
 func (c *Client) Sigil() string { return "#" }
 
+// Icon is the nerd-font GitHub mark (nf-fa-github).
+func (c *Client) Icon() string { return "\uf09b" }
+
 // ChecksHeading: GitHub calls them checks, whoever produced them.
 func (c *Client) ChecksHeading() string { return "Checks" }
 

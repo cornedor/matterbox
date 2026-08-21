@@ -67,6 +67,10 @@ type Provider interface {
 	// GitLab (group/project!12), "#" for GitHub (owner/repo#12). Label builds
 	// the full short form from it.
 	Sigil() string
+	// Icon is a nerd-font glyph identifying the forge, drawn at the head of the
+	// inline badge so a feed mixing forges says which is which at a glance. A
+	// provider with no glyph to offer returns "" and the badge omits it.
+	Icon() string
 	// ChecksHeading labels the CI section in the panel with the forge's own word
 	// for it — "Pipeline" on GitLab, "Checks" on GitHub.
 	ChecksHeading() string

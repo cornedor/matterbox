@@ -74,6 +74,9 @@ func (c *Client) ItemNouns() string { return c.Noun() }
 // Sigil is the separator in GitLab's short reference form (group/project!12).
 func (c *Client) Sigil() string { return "!" }
 
+// Icon is the nerd-font GitLab tanuki (nf-fa-gitlab).
+func (c *Client) Icon() string { return "\uf296" }
+
 // ChecksHeading: GitLab calls its CI a pipeline, and the panel says so.
 func (c *Client) ChecksHeading() string { return "Pipeline" }
 
