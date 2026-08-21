@@ -45,7 +45,28 @@ GO     ?= go
 # stays empty and the binary falls back to the VCS revision the toolchain
 # records, or "dev". Override with `make build VERSION=v1.2.3`.
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null)
+
+# PostHog project key for the opt-in anonymous telemetry (internal/telemetry).
+# Overrides the PostHog project the telemetry client reports to. The real key
+# is compiled into internal/telemetry by default — building from source is the
+# normal way to get matterbox, so a key only a release build carried would be a
+# key almost nobody has. Consent (telemetry.enabled in config.yaml) is the gate,
+# not this. Set it to point a build at your own project:
+#   make POSTHOG_KEY=phc_your_own_project
+# or to an empty value to build a binary that can report nowhere at all:
+#   make POSTHOG_KEY=
+# That last case is why this tests `origin` rather than emptiness, the same way
+# TAGS does below: `?=` cannot tell "not given" from "given empty", so treating
+# an empty value as "not given" would silently keep the compiled-in key in the
+# one build that asked for no key at all.
+ifeq ($(origin POSTHOG_KEY),undefined)
+KEYFLAG :=
+else
+KEYFLAG := -X matterbox/internal/telemetry.projectKey=$(POSTHOG_KEY)
+endif
+
 LDFLAGS  := $(if $(VERSION),-X matterbox/internal/cli.version=$(VERSION),)
+LDFLAGS  += $(KEYFLAG)
 
 # Build tags. Auto-detected per machine unless TAGS is given on the command
 # line or in the environment (TAGS= disables every optional feature).

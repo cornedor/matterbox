@@ -82,7 +82,7 @@ func TestNotifyGate(t *testing.T) {
 		if cfg != nil {
 			cfg(e)
 		}
-		e.notifyGate(context.Background(), ev, p, notifyOpts{urgent: urgent})
+		e.notifyGate(context.Background(), msgTrigger(ev, p), notifyOpts{urgent: urgent})
 		e.wg.Wait()
 		return e.cursor()
 	}

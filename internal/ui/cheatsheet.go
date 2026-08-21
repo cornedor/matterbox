@@ -160,6 +160,7 @@ func (m *Model) editorSheetRows() []keysSheetRow {
 // switcher has already closed itself before the command runs, so there's no
 // overlap. Content is rebuilt here and on resize.
 func (m *Model) openKeysSheet() {
+	m.noteHelpOpened()
 	m.keysSheetMode = true
 	m.helpSheet = false
 	m.sizeKeysSheetView()
@@ -171,6 +172,7 @@ func (m *Model) openKeysSheet() {
 // commands (the /help command). It shares all the cheatsheet's sizing, key
 // handling and view wiring; only the content and title differ.
 func (m *Model) openHelpSheet() {
+	m.noteHelpOpened()
 	m.keysSheetMode = true
 	m.helpSheet = true
 	m.sizeKeysSheetView()

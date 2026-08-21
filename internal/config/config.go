@@ -202,6 +202,42 @@ type Config struct {
 	// suggestions). Off unless enabled is true. See internal/languagetool and
 	// internal/ui/grammar.go.
 	LanguageTool LanguageToolConfig `yaml:"language_tool"`
+	// Telemetry holds the consent for anonymous usage telemetry and error
+	// reports. Strictly opt-in: an absent section means "off", and the setup
+	// wizard (`matterbox welcome`) is the only thing that ever asks — running
+	// the client never prompts, so an install that predates telemetry stays
+	// silent until its owner runs the wizard. See internal/telemetry and
+	// https://matterbox.work/docs/telemetry.
+	Telemetry TelemetryConfig `yaml:"telemetry"`
+}
+
+// TelemetryConfig records the answer to the telemetry question the setup
+// wizard asks: may matterbox report anonymous usage and error data. Nothing is
+// sent unless enabled is explicitly true — see internal/telemetry, which
+// no-ops on anything else.
+type TelemetryConfig struct {
+	// Enabled turns anonymous telemetry + error reporting on. Only an explicit
+	// true sends anything; absent (nobody has answered the question) and false
+	// (answered no) are both off.
+	//
+	// Pointer with omitempty so an unanswered question writes no key at all:
+	// `enabled: null` would be both puzzling to read and a type error against
+	// config.schema.json, which the editor would underline on every fresh
+	// install. A pointer to false is not empty, so a recorded "no" still lands
+	// on disk.
+	Enabled *bool `yaml:"enabled,omitempty"`
+	// AnonymousID is the random identifier events are grouped by, minted on
+	// opt-in. It is not derived from your account, server, hostname or
+	// anything else about you — clear it (or the whole section) to become a
+	// new, unrelated user. Absent while telemetry is off.
+	AnonymousID string `yaml:"anonymous_id,omitempty"`
+}
+
+// TelemetryEnabled reports whether the user opted in to anonymous telemetry.
+// Only an explicit `enabled: true` counts: absent (never asked) and false both
+// mean no.
+func (c Config) TelemetryEnabled() bool {
+	return c.Telemetry.Enabled != nil && *c.Telemetry.Enabled
 }
 
 // LanguageToolConfig holds the grammar/spell-checker settings. The feature is
@@ -1220,6 +1256,24 @@ func SaveTeamOrder(order []string) error {
 	return writeConfig(p, cfg)
 }
 
+// SaveTelemetry persists the telemetry consent (and its anonymous id), leaving
+// every other setting as it is on disk. Load-mutate-write like SaveTeamOrder,
+// because the caller is a long-running process whose in-memory config may have
+// drifted from the file, and a consent flag is the last thing that should drag
+// unrelated stale values back to disk.
+func SaveTelemetry(t TelemetryConfig) error {
+	cfg, err := Load()
+	if err != nil {
+		return err
+	}
+	cfg.Telemetry = t
+	p, err := Path()
+	if err != nil {
+		return err
+	}
+	return writeConfig(p, cfg)
+}
+
 // writeConfig serialises a config to disk with a small header so the file
 // reads as documentation as well as data.
 // tightenConfigPerms drops group/other permissions on an existing config.
@@ -1456,7 +1510,13 @@ func writeConfig(p string, cfg *Config) error {
 		"#             http://localhost:8010/v2); language is the code to check\n" +
 		"#             against — en-US, en-GB, nl, … or auto (default) to detect\n" +
 		"#             it per message; picky true enables strict mode (extra\n" +
-		"#             style/typography/grammar rules; default false).\n"
+		"#             style/typography/grammar rules; default false).\n" +
+		"# telemetry:  anonymous usage + error reporting, off unless you opted in\n" +
+		"#             (`matterbox welcome` asks; using the client never does).\n" +
+		"#             enabled false stops it for good;\n" +
+		"#             anonymous_id is the random id events are grouped by —\n" +
+		"#             delete it for a fresh one. Details:\n" +
+		"#             https://matterbox.work/docs/telemetry\n"
 	if err := os.WriteFile(p, append([]byte(header), body...), FileMode); err != nil {
 		return err
 	}

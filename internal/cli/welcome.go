@@ -5,6 +5,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"matterbox/internal/config"
+	"matterbox/internal/telemetry"
 	"matterbox/internal/welcome"
 )
 
@@ -21,6 +22,8 @@ func newWelcomeCmd() *cobra.Command {
 		Long: "Run the interactive setup wizard: a vaporwave intro, then a short form to\n" +
 			"set your Mattermost server URL, sign in, and pick a few preferences\n" +
 			"(mark-read delay, SQL tab, mouse support, animations, ctrl+arrow nav).\n" +
+			"It also asks whether anonymous telemetry may be collected — off unless you\n" +
+			"say yes, and asked only here, never while you're using the client.\n" +
 			"It writes ~/.config/matterbox/config.yaml and the saved login token.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -41,6 +44,12 @@ func runWelcome(demo bool) error {
 	if demo {
 		defer welcome.StartDemoMusic()()
 	}
+	// The wizard holds its funnel events in memory until the telemetry question
+	// is answered yes, at which point it opens the client itself (see
+	// internal/welcome/telemetry.go). Close flushes whatever that produced —
+	// after the program has released the terminal, so a slow flush can't stall
+	// the exit mid-teardown — and is a no-op when the answer was no.
+	defer telemetry.Close()
 	if _, err := tea.NewProgram(welcome.New(cfg, demo)).Run(); err != nil {
 		return err
 	}

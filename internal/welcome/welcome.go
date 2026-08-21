@@ -1,8 +1,8 @@
 // Package welcome is the first-run setup wizard: a vaporwave intro animation
 // (the internal/vapor renderer) that, after the ~6s title fly-in, hands over to
-// a small form — server URL, authentication, and a screen of advanced settings —
-// drawn on top of the still-running background. It is launched by the
-// `matterbox welcome` subcommand and writes config.yaml + the saved token.
+// a small form — server URL, authentication, a screen of advanced settings, and
+// the telemetry question — drawn on top of the still-running background. It is launched by the `matterbox welcome`
+// subcommand and writes config.yaml + the saved token.
 package welcome
 
 import (
@@ -78,7 +78,21 @@ const (
 	stepServer = iota
 	stepAuth
 	stepAdvanced
+	stepTelemetry
 )
+
+// Focusable controls on the telemetry step, in tab order: the answers to a
+// yes/no question. Declining is focused when the step opens — consent has to be
+// chosen deliberately, not collected from someone holding down enter.
+const (
+	telemetryFocusYes = iota
+	telemetryFocusNo
+	telemetryFieldCount
+)
+
+// telemetryDocsURL is shown (and underlined) on the telemetry step: the page
+// that documents what is collected and how to switch it off.
+const telemetryDocsURL = "https://matterbox.work/docs/telemetry"
 
 // Focusable controls on the auth step, in tab order. Username/password come
 // first — they're the primary path, so the username field is focused when the
@@ -116,6 +130,8 @@ type Model struct {
 
 	authFocus int // focused control on the auth step (authFocus* consts)
 
+	telemetryFocus int // focused answer on the telemetry step (telemetryFocus* consts)
+
 	server   textField
 	user     textField
 	password textField
@@ -143,6 +159,14 @@ type Model struct {
 	// twice; closeCapture tears it down on success/quit.
 	cap       mmauth.Capture
 	capturing bool
+
+	// The activation funnel (telemetry.go). funnel tracks which steps were
+	// shown and how often; usedSSO / usedPassword record which sign-in route
+	// produced the token, for setup_finished's auth_method. Nothing here is
+	// sent unless the telemetry question is answered yes.
+	funnel       wizardFunnel
+	usedSSO      bool
+	usedPassword bool
 
 	// Background frame cache. scene holds the pristine rendered scene for sceneT;
 	// frame is a per-View copy the overlay draws onto. The scene is re-rendered
@@ -200,6 +224,15 @@ func New(cfg *config.Config, demo bool) *Model {
 	})
 
 	m := &Model{rend: rend, cfg: cfg, phase: phaseIntro, step: stepServer, demo: demo}
+	// Seed the answer from the config, so someone who already opted in and runs
+	// the wizard again sees their current choice rather than a screen that looks
+	// like they never agreed. Everyone else opens on the decline button: consent
+	// is chosen, never defaulted into.
+	if cfg.TelemetryEnabled() {
+		m.telemetryFocus = telemetryFocusYes
+	} else {
+		m.telemetryFocus = telemetryFocusNo
+	}
 	m.themeNames = allThemeNames()
 	if cfg.ServerURL != "" && cfg.ServerURL != config.PlaceholderServerURL {
 		m.server.setValue(cfg.ServerURL)
@@ -324,6 +357,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.phase == phaseIntro && m.t >= m.wizardAt() {
 			m.phase = phaseWizard
+			m.recordStep(m.step)
 		}
 		// frameRate() reflects the just-updated phase, so the tick rate drops as
 		// soon as the wizard opens.

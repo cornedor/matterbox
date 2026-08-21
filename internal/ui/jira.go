@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -21,6 +22,8 @@ type jiraLoadedMsg struct {
 	key   string
 	issue *jira.Issue
 	err   error
+	// started dates the fetch, for forge_action's API round trip.
+	started time.Time
 }
 
 // fetchJira fetches (and caches) an issue in the background, returning a
@@ -28,15 +31,17 @@ type jiraLoadedMsg struct {
 func (m Model) fetchJira(gen int, key string) tea.Cmd {
 	client := m.jiraClient
 	ctx := m.ctx
+	started := featureStart()
 	return func() tea.Msg {
 		issue, err := client.Get(ctx, key)
-		return jiraLoadedMsg{gen: gen, key: key, issue: issue, err: err}
+		return jiraLoadedMsg{gen: gen, key: key, issue: issue, err: err, started: started}
 	}
 }
 
 // handleJiraLoaded installs a finished fetch, unless the user has since cycled
 // or closed the panel (stale gen) or moved to a non-Jira reference.
 func (m Model) handleJiraLoaded(msg jiraLoadedMsg) (tea.Model, tea.Cmd) {
+	m.recordForge("jira", "open", msg.started, msg.err)
 	r := m.currentRef()
 	if !m.refOpen || msg.gen != m.refGen || r == nil || r.kind != refJira {
 		return m, nil

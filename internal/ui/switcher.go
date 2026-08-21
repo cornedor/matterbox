@@ -9,6 +9,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/telemetry"
 )
 
 // switcherWidth is the rendered outer width of the popup. Falls back
@@ -23,6 +25,7 @@ const switcherLimit = 12
 // textinput is reset (no stale query), focused so the cursor blinks,
 // and selection lands on the first match.
 func (m Model) openSwitcher() (tea.Model, tea.Cmd) {
+	m.notePickerOpened()
 	m.switcherMode = true
 	m.switcher.SetValue("")
 	m.switcher.Prompt = "> "
@@ -37,6 +40,7 @@ func (m Model) openSwitcher() (tea.Model, tea.Cmd) {
 // with the ">" prefix pre-filled (the F1 shortcut) so the command catalogue
 // shows immediately — equivalent to opening the switcher and typing ">".
 func (m Model) openCommandPicker() (tea.Model, tea.Cmd) {
+	m.notePickerOpened()
 	m.switcherMode = true
 	m.switcher.SetValue(">")
 	m.switcher.CursorEnd()
@@ -70,12 +74,14 @@ func (m Model) handleSwitcherKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.leaveCommandArgMode()
 			return m, nil
 		}
+		m.notePickerAbandoned("global:command-picker", m.tel.pickerAt())
 		m.closeSwitcher()
 		return m, nil
 	case key.Matches(msg, m.keys.Switcher):
 		// ctrl+p opened the switcher; pressing it again toggles it closed.
 		// (It used to be ctrl+k, which is now "prev channel" in the global nav.)
 		// Checked before InputUp so it wins ctrl+p (a whitelisted shadow).
+		m.notePickerAbandoned("global:command-picker", m.tel.pickerAt())
 		m.closeSwitcher()
 		return m, nil
 	case key.Matches(msg, m.keys.InputUp):
@@ -106,6 +112,7 @@ func (m Model) handleSwitcherKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			cmd := *m.switcherCmdPending
 			arg := m.switcher.Value()
 			m.closeSwitcher()
+			telemetry.Palette(cmd.tid)
 			return m, cmd.run(&m, arg)
 		}
 		if m.inCommandMode() {
@@ -116,6 +123,7 @@ func (m Model) handleSwitcherKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			sel := results[m.switcherIdx]
 			if sel.argPrompt == "" {
 				m.closeSwitcher()
+				telemetry.Palette(sel.tid)
 				return m, sel.run(&m, "")
 			}
 			m.enterCommandArgMode(sel)
@@ -144,7 +152,7 @@ func (m Model) handleSwitcherKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.focus = focusInput
 		// This path bypasses openChannelLoadCmd; route the switch through
 		// enterChannel so openChannelID and the mark-read dwell stay in lock-step.
-		draftCmd := m.enterChannel(ch.Id)
+		draftCmd := m.enterChannel(ch.Id, "switcher")
 		m.posts = nil
 		m.status = "loading messages…"
 		m.renderMessages()

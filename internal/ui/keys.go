@@ -140,6 +140,17 @@ type keyMap struct {
 	Help          key.Binding
 	Quit          key.Binding
 
+	// actionIDs maps a binding's fingerprint to its registry id, and boundKeys
+	// is every key string bound to any action. Both are indexes over the same
+	// bindings the struct already holds, built by rebuildIndexes — they exist so
+	// telemetry can name the action a keypress resolved to, and tell a key that
+	// is bound somewhere in the app from one the user invented, without walking
+	// the registry on every keystroke. Maps, so copying a keyMap (which happens
+	// on every event, since it lives in Model) shares them rather than
+	// duplicating them.
+	actionIDs map[string]string
+	boundKeys map[string]bool
+
 	// navRoutes is a routing helper (not an action): the four sidebar-nav
 	// actions split into their always-global arrow alias and their vim key,
 	// so handleKey can dispatch the vim keys on a different schedule from the
@@ -483,7 +494,54 @@ func newKeyMap(navModifier string) keyMap {
 			km.navRoutes = append(km.navRoutes, r)
 		}
 	}
+	km.rebuildIndexes()
 	return km
+}
+
+// bindingFingerprint identifies a binding by what distinguishes one action's
+// binding from another's: its description and its exact key list. Both come
+// straight off the binding, so a fingerprint taken from a copy of a keyMap
+// matches the one taken from the original — which is what lets the lookup
+// survive Model being passed by value.
+//
+// Two actions sharing a description *and* a key list would collide;
+// TestActionFingerprintsAreUnique asserts none do, for the defaults and for an
+// override that deliberately tries to.
+func bindingFingerprint(b key.Binding) string {
+	return b.Help().Desc + "\x1f" + strings.Join(b.Keys(), "\x00")
+}
+
+// rebuildIndexes recomputes actionIDs and boundKeys from the current bindings.
+// Called after the bindings are final — at the end of newKeyMap, and again
+// after applyKeyOverrides has replaced the user's rebound ones — so the indexes
+// describe the effective keymap rather than the defaults. Fresh maps each
+// time, so a keyMap built before an override doesn't share (and see) the
+// rebuilt one's contents.
+func (km *keyMap) rebuildIndexes() {
+	km.actionIDs = make(map[string]string, len(actionDefs))
+	km.boundKeys = make(map[string]bool, len(actionDefs)*2)
+	for _, def := range actionDefs {
+		b := def.field(km)
+		km.actionIDs[bindingFingerprint(*b)] = def.id
+		for _, k := range b.Keys() {
+			km.boundKeys[k] = true
+		}
+	}
+}
+
+// actionID names the registry action a binding belongs to, or "" for a
+// hardwired binding (a modal's esc, a form's tab) that is not a rebindable
+// action and so has no id to report.
+func (km *keyMap) actionID(b key.Binding) string {
+	return km.actionIDs[bindingFingerprint(b)]
+}
+
+// boundSomewhere reports whether k is bound to any action anywhere in the app.
+// Used to tell "pressed a key we don't have" from "pressed a key we do have,
+// in a pane where it doesn't apply" — the second is usually a binding scoped
+// too narrowly, the first is a feature request.
+func (km *keyMap) boundSomewhere(k string) bool {
+	return km.boundKeys[k]
 }
 
 // navArrowDir maps a nav action's navArrow direction to the (team, dir) move
@@ -602,6 +660,9 @@ func applyKeyOverrides(km keyMap, overrides map[string]config.StringOrList) (key
 			}
 		}
 	}
+	// The overrides changed which keys map to which action, so the telemetry
+	// indexes have to be rebuilt against the effective bindings.
+	km.rebuildIndexes()
 	return km, nil
 }
 

@@ -185,6 +185,10 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 	count := m.nextClickCount(msg.X, msg.Y)
 	shift := msg.Mod&tea.ModShift != 0
 	h := m.hitTest(msg.X, msg.Y)
+	// Anonymous telemetry, if the user opted in: which regions get clicked, so
+	// mouse use can be compared against the keyboard bindings for the same
+	// things. A no-op otherwise.
+	recordClick(h.zone)
 	switch h.zone {
 	case hitTab:
 		m.clearTextSel()
@@ -207,6 +211,7 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 	case hitJumpBottom:
 		return m.clickJumpBottom()
 	case hitFeedMarkAll:
+		m.recordFeedAction("mark_all_read", "mouse")
 		return m, m.markAllFeedRead()
 	case hitFeed:
 		return m.clickFeedEntry(h.idx)
@@ -259,6 +264,7 @@ func (m Model) clickFeedEntry(idx int) (tea.Model, tea.Cmd) {
 	m.focus = focusFeed
 	m.feed.idx = idx
 	if activate {
+		m.recordFeedAction("open_channel", "mouse")
 		return m.openFeedEntry()
 	}
 	m.renderFeedResults()
@@ -308,6 +314,7 @@ func (m Model) clickSearchHit(idx int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if activate {
+		m.recordSearchHitOpened(idx)
 		return m.openHitChannel(m.search.hits[idx])
 	}
 	m.renderSearchResults()
@@ -665,7 +672,7 @@ func (m Model) openVisibleChannel(idx int) (tea.Model, tea.Cmd) {
 	if ch.Id == m.openChannelID {
 		return m, nil
 	}
-	return m, tea.Batch(m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id))
+	return m, tea.Batch(m.openChannelLoadCmd(ch.Id, "sidebar_mouse"), m.bumpChannelStat(ch.Id))
 }
 
 // hitTest resolves a screen cell to the clickable element under it. The tab

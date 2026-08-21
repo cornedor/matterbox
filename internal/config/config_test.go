@@ -490,3 +490,106 @@ func TestLoadTightensWorldReadableConfig(t *testing.T) {
 		t.Errorf("config still readable by group/other after Load: mode %04o", fi.Mode().Perm())
 	}
 }
+
+// TestTelemetryDefaultsOff pins the opt-in rule at the type level: a config
+// that says nothing about telemetry is off, and counts as never asked, so
+// fillDefaults must leave the pointer alone.
+func TestTelemetryDefaultsOff(t *testing.T) {
+	c := &Config{}
+	c.fillDefaults()
+	if c.Telemetry.Enabled != nil {
+		t.Errorf("fillDefaults set telemetry.enabled = %v; it must stay unset", *c.Telemetry.Enabled)
+	}
+	if c.TelemetryEnabled() {
+		t.Error("an unset telemetry section reads as enabled")
+	}
+}
+
+// TestTelemetryParse pins the yaml keys and the three states of the consent
+// pointer: absent (nobody answered), false (declined), true (opted in) — only
+// the last of which is on.
+func TestTelemetryParse(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		yaml          string
+		on            bool
+		wantAnonymous string
+	}{
+		{name: "absent", yaml: "server_url: https://x\n"},
+		{name: "declined", yaml: "telemetry:\n  enabled: false\n"},
+		{
+			name:          "opted in",
+			yaml:          "telemetry:\n  enabled: true\n  anonymous_id: abc123\n",
+			on:            true,
+			wantAnonymous: "abc123",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var c Config
+			if err := yaml.Unmarshal([]byte(tc.yaml), &c); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			c.fillDefaults()
+			if c.TelemetryEnabled() != tc.on {
+				t.Errorf("TelemetryEnabled() = %v, want %v", c.TelemetryEnabled(), tc.on)
+			}
+			if c.Telemetry.AnonymousID != tc.wantAnonymous {
+				t.Errorf("anonymous_id = %q, want %q", c.Telemetry.AnonymousID, tc.wantAnonymous)
+			}
+		})
+	}
+}
+
+// TestSaveTelemetryKeepsOtherSettings: writing a consent decision must not drag
+// a stale in-memory config over the file.
+func TestSaveTelemetryKeepsOtherSettings(t *testing.T) {
+	t.Setenv(DirEnv, t.TempDir())
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ServerURL = "https://mattermost.example.com"
+	if err := Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	yes := true
+	if err := SaveTelemetry(TelemetryConfig{Enabled: &yes, AnonymousID: "deadbeef"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.TelemetryEnabled() || got.Telemetry.AnonymousID != "deadbeef" {
+		t.Errorf("telemetry not persisted: %+v", got.Telemetry)
+	}
+	if got.ServerURL != "https://mattermost.example.com" {
+		t.Errorf("SaveTelemetry clobbered server_url: %q", got.ServerURL)
+	}
+}
+
+// TestTelemetryUnansweredWritesNoKey pins the omitempty on the consent pointer:
+// an unanswered question must not land on disk as `enabled: null`, which the
+// JSON Schema would flag as a type error in the user's editor, while a recorded
+// "no" must still be written.
+func TestTelemetryUnansweredWritesNoKey(t *testing.T) {
+	var tc TelemetryConfig
+	out, err := yaml.Marshal(tc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "{}" {
+		t.Errorf("unanswered telemetry serialised as %q, want an empty section", got)
+	}
+
+	no := false
+	tc.Enabled = &no
+	out, err = yaml.Marshal(tc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), "enabled: false") {
+		t.Errorf("a recorded decline was dropped from the yaml:\n%s", out)
+	}
+}

@@ -644,8 +644,9 @@ func (e *Engine) ingest(p *model.Post) {
 // its own goroutine; respects ctx (cancelled on shutdown). summarize selects
 // whether the body is an LLM summary of the surrounding context or the raw
 // message text — resolved per notify action by the caller (notifyGate).
-func (e *Engine) notify(ctx context.Context, ev *model.WebSocketEvent, p *model.Post, opts notifyOpts) {
+func (e *Engine) notify(ctx context.Context, t trigger, opts notifyOpts) {
 	defer e.wg.Done()
+	ev, p := t.ev, t.post
 	summarize := opts.summarize
 	chatID := opts.chatID
 	// Two-way reply buttons only work for the configured chat (the only sender
@@ -664,6 +665,7 @@ func (e *Engine) notify(ctx context.Context, ev *model.WebSocketEvent, p *model.
 		if e.wasRead(ctx, p) {
 			e.log.Printf("mention in channel %s read within %ds — skipped", p.ChannelId, e.opts.NotifyDelaySeconds)
 			e.advanceCursor(p.CreateAt)
+			e.reportRuleOutcome(t, ActionNotify, "cancelled")
 			return
 		}
 	}
@@ -688,6 +690,10 @@ func (e *Engine) notify(ctx context.Context, ev *model.WebSocketEvent, p *model.
 	if e.tg == nil {
 		e.log.Printf("mention: %s — %s", label, truncateForLog(body))
 		e.advanceCursor(p.CreateAt)
+		// Nowhere to deliver: the daemon is running as a cache warmer with a
+		// notify rule that can't reach anyone, which is worth telling apart
+		// from a delivery that failed.
+		e.reportRuleOutcome(t, ActionNotify, "unavailable")
 		return
 	}
 
@@ -723,6 +729,7 @@ func (e *Engine) notify(ctx context.Context, ev *model.WebSocketEvent, p *model.
 	} else {
 		msgID, err = e.tg.Send(ctx, chatID, text, keyboard)
 	}
+	e.reportRule(t, ActionNotify, err)
 	if err != nil {
 		e.log.Printf("telegram delivery failed for %s: %v", label, err)
 		return
@@ -1032,7 +1039,9 @@ func (e *Engine) handleCallback(ctx context.Context, cb *telegram.CallbackQuery)
 	note := "done"
 	switch action {
 	case "r": // mark channel read
-		if err := e.client.ViewChannel(ctx, e.me.Id, arg); err != nil {
+		err := e.client.ViewChannel(ctx, e.me.Id, arg)
+		reportNotifAction("read", err)
+		if err != nil {
 			e.log.Printf("mark-read failed: %v", err)
 			note = "mark-read failed"
 		} else {
@@ -1053,11 +1062,13 @@ func (e *Engine) handleCallback(ctx context.Context, cb *telegram.CallbackQuery)
 func (e *Engine) handleReply(ctx context.Context, msg *telegram.Message) {
 	target, ok := e.lookupNotif(msg.ReplyToMessage.MessageID)
 	if !ok {
+		reportNotifExpired("reply")
 		e.sendTG(ctx, "I no longer have context for that message (the daemon may have restarted) — reply to a newer notification.")
 		return
 	}
 	fileIDs, err := e.uploadInboundFile(ctx, target.channelID, msg)
 	if err != nil {
+		reportNotifAction("reply", err)
 		e.log.Printf("forward attachment failed: %v", err)
 		e.sendTG(ctx, "Couldn't forward the attachment: "+err.Error())
 		return
@@ -1067,10 +1078,12 @@ func (e *Engine) handleReply(ctx context.Context, msg *telegram.Message) {
 		body = msg.Caption // photo/document captions ride here, not in Text
 	}
 	if _, err := e.client.Send(ctx, target.channelID, target.rootID, body, fileIDs); err != nil {
+		reportNotifAction("reply", err)
 		e.log.Printf("post reply failed: %v", err)
 		e.sendTG(ctx, "Failed to post: "+err.Error())
 		return
 	}
+	reportNotifAction("reply", nil)
 	// Replying means you've dealt with it — mark the channel read too.
 	if err := e.client.ViewChannel(ctx, e.me.Id, target.channelID); err != nil {
 		e.log.Printf("mark read after reply: %v", err)
@@ -1085,6 +1098,7 @@ func (e *Engine) handleReply(ctx context.Context, msg *telegram.Message) {
 func (e *Engine) handleReaction(ctx context.Context, mr *telegram.MessageReactionUpdated) {
 	target, ok := e.lookupNotif(mr.MessageID)
 	if !ok {
+		reportNotifExpired("react")
 		return // reaction on an unknown/old notification — nothing to map it to
 	}
 	added, removed := reactionEmojiDiff(mr.OldReaction, mr.NewReaction)
@@ -1095,7 +1109,9 @@ func (e *Engine) handleReaction(ctx context.Context, mr *telegram.MessageReactio
 			e.sendTG(ctx, "Couldn't map "+em+" to a Mattermost reaction.")
 			continue
 		}
-		if err := e.client.AddReaction(ctx, e.me.Id, target.postID, name); err != nil {
+		err := e.client.AddReaction(ctx, e.me.Id, target.postID, name)
+		reportNotifAction("react", err)
+		if err != nil {
 			e.log.Printf("add reaction %s: %v", name, err)
 		}
 	}

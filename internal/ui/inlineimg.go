@@ -1501,6 +1501,19 @@ func (m Model) handleInlineImagesFetched(msg inlineImagesFetchedMsg) (Model, tea
 	}
 	m.inlineImg.markFailed(msg.failed...)
 	m.inlineImg.markUnresolved(msg.retry...)
+	// Inline thumbnails are the most-used graphics path and the most likely to
+	// be silently broken on a given terminal. A decode failure is permanent
+	// (we will never decode it); a retry is the network, which is not the
+	// terminal's fault and reports as unavailable rather than an error.
+	if len(readyKeys) > 0 {
+		m.recordMedia("inline_image", "ok", "", 0)
+	}
+	if len(msg.failed) > 0 {
+		m.recordMedia("inline_image", "error", "parse", 0)
+	}
+	if len(msg.retry) > 0 {
+		m.recordMedia("inline_image", "unavailable", "network", 0)
+	}
 
 	// Every outcome changes what the owning post should draw, so every outcome has
 	// to drop its cached lines — not just the happy one. A ready image swaps its

@@ -877,7 +877,7 @@ func (m Model) jumpToChannelPost(channelID, postID string) (tea.Model, tea.Cmd) 
 			// A same-channel jump needs none of that bookkeeping.
 			var draftCmd tea.Cmd
 			if channelID != m.openChannelID {
-				draftCmd = m.enterChannel(channelID)
+				draftCmd = m.enterChannel(channelID, "permalink")
 			}
 			m.posts = around
 			m.postIdx = len(around) - 1
@@ -893,6 +893,8 @@ func (m Model) jumpToChannelPost(channelID, postID string) (tea.Model, tea.Cmd) 
 			m.pendingJumpPostID = ""
 			m.loading = false
 			m.renderMessages()
+			m.noteOpenCache(channelID, len(around))
+			m.recordChannelOpened(channelID)
 			var gapCmd tea.Cmd
 			if gapID, _ := m.store.LatestPostID(channelID); gapID != "" {
 				gapCmd = m.fetchPostsAfter(channelID, gapID)
@@ -903,7 +905,7 @@ func (m Model) jumpToChannelPost(channelID, postID string) (tea.Model, tea.Cmd) 
 	// Fallback: reload the channel and let jumpToPendingPost position it if the
 	// loaded page happens to include the post.
 	m.pendingJumpPostID = postID
-	return m, m.openChannelLoadCmd(channelID)
+	return m, m.openChannelLoadCmd(channelID, "permalink")
 }
 
 // hitInfoContent maps a cell inside the channel-info panel's viewport to the

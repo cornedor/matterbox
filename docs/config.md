@@ -403,6 +403,33 @@ as-is. What a token needs:
 - **Jira, scoped token** — `read:jira-work` + `read:jira-user` to view, plus
   `write:jira-work` for the edits.
 
+### `telemetry`
+
+Anonymous usage telemetry and error reports. **Off unless you turned it on.**
+`matterbox welcome` asks; using the client never does, so upgrading into a build
+that has telemetry changes nothing until you run the wizard. What is collected,
+and how to stop it, is documented in [telemetry.md](telemetry.md) — the complete
+event catalogue, generated from the code so it cannot fall out of step — and at
+<https://matterbox.work/docs/telemetry>.
+
+```yaml
+telemetry:
+  enabled: true
+  anonymous_id: 4f0c…
+```
+
+| Key | Default | What it does |
+|---|---|---|
+| `telemetry.enabled` | *(absent — off)* | Send anonymous usage data and error reports. Absent means nobody has answered the question, which behaves exactly like `false`; only an explicit `true` sends anything. |
+| `telemetry.anonymous_id` | *(empty)* | The random id reports are grouped by, minted when you opt in. Nothing about your account, server or machine goes into it — delete it to become a new, unrelated user. |
+
+Turning it off after the fact is one line (`enabled: false`); matterbox also
+drops the id when you decline in the wizard, so opting out leaves nothing behind
+to tag you with. Re-running `matterbox welcome` is how you change your answer:
+the question opens on whatever the config currently says. The config key is the
+only gate: the PostHog key is compiled into every build, including one you built
+yourself, and does nothing without an explicit `enabled: true`.
+
 ## Environment variables
 
 | Variable | Effect |
@@ -412,6 +439,8 @@ as-is. What a token needs:
 | `GITLAB_TOKEN` | Used when `gitlab.token` is empty (before the `glab` fallback). |
 | `GIPHY_API_KEY` | Overrides `giphy.api_key`. |
 | `NO_COLOR` | Disables code-block colour regardless of `code_theme`. |
+| `MATTERBOX_POSTHOG_KEY` | Project key telemetry reports to, overriding the compiled-in one. For working on telemetry against your own PostHog project; consent is still required. |
+| `MATTERBOX_POSTHOG_HOST` | Ingest host for telemetry (default `https://eu.i.posthog.com`). |
 
 ## Recipes
 

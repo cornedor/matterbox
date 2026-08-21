@@ -60,6 +60,7 @@ func extractCodeBlocks(msg string) []codeBlock {
 // every fenced block, copy it straight away when there's exactly one, or raise
 // the picker so the user can choose when there are several.
 func (m Model) copyCodeFromPost(p *model.Post) (tea.Model, tea.Cmd) {
+	m.recordActed(m.actedRecord("copy_code", p, "key"))
 	blocks := extractCodeBlocks(p.Message)
 	switch len(blocks) {
 	case 0:

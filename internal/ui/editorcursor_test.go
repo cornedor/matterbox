@@ -65,7 +65,7 @@ func TestSQLCursorLandsOnCaret(t *testing.T) {
 func TestSearchCursorLandsOnCaret(t *testing.T) {
 	m := newTestModel()
 	m.width, m.height = 120, 40
-	if cmd := m.openSearchTab(); cmd != nil {
+	if cmd := m.openSearchTab("key"); cmd != nil {
 		cmd() // run the input's Focus command
 	}
 	if !m.onSearchTab() {

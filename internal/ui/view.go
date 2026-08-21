@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattermost/mattermost/server/public/model"
 
+	"matterbox/internal/telemetry"
 	"matterbox/internal/textwidth"
 )
 
@@ -1553,7 +1554,13 @@ func humanSize(n int64) string {
 // capable terminals while leaving normal text input (including shifted
 // characters like '?' from shift+/) untouched.
 func (m Model) View() tea.View {
-	v := tea.NewView(m.viewContent())
+	// The render path is where this codebase's complexity lives, so a panic
+	// here is the one most worth hearing about. Same shape as Update: report
+	// and re-panic, guarded so the disabled path stays a single atomic load.
+	if telemetry.Enabled() {
+		defer telemetry.Crash("render")
+	}
+	v := tea.NewView(m.timedViewContent())
 	v.AltScreen = true
 	// Ask the terminal to report focus/blur (DECSET 1004). Two things ride on
 	// knowing whether you're actually looking: the channel isn't marked read
@@ -1578,6 +1585,23 @@ func (m Model) View() tea.View {
 		v.Cursor = tea.NewCursor(cx, cy)
 	}
 	return v
+}
+
+// timedViewContent builds the screen, timing it when telemetry is on so a
+// perceptibly slow frame can be reported. Render cost is the recurring
+// performance problem in this codebase and has only ever been measured locally,
+// on one machine, against one cache; this is the field version. The content
+// build is what is timed — the rest of View is a handful of field assignments.
+//
+// An opted-out session takes the nil branch and pays one pointer comparison.
+func (m *Model) timedViewContent() string {
+	if m.tel == nil {
+		return m.viewContent()
+	}
+	started := time.Now()
+	s := m.viewContent()
+	m.recordFrame(time.Since(started))
+	return s
 }
 
 func (m *Model) viewContent() string {

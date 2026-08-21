@@ -287,6 +287,7 @@ func (m *Model) focusEditChannelRow() tea.Cmd {
 // which moves the row — so the cursor is re-pointed at it afterwards. A failure
 // keeps the modal open with the server's message so the field can be fixed.
 func (m Model) applyChannelPatched(msg channelPatchedMsg) (tea.Model, tea.Cmd) {
+	m.recordFeature("channel_edit", "palette", noLatency, 0, msg.err)
 	if msg.err != nil {
 		if m.chanEdit == nil {
 			m.status = "edit channel: " + oneLine(msg.err.Error())

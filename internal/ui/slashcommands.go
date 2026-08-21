@@ -14,6 +14,7 @@ import (
 
 	"matterbox/internal/effects"
 	"matterbox/internal/mm"
+	"matterbox/internal/telemetry"
 )
 
 // Slash commands are typed into the composer and intercepted on send: a leading
@@ -139,8 +140,15 @@ func parseSlash(text string) (name, args string, ok bool) {
 func (m Model) runSlashCommand(name, args string) (tea.Model, tea.Cmd) {
 	draftCmd := m.consumeComposer()
 	if c, ok := lookupSlash(name); ok {
+		// Counted by the command's own name, which is already a stable
+		// identifier. The argument is never reported — it is composer text.
+		telemetry.Slash(c.name)
 		return m, tea.Batch(draftCmd, c.run(&m, args))
 	}
+	// A server or plugin command. Counted as "server" without its trigger word:
+	// those names come from the Mattermost instance and can name an
+	// organisation's internal tooling, which our own command names cannot.
+	telemetry.Slash("server")
 	return m, tea.Batch(draftCmd, m.execServerCommand(name, args))
 }
 
@@ -322,7 +330,7 @@ func splitFirstArg(args string) (first, message string) {
 
 // slashSearch opens the Search tab and runs the query (empty just opens it).
 func slashSearch(m *Model, args string) tea.Cmd {
-	cmd := m.openSearchTab()
+	cmd := m.openSearchTab("slash")
 	q := strings.TrimSpace(args)
 	if q == "" {
 		return cmd

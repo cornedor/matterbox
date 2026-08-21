@@ -178,6 +178,12 @@ func (m *Model) startAISearch(rawQuery string) tea.Cmd {
 	m.search.loading = false
 	m.renderSearchResults()
 
+	// The agentic search is the most expensive thing on this tab and the least
+	// evidenced: it runs a whole tool-calling loop against a local model, and
+	// nobody knows whether the answers get opened. Timed from here; reported
+	// when the run terminates.
+	m.armSearch("ai", "all", searchTerms(query), false)
+
 	system := m.buildAISearchSystem()
 	catalog := m.buildSearchCatalogInput()
 	messages := []aisearch.Message{
@@ -215,6 +221,7 @@ func (m *Model) startAIFollowup() tea.Cmd {
 	m.aiSearch.followup.SetValue("")
 	m.aiSearch.followup.Blur()
 	m.beginAISearchSpinner()
+	m.armSearch("ai", "all", searchTerms(text), false)
 
 	// Clear the previous result set so the live trace owns the viewport again.
 	m.search.hits = nil
@@ -323,6 +330,7 @@ func (m *Model) applyAISearchUpdate(msg aiSearchUpdateMsg) tea.Cmd {
 	}
 	// Terminal update.
 	m.finishAISearch()
+	m.recordSearchRun(len(u.Hits), u.Err != nil)
 	m.aiSearch.answer = u.Answer
 	m.aiSearch.tentative = u.Tentative
 	m.aiSearch.err = u.Err

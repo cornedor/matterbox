@@ -11,6 +11,7 @@ import (
 	"matterbox/internal/config"
 	"matterbox/internal/mmauth"
 	"matterbox/internal/opener"
+	"matterbox/internal/telemetry"
 )
 
 // handleKey routes a keypress by phase. ctrl+c always quits.
@@ -31,6 +32,7 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.t = end
 		}
 		m.phase = phaseWizard
+		m.recordStep(m.step)
 		return m, nil
 	case phaseDone:
 		// In demo mode, space dismisses the panel but keeps the program running
@@ -53,6 +55,8 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.handleAuthKey(msg)
 		case stepAdvanced:
 			return m.handleAdvancedKey(msg)
+		case stepTelemetry:
+			return m.handleTelemetryKey(msg)
 		}
 	}
 	return m, nil
@@ -74,7 +78,7 @@ func (m *Model) handleServerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.serverMsg = ""
 		m.authMsg = ""
 		m.authFocus = authFocusUser // open on the username field each time
-		m.step = stepAuth
+		m.gotoStep(stepAuth)
 		return m, nil
 	}
 	editField(&m.server, msg)
@@ -90,7 +94,7 @@ func (m *Model) handleAuthKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// Stop listening; a changed server would make a captured token stale, and
 		// re-entering the step restarts capture on the next browser-open.
 		m.closeCapture()
-		m.step = stepServer
+		m.gotoStep(stepServer)
 		return m, nil
 	case "up", "shift+tab":
 		n := m.authControls()
@@ -143,6 +147,9 @@ func (m *Model) openSSO() tea.Cmd {
 	_ = opener.Open(mmauth.LoginURL(m.cfg.ServerURL))
 	m.authErr = false
 	m.authFocus = authFocusToken
+	// Whatever token arrives after this — captured or pasted — came out of the
+	// SSO round trip, which is what setup_finished's auth_method reports.
+	m.usedSSO = true
 
 	if !m.capturing {
 		if c, ok := mmauth.StartCapture(context.Background()); ok {
@@ -200,7 +207,7 @@ func (m *Model) submitToken() (tea.Model, tea.Cmd) {
 	if raw == "" {
 		m.authMsg = ""
 		m.authErr = false
-		m.step = stepAdvanced
+		m.gotoStep(stepAdvanced)
 		return m, nil
 	}
 	tok := mmauth.ExtractToken(raw)
@@ -237,6 +244,7 @@ func (m *Model) submitPassword() (tea.Model, tea.Cmd) {
 	m.validating = true
 	m.authErr = false
 	m.authMsg = "Signing in…"
+	m.usedPassword = true
 	return m, passwordLoginCmd(m.cfg.ServerURL, user, pass, mfa)
 }
 
@@ -245,6 +253,7 @@ func (m *Model) handleAuthResult(msg authResultMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
 		m.authMsg = "Sign-in failed: " + oneLine(msg.err.Error())
 		m.authErr = true
+		m.recordLoginFailure(m.tokenMethod(), msg.err, false)
 		return m, nil
 	}
 	if err := auth.SaveToken(m.pendingToken); err != nil {
@@ -261,7 +270,7 @@ func (m *Model) handleAuthResult(msg authResultMsg) (tea.Model, tea.Cmd) {
 	_ = config.Save(m.cfg)
 	m.authMsg = ""
 	m.token.setValue("")
-	m.step = stepAdvanced
+	m.gotoStep(stepAdvanced)
 	return m, nil
 }
 
@@ -281,6 +290,7 @@ func (m *Model) handlePasswordResult(msg passwordResultMsg) (tea.Model, tea.Cmd)
 	if msg.err != nil {
 		m.authMsg = "Sign-in failed: " + oneLine(msg.err.Error())
 		m.authErr = true
+		m.recordLoginFailure("password", msg.err, m.mfaRequired)
 		return m, nil
 	}
 	if err := auth.SaveToken(msg.token); err != nil {
@@ -296,14 +306,14 @@ func (m *Model) handlePasswordResult(msg passwordResultMsg) (tea.Model, tea.Cmd)
 	m.authMsg = ""
 	m.password.setValue("")
 	m.mfa.setValue("")
-	m.step = stepAdvanced
+	m.gotoStep(stepAdvanced)
 	return m, nil
 }
 
 func (m *Model) handleAdvancedKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
-		m.step = stepAuth
+		m.gotoStep(stepAuth)
 		return m, nil
 	case "up", "shift+tab":
 		m.adv.focus = (m.adv.focus - 1 + advFieldCount) % advFieldCount
@@ -328,8 +338,8 @@ func (m *Model) handleAdvancedKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.authMsg = "Couldn't save config: " + oneLine(err.Error())
 			return m, nil
 		}
-		m.closeCapture() // setup's done; don't leave the socket listening
-		m.phase = phaseDone
+		m.closeCapture() // preferences saved; don't leave the socket listening
+		m.gotoStep(stepTelemetry)
 		return m, nil
 	}
 	// Type digits to set the mark-read delay directly when it's focused.
@@ -337,6 +347,51 @@ func (m *Model) handleAdvancedKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.adv.markRead = clampDelay(m.adv.markRead*10 + int(msg.Text[0]-'0'))
 	}
 	return m, nil
+}
+
+// handleTelemetryKey answers the telemetry question: move between the two
+// buttons, enter to pick one, esc to step back into the preferences. Both
+// answers are recorded — declining writes `telemetry.enabled: false` rather
+// than nothing, so the wizard knows not to ask again.
+func (m *Model) handleTelemetryKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.gotoStep(stepAdvanced)
+		return m, nil
+	case "up", "shift+tab":
+		m.telemetryFocus = (m.telemetryFocus - 1 + telemetryFieldCount) % telemetryFieldCount
+		return m, nil
+	case "down", "tab":
+		m.telemetryFocus = (m.telemetryFocus + 1) % telemetryFieldCount
+		return m, nil
+	case "enter":
+		consent := m.telemetryFocus == telemetryFocusYes
+		m.applyTelemetry(consent)
+		if err := config.Save(m.cfg); err != nil {
+			m.authMsg = "Couldn't save config: " + oneLine(err.Error())
+			return m, nil
+		}
+		// Only now is the answer recorded on disk, which is what
+		// ReleasePending checks before it sends anything held.
+		m.recordConsent(consent)
+		m.phase = phaseDone
+		return m, nil
+	}
+	return m, nil
+}
+
+// applyTelemetry records the answer in the config. Opting in mints the random
+// id the reports are grouped by (and only then — a declining user gets no
+// identifier at all); opting out clears any id a previous opt-in left behind,
+// so turning telemetry off doesn't quietly keep the user tagged.
+func (m *Model) applyTelemetry(consent bool) {
+	m.cfg.Telemetry.Enabled = &consent
+	switch {
+	case !consent:
+		m.cfg.Telemetry.AnonymousID = ""
+	case m.cfg.Telemetry.AnonymousID == "":
+		m.cfg.Telemetry.AnonymousID = telemetry.NewAnonymousID()
+	}
 }
 
 // adjustAdvanced applies a left/right (or space) change to the focused field:

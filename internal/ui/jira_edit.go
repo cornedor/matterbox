@@ -91,6 +91,12 @@ type jiraMutatedMsg struct {
 	key   string
 	field string
 	err   error
+	// action is the forge_action label for this write. Usually the field name,
+	// but a comment carrying a mention is a reply — the same endpoint, a
+	// different thing to do with it, and the two are worth telling apart.
+	action string
+	// started dates the write, for forge_action's latency.
+	started time.Time
 }
 
 // startJiraPicker resets the picker to a fresh loading state for the current
@@ -428,7 +434,7 @@ func (m Model) applyJiraPick() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.status = fmt.Sprintf("updating %s %s…", key, field)
-	return m, jiraMutateCmd(key, field, run)
+	return m, jiraMutateCmd(key, field, field, run)
 }
 
 // applyJiraPoints closes the input and fires the story-points write.
@@ -438,19 +444,21 @@ func (m Model) applyJiraPoints() (tea.Model, tea.Cmd) {
 	m.closeJiraPoints()
 	client, ctx := m.jiraClient, m.ctx
 	m.status = fmt.Sprintf("updating %s points…", key)
-	return m, jiraMutateCmd(key, "points", func() error { return client.SetStoryPoints(ctx, key, raw) })
+	return m, jiraMutateCmd(key, "points", "points", func() error { return client.SetStoryPoints(ctx, key, raw) })
 }
 
 // jiraMutateCmd runs a field write in the background and reports the result.
-func jiraMutateCmd(key, field string, run func() error) tea.Cmd {
+func jiraMutateCmd(key, field, action string, run func() error) tea.Cmd {
+	started := featureStart()
 	return func() tea.Msg {
-		return jiraMutatedMsg{key: key, field: field, err: run()}
+		return jiraMutatedMsg{key: key, field: field, action: action, err: run(), started: started}
 	}
 }
 
 // handleJiraMutated reports the write outcome and reloads the issue on success
 // so the panel shows the authoritative (and any cascading) values.
 func (m Model) handleJiraMutated(msg jiraMutatedMsg) (tea.Model, tea.Cmd) {
+	m.recordForge("jira", msg.action, msg.started, msg.err)
 	if msg.err != nil {
 		m.status = fmt.Sprintf("%s %s update failed: %v", msg.key, msg.field, msg.err)
 		return m, nil

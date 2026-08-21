@@ -141,7 +141,8 @@ func runToggleSaved(m *Model, _ string) tea.Cmd {
 	} else {
 		m.status = "unsaving message…"
 	}
-	return m.setSavedCmd(p.Id, saved)
+	return m.reportActed(m.setSavedCmd(p.Id, saved),
+		m.actedRecord(savedAction(saved), p, "palette"))
 }
 
 // setSavedCmd is the server half of a save/unsave.
@@ -317,7 +318,8 @@ func (m Model) handleSavedPostsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.setSaved(p.Id, false)
 		m.repaintPosts()
 		m.status = "unsaving message…"
-		return m, m.setSavedCmd(p.Id, false)
+		return m, m.reportActed(m.setSavedCmd(p.Id, false),
+			m.actedRecord("unsave", p, "picker"))
 	case key.Matches(msg, m.keys.OpenChannel):
 		ch := m.findChannel(p.ChannelId)
 		if ch == nil {

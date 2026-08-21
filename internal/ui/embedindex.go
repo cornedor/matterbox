@@ -96,7 +96,19 @@ func (m *Model) applyEmbedBatch(msg embedBatchMsg) tea.Cmd {
 	}
 	m.embedder.running = false
 	if msg.err != nil {
+		// Once per session: the indexer retries on a backoff, so an embeddings
+		// server that is down would otherwise report every few seconds for
+		// hours. One event says the same thing.
+		if m.firstTime("embed_index/error") {
+			m.recordFeature("embed_index", "auto", noLatency, 0, msg.err)
+		}
 		return embedTick(embedBackoff, m.embedder.seq)
+	}
+	// Also once: this is a background loop, and what is worth knowing is that
+	// semantic indexing ran at all on a real cache — not how many batches it
+	// took. The running total goes out with app_stopped's counters.
+	if msg.n > 0 && m.firstTime("embed_index/ok") {
+		m.recordFeature("embed_index", "auto", noLatency, msg.n, nil)
 	}
 	m.embedder.total += msg.n
 	if msg.more {

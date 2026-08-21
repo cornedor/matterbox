@@ -181,6 +181,9 @@
     },
     "language_tool": {
       "$ref": "#/definitions/languageTool"
+    },
+    "telemetry": {
+      "$ref": "#/definitions/telemetry"
     }
   },
   "definitions": {
@@ -549,6 +552,22 @@
             "public_repo",
             "repo:status"
           ]
+        }
+      }
+    },
+    "telemetry": {
+      "type": "object",
+      "description": "Anonymous usage telemetry and error reporting. Strictly opt-in: off unless enabled is true, and only the first-run setup wizard asks — an existing install is never prompted. See https://matterbox.work/docs/telemetry",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Send anonymous usage telemetry and error reports (default false). Absent means the question was never asked, which is also off.",
+          "default": false
+        },
+        "anonymous_id": {
+          "type": "string",
+          "description": "Random id the reports are grouped by, minted when you opt in. Not derived from your account, server or machine; delete it to become a new, unrelated user."
         }
       }
     },

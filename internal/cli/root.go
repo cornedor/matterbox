@@ -15,6 +15,7 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"runtime"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	emoji "github.com/kyokomi/emoji/v2"
@@ -23,6 +24,7 @@ import (
 	"matterbox/internal/auth"
 	"matterbox/internal/config"
 	"matterbox/internal/mm"
+	"matterbox/internal/telemetry"
 	"matterbox/internal/ui"
 )
 
@@ -63,6 +65,11 @@ func newRootCmd() *cobra.Command {
 				if !auth.HasToken() {
 					return nil
 				}
+				// The launch about to happen is the first one, which is worth
+				// telling apart from every later launch: it is the only sample
+				// of what a fresh install's defaults look like before anyone
+				// has changed anything.
+				ui.SetFirstRun()
 			}
 			return runTUI()
 		},
@@ -84,7 +91,37 @@ func newRootCmd() *cobra.Command {
 // Execute runs the command tree and returns a process exit code: 0 on
 // success, 1 on any error. main() is a one-liner around this.
 func Execute() int {
-	if err := newRootCmd().Execute(); err != nil {
+	started := time.Now()
+	// Hold any event a subcommand emits until reportCommand can decide whether
+	// there is anyone to send it to. Telemetry is started after the work is
+	// done — so `matterbox decode` never reads a config it has no use for —
+	// which means an event emitted during the work would otherwise find no
+	// client and be dropped. One atomic store; the buffer is bounded and
+	// discarded when consent is absent.
+	telemetry.BeginPending()
+	root := newRootCmd()
+	// A panic escaping a subcommand would otherwise be a crash nobody hears
+	// about: several verbs are only ever run by scripts and notification
+	// handlers. Report it while the stack is still standing, flush, and let the
+	// panic carry on so the crash and its trace are exactly what they were.
+	// The TUI's own panics are caught closer in, inside Update and View.
+	defer func() {
+		if v := recover(); v != nil {
+			reportPanic(v)
+			panic(v)
+		}
+	}()
+	// ExecuteC, not Execute: it returns the command that actually ran, which is
+	// what the telemetry needs to name the verb. Behaviour is otherwise
+	// identical.
+	cmd, err := root.ExecuteC()
+	// Anonymous telemetry, if the user opted in. Only for a subcommand — the
+	// root command is the TUI, which reports its own app_started / app_stopped
+	// with far more to say than an exit code. A no-op without consent.
+	if cmd != nil && cmd != root {
+		reportCommand(cmd, started, err)
+	}
+	if err != nil {
 		fmt.Fprintln(os.Stderr, "matterbox:", err)
 		return 1
 	}
@@ -129,6 +166,19 @@ func runTUI() error {
 	if err := ui.CheckKeybindings(cfg); err != nil {
 		return fmt.Errorf("keybindings: %w", err)
 	}
+	// Anonymous telemetry, if the user opted in: a no-op otherwise, so there is
+	// nothing to branch on here. Close flushes on the way out — after the
+	// program has released the terminal, so a slow flush can't stall the exit
+	// mid-teardown.
+	telemetry.Start(cfg)
+	defer telemetry.Close()
+	// ui builds the launch event but has no way to know what this binary is
+	// called or what it was compiled with.
+	stamp := readBuildStamp()
+	ui.SetBuildInfo(versionName(stamp), stamp.tags)
+	// The same stamp on error reports, so a crash says which build produced it
+	// — the first question asked of any of them, and unrecoverable afterwards.
+	telemetry.SetBuild(versionName(stamp), stamp.tags)
 	// v2 drops tea.WithAltScreen(); each tea.View opts in via
 	// v.AltScreen = true (set in Model.View). v2 always requests the
 	// kitty "disambiguate escape codes" flag, which makes shift+enter
@@ -139,7 +189,11 @@ func runTUI() error {
 	stop := ui.ServeControlSocket(prog)
 	defer stop()
 	if _, err := prog.Run(); err != nil {
+		// The session ended badly. Report it before the deferred Close flushes,
+		// so the reason survives.
+		telemetry.AppStopped("error")
 		return err
 	}
+	telemetry.AppStopped("quit")
 	return nil
 }

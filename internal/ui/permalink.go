@@ -6,6 +6,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/telemetry"
 )
 
 // Following a permalink in-app: a Mattermost message permalink looks like
@@ -56,6 +58,10 @@ type followPermalinkMsg struct {
 // reached in-app. The channel is resolved from the loaded posts or the local
 // cache when possible; otherwise the post is fetched from the server first.
 func (m Model) followPermalink(postID, fallbackURL string) (tea.Model, tea.Cmd) {
+	// Following a message link inside the app rather than handing it to the
+	// browser is a whole feature (see the package note); this is the only place
+	// it is entered from.
+	telemetry.Feature("permalink")
 	// Already loaded in the open channel: reposition without any lookup.
 	for _, p := range m.posts {
 		if p.Id == postID {
@@ -103,7 +109,7 @@ func (m Model) openChannelAtPost(ch *model.Channel, postID string) (tea.Model, t
 		if around, err := m.store.PostsAround(ch.Id, postID, 30, 30); err == nil && len(around) > 0 {
 			// We bypass openChannelLoadCmd here; route the switch through
 			// enterChannel so the pane can't desync from openChannelID.
-			draftCmd := m.enterChannel(ch.Id)
+			draftCmd := m.enterChannel(ch.Id, "permalink")
 			m.posts = around
 			m.postIdx = len(around) - 1
 			for i, p := range around {
@@ -117,6 +123,8 @@ func (m Model) openChannelAtPost(ch *model.Channel, postID string) (tea.Model, t
 			m.status = ""
 			m.loading = false
 			m.renderMessages()
+			m.noteOpenCache(ch.Id, len(around))
+			m.recordChannelOpened(ch.Id)
 			// Gap-fill forward from the newest cached post so the user can scroll
 			// down to live without an extra step.
 			var gapCmd tea.Cmd
@@ -131,7 +139,7 @@ func (m Model) openChannelAtPost(ch *model.Channel, postID string) (tea.Model, t
 	// the unread divider and viewGen itself) with a queued jump applied once the
 	// page arrives.
 	m.pendingJumpPostID = postID
-	return m, tea.Batch(m.openChannelLoadCmd(ch.Id), saveCmd)
+	return m, tea.Batch(m.openChannelLoadCmd(ch.Id, "permalink"), saveCmd)
 }
 
 // permalinkResolvedMsg carries the channel a permalinked post belongs to, looked

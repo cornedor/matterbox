@@ -201,7 +201,7 @@ func TestNotifyGateSkipsWhatYoureReading(t *testing.T) {
 		e.me = &model.User{Id: "u-me", Username: "corne"}
 		e.needsTUIStatus = true
 		e.tuiSocket = fakeTUI(t, s, nil)
-		e.notifyGate(context.Background(), ev, p, notifyOpts{urgent: urgent})
+		e.notifyGate(context.Background(), msgTrigger(ev, p), notifyOpts{urgent: urgent})
 		e.wg.Wait()
 		return e.cursor()
 	}

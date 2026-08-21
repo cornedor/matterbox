@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -28,6 +29,9 @@ type forgeLoadedMsg struct {
 	number   int
 	change   *forge.Change
 	err      error
+	// started dates the fetch, for forge_action's API round trip. The provider
+	// caches, so this measures what the panel actually waited for.
+	started time.Time
 }
 
 // forgeMutatedMsg carries the result of an approve / merge action. On success
@@ -40,6 +44,8 @@ type forgeMutatedMsg struct {
 	label    string // the forge's short form, for the status line
 	action   string // "approve" / "merge"
 	err      error
+	// started dates the mutation, for forge_action's latency.
+	started time.Time
 }
 
 // refConfirmState is the modal shown before an approve or merge fires. It owns
@@ -82,8 +88,9 @@ func (m *Model) forgeAt(i int) forge.Provider {
 // (forge.KindPull / KindIssue / empty) forwarded to Provider.Get.
 func (m Model) fetchForgeChange(gen, provider int, repo string, number int, kind string) tea.Cmd {
 	p, ctx := m.forgeAt(provider), m.ctx
+	started := featureStart()
 	return func() tea.Msg {
-		msg := forgeLoadedMsg{gen: gen, provider: provider, repo: repo, number: number}
+		msg := forgeLoadedMsg{gen: gen, provider: provider, repo: repo, number: number, started: started}
 		if p == nil {
 			msg.err = forge.ErrNotConfigured
 			return msg
@@ -96,6 +103,10 @@ func (m Model) fetchForgeChange(gen, provider int, repo string, number int, kind
 // handleForgeLoaded installs a finished fetch, unless the user has since cycled
 // or closed the panel (stale gen) or moved to a non-forge reference.
 func (m Model) handleForgeLoaded(msg forgeLoadedMsg) (tea.Model, tea.Cmd) {
+	// Reported even when the result is stale: the fetch happened and its
+	// outcome is a fact about the provider, not about whether the panel still
+	// wants it.
+	m.recordForge(forgeProviderID(m.forgeAt(msg.provider)), "open", msg.started, msg.err)
 	r := m.currentRef()
 	if !m.refOpen || msg.gen != m.refGen || r == nil || r.kind != refForge {
 		return m, nil
@@ -485,7 +496,7 @@ func (m Model) applyRefConfirm(method string) (tea.Model, tea.Cmd) {
 	}
 	label := forge.Label(p, c.repo, c.number)
 	m.status = fmt.Sprintf("%s %s…", c.action, label)
-	msg := forgeMutatedMsg{provider: c.provider, repo: c.repo, number: c.number, label: label, action: c.action}
+	msg := forgeMutatedMsg{provider: c.provider, repo: c.repo, number: c.number, label: label, action: c.action, started: featureStart()}
 	return m, forgeMutateCmd(msg, run)
 }
 
@@ -500,6 +511,10 @@ func forgeMutateCmd(msg forgeMutatedMsg, run func() error) tea.Cmd {
 // handleForgeMutated reports the action outcome and reloads the change request
 // on success so the panel shows the authoritative (and any cascading) state.
 func (m Model) handleForgeMutated(msg forgeMutatedMsg) (tea.Model, tea.Cmd) {
+	// The write paths are the reason the forge integrations exist beyond
+	// reading: whether anyone actually approves or merges from matterbox is
+	// what decides whether they were worth building.
+	m.recordForge(forgeProviderID(m.forgeAt(msg.provider)), msg.action, msg.started, msg.err)
 	if msg.err != nil {
 		m.status = fmt.Sprintf("%s %s failed: %v", msg.label, msg.action, msg.err)
 		return m, nil

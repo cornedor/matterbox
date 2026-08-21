@@ -14,7 +14,43 @@ import (
 	"matterbox/internal/embed"
 	"matterbox/internal/semindex"
 	"matterbox/internal/store"
+	"matterbox/internal/telemetry"
 )
+
+// Search telemetry helpers. The properties are the shape of the query and never
+// the query: how many words it had, whether it was narrowed, how many hits came
+// back. See internal/telemetry/catalogue_events.go for search_run.
+
+// searchBackend names which backend ran, matching the labels the TUI reports so
+// the two surfaces are comparable in one breakdown.
+func searchBackend(semantic bool) string {
+	if semantic {
+		return "hybrid"
+	}
+	return "local_fts"
+}
+
+// searchScope says whether the search was narrowed to specific conversations or
+// ran across the whole cache.
+func searchScope(channelIDs, authorIDs []string) string {
+	if len(channelIDs) > 0 || len(authorIDs) > 0 {
+		return "channel"
+	}
+	return "all"
+}
+
+// searchOutcome distinguishes a search that failed from one that simply found
+// nothing — the second is the most common way search disappoints, and it is not
+// an error.
+func searchOutcome(hits int, err error) string {
+	switch {
+	case err != nil:
+		return "error"
+	case hits == 0:
+		return "empty"
+	}
+	return "ok"
+}
 
 // defaultSearchLimit is how many matches `search` shows when --limit is not
 // given. A page, not a firehose — page further with --offset.
@@ -153,6 +189,7 @@ func runSearch(ctx context.Context, o searchOpts, out io.Writer) error {
 		total  int
 		capped bool
 	)
+	started := time.Now()
 	if o.semantic {
 		ec := cfg.Embeddings
 		ecl := embed.New(ec.Endpoint, ec.APIKey, ec.Model, ec.Dim)
@@ -173,6 +210,20 @@ func runSearch(ctx context.Context, o searchOpts, out io.Writer) error {
 		hits, total, err = st.SearchSpec(spec, o.limit, o.offset, o.contextN)
 		capped = total >= store.MatchCountCap // keyword total saturates at the cap
 	}
+	// The scriptable half of the four-backend question: `matterbox search` runs
+	// the same two backends the TUI's Search tab does, and a verb only ever
+	// called from a script has nobody to report that it stopped finding things.
+	// Held until reportCommand opens the client (see telemetry/pending.go).
+	telemetry.SearchRun(telemetry.Search{
+		Mode:         searchBackend(o.semantic),
+		Scope:        searchScope(channelIDs, authorIDs),
+		From:         "cli",
+		Terms:        len(strings.Fields(o.query)),
+		HadOperators: o.from != "" || o.sinceMs > 0 || o.untilMs > 0,
+		Results:      len(hits),
+		LatencyMs:    time.Since(started).Milliseconds(),
+		Outcome:      searchOutcome(len(hits), err),
+	})
 	if err != nil {
 		return err
 	}
