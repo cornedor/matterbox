@@ -69,6 +69,12 @@ func (m *Model) openTarget(o openable) tea.Cmd {
 		if strings.HasPrefix(o.url, spoilerURLScheme) {
 			return nil
 		}
+		// Thumbnail clicks are handled in handleMouseRelease → handleImageClick
+		// (needs the pane to resolve the post). Swallow here so a stray activate
+		// never hands matterbox-image: to the OS launcher.
+		if strings.HasPrefix(o.url, imageClickURLScheme) {
+			return nil
+		}
 	}
 	if o.file == nil {
 		if postID, ok := m.parsePermalinkPostID(o.url); ok {

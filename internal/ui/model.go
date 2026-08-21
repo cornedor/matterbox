@@ -156,6 +156,11 @@ type Model struct {
 	// and drags select text to copy. Off keeps the terminal's native text selection.
 	mouseEnabled bool
 
+	// imageClick mirrors config.ImageClick: what a mouse click on a rendered
+	// inline thumbnail does — "preview", "open", "download", or "off". See
+	// imageclick.go. Only the thumbnail cells carry the OSC 8 target.
+	imageClick string
+
 	// attachOnDrop mirrors config.AttachOnDrop: when true, a paste that is
 	// nothing but existing absolute file paths is treated as a drag-and-drop
 	// (terminals deliver a drop as a pasted path) and attached rather than
@@ -1087,6 +1092,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	feedShowMuted := false
 	mouseEnabled := true
 	attachOnDrop := true
+	imageClick := "preview"
 	navModifier := navModifierFromConfig(cfg)
 	vimNav := vimNavGlobal
 	emojiMode := "auto"
@@ -1151,6 +1157,14 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		}
 		if cfg.AttachOnDrop != nil {
 			attachOnDrop = *cfg.AttachOnDrop
+		}
+		if cfg.ImageClick != "" {
+			imageClick = cfg.ImageClick
+		}
+		switch imageClick {
+		case "preview", "open", "download", "off":
+		default:
+			imageClick = "preview"
 		}
 		if cfg.EmojiImages != "" {
 			emojiMode = cfg.EmojiImages
@@ -1296,6 +1310,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		showCustomStatus:   showCustomStatus,
 		showDateSeparators: showDateSeparators,
 		mouseEnabled:       mouseEnabled,
+		imageClick:         imageClick,
 		launchEnv:          newLaunchEnv(cfg, mouseEnabled),
 		tel:                newUITelemetry(),
 		attachOnDrop:       attachOnDrop,

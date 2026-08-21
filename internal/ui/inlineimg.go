@@ -941,7 +941,9 @@ func (m *Model) inlineThumbLines(it previewItem, paneWidth int) []string {
 		rows := strings.Split(r.placeholder, "\n")
 		out := make([]string, len(rows))
 		for i, row := range rows {
-			out[i] = "  " + row
+			// OSC 8 on the image cells only (gutter stays outside) so a click
+			// hits the thumbnail, not the message chrome — see imageclick.go.
+			out[i] = "  " + m.wrapImageClickLink(it, row)
 		}
 		return out
 	case r.reserve:
