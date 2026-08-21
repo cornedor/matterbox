@@ -1,7 +1,9 @@
 package ui
 
 import (
+	"fmt"
 	"image"
+	"strings"
 	"testing"
 	"time"
 )
@@ -31,10 +33,30 @@ func (f *fakeVideoStream) nextChunk(max int) ([]image.Image, []time.Duration, bo
 
 func (f *fakeVideoStream) close() { f.closed++ }
 
+// mkStreamFrames builds n encoded frames the way encodeStreamFrames does:
+// rotating through the ring, starting on ring[0].
 func mkStreamFrames(n int) []streamFrame {
+	return mkStreamFramesFrom(n, testRing(), 0)
+}
+
+func testRing() [streamRingSlots]uint32 {
+	var ring [streamRingSlots]uint32
+	for i := range ring {
+		ring[i] = uint32(10 + i)
+	}
+	return ring
+}
+
+func mkStreamFramesFrom(n int, ring [streamRingSlots]uint32, startSeq int) []streamFrame {
 	out := make([]streamFrame, n)
 	for i := range out {
-		out[i] = streamFrame{seq: "seq", delay: 10 * time.Millisecond, img: image.NewRGBA(image.Rect(0, 0, 2, 2))}
+		id := ring[(startSeq+i)%streamRingSlots]
+		out[i] = streamFrame{
+			seq:   fmt.Sprintf("up:%d:%d", id, startSeq+i),
+			delay: 10 * time.Millisecond,
+			img:   image.NewRGBA(image.Rect(0, 0, 2, 2)),
+			id:    id,
+		}
 	}
 	return out
 }
@@ -42,8 +64,9 @@ func mkStreamFrames(n int) []streamFrame {
 func TestAdvanceStreamPopsAndFetches(t *testing.T) {
 	m := &Model{previewGen: 1}
 	fake := &fakeVideoStream{remaining: 100}
+	ring := testRing()
 	m.preview = previewState{
-		active: true, streaming: true, id: 1, rows: 1, cols: 1,
+		active: true, streaming: true, id: ring[0], streamRing: ring, rows: 1, cols: 1,
 		stream: fake, streamBuf: mkStreamFrames(3),
 	}
 	cmd := m.advanceStream()
@@ -56,8 +79,66 @@ func TestAdvanceStreamPopsAndFetches(t *testing.T) {
 	if m.preview.img == nil {
 		t.Error("current frame image not set after advance")
 	}
+	// The upload and the switch onto it happen in the same update: bubbletea
+	// flushes raw output before the rendered View, so the cells name the id
+	// only after its bytes have gone out.
+	if m.preview.id != ring[0] {
+		t.Errorf("displayed id = %d, want %d (the frame just uploaded)", m.preview.id, ring[0])
+	}
 	if !m.preview.streamFetching {
 		t.Error("expected a decode-ahead fetch to be kicked (buffer below high-water)")
+	}
+}
+
+// The invariant the ring exists for: the frame being uploaded must
+// never be going to the id the terminal is currently displaying, because
+// re-transmitting an id can drop its image for the whole upload (see
+// advanceStream).
+func TestAdvanceStreamNeverUploadsOverDisplayedID(t *testing.T) {
+	m := &Model{previewGen: 1}
+	fake := &fakeVideoStream{remaining: 1000}
+	ring := testRing()
+	m.preview = previewState{
+		active: true, streaming: true, id: ring[0], streamRing: ring, rows: 1, cols: 1,
+		stream: fake, streamBuf: mkStreamFramesFrom(40, ring, 0),
+	}
+	for tick := 0; tick < 20; tick++ {
+		onScreen := m.preview.id
+		displaying := m.preview.img != nil
+		m.advanceStream()
+		uploaded := m.preview.id
+		if displaying && uploaded == onScreen {
+			t.Fatalf("tick %d uploaded to id %d while it was the one on screen", tick, uploaded)
+		}
+		// And it has to be a ring slot, not some drifted id.
+		var known bool
+		for _, id := range ring {
+			known = known || id == uploaded
+		}
+		if !known {
+			t.Fatalf("tick %d: uploaded to %d, which is not a ring slot (%v)", tick, uploaded, ring)
+		}
+	}
+}
+
+// A resize can drop an odd number of buffered frames, leaving the next frame
+// targeting the id now on screen. That frame must be skipped, not uploaded.
+func TestAdvanceStreamSkipsCollidingFrame(t *testing.T) {
+	m := &Model{previewGen: 1}
+	fake := &fakeVideoStream{remaining: 1000}
+	ring := testRing()
+	// On screen: ring[0]. The buffer starts with a frame also targeting ring[0].
+	m.preview = previewState{
+		active: true, streaming: true, id: ring[0], streamRing: ring, rows: 1, cols: 1,
+		stream: fake, streamBuf: mkStreamFramesFrom(4, ring, 0),
+		img: image.NewRGBA(image.Rect(0, 0, 2, 2)),
+	}
+	m.advanceStream()
+	if m.preview.id == ring[0] {
+		t.Fatalf("uploaded to the displayed id %d instead of skipping it", ring[0])
+	}
+	if m.preview.id != ring[1] {
+		t.Errorf("uploaded to id %d, want the next ring slot %d", m.preview.id, ring[1])
 	}
 }
 
@@ -188,5 +269,55 @@ func TestTeardownDefersToInFlightCmd(t *testing.T) {
 	m.teardownPreviewStream()
 	if fake.closed != 1 {
 		t.Errorf("teardown should free an unheld stream once, got %d", fake.closed)
+	}
+}
+
+// The alternation has to survive into the actual escape sequences, not just the
+// streamFrame bookkeeping: the id is baked into each pre-built transmit, and it
+// must keep alternating across a chunk boundary (startSeq) or two consecutive
+// frames would land on the same id.
+func TestEncodeStreamFramesAlternatesIDsOnTheWire(t *testing.T) {
+	ring := testRing()
+	mk := func(n int) ([]image.Image, []time.Duration) {
+		frames := make([]image.Image, n)
+		delays := make([]time.Duration, n)
+		for i := range frames {
+			frames[i] = image.NewRGBA(image.Rect(0, 0, 4, 4))
+			delays[i] = 10 * time.Millisecond
+		}
+		return frames, delays
+	}
+
+	var got []uint32
+	for _, chunk := range []struct{ n, startSeq int }{{3, 0}, {3, 3}} {
+		frames, delays := mk(chunk.n)
+		out, err := encodeStreamFrames(frames, delays, 2, 2, ring, chunk.startSeq, 8, 16)
+		if err != nil {
+			t.Fatalf("encodeStreamFrames: %v", err)
+		}
+		for _, fr := range out {
+			// The id in the sequence is what the terminal acts on; the struct
+			// field only mirrors it.
+			want := fmt.Sprintf("i=%d", fr.id)
+			if !strings.Contains(fr.seq, want) {
+				t.Errorf("sequence does not carry %s", want)
+			}
+			got = append(got, fr.id)
+		}
+	}
+
+	// Consecutive frames must never share a slot, and a slot must not come back
+	// around sooner than the ring size — that reuse distance is the grace the
+	// design depends on.
+	for i := 1; i < len(got); i++ {
+		for j := max(0, i-streamRingSlots+1); j < i; j++ {
+			if got[i] == got[j] {
+				t.Fatalf("frames %d and %d reuse id %d within %d slots: %v",
+					j, i, got[i], streamRingSlots, got)
+			}
+		}
+	}
+	if got[0] != ring[0] {
+		t.Errorf("first frame id = %d, want %d", got[0], ring[0])
 	}
 }

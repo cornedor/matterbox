@@ -126,6 +126,11 @@ type streamFrame struct {
 	seq   string
 	delay time.Duration
 	img   image.Image
+	// id is the Kitty image id seq transmits under. Playback alternates it
+	// between the preview's two ids in encode order (see encodeStreamFrames),
+	// which is what keeps a frame from ever being uploaded over the image the
+	// terminal is currently showing.
+	id uint32
 }
 
 // streamsPreviewVideo reports whether opening it in the preview modal should

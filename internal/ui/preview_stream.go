@@ -91,6 +91,7 @@ func (m Model) loadPreviewItem(gen int, id uint32, it previewItem) tea.Cmd {
 // installs the result and starts the tick.
 func (m Model) loadPreviewStream(gen int, id uint32, it previewItem) tea.Cmd {
 	cellPxW, cellPxH := m.cellPxW, m.cellPxH
+	ring := m.preview.streamRing
 	mm := m
 	return func() tea.Msg {
 		data, err := mm.readPreviewBytes(it)
@@ -111,7 +112,7 @@ func (m Model) loadPreviewStream(gen int, id uint32, it previewItem) tea.Cmd {
 			return streamOpenedMsg{gen: gen, err: errors.New("video produced no frames")}
 		}
 		cols, rows := mm.computePreviewCells(frames[0].Bounds())
-		buf, err := encodeStreamFrames(frames, delays, cols, rows, id, cellPxW, cellPxH)
+		buf, err := encodeStreamFrames(frames, delays, cols, rows, ring, 0, cellPxW, cellPxH)
 		if err != nil {
 			stream.close()
 			return streamOpenedMsg{gen: gen, err: err}
@@ -162,21 +163,22 @@ func (m Model) handleStreamOpened(msg streamOpenedMsg) (tea.Model, tea.Cmd) {
 	m.preview.streamDone = false
 	m.preview.cols, m.preview.rows = msg.cols, msg.rows
 	m.preview.caption = msg.caption
-	if len(msg.buf) > 0 {
-		m.preview.img = msg.buf[0].img
-	}
+	// The opener encoded this chunk starting the rotation at 0, so the next
+	// chunk continues from here.
+	m.preview.streamSeq = len(msg.buf)
 	return m, m.advanceStream()
 }
 
 // loadPreviewStreamChunk pulls the next chunk from the (main-loop-lent) stream
-// and encodes it at rows×cols, off the UI goroutine.
-func (m Model) loadPreviewStreamChunk(gen int, stream videoStream, rows, cols int, id uint32, cellPxW, cellPxH int) tea.Cmd {
+// and encodes it at rows×cols, off the UI goroutine. startSeq continues the
+// rotation through the ring from wherever the previous chunk left off.
+func (m Model) loadPreviewStreamChunk(gen int, stream videoStream, rows, cols int, ring [streamRingSlots]uint32, startSeq int, cellPxW, cellPxH int) tea.Cmd {
 	return func() tea.Msg {
 		frames, delays, eof, err := stream.nextChunk(streamChunkFrames)
 		if err != nil {
 			return streamChunkMsg{gen: gen, stream: stream, err: err, eof: true, rows: rows, cols: cols}
 		}
-		buf, eerr := encodeStreamFrames(frames, delays, cols, rows, id, cellPxW, cellPxH)
+		buf, eerr := encodeStreamFrames(frames, delays, cols, rows, ring, startSeq, cellPxW, cellPxH)
 		if eerr != nil {
 			return streamChunkMsg{gen: gen, stream: stream, err: eerr, eof: true, rows: rows, cols: cols}
 		}
@@ -205,6 +207,10 @@ func (m Model) handleStreamChunk(msg streamChunkMsg) (tea.Model, tea.Cmd) {
 	if msg.eof {
 		m.closePreviewStream() // no more chunks needed; free decoder + temp now
 	}
+	// Advance the rotation counter by everything this chunk encoded, whether
+	// or not we install it: the ids it consumed are spent either way, and the
+	// next chunk has to continue past them.
+	m.preview.streamSeq += len(msg.buf)
 	// Only install frames encoded at the current placement; a resize since this
 	// chunk was kicked makes them the wrong size, so drop them (a few-frame skip)
 	// and let the next chunk decode at the new size.
@@ -234,6 +240,23 @@ func (m Model) handleStreamReencode(msg streamReencodeMsg) (tea.Model, tea.Cmd) 
 // or handles the two stall cases: end-of-clip (stop, holding the last frame) and
 // underrun (decoder fell behind — hold and re-check shortly, ensuring a
 // decode-ahead is running). Also tops up the decode-ahead buffer.
+//
+// Frames rotate through preview.streamRing rather than all being re-transmitted
+// under one id. Re-transmitting an id replaces the image it names, and a
+// terminal is entitled to drop the old one the moment the new transmission
+// starts rather than when it completes — Ghostty does exactly that. A frame is
+// several hundred KB of base64 in ~4KB chunks, so "while the upload is in
+// flight" is most of a frame interval: uploading over the id the placeholder
+// cells point at leaves them pointing at nothing, and the image strobes.
+//
+// The ordering that makes the rotation safe comes from bubbletea, which flushes
+// the tea.Raw buffer and then the rendered View, both from one ticker (see its
+// startRenderer). So within a flush this frame's upload is written *before* the
+// cell switch that moves the modal onto it — which is the right way round: the
+// id being uploaded is one the cells left several frames ago, and the cells only
+// name it once its bytes have already gone out. Do not "fix" this by deferring
+// the cell switch a tick; that puts the cells one frame behind the upload, which
+// is precisely the case where the upload deletes what is on screen.
 func (m *Model) advanceStream() tea.Cmd {
 	p := &m.preview
 	if p.streamDone {
@@ -248,8 +271,29 @@ func (m *Model) advanceStream() tea.Cmd {
 		// chunk is decoding, and poll again shortly.
 		return tea.Batch(m.maybeFetchStream(), previewStreamTickCmd(m.previewGen, previewStreamUnderrunPoll))
 	}
-	fr := p.streamBuf[0]
-	p.streamBuf = p.streamBuf[1:]
+
+	// Take the next frame, skipping any that would upload onto the slot the
+	// modal is displaying right now. Only reachable when dropped frames (a
+	// resize) shift the rotation; costs a frame, like the resize itself.
+	onScreen := p.id
+	var fr streamFrame
+	for len(p.streamBuf) > 0 {
+		fr, p.streamBuf = p.streamBuf[0], p.streamBuf[1:]
+		if fr.id == 0 || p.img == nil || fr.id != onScreen {
+			break
+		}
+		fr = streamFrame{}
+	}
+	if fr.seq == "" {
+		return tea.Batch(m.maybeFetchStream(), previewStreamTickCmd(m.previewGen, previewStreamUnderrunPoll))
+	}
+
+	// Move the modal onto this frame in the same update that uploads it: the
+	// upload is flushed first, so by the time the cells name this id its image
+	// has landed.
+	if fr.id != 0 {
+		p.id = fr.id
+	}
 	p.img = fr.img
 	cmds := []tea.Cmd{tea.Raw(fr.seq), previewStreamTickCmd(m.previewGen, fr.delay)}
 	if c := m.maybeFetchStream(); c != nil {
@@ -270,7 +314,10 @@ func (m *Model) maybeFetchStream() tea.Cmd {
 		return nil
 	}
 	p.streamFetching = true
-	return m.loadPreviewStreamChunk(m.previewGen, p.stream, p.rows, p.cols, p.id, m.cellPxW, m.cellPxH)
+	return m.loadPreviewStreamChunk(
+		m.previewGen, p.stream, p.rows, p.cols,
+		p.streamRing, p.streamSeq, m.cellPxW, m.cellPxH,
+	)
 }
 
 // resizePreviewStream re-fits the current frame to the new placement and drops
@@ -283,6 +330,10 @@ func (m *Model) resizePreviewStream() tea.Cmd {
 	}
 	m.sizePreview()
 	m.preview.streamBuf = nil
+	// The re-fit below deliberately re-transmits under the id already on screen,
+	// which does blank it for the length of that one upload. A resize already
+	// costs dropped frames, and doing it here instead would need a promotion
+	// tick to switch cells afterwards for no visible gain.
 	cur := m.preview.img
 	rows, cols, id := m.preview.rows, m.preview.cols, m.preview.id
 	cw, ch := m.cellPxW, m.cellPxH
@@ -319,17 +370,24 @@ func (m *Model) closePreviewStream() {
 }
 
 // encodeStreamFrames right-sizes each decoded frame to the rows×cols placement
-// and pre-builds its Kitty transmit sequence under id, keeping the decoded image
-// alongside so a resize can re-fit it. Run off the UI goroutine.
-func encodeStreamFrames(frames []image.Image, delays []time.Duration, cols, rows int, id uint32, cellPxW, cellPxH int) ([]streamFrame, error) {
+// and pre-builds its Kitty transmit sequence, keeping the decoded image alongside
+// so a resize can re-fit it. Run off the UI goroutine.
+//
+// ring is the preview's pool of image ids and startSeq is how many frames have
+// already been encoded for this stream, so frames keep cycling through the ring
+// even across a chunk boundary. Every frame's id is baked into its pre-built
+// sequence, so the tick never recomputes the rotation — it reads
+// streamFrame.id (see advanceStream).
+func encodeStreamFrames(frames []image.Image, delays []time.Duration, cols, rows int, ring [streamRingSlots]uint32, startSeq int, cellPxW, cellPxH int) ([]streamFrame, error) {
 	out := make([]streamFrame, len(frames))
 	for i, f := range frames {
+		id := ring[(startSeq+i)%streamRingSlots]
 		fitted := fitFrameToCells(f, cols, rows, cellPxW, cellPxH)
 		seq, err := kittyTransmitImage(id, fitted, rows, cols)
 		if err != nil {
 			return nil, err
 		}
-		out[i] = streamFrame{seq: seq, delay: delays[i], img: f}
+		out[i] = streamFrame{seq: seq, delay: delays[i], img: f, id: id}
 	}
 	return out, nil
 }

@@ -114,13 +114,22 @@ type previewState struct {
 	// resize from the image aspect and the terminal size.
 	rows, cols int
 
-	// id is the Kitty image id the current frame was transmitted under,
-	// allocated from emojiImg.allocID() and freed with kittyDelete on close. A
-	// native resize allocates a fresh id (see reencodePreview) rather than
-	// reusing this one, to avoid re-transmitting a root frame under an id that
-	// already carries animation frames at the old size — an interaction the
-	// protocol doesn't spell out.
+	// id is the Kitty image id the frame currently *on screen* was transmitted
+	// under, allocated from emojiImg.allocID() and freed with kittyDelete on
+	// close. previewImageBlock renders the placeholder cells against it, so
+	// changing it moves the image the modal displays. A native resize allocates
+	// a fresh id (see reencodePreview) rather than reusing this one, to avoid
+	// re-transmitting a root frame under an id that already carries animation
+	// frames at the old size — an interaction the protocol doesn't spell out.
 	id uint32
+
+	// streamRing is the pool of image ids streaming playback cycles through, so
+	// a frame is only ever uploaded to a slot that left the screen several
+	// frames ago — re-transmitting an id can drop its image for the whole
+	// upload, which blanks it if any cell still points there. See advanceStream
+	// for the ordering that sets the ring size. Allocated with id (ids are just
+	// counters) and all freed together.
+	streamRing [streamRingSlots]uint32
 
 	// --- streaming video playback (space on a video attachment) ---------------
 	// When streaming is set, this preview is a video played incrementally rather
@@ -141,6 +150,30 @@ type previewState struct {
 	streamEOF      bool
 	streamFetching bool
 	streamDone     bool
+	// streamSeq counts frames encoded for this stream so far, so the ring
+	// keeps cycling across chunk boundaries (see encodeStreamFrames).
+	streamSeq int
+}
+
+// streamRingSlots is how many image ids streaming playback rotates through.
+//
+// One slot per frame in flight would do if every frame's upload and its cell
+// switch reached the terminal as one step, but they don't: bubbletea flushes
+// the tea.Raw buffer and the rendered View separately, both on its own ticker
+// (see startRenderer), so a slow frame can put two uploads into a single flush
+// ahead of one cell switch. Each extra slot is one more frame of grace before
+// an id is reused, and the cost is one more image resident in the terminal, so
+// this is deliberately larger than the minimum of 2.
+const streamRingSlots = 4
+
+// allocStreamRing reserves the streaming player's image ids. Cheap enough
+// (allocID is a counter) to do for every preview rather than only videos.
+func (m *Model) allocStreamRing() [streamRingSlots]uint32 {
+	var ring [streamRingSlots]uint32
+	for i := range ring {
+		ring[i] = m.emojiImg.allocID()
+	}
+	return ring
 }
 
 // previewImageLoadedMsg carries a finished background decode. gen guards against
@@ -275,8 +308,12 @@ func (m Model) openPreviewItems(items []previewItem, start int) (tea.Model, tea.
 		m.status = "image preview unavailable: " + m.emojiImg.statusReason() + " — press o to open"
 		return m, nil
 	}
-	id := m.emojiImg.allocID()
-	m.preview = previewState{active: true, items: items, idx: start, loading: true, id: id}
+	ring := m.allocStreamRing()
+	m.preview = previewState{
+		active: true, items: items, idx: start, loading: true,
+		id: ring[0], streamRing: ring,
+	}
+	id := ring[0]
 	m.previewGen++
 	return m, m.loadPreviewItem(m.previewGen, id, items[start])
 }
@@ -662,7 +699,10 @@ func (m Model) cyclePreview(delta int) (tea.Model, tea.Cmd) {
 	m.preview.streamEOF = false
 	m.preview.streamFetching = false
 	m.preview.streamDone = false
-	id := m.emojiImg.allocID()
+	m.preview.streamSeq = 0
+	ring := m.allocStreamRing()
+	m.preview.streamRing = ring
+	id := ring[0]
 	m.preview.id = id
 	m.previewGen++ // also drops any in-flight animation tick/chunk for the old image
 	return m, tea.Batch(free, m.loadPreviewItem(m.previewGen, id, m.preview.items[m.preview.idx]))
@@ -678,13 +718,28 @@ func (m *Model) closeImagePreview() tea.Cmd {
 	return cmd
 }
 
-// freePreviewID returns the out-of-band delete for the current image id (nil if
-// none allocated yet). Does not touch other preview state.
+// freePreviewID returns the out-of-band delete for every image id this preview
+// allocated (nil if none yet).
 func (m *Model) freePreviewID() tea.Cmd {
-	if m.preview.id == 0 {
+	var seq string
+	seen := map[uint32]bool{}
+	free := func(id uint32) {
+		if id == 0 || seen[id] {
+			return
+		}
+		seen[id] = true
+		seq += kittyDelete(id)
+	}
+	free(m.preview.id)
+	// Streaming playback leaves an image resident in every ring slot it
+	// reached, not just the one on screen.
+	for _, id := range m.preview.streamRing {
+		free(id)
+	}
+	if seq == "" {
 		return nil
 	}
-	return tea.Raw(kittyDelete(m.preview.id))
+	return tea.Raw(seq)
 }
 
 // handlePreviewKey owns every keystroke while the modal is up. The configurable
