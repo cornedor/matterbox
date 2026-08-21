@@ -89,6 +89,13 @@ func (m *Model) drawDone(grid [][]cell) {
 		p.wrap("Not signed in — run `matterbox login` when you're ready.", labelC)
 	}
 	p.blank()
+	if m.cfg.TelemetryEnabled() {
+		p.wrap("Anonymous telemetry is on — thank you. Turn it off any time with "+
+			"`telemetry.enabled: false` in your config.", labelC)
+	} else {
+		p.wrap("Telemetry is off. Nothing is reported.", labelC)
+	}
+	p.blank()
 	p.wrap("Settings saved. Launch Matterbox any time by running `matterbox`.", labelC)
 	p.blank()
 
@@ -102,11 +109,19 @@ func (m *Model) drawDone(grid [][]cell) {
 	m.drawPanel(grid, p, panelW)
 }
 
+// wizardSteps is how many steps the headings count off (stepSub).
+const wizardSteps = 4
+
+// stepSub is the sub-heading for step n ("Step 2 of 4 · Authentication").
+func stepSub(n int, name string) string {
+	return fmt.Sprintf("Step %d of %d · %s", n, wizardSteps, name)
+}
+
 // buildStep fills p with the rows for the active wizard step.
 func (m *Model) buildStep(p *panelBuilder) {
 	switch m.step {
 	case stepServer:
-		p.heading("✦ Welcome to Matterbox", "Step 1 of 3 · Server")
+		p.heading("✦ Welcome to Matterbox", stepSub(1, "Server"))
 		p.blank()
 		p.wrap("A Mattermost client for your terminal. Let's connect to your server — it only takes a minute.", labelC)
 		p.blank()
@@ -119,7 +134,7 @@ func (m *Model) buildStep(p *panelBuilder) {
 		p.text("enter  continue        esc  quit", dimC)
 
 	case stepAuth:
-		p.heading("✦ Sign in", "Step 2 of 3 · Authentication")
+		p.heading("✦ Sign in", stepSub(2, "Authentication"))
 		p.blank()
 		p.text("Username or email", dimC)
 		p.field(&m.user, m.authFocus == authFocusUser && !m.validating, "you@example.com")
@@ -147,7 +162,7 @@ func (m *Model) buildStep(p *panelBuilder) {
 		p.text("↑↓ move    enter  select    esc  back", dimC)
 
 	case stepAdvanced:
-		p.heading("✦ Preferences", "Step 3 of 3 · Advanced")
+		p.heading("✦ Preferences", stepSub(3, "Advanced"))
 		p.blank()
 		p.add(m.advRow("Mark read after", fmt.Sprintf("%ds", m.adv.markRead), accentCyan, 0))
 		p.add(m.advRow("SQL tab", onoff(m.adv.sqlTab), chipColor(m.adv.sqlTab), 1))
@@ -161,7 +176,31 @@ func (m *Model) buildStep(p *panelBuilder) {
 		p.blank()
 		m.addCodePreview(p)
 		p.blank()
-		p.text("↑↓ move   ←→/space change   enter  finish   esc  back", dimC)
+		p.text("↑↓ move   ←→/space change   enter  continue   esc  back", dimC)
+
+	case stepTelemetry:
+		p.heading("✦ Help improve Matterbox", stepSub(4, "Telemetry"))
+		p.blank()
+		p.wrap("May we collect anonymous usage telemetry and error reports?", valueC)
+		p.blank()
+		p.wrap("It is anonymous: a random id, never your name, your server, or "+
+			"anything anyone types — just which features get used and what "+
+			"breaks.", labelC)
+		p.blank()
+		p.text("What we collect, and how to turn it off later:", dimC)
+		p.textU("  "+telemetryDocsURL, telemetryDocsURL, accentCyan)
+		// No blank before the buttons: the step has to keep its two answers AND
+		// the key hint inside an 80x24 — and a row shorter than that — panel,
+		// which drawPanel clips from the bottom.
+		p.button("Yes, share anonymous telemetry", m.telemetryFocus == telemetryFocusYes)
+		p.button("No thanks", m.telemetryFocus == telemetryFocusNo)
+		// Same channel the other steps use for a failed write: without this the
+		// answer would appear to be ignored when the config can't be saved.
+		if m.authMsg != "" {
+			p.wrap(m.authMsg, badC)
+		}
+		p.blank()
+		p.text("↑↓ move   enter  choose   esc  back", dimC)
 	}
 }
 

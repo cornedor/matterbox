@@ -21,6 +21,8 @@ func newWelcomeCmd() *cobra.Command {
 		Long: "Run the interactive setup wizard: a vaporwave intro, then a short form to\n" +
 			"set your Mattermost server URL, sign in, and pick a few preferences\n" +
 			"(mark-read delay, SQL tab, mouse support, animations, ctrl+arrow nav).\n" +
+			"It also asks whether anonymous telemetry may be collected — off unless you\n" +
+			"say yes, and asked only here, never while you're using the client.\n" +
 			"It writes ~/.config/matterbox/config.yaml and the saved login token.",
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {

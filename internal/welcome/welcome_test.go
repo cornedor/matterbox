@@ -64,7 +64,11 @@ func TestWizardHappyPathSavesConfig(t *testing.T) {
 	if !m.adv.sqlTab {
 		t.Fatal("SQL tab did not toggle on")
 	}
-	m.handleKey(key(tea.KeyEnter)) // finish
+	m.handleKey(key(tea.KeyEnter)) // preferences done -> telemetry
+	if m.step != stepTelemetry {
+		t.Fatalf("after preferences: step = %d, want stepTelemetry", m.step)
+	}
+	m.handleKey(key(tea.KeyEnter)) // decline is focused -> finish
 	if m.phase != phaseDone {
 		t.Fatalf("after finish: phase = %d, want phaseDone", m.phase)
 	}
@@ -392,4 +396,141 @@ func TestNormalizeServer(t *testing.T) {
 		}
 	}
 	// Token extraction lives in internal/mmauth now (tested there).
+}
+
+// TestWizardAsksTelemetryOptIn walks from the preferences step into the
+// telemetry question and answers yes: the consent and a freshly minted
+// anonymous id must reach disk.
+func TestWizardAsksTelemetryOptIn(t *testing.T) {
+	m := newWizard(t)
+	m.step = stepAdvanced
+
+	m.handleKey(key(tea.KeyEnter)) // finish preferences
+	if m.step != stepTelemetry {
+		t.Fatalf("after preferences: step = %d, want stepTelemetry", m.step)
+	}
+	if m.phase == phaseDone {
+		t.Fatal("preferences finished the wizard instead of asking about telemetry")
+	}
+	// Declining is focused first, so opting in takes a deliberate move.
+	if m.telemetryFocus != telemetryFocusNo {
+		t.Fatalf("telemetry step opened with focus %d, want the decline button", m.telemetryFocus)
+	}
+	m.handleKey(key(tea.KeyUp))
+	if m.telemetryFocus != telemetryFocusYes {
+		t.Fatalf("up from decline: focus = %d, want the accept button", m.telemetryFocus)
+	}
+	m.handleKey(key(tea.KeyEnter))
+	if m.phase != phaseDone {
+		t.Fatalf("after answering telemetry: phase = %d, want phaseDone", m.phase)
+	}
+
+	got, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.TelemetryEnabled() {
+		t.Errorf("persisted telemetry.enabled = %v, want true", got.Telemetry.Enabled)
+	}
+	if len(got.Telemetry.AnonymousID) != 32 {
+		t.Errorf("persisted anonymous_id = %q, want 32 hex chars", got.Telemetry.AnonymousID)
+	}
+}
+
+// TestTelemetryDeclineIsRecorded pins that "no thanks" writes an explicit
+// false, so a declined config reads as answered rather than untouched, and
+// mints no identifier.
+func TestTelemetryDeclineIsRecorded(t *testing.T) {
+	m := newWizard(t)
+	m.step = stepTelemetry
+
+	m.handleKey(key(tea.KeyEnter)) // decline is focused
+	if m.phase != phaseDone {
+		t.Fatalf("after declining: phase = %d, want phaseDone", m.phase)
+	}
+
+	got, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Telemetry.Enabled == nil {
+		t.Fatal("declining left telemetry.enabled absent, not an explicit false")
+	}
+	if got.TelemetryEnabled() {
+		t.Error("declining enabled telemetry")
+	}
+	if got.Telemetry.AnonymousID != "" {
+		t.Errorf("declining minted an anonymous id (%q)", got.Telemetry.AnonymousID)
+	}
+}
+
+// TestTelemetryOptOutClearsAnonymousID: turning consent off in a re-run must
+// drop the identifier a previous opt-in left behind.
+func TestTelemetryOptOutClearsAnonymousID(t *testing.T) {
+	m := newWizard(t)
+	m.cfg.Telemetry.AnonymousID = "deadbeefdeadbeefdeadbeefdeadbeef"
+	m.applyTelemetry(false)
+	if m.cfg.Telemetry.AnonymousID != "" {
+		t.Errorf("anonymous id survived opting out: %q", m.cfg.Telemetry.AnonymousID)
+	}
+}
+
+// TestTelemetryFocusSeedsFromConfig: a re-run opens on the answer already in
+// the config, while an untouched config opens on decline.
+func TestTelemetryFocusSeedsFromConfig(t *testing.T) {
+	t.Setenv(config.DirEnv, t.TempDir())
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := New(cfg, false); m.telemetryFocus != telemetryFocusNo {
+		t.Errorf("unanswered: focus = %d, want the decline button", m.telemetryFocus)
+	}
+	yes := true
+	cfg.Telemetry.Enabled = &yes
+	if m := New(cfg, false); m.telemetryFocus != telemetryFocusYes {
+		t.Errorf("already opted in: focus = %d, want the accept button", m.telemetryFocus)
+	}
+}
+
+// TestTelemetryStepRendersConsentInfo checks the question carries what it has
+// to: that the data is anonymous, and the docs link.
+func TestTelemetryStepRendersConsentInfo(t *testing.T) {
+	m := newWizard(t)
+	m.t = 7 // settled scene
+	m.step = stepTelemetry
+	text := ansiSGR.ReplaceAllString(m.View().Content, "")
+	for _, want := range []string{"anonymous", telemetryDocsURL, "Yes, share anonymous telemetry", "No thanks", "Step 4 of 4"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("telemetry step missing %q in render", want)
+		}
+	}
+}
+
+// TestStepCountCountsEveryStep: the headings must count the telemetry step, so
+// a user is never told "of 3" and then handed a fourth screen.
+func TestStepCountCountsEveryStep(t *testing.T) {
+	if got := stepSub(1, "Server"); got != "Step 1 of 4 · Server" {
+		t.Errorf("heading = %q, want a 4-step count", got)
+	}
+}
+
+// TestTelemetryStepFitsSmallTerminal: drawPanel clips a too-tall panel from the
+// bottom, so growing the consent copy could quietly cut the answers off the
+// screen. Both buttons and the key hint must survive a small terminal.
+func TestTelemetryStepFitsSmallTerminal(t *testing.T) {
+	for _, sz := range [][2]int{{80, 24}, {60, 20}} {
+		m := newWizard(t)
+		m.t = 7
+		m.step = stepTelemetry
+		m.width, m.height = sz[0], sz[1]
+		m.rend.Resize(sz[0], sz[1])
+		m.sceneValid = false
+		text := ansiSGR.ReplaceAllString(m.View().Content, "")
+		for _, want := range []string{"Yes, share anonymous telemetry", "No thanks", "esc  back"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%dx%d: telemetry step clipped %q off the panel", sz[0], sz[1], want)
+			}
+		}
+	}
 }

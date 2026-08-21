@@ -11,6 +11,7 @@ import (
 	"matterbox/internal/config"
 	"matterbox/internal/mmauth"
 	"matterbox/internal/opener"
+	"matterbox/internal/telemetry"
 )
 
 // handleKey routes a keypress by phase. ctrl+c always quits.
@@ -53,6 +54,8 @@ func (m *Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.handleAuthKey(msg)
 		case stepAdvanced:
 			return m.handleAdvancedKey(msg)
+		case stepTelemetry:
+			return m.handleTelemetryKey(msg)
 		}
 	}
 	return m, nil
@@ -328,8 +331,8 @@ func (m *Model) handleAdvancedKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.authMsg = "Couldn't save config: " + oneLine(err.Error())
 			return m, nil
 		}
-		m.closeCapture() // setup's done; don't leave the socket listening
-		m.phase = phaseDone
+		m.closeCapture() // preferences saved; don't leave the socket listening
+		m.step = stepTelemetry
 		return m, nil
 	}
 	// Type digits to set the mark-read delay directly when it's focused.
@@ -337,6 +340,47 @@ func (m *Model) handleAdvancedKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.adv.markRead = clampDelay(m.adv.markRead*10 + int(msg.Text[0]-'0'))
 	}
 	return m, nil
+}
+
+// handleTelemetryKey answers the telemetry question: move between the two
+// buttons, enter to pick one, esc to step back into the preferences. Both
+// answers are recorded — declining writes `telemetry.enabled: false` rather
+// than nothing, so the wizard knows not to ask again.
+func (m *Model) handleTelemetryKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.step = stepAdvanced
+		return m, nil
+	case "up", "shift+tab":
+		m.telemetryFocus = (m.telemetryFocus - 1 + telemetryFieldCount) % telemetryFieldCount
+		return m, nil
+	case "down", "tab":
+		m.telemetryFocus = (m.telemetryFocus + 1) % telemetryFieldCount
+		return m, nil
+	case "enter":
+		m.applyTelemetry(m.telemetryFocus == telemetryFocusYes)
+		if err := config.Save(m.cfg); err != nil {
+			m.authMsg = "Couldn't save config: " + oneLine(err.Error())
+			return m, nil
+		}
+		m.phase = phaseDone
+		return m, nil
+	}
+	return m, nil
+}
+
+// applyTelemetry records the answer in the config. Opting in mints the random
+// id the reports are grouped by (and only then — a declining user gets no
+// identifier at all); opting out clears any id a previous opt-in left behind,
+// so turning telemetry off doesn't quietly keep the user tagged.
+func (m *Model) applyTelemetry(consent bool) {
+	m.cfg.Telemetry.Enabled = &consent
+	switch {
+	case !consent:
+		m.cfg.Telemetry.AnonymousID = ""
+	case m.cfg.Telemetry.AnonymousID == "":
+		m.cfg.Telemetry.AnonymousID = telemetry.NewAnonymousID()
+	}
 }
 
 // adjustAdvanced applies a left/right (or space) change to the focused field:

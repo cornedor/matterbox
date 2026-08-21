@@ -23,6 +23,7 @@ import (
 	"matterbox/internal/auth"
 	"matterbox/internal/config"
 	"matterbox/internal/mm"
+	"matterbox/internal/telemetry"
 	"matterbox/internal/ui"
 )
 
@@ -129,6 +130,12 @@ func runTUI() error {
 	if err := ui.CheckKeybindings(cfg); err != nil {
 		return fmt.Errorf("keybindings: %w", err)
 	}
+	// Anonymous telemetry, if the user opted in: a no-op otherwise, so there is
+	// nothing to branch on here. Close flushes on the way out — after the
+	// program has released the terminal, so a slow flush can't stall the exit
+	// mid-teardown.
+	telemetry.Start(cfg)
+	defer telemetry.Close()
 	// v2 drops tea.WithAltScreen(); each tea.View opts in via
 	// v.AltScreen = true (set in Model.View). v2 always requests the
 	// kitty "disambiguate escape codes" flag, which makes shift+enter

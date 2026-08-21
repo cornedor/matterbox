@@ -68,6 +68,11 @@ matterbox welcome
 
 Running `matterbox` with no saved login starts it for you.
 
+The wizard asks whether anonymous usage telemetry and error reports may be collected.
+It is off unless you say yes, and it is only ever asked here — using the client never
+prompts you. Re-run the wizard to change your answer, or set
+`telemetry.enabled: false`. See <https://matterbox.work/docs/telemetry>.
+
 ### Manual configuration
 
 Edit `~/.config/matterbox/config.yaml` directly for full control. At minimum:
