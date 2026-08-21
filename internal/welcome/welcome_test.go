@@ -559,6 +559,77 @@ func TestTelemetryStepOpensOnTheLink(t *testing.T) {
 	}
 }
 
+// linkRowCells returns the cells of the panel row holding the docs link, found
+// by cell index rather than byte offset — the row contains multi-byte glyphs
+// (the panel border, the focus marker, the scene behind it), so a byte index
+// into the joined runes points at the wrong cell.
+func linkRowCells(t *testing.T, m *Model) []cell {
+	t.Helper()
+	grid := m.sceneFrame()
+	m.drawWizard(grid)
+	for y := range grid {
+		runes := make([]rune, 0, len(grid[y]))
+		for x := range grid[y] {
+			runes = append(runes, grid[y][x].R)
+		}
+		idx := strings.Index(string(runes), telemetryDocsURL)
+		if idx < 0 {
+			continue
+		}
+		start := len([]rune(string(runes)[:idx]))
+		// From the two marker cells through the end of the URL.
+		return grid[y][start-2 : start+len([]rune(telemetryDocsURL))]
+	}
+	t.Fatal("no panel row holds the docs link")
+	return nil
+}
+
+// TestLinkRowKeepsThePanelBackground: every cell of the link row must carry a
+// background. The row drawers here read-modify-write each cell because the
+// panel's translucent fill lives in Bg — assigning a fresh cell{} zeroes HasBg
+// and punches a hole straight through the panel to the animated scene behind it,
+// which showed up as a bright box beside the focus marker. Cheap to reintroduce
+// by reaching for setCell, so it is pinned.
+func TestLinkRowKeepsThePanelBackground(t *testing.T) {
+	for _, focused := range []int{telemetryFocusLink, telemetryFocusYes} {
+		m := newWizard(t)
+		m.t = 7
+		m.step = stepTelemetry
+		m.telemetryFocus = focused
+		m.sceneValid = false
+		for i, c := range linkRowCells(t, m) {
+			if !c.HasBg {
+				t.Errorf("focus %d: link-row cell %d (%q) has no background — "+
+					"the panel is see-through there", focused, i, c.R)
+			}
+		}
+	}
+}
+
+// TestFocusedLinkIsVisiblySelected: the link sits above two buttons that fill
+// when focused, so a bare "›" on it does not read as selected next to them. It
+// takes the same filled bar, and gives it up when focus moves to an answer.
+func TestFocusedLinkIsVisiblySelected(t *testing.T) {
+	m := newWizard(t)
+	m.t = 7
+	m.step = stepTelemetry
+	m.sceneValid = false
+	for i, c := range linkRowCells(t, m) {
+		if c.Bg != cursorBg || c.Fg != cursorFg {
+			t.Fatalf("focused link cell %d (%q) is not drawn as selected: fg=%v bg=%v",
+				i, c.R, c.Fg, c.Bg)
+		}
+	}
+
+	m.telemetryFocus = telemetryFocusYes
+	m.sceneValid = false
+	for i, c := range linkRowCells(t, m) {
+		if c.Bg == cursorBg {
+			t.Fatalf("unfocused link cell %d (%q) still carries the selected bar", i, c.R)
+		}
+	}
+}
+
 // TestTelemetryEnterOpensTheDocs: enter is the key a hand arrives on this step
 // already holding, having finished the three before it that way. On the focus
 // the step opens with it must open the documentation and leave the question

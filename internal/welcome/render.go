@@ -379,22 +379,41 @@ func drawButton(grid [][]cell, x, y, w int, label string, focused bool) {
 	}
 }
 
-// drawLinkRow renders the docs link as a focusable row: the same "› " marker the
-// other focusable rows use, then the URL underlined in the accent colour. The
-// 2-cell prefix is kept in both states so the link doesn't shift when focus
-// moves onto or off it.
+// drawLinkRow renders the docs link as a focusable row: the "› " marker the
+// other focusable rows use, then the underlined URL. Focused, it gets the same
+// filled bar as a focused button, so "selected" looks identical on the link and
+// on the two answers under it — a marker alone doesn't read as selected next to
+// controls that highlight. The 2-cell prefix is kept in both states so the link
+// doesn't shift when focus moves onto or off it.
 func drawLinkRow(grid [][]cell, x, y, w int, url string, focused bool) {
 	if w <= 0 {
 		return
 	}
-	marker, fg := "  ", blend(accentCyan, labelC, 0.4)
+	marker := "  "
 	if focused {
-		marker, fg = "› ", accentCyan
+		marker = "› "
 	}
-	for i, r := range []rune(clip(marker, w)) {
-		setCell(grid, x+i, y, cell{R: r, Fg: accentCyan})
+	runes := []rune(clip(marker+url, w))
+	mlen := len([]rune(marker))
+	for i, r := range runes {
+		cx := x + i
+		if !inBounds(grid, cx, y) {
+			continue
+		}
+		// Read-modify-write rather than replacing the cell: the panel's fill
+		// lives in Bg, and a fresh cell{} zeroes HasBg, punching a hole straight
+		// through the panel to the animated scene behind it. That is what
+		// drawTextUnderlined is careful about too.
+		c := grid[y][cx]
+		c.R = r
+		c.Fg = accentCyan
+		// Underline the URL, not the marker: it is what you would click.
+		c.Underline = i >= mlen
+		if focused {
+			c.Fg, c.Bg, c.HasBg = cursorFg, cursorBg, true
+		}
+		grid[y][cx] = c
 	}
-	drawTextUnderlined(grid, x+len([]rune(marker)), y, clip(url, w-len([]rune(marker))), url, fg)
 }
 
 // drawTextUnderlined writes s in fg over the existing background, underlining the
