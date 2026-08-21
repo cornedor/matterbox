@@ -32,6 +32,11 @@ has two knobs. Neither grants consent:
 | `MATTERBOX_POSTHOG_KEY` | run time | Overrides the compiled-in key for one run, for pointing a build at your own project. |
 | `MATTERBOX_POSTHOG_HOST` | run time | Overrides the ingest host (default `https://eu.i.posthog.com`). |
 
+To see where all of that landed on your own machine, ask the binary:
+`matterbox --version` prints a `telemetry:` line reporting whether it would
+send anything — and if not, whether that is because nobody has answered the
+question, because the answer was no, or because the build carries no key.
+
 ## The setup wizard, which asks before it can send
 
 The wizard asks the telemetry question on its last screen, so everything
@@ -150,13 +155,15 @@ failure inside a retry loop cannot flood.
 
 Being complete means naming the data we do not choose to send.
 
-Events are delivered to PostHog Cloud EU over HTTPS, so PostHog sees the IP
-address the request came from and stamps each event with a receive time. Your
-IP is not something matterbox puts in an event, but it is visible to PostHog
-as the sender, so if that matters to you, leave telemetry off. Location lookup
-*is* switched off: every event carries `$geoip_disable`, which is the Go
-SDK's default and is not overridden here, so no country, region or city is
-derived from that address.
+Events are delivered to PostHog Cloud EU over HTTPS, so PostHog's servers
+see the connecting IP address in transit, as any service you talk to does.
+It goes no further: the project is configured to discard client IPs, so the
+address is never stored with an event — transformations such as bot
+detection may use it, then it is thrown away. Your IP is not something
+matterbox puts in an event either. Location lookup is off regardless:
+every event carries `$geoip_disable`, which is the Go SDK's default and
+is not overridden here, so no country, region or city is derived from
+that address. PostHog does stamp each event with a receive time.
 
 The SDK also stamps four properties of its own on every event, before
 matterbox sees the payload and with no setting to turn them off:

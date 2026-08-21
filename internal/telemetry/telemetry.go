@@ -143,7 +143,7 @@ func StartMode(cfg *config.Config, mode Mode) {
 	}
 	// Empty only when a build deliberately blanked it (a fork pointing
 	// somewhere else, or a test): there is nowhere to send, so do nothing.
-	key := envOr(KeyEnv, projectKey)
+	key := resolvedKey()
 	if key == "" {
 		DropPending()
 		return
@@ -184,6 +184,18 @@ func StartMode(cfg *config.Config, mode Mode) {
 		go startSnapshots(snapStop)
 	}
 }
+
+// resolvedKey is the project key this process would report to: the run-time
+// override if one is set, otherwise whatever was compiled in. Empty means there
+// is nowhere to send, whatever the config says.
+func resolvedKey() string { return envOr(KeyEnv, projectKey) }
+
+// HasProjectKey reports whether this build could report anywhere at all, which
+// is a different question from whether it is allowed to. False only for a binary
+// whose key was deliberately blanked (`make POSTHOG_KEY=`) or overridden to
+// empty — and since the key is compiled in, asking the binary is the only way to
+// confirm that worked, which is why `matterbox --version` says.
+func HasProjectKey() bool { return resolvedKey() != "" }
 
 // Enabled reports whether telemetry is actually running: consent given, a
 // project key present, and the client open. Use it to skip work that only

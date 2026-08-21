@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"matterbox/internal/libav"
+	"matterbox/internal/telemetry"
 )
 
 // version is the release name, stamped at link time by the Makefile:
@@ -98,21 +99,57 @@ func versionBlock() string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "matterbox %s\n", versionName(s))
 	if s.time != "" {
-		fmt.Fprintf(&b, "built:  %s\n", s.time)
+		fmt.Fprintf(&b, "built:     %s\n", s.time)
 	}
 	tags := s.tags
 	if tags == "" {
 		tags = "(none)"
 	}
-	fmt.Fprintf(&b, "tags:   %s\n", tags)
+	fmt.Fprintf(&b, "tags:      %s\n", tags)
 	// A `video` build links the system's ffmpeg, whose license depends on how
 	// that ffmpeg was configured — so two binaries from the same commit can
 	// differ on whether they may be handed to anyone. Only the binary itself
 	// knows, so it says. Omitted entirely when no libav is linked, which is
 	// every release build.
 	if sum := libav.Linked().Summary(); sum != "" {
-		fmt.Fprintf(&b, "ffmpeg: %s\n", sum)
+		fmt.Fprintf(&b, "ffmpeg:    %s\n", sum)
 	}
-	fmt.Fprintf(&b, "go:     %s %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
+	fmt.Fprintf(&b, "go:        %s %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
+	fmt.Fprintf(&b, "telemetry: %s\n", telemetryState())
 	return b.String()
+}
+
+// telemetryState is the "telemetry:" line: whether this binary would report
+// anything, and why not when it wouldn't.
+//
+// Worth printing next to the build facts because it is one, partly: three things
+// have to line up — a project key compiled into the binary, a config on disk, and
+// an explicit yes in it — and no two of them live in the same place. "Is this
+// build sending anything?" is otherwise a question you answer by reading source,
+// which is the wrong answer to give someone asking about their own machine.
+//
+// Reads the config only if one already exists. config.Load writes a default file
+// when there isn't one, and printing a version must not leave a file behind —
+// the same reason loadConfigIfPresent exists, which this uses.
+func telemetryState() string {
+	state, why := "off", "never asked"
+	if cfg := loadConfigIfPresent(); cfg != nil && cfg.Telemetry.Enabled != nil {
+		why = ""
+		if cfg.TelemetryEnabled() {
+			state = "on"
+		}
+	}
+	// A build whose key was blanked (`make POSTHOG_KEY=`) reports nowhere
+	// whatever the config says, and since the key is compiled in, asking the
+	// binary is the only way to confirm that worked.
+	if !telemetry.HasProjectKey() {
+		if why != "" {
+			why += ", "
+		}
+		why += "no project key in this build"
+	}
+	if why == "" {
+		return state
+	}
+	return state + " (" + why + ")"
 }

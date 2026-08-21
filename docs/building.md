@@ -17,7 +17,8 @@ To unlock video, install your distribution's FFmpeg development headers
 `make build TAGS=…`, or `TAGS=` for none.
 
 `matterbox --version` asks the linked libraries what they are, and prints the build,
-its optional features, and the platform. Worth pasting into a bug report.
+its optional features, the platform, and whether this binary would report any
+telemetry. Worth pasting into a bug report.
 
 ## Distributing a binary you built
 
