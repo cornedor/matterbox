@@ -31,6 +31,7 @@ import (
 	"matterbox/internal/opener"
 	"matterbox/internal/semindex"
 	"matterbox/internal/store"
+	"matterbox/internal/telemetry"
 	"matterbox/internal/viewport"
 )
 
@@ -132,6 +133,12 @@ type Model struct {
 	customStatuses    map[string]model.CustomStatus
 	showCustomStatus  bool
 	statusPollStarted bool
+
+	// launchEnv holds the app_started properties between New() (which has the
+	// config) and the first WindowSizeMsg (which has the terminal size, the most
+	// useful environment fact a TUI has). Nil once sent, and nil for the whole
+	// session when telemetry is off. See telemetryapp.go.
+	launchEnv *telemetry.Env
 
 	// mouseEnabled mirrors config.Mouse: when true, View requests mouse
 	// reporting — the wheel scrolls the focused message/thread pane and the
@@ -1270,6 +1277,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		showCustomStatus:   showCustomStatus,
 		showDateSeparators: showDateSeparators,
 		mouseEnabled:       mouseEnabled,
+		launchEnv:          newLaunchEnv(cfg, mouseEnabled),
 		attachOnDrop:       attachOnDrop,
 		focus:              focusMessages,
 		// Start the effects mid-sweep, so the first frame drawn for a post that is
@@ -1897,12 +1905,56 @@ func (m *Model) flashStatus(text string) tea.Cmd {
 }
 
 func (m Model) sendMessage(channelID, rootID, text string, fileIDs []string) tea.Cmd {
+	// The surface is read here, in the Update goroutine, rather than inside the
+	// closure: by the time the send returns the thread may have been closed.
+	surface := "composer"
+	if m.threadOpen {
+		surface = "thread"
+	}
 	return func() tea.Msg {
+		started := time.Now()
 		p, err := m.client.Send(m.ctx, channelID, rootID, text, fileIDs)
 		if err != nil {
+			telemetry.Friction("send_failed")
+			// A send that fails is the one failure the user is unambiguously
+			// waiting on, so it is also the most useful reliability signal
+			// there is: the error text is scrubbed on the way out.
+			telemetry.OperationFailed(telemetry.Failure{
+				Where:       "api.posts",
+				Class:       telemetry.ClassifyError(err),
+				UserVisible: true,
+				Err:         err,
+			})
 			return errMsg{err}
 		}
+		// Anonymous telemetry, if the user opted in: the shape of the message,
+		// never a word of it. See messageShape.
+		telemetry.MessageSent(messageShape(text, surface, rootID, len(fileIDs),
+			time.Since(started)))
 		return postSentMsg{channelID: channelID, post: p}
+	}
+}
+
+// messageShape describes a sent message for telemetry: how long it was, how
+// many lines and mentions it had, whether it carried a code block or a link.
+// None of the text goes anywhere — the length is bucketed and everything else
+// is a count or a flag, because what people write is theirs and how they
+// compose is what tells us where composer effort belongs.
+//
+// is_nested_reply and has_effect are deliberately absent: both live in the
+// invisible payload channel appended to the body, and reading that here would
+// mean decoding the message rather than measuring it.
+func messageShape(text, surface, rootID string, files int, took time.Duration) telemetry.Sent {
+	return telemetry.Sent{
+		Surface:      surface,
+		IsReply:      rootID != "",
+		Length:       len([]rune(text)),
+		Lines:        strings.Count(text, "\n") + 1,
+		Attachments:  files,
+		Mentions:     strings.Count(text, "@"),
+		HasCodeBlock: strings.Contains(text, "```"),
+		HasLink:      strings.Contains(text, "http://") || strings.Contains(text, "https://"),
+		SendMs:       took.Milliseconds(),
 	}
 }
 

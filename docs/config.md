@@ -408,7 +408,9 @@ as-is. What a token needs:
 Anonymous usage telemetry and error reports. **Off unless you turned it on.**
 `matterbox welcome` asks; using the client never does, so upgrading into a build
 that has telemetry changes nothing until you run the wizard. What is collected,
-and how to stop it, is documented at <https://matterbox.work/docs/telemetry>.
+and how to stop it, is documented in [telemetry.md](telemetry.md) — the complete
+event catalogue, generated from the code so it cannot fall out of step — and at
+<https://matterbox.work/docs/telemetry>.
 
 ```yaml
 telemetry:

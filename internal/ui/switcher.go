@@ -9,6 +9,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/telemetry"
 )
 
 // switcherWidth is the rendered outer width of the popup. Falls back
@@ -106,6 +108,7 @@ func (m Model) handleSwitcherKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			cmd := *m.switcherCmdPending
 			arg := m.switcher.Value()
 			m.closeSwitcher()
+			telemetry.Palette(cmd.tid)
 			return m, cmd.run(&m, arg)
 		}
 		if m.inCommandMode() {
@@ -116,6 +119,7 @@ func (m Model) handleSwitcherKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			sel := results[m.switcherIdx]
 			if sel.argPrompt == "" {
 				m.closeSwitcher()
+				telemetry.Palette(sel.tid)
 				return m, sel.run(&m, "")
 			}
 			m.enterCommandArgMode(sel)

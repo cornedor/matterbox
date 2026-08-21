@@ -14,6 +14,7 @@ import (
 	"github.com/mattermost/mattermost/server/public/model"
 
 	"matterbox/internal/store"
+	"matterbox/internal/telemetry"
 )
 
 // Update is the bubbletea entry point. It runs the real handler, then —
@@ -23,6 +24,14 @@ import (
 // resolveUnknownSenders). The fetch is deduplicated at the client, so
 // firing it after every event is cheap.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Report a panic in any handler before it unwinds, then let it carry on:
+	// bubbletea catches it above us, restores the terminal and prints the
+	// trace exactly as it did before. Guarded rather than unconditional
+	// because this is the per-event path — an opted-out session pays one
+	// atomic load and never registers the defer.
+	if telemetry.Enabled() {
+		defer telemetry.Crash("ui.other")
+	}
 	noteActivity(msg)
 	next, cmd := m.update(msg)
 	nm, ok := next.(Model)
@@ -167,6 +176,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		// The first size message is the earliest point the launch event can
+		// carry a terminal size, and the earliest point guaranteed to happen at
+		// all. A no-op on every later resize, and when telemetry is off.
+		m.recordLaunch()
 		m.filter.SetWidth(channelsWidth - 4)
 		// A resize *drag* fires a storm of these. Re-laying-out the panes is
 		// cheap, so do it every frame — borders/scrollbars stay correct and
@@ -1988,6 +2001,11 @@ func (m Model) handlePaste(msg tea.PasteMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// Anonymous telemetry, if the user opted in: attribute this press to the
+	// layer that owns it before anything below changes the state the
+	// attribution is read from. A no-op otherwise. See telemetrykeys.go for why
+	// this is the only place keyboard use is recorded.
+	m.recordKey(msg)
 	// A keypress ends mouse free-scroll: re-anchor the selection to the post the
 	// wheel left on screen (so the key acts on a visible message and the view
 	// doesn't jump back to the pre-scroll selection), then resume normal

@@ -1,23 +1,28 @@
 // Package telemetry reports anonymous usage data and error reports to PostHog
 // for the users who asked for it — and does nothing at all for everyone else.
-// Consent is a single config key (`telemetry.enabled`, off unless the first-run
-// wizard was answered "yes"), and every function here is a no-op without it, so
-// callers never have to check first: an opted-out user runs the same code paths
-// with no client, no goroutines and no network.
+// Consent is a single config key (`telemetry.enabled`), and every function here
+// is a no-op without it, so callers never have to check first: an opted-out
+// user runs the same code paths with no client, no goroutines, no counters and
+// no network.
 //
-// Nothing in matterbox captures an event yet — this is the transport, and what
-// travels over it gets added deliberately, one call at a time. Two properties
-// have to hold for whatever is added:
+// What may be sent is not up to the call sites. Every event and every property
+// is declared in catalogue_events.go, and Capture drops anything undeclared or
+// out-of-range before it is queued — so the published list in
+// `docs/telemetry.md`, which is generated from those same declarations, is the
+// whole truth rather than a description of it. See catalogue.go for why that
+// inversion is the point.
+//
+// Two invariants hold over everything in this package:
 //
 //   - It stays anonymous. Events are attributed to a random id minted on
 //     opt-in (config.TelemetryConfig.AnonymousID) that is unrelated to the
-//     Mattermost account, the server, the hostname or the machine. Never put
-//     message content, channel or team names, usernames, server URLs or file
-//     paths in an event — Error in particular hands PostHog an error string,
-//     so its callers must pass errors that don't quote user data.
-//   - It is documented on https://matterbox.work/docs/telemetry, which the
-//     wizard links to when it asks. The page is the contract; an event that
-//     isn't on it shouldn't ship.
+//     Mattermost account, the server, the hostname or the machine. Message
+//     content, channel and team names, usernames, server URLs and file paths
+//     have no representation in the catalogue: numbers about user content are
+//     bucketed (buckets.go) and error text is scrubbed (scrub.go).
+//   - It is cheap when off and cheap when on. The disabled path is a single
+//     atomic load. The enabled path aggregates high-frequency signals in
+//     memory (counters.go) rather than sending an event per keystroke.
 package telemetry
 
 import (
@@ -26,6 +31,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/posthog/posthog-go"
@@ -33,15 +39,24 @@ import (
 	"matterbox/internal/config"
 )
 
-// projectKey is the PostHog project API key, baked into release builds:
+// projectKey is the PostHog project API key. It is compiled in rather than
+// passed at build time because building from source is the normal way to get
+// matterbox — the optional media features link against libav, whose licence
+// makes distributing binaries awkward — so a key supplied only by the release
+// build would be a key almost nobody has. Telemetry that only works for people
+// who didn't build it themselves would answer questions about a population we
+// don't have.
 //
-//	go build -ldflags "-X matterbox/internal/telemetry.projectKey=phc_..."
+// Shipping it in the client is how PostHog is designed to be used: it is
+// write-only, so it can queue events and read nothing back. It is not a secret
+// and does not need protecting.
 //
-// It is a write-only ingest key — shipping it inside the client is how PostHog
-// is designed to be used — but a plain `make` build leaves it empty, which
-// keeps telemetry off for anyone building from source no matter what their
-// config says, since there is nowhere to send to.
-var projectKey = ""
+// It is therefore *not* the consent gate. `telemetry.enabled` is, and it is the
+// only one: with this key present and consent absent, nothing is sent. Override
+// the destination for local work with MATTERBOX_POSTHOG_KEY, or at build time:
+//
+//	make POSTHOG_KEY=phc_your_own_project
+var projectKey = "phc_CfbVPKfDJpxS3PuiPtuTGYJCxrAK2op6anveocxwaeNR"
 
 // endpoint is the PostHog ingest host. EU cloud, since that is where the
 // project lives; PostHog's own default is the US one.
@@ -55,9 +70,46 @@ const (
 	HostEnv = "MATTERBOX_POSTHOG_HOST"
 )
 
-// shutdownTimeout bounds the flush in Close: matterbox exits when the user
-// quits, and a slow network is not a reason to hold the terminal hostage.
-const shutdownTimeout = 3 * time.Second
+// Flush budgets bound how long Close may spend delivering what is queued.
+// Different per mode because the cost of waiting is different: quitting the TUI
+// can afford a moment, but `matterbox send` is called from scripts and
+// notification handlers where an extra second per invocation is a real
+// regression in something the user did not ask for.
+const (
+	flushBudgetTUI    = 3 * time.Second
+	flushBudgetCLI    = 700 * time.Millisecond
+	flushBudgetDaemon = 5 * time.Second
+)
+
+// Mode is how this process is being used, which selects the flush budget.
+type Mode int
+
+const (
+	ModeTUI Mode = iota
+	ModeCLI
+	ModeDaemon
+)
+
+func (m Mode) flushBudget() time.Duration {
+	switch m {
+	case ModeCLI:
+		return flushBudgetCLI
+	case ModeDaemon:
+		return flushBudgetDaemon
+	}
+	return flushBudgetTUI
+}
+
+// active is the fast path. Every entry point in the package reads it first,
+// and an opted-out process pays exactly one atomic load per call — which is
+// what makes it safe to put a counter bump on the keystroke path. It is
+// separate from `client != nil` because reading that needs the mutex.
+var active atomic.Bool
+
+// strict makes a dropped property or an uncatalogued event a panic instead of
+// a silent no-op. Tests turn it on: a mistake in an event should fail CI
+// loudly, and fail silently in a user's terminal. Never enabled in a release.
+var strict atomic.Bool
 
 // Package-level state, guarded by mu. A single client per process, opened by
 // Start and closed by Close; nil means telemetry is off, which is both the
@@ -66,6 +118,7 @@ var (
 	mu         sync.Mutex
 	client     posthog.Client
 	distinctID string
+	snapStop   chan struct{}
 )
 
 // Start opens the PostHog client, but only when the user has opted in and a
@@ -76,10 +129,17 @@ var (
 // Errors are swallowed by design. Telemetry failing is not the user's problem
 // and matterbox has no channel to report it on: writing to stderr would punch
 // a hole through the TUI's alt-screen.
-func Start(cfg *config.Config) {
+func Start(cfg *config.Config) { StartMode(cfg, ModeTUI) }
+
+// StartMode is Start with an explicit mode, which decides how long Close may
+// spend flushing. Use ModeCLI for one-shot subcommands and ModeDaemon for
+// `matterbox listen`.
+func StartMode(cfg *config.Config, mode Mode) {
 	if cfg == nil || !cfg.TelemetryEnabled() {
 		return
 	}
+	// Empty only when a build deliberately blanked it (a fork pointing
+	// somewhere else, or a test): there is nowhere to send, so do nothing.
 	key := envOr(KeyEnv, projectKey)
 	if key == "" {
 		return
@@ -95,77 +155,155 @@ func Start(cfg *config.Config) {
 		// the TUI mid-frame. Everything it has to say is about telemetry
 		// delivery, which the user did not ask to hear about.
 		Logger:          silentLogger{},
-		ShutdownTimeout: shutdownTimeout,
+		ShutdownTimeout: mode.flushBudget(),
 	})
 	if err != nil {
 		return
 	}
 	client = c
 	distinctID = anonymousID(cfg)
+
+	now := time.Now()
+	tally.mu.Lock()
+	tally.sessionStart = now
+	tally.windowStart = now
+	tally.mu.Unlock()
+
+	// Only now is the package live: the counters must have a window start
+	// before anything can bump them, or the first snapshot would report a
+	// nonsense span.
+	active.Store(true)
+	if mode != ModeCLI {
+		// A one-shot subcommand exits long before the first tick, and Close
+		// flushes regardless — so it gets no goroutine.
+		snapStop = make(chan struct{})
+		go startSnapshots(snapStop)
+	}
 }
 
 // Enabled reports whether telemetry is actually running: consent given, a
 // project key present, and the client open. Use it to skip work that only
 // exists to feed an event, not as a permission check before Capture — Capture
 // does that itself.
-func Enabled() bool {
-	mu.Lock()
-	defer mu.Unlock()
-	return client != nil
+func Enabled() bool { return active.Load() }
+
+// SetStrict turns catalogue violations into panics, for tests. Returns the
+// previous setting so a test can restore it.
+func SetStrict(on bool) bool {
+	prev := strict.Load()
+	strict.Store(on)
+	return prev
 }
 
-// Capture records one named event. A nil or empty props is fine. No-op when
-// telemetry is off; it never blocks on the network (PostHog batches in the
-// background) and never reports an error, because a dropped event is not worth
-// a code path in the UI.
+// Capture records one named event, after checking it against the catalogue:
+// an event name that isn't declared is dropped, and so is any property the
+// declaration doesn't allow or whose value falls outside it (see
+// EventSpec.sanitize). A nil or empty props is fine.
 //
-// Keep props anonymous — counts, durations, enum-ish labels, feature names. See
-// the package comment for what must not go in.
+// It never blocks on the network — PostHog batches in the background — and
+// never reports an error, because a dropped event is not worth a code path in
+// the UI. Prefer the typed helpers in emit.go over calling this directly;
+// they exist so a call site cannot misspell a property name.
 func Capture(event string, props map[string]any) {
+	capture(event, props, nil)
+}
+
+// capture is the shared implementation. personProps names properties that
+// should also be mirrored onto the PostHog person via $set — used by
+// app_started for the environment facts that describe an install rather than a
+// moment, so "how many people are on kitty" is a person-level breakdown rather
+// than a count of launches. They are drawn from the event's own already
+// validated properties, so they need no separate whitelist.
+func capture(event string, props map[string]any, personProps []string) {
+	if !active.Load() {
+		// Even with telemetry off, a mistyped event should fail a test that
+		// asked for strictness.
+		if strict.Load() {
+			checkStrict(event, props)
+		}
+		return
+	}
+	spec, ok := Spec(event)
+	if !ok {
+		if strict.Load() {
+			panic("telemetry: event not in catalogue: " + event)
+		}
+		return
+	}
+	clean, dropped := spec.sanitize(props)
+	if len(dropped) > 0 && strict.Load() {
+		panic("telemetry: event " + event + " has undeclared or invalid properties: " +
+			strings.Join(dropped, ", "))
+	}
+	if len(personProps) > 0 {
+		if set := pick(clean, personProps); len(set) > 0 {
+			if clean == nil {
+				clean = make(map[string]any, 1)
+			}
+			clean["$set"] = set
+		}
+	}
+
 	mu.Lock()
 	c, id := client, distinctID
 	mu.Unlock()
-	if c == nil || event == "" {
+	if c == nil {
 		return
 	}
 	_ = c.Enqueue(posthog.Capture{
 		DistinctId: id,
 		Event:      event,
-		Properties: posthog.Properties(props),
+		Properties: posthog.Properties(clean),
 	})
 }
 
-// Error reports err as an anonymous PostHog exception, grouped by where: a
-// short, stable, hand-written label for the operation that failed
-// ("ws.connect", "store.migrate") rather than anything derived from user data.
-//
-// The error's text is sent verbatim, so only call this with errors that quote
-// no message content, channel names, server URLs or file paths — wrap the
-// message first if in doubt. No-op when telemetry is off or err is nil.
-func Error(where string, err error) {
-	mu.Lock()
-	c, id := client, distinctID
-	mu.Unlock()
-	if c == nil || err == nil {
-		return
+// checkStrict validates without sending, so a test can assert an event is
+// well-formed without opting the test process in to a network client.
+func checkStrict(event string, props map[string]any) {
+	spec, ok := Spec(event)
+	if !ok {
+		panic("telemetry: event not in catalogue: " + event)
 	}
-	if where == "" {
-		where = "error"
+	if _, dropped := spec.sanitize(props); len(dropped) > 0 {
+		panic("telemetry: event " + event + " has undeclared or invalid properties: " +
+			strings.Join(dropped, ", "))
 	}
-	_ = c.Enqueue(posthog.NewDefaultException(time.Now().UTC(), id, where, err.Error()))
 }
 
-// Close flushes whatever is queued and shuts the client down, bounded by
-// shutdownTimeout. Safe to call when telemetry never started, and safe to call
-// twice; a later Start would open a fresh client.
+// pick copies the named keys out of props.
+func pick(props map[string]any, names []string) map[string]any {
+	out := make(map[string]any, len(names))
+	for _, n := range names {
+		if v, ok := props[n]; ok {
+			out[n] = v
+		}
+	}
+	return out
+}
+
+// Close flushes whatever is queued and shuts the client down, bounded by the
+// mode's flush budget. The pending usage_snapshot goes out first, so the tail of a
+// session isn't lost. Safe to call when telemetry never started, and safe to
+// call twice; a later Start would open a fresh client.
 func Close() {
+	if active.Load() {
+		Flush(true)
+	}
+	active.Store(false)
+
 	mu.Lock()
 	c := client
-	client, distinctID = nil, ""
+	stop := snapStop
+	client, distinctID, snapStop = nil, "", nil
 	mu.Unlock()
+
+	if stop != nil {
+		close(stop)
+	}
 	if c != nil {
 		_ = c.Close()
 	}
+	resetExceptionBudget()
 }
 
 // anonymousID returns the id events are attributed to, minting and persisting

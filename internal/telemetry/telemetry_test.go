@@ -91,19 +91,49 @@ func TestStartWithoutConsentDecline(t *testing.T) {
 	}
 }
 
-// TestStartWithoutProjectKeyIsNoop: a build with no key compiled in has nowhere
-// to send, so consent alone doesn't start a client.
+// TestStartWithoutProjectKeyIsNoop: a build with the key blanked
+// (`make POSTHOG_KEY=`) has nowhere to send, so consent alone doesn't start a
+// client. The key is compiled in by default, so the test blanks it — this is
+// the documented escape hatch for someone who wants a binary that cannot
+// report at all, and it has to keep working.
 func TestStartWithoutProjectKeyIsNoop(t *testing.T) {
 	t.Cleanup(Close)
 	cfg := consentingConfig(t)
 	t.Setenv(KeyEnv, "")
-	if projectKey != "" {
-		t.Skip("built with a project key compiled in")
-	}
+
+	restore := projectKey
+	projectKey = ""
+	t.Cleanup(func() { projectKey = restore })
 
 	Start(cfg)
 	if Enabled() {
 		t.Fatal("telemetry started without a project key")
+	}
+}
+
+// TestConsentIsTheOnlyGate is the counterpart, and the promise the docs make:
+// the compiled-in key does nothing by itself. A config that never opted in must
+// start nothing even though the binary knows perfectly well where to send.
+func TestConsentIsTheOnlyGate(t *testing.T) {
+	t.Cleanup(Close)
+	t.Setenv(config.DirEnv, t.TempDir())
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if projectKey == "" {
+		t.Fatal("no project key is compiled in — release builds would report nothing")
+	}
+
+	Start(cfg) // consent absent
+	if Enabled() {
+		t.Fatal("the compiled-in key started telemetry without consent")
+	}
+	no := false
+	cfg.Telemetry.Enabled = &no
+	Start(cfg) // consent declined
+	if Enabled() {
+		t.Fatal("the compiled-in key started telemetry for a user who declined")
 	}
 }
 
@@ -133,12 +163,16 @@ func TestCaptureAndErrorReachIngest(t *testing.T) {
 	if !Enabled() {
 		t.Fatal("telemetry did not start with consent + a project key")
 	}
-	Capture("test_event", map[string]any{"count": 2})
-	Error("test.where", errors.New("boom"))
+	// A catalogued event: Capture validates against the catalogue now, so an
+	// invented name would be dropped rather than sent (see TestCaptureDropsUncataloguedEvent).
+	Capture("version_upgraded", map[string]any{"from": "0.9.0", "to": "0.9.1"})
+	// A real failure site: the label is validated against FailureSites, so an
+	// invented one would be replaced rather than reported (see TestExceptionSiteIsValidated).
+	Error("store.migrate", errors.New("boom"))
 	Close() // flushes
 
 	body := in.all()
-	for _, want := range []string{"test_event", "phc_test", cfg.Telemetry.AnonymousID, "$exception", "test.where", "boom"} {
+	for _, want := range []string{"version_upgraded", "0.9.1", "phc_test", cfg.Telemetry.AnonymousID, "$exception", "store.migrate", "boom"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("ingested batches missing %q\ngot: %s", want, body)
 		}

@@ -14,7 +14,13 @@ import (
 // the user types ">" as the first character of the query. Each command
 // optionally prompts for a single argument before running.
 type switcherCommand struct {
-	name           string
+	name string
+	// tid is the stable id this command is counted under. Separate from name
+	// because several names interpolate a channel ("Mute #incidents") and a
+	// channel name must never leave the machine — and because a display name is
+	// free to be reworded without orphaning the metric behind it. See
+	// telemetry.PaletteIDs.
+	tid            string
 	desc           string
 	argPrompt      string // non-empty → switcher swaps to a captive arg input
 	argPlaceholder string
@@ -29,6 +35,7 @@ func builtinCommands() []switcherCommand {
 	return []switcherCommand{
 		{
 			name: "Summarize recent messages",
+			tid:  "summarize",
 			desc: "summarize this channel (or the unread feed) with a local LLM",
 			// No argPrompt: the command opens its own duration picker (or, on
 			// the Feed tab, summarizes all unread messages straight away).
@@ -36,18 +43,21 @@ func builtinCommands() []switcherCommand {
 		},
 		{
 			name: "Create channel",
+			tid:  "create_channel",
 			desc: "make a new public or private channel on one of your teams",
 			// No argPrompt: the command opens its own form modal.
 			run: runCreateChannel,
 		},
 		{
 			name: "Join a channel",
+			tid:  "join_channel",
 			desc: "browse the public channels you're not in yet",
 			// No argPrompt: the command opens its own browse-and-filter list.
 			run: runJoinChannel,
 		},
 		{
 			name:           "Start group DM",
+			tid:            "start_group_dm",
 			desc:           "open (creating if new) a group DM with the people you name",
 			argPrompt:      "users: ",
 			argPlaceholder: "@alice, @bob  (2–7 people)",
@@ -55,41 +65,49 @@ func builtinCommands() []switcherCommand {
 		},
 		{
 			name: "Keys",
+			tid:  "keys",
 			desc: "keyboard shortcuts cheatsheet (your effective bindings)",
 			run:  runShowKeys,
 		},
 		{
 			name: "Saved messages",
+			tid:  "saved_messages",
 			desc: "browse your saved messages (enter opens, d unsaves)",
 			run:  runOpenSavedMessages,
 		},
 		{
 			name: "Message stats",
+			tid:  "message_stats",
 			desc: "your most active channels in the last 7 days, from the local cache",
 			run:  runMessageStats,
 		},
 		{
 			name: "Status: online",
+			tid:  "status_online",
 			desc: "set your presence to online",
 			run:  runSetPresence(model.StatusOnline),
 		},
 		{
 			name: "Status: away",
+			tid:  "status_away",
 			desc: "set your presence to away",
 			run:  runSetPresence(model.StatusAway),
 		},
 		{
 			name: "Status: dnd (do not disturb)",
+			tid:  "status_dnd",
 			desc: "set your presence to do not disturb",
 			run:  runSetPresence(model.StatusDnd),
 		},
 		{
 			name: "Status: offline",
+			tid:  "status_offline",
 			desc: "appear offline to others",
 			run:  runSetPresence(model.StatusOffline),
 		},
 		{
 			name:           "Set custom status",
+			tid:            "status_custom_set",
 			desc:           "emoji + text shown next to your name",
 			argPrompt:      "custom status: ",
 			argPlaceholder: ":palm_tree: on vacation  (empty clears)",
@@ -97,11 +115,13 @@ func builtinCommands() []switcherCommand {
 		},
 		{
 			name: "Clear custom status",
+			tid:  "status_custom_clear",
 			desc: "remove your custom status emoji + text",
 			run:  runClearCustomStatus,
 		},
 		{
 			name:           "Index channel",
+			tid:            "index_channel",
 			desc:           "cache N days of history to the local DB",
 			argPrompt:      "days: ",
 			argPlaceholder: "30",
@@ -109,6 +129,7 @@ func builtinCommands() []switcherCommand {
 		},
 		{
 			name:           "Typing animation",
+			tid:            "typing_animation",
 			desc:           "fake live-typing a message via a stream of edits (socket test)",
 			argPrompt:      "message: ",
 			argPlaceholder: "hello world",
@@ -116,41 +137,49 @@ func builtinCommands() []switcherCommand {
 		},
 		{
 			name: "Gorillas",
+			tid:  "gorillas",
 			desc: "play the QBasic artillery classic against someone, inside a post",
 			run:  runGorillas,
 		},
 		{
 			name: "Gorillas (hotseat)",
+			tid:  "gorillas_hotseat",
 			desc: "play both sides yourself — the post still streams, so others can watch",
 			run:  runGorillasSolo,
 		},
 		{
 			name: "Achtung, die Kurve",
+			tid:  "kurve",
 			desc: "race snaking curves against up to five others — last one alive wins — inside a post",
 			run:  runKurve,
 		},
 		{
 			name: "Achtung, die Kurve (hotseat)",
+			tid:  "kurve_hotseat",
 			desc: "steer both curves yourself — the post still streams, so others can watch",
 			run:  runKurveSolo,
 		},
 		{
 			name: "Rejoin game",
+			tid:  "rejoin_game",
 			desc: "step back into a Gorillas or Kurve game you closed, as the player you were",
 			run:  runRejoin,
 		},
 		{
 			name: "Debug: key inspector",
+			tid:  "debug_key_inspector",
 			desc: "echo the raw key events the terminal sends (diagnose option/ctrl/shift+arrow)",
 			run:  runKeyDebug,
 		},
 		{
 			name: "Debug: Copy message ID",
+			tid:  "debug_copy_message_id",
 			desc: "copy the ID of the currently selected message to the clipboard",
 			run:  runCopyMessageID,
 		},
 		{
 			name: "Debug: Copy channel ID",
+			tid:  "debug_copy_channel_id",
 			desc: "copy the ID of the currently open channel to the clipboard",
 			run:  runCopyChannelID,
 		},
@@ -378,12 +407,14 @@ func (m Model) muteCommand() (switcherCommand, bool) {
 	if m.channelMuted(c.Id) {
 		return switcherCommand{
 			name: "Unmute " + label,
+			tid:  "channel_unmute",
 			desc: "restore notifications and let it back into the unread feed",
 			run:  runSetMuted(c.Id, false),
 		}, true
 	}
 	return switcherCommand{
 		name: "Mute " + label,
+		tid:  "channel_mute",
 		desc: "silence notifications and hide it from the unread feed",
 		run:  runSetMuted(c.Id, true),
 	}, true
@@ -399,12 +430,14 @@ func (m Model) feedMutedCommand() (switcherCommand, bool) {
 	if m.feed.showMuted {
 		return switcherCommand{
 			name: "Feed: hide muted channels",
+			tid:  "feed_hide_muted",
 			desc: "drop muted channels back out of the unread feed",
 			run:  func(m *Model, _ string) tea.Cmd { return m.toggleFeedMuted() },
 		}, true
 	}
 	return switcherCommand{
 		name: "Feed: show muted channels",
+		tid:  "feed_show_muted",
 		desc: "include unread messages from muted channels in the feed",
 		run:  func(m *Model, _ string) tea.Cmd { return m.toggleFeedMuted() },
 	}, true
@@ -420,6 +453,7 @@ func (m Model) feedMarkAllCommand() (switcherCommand, bool) {
 	}
 	return switcherCommand{
 		name: "Feed: mark all read (" + plural(len(m.feed.entries), "channel", "channels") + ")",
+		tid:  "feed_mark_all_read",
 		desc: "clear the unread state of every channel the feed is showing",
 		run:  func(m *Model, _ string) tea.Cmd { return m.markAllFeedRead() },
 	}, true
@@ -586,12 +620,14 @@ func (m *Model) sidebarUnreadCommand() (switcherCommand, bool) {
 	if m.sidebarUnreadOnly {
 		return switcherCommand{
 			name: "Sidebar: show all channels",
+			tid:  "sidebar_all_channels",
 			desc: "return the sidebar to the full channel list",
 			run:  func(m *Model, _ string) tea.Cmd { return m.setSidebarUnreadOnly(false) },
 		}, true
 	}
 	return switcherCommand{
 		name: "Sidebar: show unread channels",
+		tid:  "sidebar_unread_channels",
 		desc: "narrow the sidebar to channels with unread activity (plus the open one)",
 		run:  func(m *Model, _ string) tea.Cmd { return m.setSidebarUnreadOnly(true) },
 	}, true

@@ -185,6 +185,10 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 	count := m.nextClickCount(msg.X, msg.Y)
 	shift := msg.Mod&tea.ModShift != 0
 	h := m.hitTest(msg.X, msg.Y)
+	// Anonymous telemetry, if the user opted in: which regions get clicked, so
+	// mouse use can be compared against the keyboard bindings for the same
+	// things. A no-op otherwise.
+	recordClick(h.zone)
 	switch h.zone {
 	case hitTab:
 		m.clearTextSel()

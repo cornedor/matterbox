@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/mattermost/mattermost/server/public/model"
 
+	"matterbox/internal/telemetry"
 	"matterbox/internal/textwidth"
 )
 
@@ -1553,6 +1554,12 @@ func humanSize(n int64) string {
 // capable terminals while leaving normal text input (including shifted
 // characters like '?' from shift+/) untouched.
 func (m Model) View() tea.View {
+	// The render path is where this codebase's complexity lives, so a panic
+	// here is the one most worth hearing about. Same shape as Update: report
+	// and re-panic, guarded so the disabled path stays a single atomic load.
+	if telemetry.Enabled() {
+		defer telemetry.Crash("render")
+	}
 	v := tea.NewView(m.viewContent())
 	v.AltScreen = true
 	// Ask the terminal to report focus/blur (DECSET 1004). Two things ride on

@@ -47,10 +47,14 @@ GO     ?= go
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null)
 
 # PostHog project key for the opt-in anonymous telemetry (internal/telemetry).
-# Empty by default, and that is not a formality: with no key compiled in the
-# telemetry client is never built, so a from-source build reports nothing no
-# matter what the config says. Release builds pass one in:
-#   make POSTHOG_KEY=phc_...
+# Overrides the PostHog project the telemetry client reports to. The real key
+# is compiled into internal/telemetry by default — building from source is the
+# normal way to get matterbox, so a key only a release build carried would be a
+# key almost nobody has. Consent (telemetry.enabled in config.yaml) is the gate,
+# not this. Set it to point a build at your own project:
+#   make POSTHOG_KEY=phc_your_own_project
+# or to an empty value to build a binary that can report nowhere at all:
+#   make POSTHOG_KEY=
 POSTHOG_KEY ?=
 
 LDFLAGS  := $(if $(VERSION),-X matterbox/internal/cli.version=$(VERSION),)
