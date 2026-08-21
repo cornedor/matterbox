@@ -65,6 +65,11 @@ func newRootCmd() *cobra.Command {
 				if !auth.HasToken() {
 					return nil
 				}
+				// The launch about to happen is the first one, which is worth
+				// telling apart from every later launch: it is the only sample
+				// of what a fresh install's defaults look like before anyone
+				// has changed anything.
+				ui.SetFirstRun()
 			}
 			return runTUI()
 		},

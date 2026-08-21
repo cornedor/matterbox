@@ -44,6 +44,17 @@ func Classify(err error) (outcome, class string) {
 	case contains("unknown flag", "unknown command", "unknown shorthand",
 		"accepts ", "requires at least", "invalid argument"):
 		return "error", "config"
+	// Before auth, because auth matches the bare word "token" and several
+	// errors that carry it are not login problems at all: "parse token file"
+	// is a corrupt file and "write token file: no space left" is a full disk.
+	// Classifying those as auth would be worse than merely mislabelling them —
+	// auth is an environment class, so worthAnIssue suppresses the issue, and
+	// the two defects most worth hearing about would go unreported. A specific
+	// match beats a generic one; the generic one goes last.
+	case contains("yaml", "parse", "unmarshal", "invalid character"):
+		return "error", "parse"
+	case contains("no space left", "read-only file system", "disk"):
+		return "error", "disk"
 	case contains("no saved login", "not logged in", "unauthorized", "401",
 		"invalid or expired session", "token"):
 		return "error", "auth"
@@ -58,10 +69,6 @@ func Classify(err error) (outcome, class string) {
 		return "error", "network"
 	case contains("500", "502", "503", "504", "internal server error"):
 		return "error", "server"
-	case contains("yaml", "parse", "unmarshal", "invalid character"):
-		return "error", "parse"
-	case contains("no space left", "read-only file system", "disk"):
-		return "error", "disk"
 	}
 	return "error", "unknown"
 }

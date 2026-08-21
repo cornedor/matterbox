@@ -426,8 +426,9 @@ telemetry:
 Turning it off after the fact is one line (`enabled: false`); matterbox also
 drops the id when you decline in the wizard, so opting out leaves nothing behind
 to tag you with. Re-running `matterbox welcome` is how you change your answer:
-the question opens on whatever the config currently says. A build made from source has no PostHog key compiled in, so it
-reports nothing whatever this says.
+the question opens on whatever the config currently says. The config key is the
+only gate: the PostHog key is compiled into every build, including one you built
+yourself, and does nothing without an explicit `enabled: true`.
 
 ## Environment variables
 

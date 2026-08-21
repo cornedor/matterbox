@@ -52,6 +52,19 @@ func SetBuildInfo(version, buildTags string) {
 	buildInfo.buildTags = buildTags
 }
 
+// firstRun records that the setup wizard ran in this process, immediately
+// before the TUI. Only internal/cli knows: the wizard and the client are two
+// programs run back to back by the root command, and by the time the Model is
+// built the only trace of the wizard is a config file that looks the same as
+// one written a year ago.
+var firstRun bool
+
+// SetFirstRun marks this launch as the one that followed the setup wizard, for
+// app_started's first_run. Called from internal/cli when the root command runs
+// the wizard and then continues into the TUI. Never set for a plain launch,
+// which is the whole distinction the property exists to draw.
+func SetFirstRun() { firstRun = true }
+
 // processStart is when this process began, for the startup-time measurement.
 // Package init is close enough — everything before it is the Go runtime coming
 // up, which is not something matterbox can change.
@@ -71,6 +84,7 @@ func newLaunchEnv(cfg *config.Config, mouseEnabled bool) *telemetry.Env {
 		OS:        telemetry.OSName(),
 		Arch:      telemetry.ArchName(),
 		Terminal:  telemetry.DetectTerminal(),
+		FirstRun:  firstRun,
 		// Filled in later, when they are known: the graphics protocol once the
 		// probe has answered, the counts once the sidebar has loaded. See the
 		// package note above.

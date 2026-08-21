@@ -55,10 +55,18 @@ VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null)
 #   make POSTHOG_KEY=phc_your_own_project
 # or to an empty value to build a binary that can report nowhere at all:
 #   make POSTHOG_KEY=
-POSTHOG_KEY ?=
+# That last case is why this tests `origin` rather than emptiness, the same way
+# TAGS does below: `?=` cannot tell "not given" from "given empty", so treating
+# an empty value as "not given" would silently keep the compiled-in key in the
+# one build that asked for no key at all.
+ifeq ($(origin POSTHOG_KEY),undefined)
+KEYFLAG :=
+else
+KEYFLAG := -X matterbox/internal/telemetry.projectKey=$(POSTHOG_KEY)
+endif
 
 LDFLAGS  := $(if $(VERSION),-X matterbox/internal/cli.version=$(VERSION),)
-LDFLAGS  += $(if $(POSTHOG_KEY),-X matterbox/internal/telemetry.projectKey=$(POSTHOG_KEY),)
+LDFLAGS  += $(KEYFLAG)
 
 # Build tags. Auto-detected per machine unless TAGS is given on the command
 # line or in the environment (TAGS= disables every optional feature).
