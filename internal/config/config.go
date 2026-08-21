@@ -146,6 +146,14 @@ type Config struct {
 	// probing again. Space still opens the full-size preview either way.
 	// See internal/ui/inlineimg.go.
 	ImageThumbnails string `yaml:"image_thumbnails"`
+	// ImageClick is what a mouse click on a rendered inline thumbnail does
+	// (image_thumbnails: auto, Kitty graphics). "preview" (default) opens the
+	// in-app full-size preview (same as space); "open" hands it to the OS /
+	// browser (same as o); "download" saves it to download_dir (same as s for
+	// attachments); "off" leaves the click as a plain message select. Only the
+	// thumbnail cells themselves are clickable — not the 🖼️ filename chip or
+	// the rest of the message. See internal/ui/imageclick.go.
+	ImageClick string `yaml:"image_click"`
 	// CodeTheme is the colour scheme used to syntax-highlight fenced code
 	// blocks in messages: any chroma style name (e.g. monokai, dracula,
 	// github-dark, gruvbox, nord, catppuccin-mocha, tokyonight-night) plus the
@@ -1040,7 +1048,7 @@ func Load() (*Config, error) {
 	if stalePrompt {
 		cfg.AISearch.Prompt = ""
 	}
-	addDefaults := stalePrompt || cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.CollapseLongMessages == nil || cfg.CollapsePreviewLines == nil || cfg.DownloadDir == "" || cfg.SQLTab == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.ImageThumbnails == "" || cfg.CodeTheme == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Animations.InlineImages == nil || cfg.Animations.NativeGIFProtocol != nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.RespectDND == nil || cfg.Listen.TwoWay == nil || cfg.Listen.NotifyDMs == nil || cfg.Listen.NotifyDelaySeconds == nil
+	addDefaults := stalePrompt || cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.CollapseLongMessages == nil || cfg.CollapsePreviewLines == nil || cfg.DownloadDir == "" || cfg.SQLTab == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.ImageThumbnails == "" || cfg.ImageClick == "" || cfg.CodeTheme == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Animations.InlineImages == nil || cfg.Animations.NativeGIFProtocol != nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.RespectDND == nil || cfg.Listen.TwoWay == nil || cfg.Listen.NotifyDMs == nil || cfg.Listen.NotifyDelaySeconds == nil
 	cfg.fillDefaults()
 	if addDefaults {
 		if werr := writeConfig(p, cfg); werr != nil {
@@ -1168,6 +1176,11 @@ func (c *Config) fillDefaults() {
 	if c.ImageThumbnails == "" {
 		c.ImageThumbnails = "off"
 	}
+	switch c.ImageClick {
+	case "preview", "open", "download", "off":
+	default:
+		c.ImageClick = "preview"
+	}
 	if c.CodeTheme == "" {
 		c.CodeTheme = defaultCodeTheme
 	}
@@ -1267,6 +1280,23 @@ func SaveTelemetry(t TelemetryConfig) error {
 		return err
 	}
 	cfg.Telemetry = t
+	p, err := Path()
+	if err != nil {
+		return err
+	}
+	return writeConfig(p, cfg)
+}
+
+// SaveImageClick persists the image_click setting (preview / open / download /
+// off), leaving every other setting as it is on disk. Same load-mutate-write
+// shape as SaveTeamOrder: the TUI may have drifted from the file, and a single
+// preference change must not rewrite unrelated stale values.
+func SaveImageClick(action string) error {
+	cfg, err := Load()
+	if err != nil {
+		return err
+	}
+	cfg.ImageClick = action
 	p, err := Path()
 	if err != nil {
 		return err
@@ -1388,6 +1418,14 @@ func writeConfig(p string, cfg *Config) error {
 		"#             line; auto draws thumbnails wherever emoji_images works (same\n" +
 		"#             Kitty-graphics terminal gate). Space still opens the full\n" +
 		"#             preview either way.\n" +
+		"# image_click: what a mouse click on a rendered inline thumbnail does\n" +
+		"#             (needs image_thumbnails: auto). preview (default) opens the\n" +
+		"#             in-app full-size preview (same as space); open hands it to\n" +
+		"#             the OS/browser (same as o); download saves it to download_dir\n" +
+		"#             (same as s for attachments); off leaves the click as a plain\n" +
+		"#             message select. Only the thumbnail cells are clickable — not\n" +
+		"#             the filename chip or the rest of the message. Also settable\n" +
+		"#             live via \"> Image click on thumbnail\".\n" +
 		"# code_theme: colour scheme for syntax-highlighting fenced code blocks in\n" +
 		"#             messages. Any chroma style name — monokai (default), dracula,\n" +
 		"#             github-dark, gruvbox, nord, onedark, catppuccin-mocha,\n" +

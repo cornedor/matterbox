@@ -94,7 +94,7 @@ load, so it always describes the build you are running.
   immediately.
 
 Values that name a fixed set of choices (`nav_modifier`, `vim_nav`,
-`emoji_images`, `image_thumbnails`, `code_theme`) **fall back to their default**
+`emoji_images`, `image_thumbnails`, `image_click`, `code_theme`) **fall back to their default**
 when you write something unrecognised — a typo costs you the setting, not the
 app. Keybinding overrides are the exception: an unknown action
 id, an unparseable chord, or a binding that collides with another action is a
@@ -147,6 +147,7 @@ treat a `server_url` still equal to it as "not configured yet" and send you to
 | `attach_on_drop` | `true` | Attach a file dragged onto the terminal. Terminals have no drag-and-drop protocol — the emulator delivers a drop by *pasting the path* — so this is a heuristic: a paste that is nothing but existing absolute file paths becomes an attachment. `false` pastes such paths as text. |
 | `emoji_images` | `auto` | `auto` renders custom (server) emoji as real inline images on a Kitty/Ghostty-class truecolor terminal outside tmux; `off` keeps literal `:name:` text everywhere. Unicode emoji are unaffected — they are always font glyphs. |
 | `image_thumbnails` | `off` | `auto` draws image attachments as inline thumbnails in the transcript, wherever `emoji_images` works (same terminal gate). `off` shows only the 🖼️ filename line. Space opens the full-size preview either way. |
+| `image_click` | `preview` | What a mouse click on a rendered inline thumbnail does (`image_thumbnails: auto`). `preview` opens the in-app full-size preview (same as space); `open` hands it to the OS/browser (same as `o`); `download` saves it to `download_dir` (same as `s` for attachments); `off` leaves the click as a plain message select. Only the thumbnail cells themselves are clickable — not the filename chip or the rest of the message. Also settable live via `>` → **Image click on thumbnail**. |
 
 `animations:` groups the motion toggles, so movement you find distracting can go
 away one piece at a time:
