@@ -2,6 +2,7 @@ package welcome
 
 import (
 	"errors"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -17,6 +18,31 @@ import (
 var ansiSGR = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
 func key(code rune) tea.KeyPressMsg { return tea.KeyPressMsg{Code: code} }
+
+// TestMain disarms the browser launcher for the whole package. Two keys in this
+// wizard open a URL — enter on the telemetry step and the SSO button — and
+// opener.Open forks xdg-open, so without this a test that presses either one
+// puts real browser tabs on whatever machine ran the suite. Disarming it here
+// rather than per-test makes that impossible to reintroduce by forgetting.
+func TestMain(m *testing.M) {
+	openURL = func(string) error { return nil }
+	os.Exit(m.Run())
+}
+
+// stubOpenURL replaces the browser launcher for one test and returns a pointer
+// to the targets it was asked to open, for asserting *which* URL a key opened.
+// TestMain already guarantees nothing reaches a real browser.
+func stubOpenURL(t *testing.T) *[]string {
+	t.Helper()
+	var opened []string
+	restore := openURL
+	openURL = func(target string) error {
+		opened = append(opened, target)
+		return nil
+	}
+	t.Cleanup(func() { openURL = restore })
+	return &opened
+}
 
 // newWizard builds a sized wizard already past the intro, with config isolated
 // to a temp dir so the test never touches the real config.yaml / token.
@@ -68,7 +94,14 @@ func TestWizardHappyPathSavesConfig(t *testing.T) {
 	if m.step != stepTelemetry {
 		t.Fatalf("after preferences: step = %d, want stepTelemetry", m.step)
 	}
-	m.handleKey(key(tea.KeyEnter)) // decline is focused -> finish
+	// Step 4: the docs link is focused, so enter opens it rather than answering
+	// — walking the wizard on enter must not answer the consent question.
+	m.handleKey(key(tea.KeyEnter))
+	if m.phase == phaseDone {
+		t.Fatal("enter on the telemetry step finished the wizard")
+	}
+	m.handleKey(key(tea.KeyUp)) // wrap up from the link onto "No thanks"
+	m.handleKey(key(tea.KeyEnter))
 	if m.phase != phaseDone {
 		t.Fatalf("after finish: phase = %d, want phaseDone", m.phase)
 	}
@@ -412,13 +445,13 @@ func TestWizardAsksTelemetryOptIn(t *testing.T) {
 	if m.phase == phaseDone {
 		t.Fatal("preferences finished the wizard instead of asking about telemetry")
 	}
-	// Declining is focused first, so opting in takes a deliberate move.
-	if m.telemetryFocus != telemetryFocusNo {
-		t.Fatalf("telemetry step opened with focus %d, want the decline button", m.telemetryFocus)
+	// The link is focused, so reaching an answer takes a deliberate move.
+	if m.telemetryFocus != telemetryFocusLink {
+		t.Fatalf("telemetry step opened with focus %d, want the docs link", m.telemetryFocus)
 	}
-	m.handleKey(key(tea.KeyUp))
+	m.handleKey(key(tea.KeyDown))
 	if m.telemetryFocus != telemetryFocusYes {
-		t.Fatalf("up from decline: focus = %d, want the accept button", m.telemetryFocus)
+		t.Fatalf("down from the link: focus = %d, want the accept button", m.telemetryFocus)
 	}
 	m.handleKey(key(tea.KeyEnter))
 	if m.phase != phaseDone {
@@ -444,7 +477,11 @@ func TestTelemetryDeclineIsRecorded(t *testing.T) {
 	m := newWizard(t)
 	m.step = stepTelemetry
 
-	m.handleKey(key(tea.KeyEnter)) // decline is focused
+	m.handleKey(key(tea.KeyUp)) // wrap up from the link onto "No thanks"
+	if m.telemetryFocus != telemetryFocusNo {
+		t.Fatalf("up from the link: focus = %d, want the decline button", m.telemetryFocus)
+	}
+	m.handleKey(key(tea.KeyEnter))
 	if m.phase != phaseDone {
 		t.Fatalf("after declining: phase = %d, want phaseDone", m.phase)
 	}
@@ -475,21 +512,87 @@ func TestTelemetryOptOutClearsAnonymousID(t *testing.T) {
 	}
 }
 
-// TestTelemetryFocusSeedsFromConfig: a re-run opens on the answer already in
-// the config, while an untouched config opens on decline.
-func TestTelemetryFocusSeedsFromConfig(t *testing.T) {
-	t.Setenv(config.DirEnv, t.TempDir())
-	cfg, err := config.Load()
+// TestTelemetryNoSingleKeyAnswers: no single keypress on this step can answer
+// the question — enter above all, since the three steps before it are finished
+// with enter. Answering takes a move onto a button and then enter. An answer
+// nobody gave is the failure this step is shaped to prevent, and "off" is as
+// much an answer as "on".
+func TestTelemetryNoSingleKeyAnswers(t *testing.T) {
+	stubOpenURL(t)
+	for _, k := range []rune{tea.KeyEnter, tea.KeyDown, tea.KeyUp, tea.KeyTab, ' ', 'y', 'n', 'j'} {
+		m := newWizard(t)
+		m.step = stepTelemetry
+		m.handleKey(key(k))
+
+		if m.phase == phaseDone {
+			t.Errorf("key %q finished the wizard", k)
+		}
+		if m.step != stepTelemetry {
+			t.Errorf("key %q left the telemetry step", k)
+		}
+		got, err := config.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Telemetry.Enabled != nil {
+			t.Errorf("key %q recorded telemetry.enabled = %v", k, *got.Telemetry.Enabled)
+		}
+	}
+}
+
+// TestTelemetryStepOpensOnTheLink: the docs link carries the focus marker when
+// the step opens and the two answers do not, so what enter will act on is
+// visible before it is pressed.
+func TestTelemetryStepOpensOnTheLink(t *testing.T) {
+	m := newWizard(t)
+	m.t = 7
+	m.step = stepTelemetry
+	m.sceneValid = false
+	text := ansiSGR.ReplaceAllString(m.View().Content, "")
+	if !strings.Contains(text, "› "+telemetryDocsURL) {
+		t.Error("the docs link does not open as the focused control")
+	}
+	for _, answer := range []string{"› [ Yes", "› [ No thanks"} {
+		if strings.Contains(text, answer) {
+			t.Errorf("an answer opened focused: %q", answer)
+		}
+	}
+}
+
+// TestTelemetryEnterOpensTheDocs: enter is the key a hand arrives on this step
+// already holding, having finished the three before it that way. On the focus
+// the step opens with it must open the documentation and leave the question
+// open — an answer nobody gave must not reach disk, not even as a decline,
+// which config.Load would otherwise report as "answered".
+func TestTelemetryEnterOpensTheDocs(t *testing.T) {
+	opened := stubOpenURL(t)
+	m := newWizard(t)
+	m.step = stepTelemetry
+
+	m.handleKey(key(tea.KeyEnter))
+	if len(*opened) != 1 || (*opened)[0] != telemetryDocsURL {
+		t.Errorf("enter opened %v, want just %q", *opened, telemetryDocsURL)
+	}
+	if m.phase == phaseDone {
+		t.Fatal("enter on the telemetry step finished the wizard")
+	}
+	got, err := config.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m := New(cfg, false); m.telemetryFocus != telemetryFocusNo {
-		t.Errorf("unanswered: focus = %d, want the decline button", m.telemetryFocus)
+	if got.Telemetry.Enabled != nil {
+		t.Errorf("enter recorded telemetry.enabled = %v", *got.Telemetry.Enabled)
 	}
-	yes := true
-	cfg.Telemetry.Enabled = &yes
-	if m := New(cfg, false); m.telemetryFocus != telemetryFocusYes {
-		t.Errorf("already opted in: focus = %d, want the accept button", m.telemetryFocus)
+
+	// Moving off the link and back again keeps enter on the link, and moving
+	// onto an answer takes it off — the two must not both be live at once.
+	m.handleKey(key(tea.KeyDown))
+	m.handleKey(key(tea.KeyEnter))
+	if m.phase != phaseDone {
+		t.Fatal("enter on the accept button did not answer")
+	}
+	if len(*opened) != 1 {
+		t.Errorf("enter on a button also opened a browser: %v", *opened)
 	}
 }
 

@@ -54,6 +54,13 @@ func (p *panelBuilder) button(label string, focused bool) {
 	p.add(func(grid [][]cell, x, y, w int) { drawButton(grid, x, y, w, label, focused) })
 }
 
+// linkRow adds a focusable URL row: the focus marker, then the underlined link.
+// Used for the telemetry step's docs link, which is a control there rather than
+// decoration — enter on it opens a browser.
+func (p *panelBuilder) linkRow(url string, focused bool) {
+	p.add(func(grid [][]cell, x, y, w int) { drawLinkRow(grid, x, y, w, url, focused) })
+}
+
 // textU adds one clipped line in fg, underlining the first occurrence of the
 // word `u` — used to point at the copyable link in the SSO snippet.
 func (p *panelBuilder) textU(s, u string, fg vapor.RGB) {
@@ -181,26 +188,31 @@ func (m *Model) buildStep(p *panelBuilder) {
 	case stepTelemetry:
 		p.heading("✦ Help improve Matterbox", stepSub(4, "Telemetry"))
 		p.blank()
-		p.wrap("May we collect anonymous usage telemetry and error reports?", valueC)
+		p.wrap("Send anonymous usage stats and error reports?", valueC)
 		p.blank()
-		// Says what is sent rather than asserting "it is anonymous", and names
-		// the one thing that isn't in our gift: PostHog sees the sender's IP.
-		// docs/telemetry.md has always said so, but this is the moment someone
-		// decides, and the caveat belongs beside the claim it qualifies.
+		// Says what is sent rather than asserting "it is anonymous", and
+		// answers the one follow-up a savvy reader has: PostHog, which
+		// receives the events, does not store the sender's IP (the project
+		// discards it). docs/telemetry.md has the full list; this is the
+		// moment someone decides.
 		//
-		// The wording is tight because the row budget is: at 60x20 this step
-		// fills the panel exactly, and drawPanel clips from the bottom, so a
-		// longer sentence takes the answers off the screen rather than
-		// wrapping. TestTelemetryStepFitsSmallTerminal is the guard.
-		p.wrap("A random id, never your name, your server, or anything you "+
-			"type — just what gets used and what breaks. PostHog does see "+
-			"the IP it arrives from.", labelC)
+		// Keep it short anyway: drawPanel clips from the bottom, so copy that
+		// outgrows the panel takes the link and the key hint off the screen
+		// rather than wrapping. There is room at 60x20 now that the answers are
+		// two keys instead of two button rows, but not unlimited room —
+		// TestTelemetryStepFitsSmallTerminal is the guard.
+		p.wrap("Nothing you type or connect to is ever reported. Events "+
+			"carry a random id and say what gets used and what breaks. "+
+			"PostHog doesn't store your IP.", labelC)
 		p.blank()
-		p.text("What we collect, and how to turn it off later:", dimC)
-		p.textU("  "+telemetryDocsURL, telemetryDocsURL, accentCyan)
-		// No blank before the buttons: the step has to keep its two answers AND
-		// the key hint inside an 80x24 — and a row shorter than that — panel,
-		// which drawPanel clips from the bottom.
+		// The link is focusable and comes first, so it — not an answer — is what
+		// the step opens on. A hand that finished the three previous steps on
+		// enter gets the documentation here, never an answer it never gave.
+		p.text("Everything it sends, and how to turn it off:", dimC)
+		p.linkRow(telemetryDocsURL, m.telemetryFocus == telemetryFocusLink)
+		// No blank before the buttons: the step has to keep both answers AND the
+		// key hint inside an 80x24 — and a row shorter than that — panel, which
+		// drawPanel clips from the bottom.
 		p.button("Yes, share anonymous telemetry", m.telemetryFocus == telemetryFocusYes)
 		p.button("No thanks", m.telemetryFocus == telemetryFocusNo)
 		// Same channel the other steps use for a failed write: without this the
@@ -365,6 +377,24 @@ func drawButton(grid [][]cell, x, y, w int, label string, focused bool) {
 	for i, r := range []rune(clip(marker+"[ "+label+" ]", w)) {
 		setCell(grid, x+i, y, cell{R: r, Fg: fg, Bg: bg, HasBg: true})
 	}
+}
+
+// drawLinkRow renders the docs link as a focusable row: the same "› " marker the
+// other focusable rows use, then the URL underlined in the accent colour. The
+// 2-cell prefix is kept in both states so the link doesn't shift when focus
+// moves onto or off it.
+func drawLinkRow(grid [][]cell, x, y, w int, url string, focused bool) {
+	if w <= 0 {
+		return
+	}
+	marker, fg := "  ", blend(accentCyan, labelC, 0.4)
+	if focused {
+		marker, fg = "› ", accentCyan
+	}
+	for i, r := range []rune(clip(marker, w)) {
+		setCell(grid, x+i, y, cell{R: r, Fg: accentCyan})
+	}
+	drawTextUnderlined(grid, x+len([]rune(marker)), y, clip(url, w-len([]rune(marker))), url, fg)
 }
 
 // drawTextUnderlined writes s in fg over the existing background, underlining the

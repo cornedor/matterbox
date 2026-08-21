@@ -139,12 +139,18 @@ func (m *Model) authControls() int {
 // handler after SSO, so the token can fill and validate itself.
 type mmauthURLMsg string
 
+// openURL hands a URL to the desktop's browser. Indirected through a variable
+// rather than calling opener.Open directly because opener.Open forks xdg-open:
+// a test that presses the keys which open a link would otherwise launch real
+// browser tabs on whatever machine ran the suite.
+var openURL = opener.Open
+
 // openSSO launches the GitLab SSO login in the browser and moves focus to the
 // paste field. On Linux it also starts the scheme-handler capture so an
 // approved sign-in flows straight back — no copy-paste — returning a Cmd that
 // waits for the captured link; the field stays as a fallback.
 func (m *Model) openSSO() tea.Cmd {
-	_ = opener.Open(mmauth.LoginURL(m.cfg.ServerURL))
+	_ = openURL(mmauth.LoginURL(m.cfg.ServerURL))
 	m.authErr = false
 	m.authFocus = authFocusToken
 	// Whatever token arrives after this — captured or pasted — came out of the
@@ -365,19 +371,38 @@ func (m *Model) handleTelemetryKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.telemetryFocus = (m.telemetryFocus + 1) % telemetryFieldCount
 		return m, nil
 	case "enter":
-		consent := m.telemetryFocus == telemetryFocusYes
-		m.applyTelemetry(consent)
-		if err := config.Save(m.cfg); err != nil {
-			m.authMsg = "Couldn't save config: " + oneLine(err.Error())
+		// Enter acts on whatever is focused, and what is focused until someone
+		// moves is the docs link — so the three steps before this one being
+		// finished with enter cannot answer this one. The most a reflex can do
+		// on this screen is read about the choice.
+		if m.telemetryFocus == telemetryFocusLink {
+			if err := openURL(telemetryDocsURL); err != nil {
+				// The URL is on screen right there, so this is recoverable by
+				// copying it; say so rather than looking like a dead key.
+				m.authMsg = "Couldn't open a browser — copy the link above."
+			}
 			return m, nil
 		}
-		// Only now is the answer recorded on disk, which is what
-		// ReleasePending checks before it sends anything held.
-		m.recordConsent(consent)
-		m.phase = phaseDone
+		m.answerTelemetry(m.telemetryFocus == telemetryFocusYes)
 		return m, nil
 	}
 	return m, nil
+}
+
+// answerTelemetry records consent and finishes the wizard. Shared by the two
+// answer keys so "yes" and "no" differ in exactly one bool and cannot drift
+// apart — the save, the funnel handoff and the ordering between them are the
+// same work either way.
+func (m *Model) answerTelemetry(consent bool) {
+	m.applyTelemetry(consent)
+	if err := config.Save(m.cfg); err != nil {
+		m.authMsg = "Couldn't save config: " + oneLine(err.Error())
+		return
+	}
+	// Only now is the answer recorded on disk, which is what ReleasePending
+	// checks before it sends anything held.
+	m.recordConsent(consent)
+	m.phase = phaseDone
 }
 
 // applyTelemetry records the answer in the config. Opting in mints the random

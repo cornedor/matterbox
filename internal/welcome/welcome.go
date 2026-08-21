@@ -81,11 +81,15 @@ const (
 	stepTelemetry
 )
 
-// Focusable controls on the telemetry step, in tab order: the answers to a
-// yes/no question. Declining is focused when the step opens — consent has to be
-// chosen deliberately, not collected from someone holding down enter.
+// Focusable controls on the telemetry step, in tab order. The docs link comes
+// first because it is the zero value, and therefore what the step opens on: the
+// only control enter can reach before a deliberate move is the one that explains
+// the choice. Neither answer is ever preselected — a wizard walked on enter
+// would otherwise record an answer nobody gave, and on a re-run (where someone
+// moves fastest) it would be their previous answer re-confirmed silently.
 const (
-	telemetryFocusYes = iota
+	telemetryFocusLink = iota
+	telemetryFocusYes
 	telemetryFocusNo
 	telemetryFieldCount
 )
@@ -130,7 +134,7 @@ type Model struct {
 
 	authFocus int // focused control on the auth step (authFocus* consts)
 
-	telemetryFocus int // focused answer on the telemetry step (telemetryFocus* consts)
+	telemetryFocus int // focused control on the telemetry step (telemetryFocus* consts)
 
 	server   textField
 	user     textField
@@ -224,15 +228,10 @@ func New(cfg *config.Config, demo bool) *Model {
 	})
 
 	m := &Model{rend: rend, cfg: cfg, phase: phaseIntro, step: stepServer, demo: demo}
-	// Seed the answer from the config, so someone who already opted in and runs
-	// the wizard again sees their current choice rather than a screen that looks
-	// like they never agreed. Everyone else opens on the decline button: consent
-	// is chosen, never defaulted into.
-	if cfg.TelemetryEnabled() {
-		m.telemetryFocus = telemetryFocusYes
-	} else {
-		m.telemetryFocus = telemetryFocusNo
-	}
+	// telemetryFocus is deliberately left at telemetryFocusLink — the docs link,
+	// not an answer — including on a re-run by someone who already answered.
+	// Seeding it from the config would put an answer under enter, and a re-run
+	// is exactly when someone moves fast through a screen they have seen before.
 	m.themeNames = allThemeNames()
 	if cfg.ServerURL != "" && cfg.ServerURL != config.PlaceholderServerURL {
 		m.server.setValue(cfg.ServerURL)
