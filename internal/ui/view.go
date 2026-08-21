@@ -1856,6 +1856,44 @@ func (m *Model) dmCustomStatus(c *model.Channel) (model.CustomStatus, bool) {
 	return cs, true
 }
 
+// rowBar renders one sidebar row inside a full-width bar of st's styling.
+// lipgloss wraps a render in a single SGR pair, so any reset the content brings
+// itself closes the bar there and every cell after it draws unhighlighted — a
+// DM's coloured presence dot cut the hover highlight off before the username,
+// and an unread label dropped it before the badge. Re-emitting st's own opening
+// sequence after each inner reset keeps the bar continuous; the reset that ends
+// the row is left alone so the background can't bleed into the border column.
+func rowBar(st lipgloss.Style, width int, content string) string {
+	// Probed from st, not from the rendered row: the row's leading escapes may
+	// belong to the content (the presence dot's colour), which must not be
+	// re-opened over the rest of the bar.
+	open := leadingSGR(st.Render("x"))
+	out := st.Width(width).Render(content)
+	if open == "" {
+		return out
+	}
+	out = strings.ReplaceAll(out, "\x1b[m", "\x1b[m"+open)
+	out = strings.ReplaceAll(out, "\x1b[0m", "\x1b[0m"+open)
+	return strings.TrimSuffix(out, open)
+}
+
+// leadingSGR returns the run of SGR sequences s opens with — the styling a
+// lipgloss render puts in front of its content.
+func leadingSGR(s string) string {
+	i := 0
+	for strings.HasPrefix(s[i:], "\x1b[") {
+		j := i + 2
+		for j < len(s) && (s[j] < 0x40 || s[j] > 0x7e) { // CSI final byte is @–~
+			j++
+		}
+		if j >= len(s) || s[j] != 'm' {
+			break
+		}
+		i = j + 1
+	}
+	return s[:i]
+}
+
 func (m *Model) renderChannelsPane(height int) string {
 	innerH := height - 1 // bottom border row (top connects to tab strip)
 	if innerH < 1 {
@@ -1973,9 +2011,9 @@ func (m *Model) renderChannelsPane(height int) string {
 		// hovered (but unselected) row gets a quieter background bar.
 		switch {
 		case i == m.channelIdx:
-			row = selectedRow.Width(channelsWidth - 1).Render("> " + suffix)
+			row = rowBar(selectedRow, channelsWidth-1, "> "+suffix)
 		case m.hover.zone == hitChannel && m.hover.idx == i:
-			row = hoverRowStyle.Width(channelsWidth - 1).Render(gutter + suffix)
+			row = rowBar(hoverRowStyle, channelsWidth-1, gutter+suffix)
 		}
 		rows = append(rows, row)
 	}
