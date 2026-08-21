@@ -120,7 +120,8 @@ func (m *Model) onFeedTab() bool {
 
 // openFeedTab switches to the synthetic Feed tab and kicks off a build.
 // Idempotent — calling it while already on Feed just refreshes.
-func (m *Model) openFeedTab() tea.Cmd {
+func (m *Model) openFeedTab(via string) tea.Cmd {
+	m.recordFeedAction("opened", via)
 	for i := 0; i <= m.maxTeamIdx(); i++ {
 		if kind, _, _ := m.tabAt(i); kind == tabFeed {
 			m.teamIdx = i
@@ -483,16 +484,22 @@ func (m Model) handleFeedKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.feed.view.ScrollDown(m.feed.view.Height() / 2)
 		return m, nil
 	case key.Matches(msg, m.keys.OpenChannel):
+		m.recordFeedAction("open_channel", "key")
 		return m.openFeedEntry()
 	case key.Matches(msg, m.keys.FeedReply):
+		m.recordFeedAction("reply", "key")
 		return m.replyFromFeedEntry()
 	case key.Matches(msg, m.keys.MarkRead):
+		m.recordFeedAction("mark_read", "key")
 		return m.markFeedEntryRead()
 	case key.Matches(msg, m.keys.MarkAllRead):
+		m.recordFeedAction("mark_all_read", "key")
 		return m, m.markAllFeedRead()
 	case key.Matches(msg, m.keys.Refresh):
+		m.recordFeedAction("refresh", "key")
 		return m, m.buildFeed()
 	case key.Matches(msg, m.keys.FeedMuted):
+		m.recordFeedAction("toggle_muted", "key")
 		return m, m.toggleFeedMuted()
 	case key.Matches(msg, m.keys.Tab):
 		return m.cycleFocus(1)
@@ -526,7 +533,7 @@ func (m *Model) enterFeedEntry() (e feedEntry, cmd tea.Cmd, ok bool) {
 	if len(e.unread) > 0 {
 		m.pendingJumpPostID = e.unread[0].Id
 	}
-	return e, tea.Batch(m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id)), true
+	return e, tea.Batch(m.openChannelLoadCmd(ch.Id, "feed"), m.bumpChannelStat(ch.Id)), true
 }
 
 // openFeedEntry opens the selected bubble's channel (enter).
@@ -552,7 +559,7 @@ func (m Model) replyFromFeedEntry() (tea.Model, tea.Cmd) {
 	if len(e.unread) == 0 {
 		return m, cmd
 	}
-	next, threadCmd := m.openThreadForPost(e.unread[len(e.unread)-1])
+	next, threadCmd := m.openThreadForPost(e.unread[len(e.unread)-1], "feed")
 	return next, tea.Batch(cmd, threadCmd)
 }
 

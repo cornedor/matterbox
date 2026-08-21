@@ -19,6 +19,7 @@ const historyTimeFormat = "2006-01-02 15:04"
 // still open the popup so the user gets explicit feedback (rather than
 // silently swallowing the key).
 func (m *Model) openHistory(p *model.Post) {
+	m.recordActed(m.actedRecord("history", p, "key"))
 	if p == nil || p.Id == "" {
 		return
 	}

@@ -1025,6 +1025,15 @@ func (m Model) handleEmojiImagesFetched(msg emojiImagesFetchedMsg) (Model, tea.C
 	m.emojiImg.markFailed(msg.failed...)
 	m.emojiImg.markUnresolved(msg.retry...)
 	if len(readyNames) > 0 {
+		m.recordMedia("emoji_image", "ok", "", 0)
+	}
+	if len(msg.failed) > 0 {
+		m.recordMedia("emoji_image", "error", "parse", 0)
+	}
+	if len(msg.retry) > 0 {
+		m.recordMedia("emoji_image", "unavailable", "network", 0)
+	}
+	if len(readyNames) > 0 {
 		m.invalidatePostsForEmoji(readyNames)
 		m.renderMessages()
 		m.renderThread()

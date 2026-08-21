@@ -24,6 +24,8 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/mattermost/mattermost/server/public/model"
 	xdraw "golang.org/x/image/draw"
+
+	"matterbox/internal/telemetry"
 )
 
 // previewHTTPClient fetches external preview images (e.g. GIF-picker ![](…)
@@ -199,6 +201,10 @@ type previewImageLoadedMsg struct {
 	rows        int
 	caption     string
 	err         error
+	// started dates the decode + transmit, for media_rendered. The preview
+	// modal is where a slow decode is most visible: the screen sits empty until
+	// the image arrives.
+	started time.Time
 }
 
 // previewReencodedMsg carries frames re-encoded at a new placement size (after a
@@ -324,14 +330,15 @@ func (m Model) openPreviewItems(items []previewItem, start int) (tea.Model, tea.
 // image id the sequences are built for. Encoding here — not in the Update
 // handler — is what keeps a slow PNG encode off the UI goroutine.
 func (m Model) loadPreviewImage(gen int, id uint32, it previewItem) tea.Cmd {
+	started := featureStart()
 	return func() tea.Msg {
 		data, err := m.readPreviewBytes(it)
 		if err != nil {
-			return previewImageLoadedMsg{gen: gen, err: err}
+			return previewImageLoadedMsg{gen: gen, err: err, started: started}
 		}
 		frames, delays, derr := m.decodePreviewFrames(data, m.animatePreview)
 		if derr != nil {
-			return previewImageLoadedMsg{gen: gen, err: fmt.Errorf("decode image: %w", derr)}
+			return previewImageLoadedMsg{gen: gen, err: fmt.Errorf("decode image: %w", derr), started: started}
 		}
 		cols, rows := m.computePreviewCells(frames[0].Bounds())
 		native := m.nativeAnim && len(frames) > 1
@@ -346,7 +353,7 @@ func (m Model) loadPreviewImage(gen int, id uint32, it previewItem) tea.Cmd {
 			seqs, eerr = encodePreviewFrames(frames, cols, rows, id, m.cellPxW, m.cellPxH)
 		}
 		if eerr != nil {
-			return previewImageLoadedMsg{gen: gen, err: eerr}
+			return previewImageLoadedMsg{gen: gen, err: eerr, started: started}
 		}
 		// Report the original's dimensions/size in the caption even when we
 		// rendered the smaller preview rendition (frames[0] would be the
@@ -363,7 +370,7 @@ func (m Model) loadPreviewImage(gen int, id uint32, it previewItem) tea.Cmd {
 		}
 		return previewImageLoadedMsg{
 			gen: gen, frames: frames, delays: delays, seqs: seqs, native: native, nativeSetup: nativeSetup,
-			cols: cols, rows: rows, caption: previewCaption(it.name, w, h, size),
+			cols: cols, rows: rows, caption: previewCaption(it.name, w, h, size), started: started,
 		}
 	}
 }
@@ -546,12 +553,16 @@ func (m Model) handlePreviewLoaded(msg previewImageLoadedMsg) (tea.Model, tea.Cm
 	m.preview.loading = false
 	if msg.err != nil {
 		m.preview.err = msg.err
+		m.recordMedia("image_preview", "error", telemetry.ClassifyError(msg.err), decodeMillis(msg.started))
 		return m, nil
 	}
 	if len(msg.seqs) == 0 || len(msg.frames) == 0 {
 		m.preview.err = fmt.Errorf("preview produced no frames")
+		m.recordMedia("image_preview", "empty", "", decodeMillis(msg.started))
 		return m, nil
 	}
+	m.recordMedia("image_preview", "ok", "", decodeMillis(msg.started))
+	telemetry.Feature("image_preview")
 	m.preview.frames = msg.frames
 	m.preview.delays = msg.delays
 	m.preview.seqs = msg.seqs

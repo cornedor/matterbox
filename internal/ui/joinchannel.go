@@ -292,6 +292,7 @@ func (m Model) submitJoinChannel() (tea.Model, tea.Cmd) {
 // applyChannelJoined closes the modal and opens the channel we just joined. A
 // failure keeps the modal open with the server's message.
 func (m Model) applyChannelJoined(msg channelJoinedMsg) (tea.Model, tea.Cmd) {
+	m.recordFeature("channel_join", "palette", noLatency, 0, msg.err)
 	if msg.err != nil {
 		if m.joinChan == nil {
 			m.status = "join channel: " + oneLine(msg.err.Error())

@@ -114,5 +114,9 @@ func (m Model) openChannelExternal(channelID string) (tea.Model, tea.Cmd) {
 	m.filterValue = ""
 	m.filter.SetValue("")
 	m.focus = focusMessages
-	return m, tea.Batch(m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id))
+	// "cli" covers both callers of the control socket: a hand-run `matterbox
+	// open` and the desktop-notification helper running the same verb. They are
+	// indistinguishable on the wire, so claiming "notification" for either would
+	// be a guess.
+	return m, tea.Batch(m.openChannelLoadCmd(ch.Id, "cli"), m.bumpChannelStat(ch.Id))
 }

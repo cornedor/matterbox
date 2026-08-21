@@ -45,6 +45,10 @@ type sqlResultsMsg struct {
 	rows      [][]any
 	truncated bool
 	err       string
+	// started dates the query, for feature_used's latency. It rides on the
+	// message because the query runs on a worker goroutine and the UI only
+	// learns of it here.
+	started time.Time
 }
 
 // sqlState owns the SQL tab: a multi-line query editor over the local message
@@ -313,11 +317,12 @@ func (m Model) runSQL() (tea.Model, tea.Cmd) {
 func (m Model) runSQLQuery(seq int, query string) tea.Cmd {
 	st := m.store
 	parent := m.ctx
+	started := featureStart()
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(parent, sqlQueryTimeout)
 		defer cancel()
 		res, err := st.RawQuery(ctx, query, sqlMaxRows)
-		out := sqlResultsMsg{seq: seq, query: query, err: errString(err)}
+		out := sqlResultsMsg{seq: seq, query: query, err: errString(err), started: started}
 		if res != nil {
 			out.cols = res.Columns
 			out.rows = res.Rows
@@ -342,6 +347,10 @@ func (m Model) applySQLResults(msg sqlResultsMsg) (tea.Model, tea.Cmd) {
 	m.sql.rows = msg.rows
 	m.sql.truncated = msg.truncated
 	m.sql.idx = 0
+	// The SQL tab is off by default, so its adoption can only be read against
+	// how many people switched it on (app_started's features_on) — and a query
+	// that errors is the most likely reason someone tries it once and stops.
+	m.recordFeature("sql_tab", "key", msg.started, len(msg.rows), errFromString(msg.err))
 	// Reconstruct each row into a post once, here, so renderSQLResults (which
 	// runs on every selection move) doesn't re-parse raw_json per keystroke.
 	m.sql.posts = make([]*model.Post, len(msg.rows))

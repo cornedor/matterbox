@@ -70,6 +70,10 @@ type summaryState struct {
 	feedMode  bool
 	count     int    // messages included in the transcript
 	progress  string // gathering-phase status line
+	// startedAt dates the whole run — gather plus stream — for feature_used's
+	// latency. A local model on a big window is the slowest thing matterbox
+	// does, and how slow it is in the field is the question.
+	startedAt time.Time
 	spinner   spinner.Model
 	seq       int // bumps each operation so stale responses are dropped
 
@@ -150,6 +154,7 @@ func (m *Model) startChannelSummary() tea.Cmd {
 	m.summary.window = formatWindow(m.summary.days, m.summary.hours, m.summary.minutes)
 	m.summary.phase = summaryGathering
 	m.summary.seq++
+	m.summary.startedAt = featureStart()
 	m.summary.progress = "gathering messages…"
 	m.beginSummarySpinner()
 	names := snapshotNames(m.userNames)
@@ -173,6 +178,7 @@ func (m *Model) startFeedSummary() tea.Cmd {
 	}
 	m.summary = newSummaryState()
 	m.summary.feedMode = true
+	m.summary.startedAt = featureStart()
 	m.summary.label = "Unread Feed"
 	m.summary.count = count
 	if m.me != nil {
@@ -235,6 +241,7 @@ func (m *Model) applySummaryGathered(msg summaryGatheredMsg) tea.Cmd {
 		m.summary.err = msg.err
 		m.sizeSummaryView()
 		m.renderSummaryViewBody()
+		m.recordFeature("summary", "palette", m.summary.startedAt, 0, msg.err)
 		return nil
 	}
 	if msg.count == 0 {
@@ -250,6 +257,9 @@ func (m *Model) applySummaryGathered(msg summaryGatheredMsg) tea.Cmd {
 		m.sizeSummaryView()
 		m.renderSummaryViewBody()
 		m.summary.view.GotoTop()
+		// Nothing in the window: the feature worked and had nothing to say,
+		// which is a different finding from a model that failed.
+		m.recordFeatureOutcome("summary", "palette", "empty", m.summary.startedAt, 0)
 		return nil
 	}
 	m.summary.count = msg.count
@@ -299,6 +309,7 @@ func (m *Model) finishSummaryStream(err error) {
 	m.summary.stream = nil
 	m.summary.phase = summaryDone
 	m.summary.err = err
+	m.recordFeature("summary", "palette", m.summary.startedAt, m.summary.count, err)
 	m.sizeSummaryView()
 	m.renderSummaryViewBody()
 	m.summary.view.GotoTop()

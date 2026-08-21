@@ -96,7 +96,11 @@ func startCLITelemetry() bool {
 	if cfg == nil || !cfg.TelemetryEnabled() {
 		return false
 	}
-	telemetry.StartMode(cfg, telemetry.ModeCLI)
+	// ReleasePending rather than StartMode: a subcommand's own events (a failed
+	// login, a search it ran) happened before this point and were held in
+	// memory, since there was no client to take them. Opening one replays them
+	// — and without consent it discards them instead. See telemetry/pending.go.
+	telemetry.ReleasePending(cfg, telemetry.ModeCLI)
 	if !telemetry.Enabled() {
 		return false
 	}

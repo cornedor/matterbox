@@ -132,6 +132,13 @@ func (m *Model) runGrammarCheck(seq int, text string) tea.Cmd {
 // silent — a flaky local server shouldn't spam the status line every keystroke.
 func (m *Model) applyGrammarResult(msg grammarResultMsg) tea.Cmd {
 	if msg.err != nil {
+		// Deliberately silent in the UI (see above), which is exactly why it is
+		// worth reporting: a LanguageTool server that stopped answering looks
+		// to the user like a feature that simply does nothing. Once per
+		// session — a check fires on every debounce tick.
+		if m.firstTime("grammar_check/error") {
+			m.recordFeature("grammar_check", "auto", noLatency, 0, msg.err)
+		}
 		return nil
 	}
 	m.cacheGrammar(msg.text, msg.matches)
@@ -258,6 +265,12 @@ func (m *Model) applyGrammarSuggestion(i int) tea.Cmd {
 	m.syncInputHeight()
 	m.closeGrammarPopup()
 	m.clearGrammar()
+	// A suggestion accepted is the feature paying off — the checks themselves
+	// run automatically and counting those would measure typing, not use.
+	m.recordFeature("grammar_check", "key", noLatency, len(mt.Replacements), nil)
+	// The app just rewrote the draft; an undo in the next few seconds is a
+	// verdict on the suggestion (see noteUndo).
+	m.noteAutoComposerEdit()
 	return m.scheduleGrammarCheck()
 }
 

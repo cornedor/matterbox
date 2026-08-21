@@ -282,6 +282,7 @@ func runStartGroupDM(m *Model, arg string) tea.Cmd {
 // bucket before the jump so the row is selectable. The composer takes focus,
 // matching the switcher's "jump there and start typing" behaviour.
 func (m Model) applyGroupDMResolved(msg groupDMResolvedMsg) (tea.Model, tea.Cmd) {
+	m.recordFeature("group_dm", "palette", noLatency, 0, msg.err)
 	if msg.err != nil {
 		m.status = "group DM: " + msg.err.Error()
 		return m, nil
@@ -299,7 +300,7 @@ func (m Model) applyGroupDMResolved(msg groupDMResolvedMsg) (tea.Model, tea.Cmd)
 	m.status = ""
 	// openChannelLoadCmd sets m.openChannelID synchronously, so a trailing /dm
 	// message targets the freshly-opened channel.
-	cmds := []tea.Cmd{m.input.Focus(), m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id)}
+	cmds := []tea.Cmd{m.input.Focus(), m.openChannelLoadCmd(ch.Id, "dm_jump"), m.bumpChannelStat(ch.Id)}
 	if msg.message != "" {
 		cmds = append(cmds, m.sendMessage(ch.Id, "", msg.message, nil))
 	}
@@ -369,12 +370,12 @@ func runSetCustomStatus(m *Model, arg string) tea.Cmd {
 	m.status = "custom status: " + strings.TrimSpace(m.renderEmojiGlyph(emojiName)+" "+text)
 	id := m.me.Id
 	client, ctx := m.client, m.ctx
-	return func() tea.Msg {
+	return m.reportFeature("custom_status", "palette", func() tea.Msg {
 		if err := client.UpdateCustomStatus(ctx, id, &cs); err != nil {
 			return errMsg{err}
 		}
 		return nil
-	}
+	})
 }
 
 func runClearCustomStatus(m *Model, _ string) tea.Cmd {
@@ -386,12 +387,12 @@ func runClearCustomStatus(m *Model, _ string) tea.Cmd {
 	m.status = "custom status cleared"
 	id := m.me.Id
 	client, ctx := m.client, m.ctx
-	return func() tea.Msg {
+	return m.reportFeature("custom_status", "palette", func() tea.Msg {
 		if err := client.ClearCustomStatus(ctx, id); err != nil {
 			return errMsg{err}
 		}
 		return nil
-	}
+	})
 }
 
 // muteCommand returns the mute/unmute toggle for the channel that was open
@@ -432,14 +433,20 @@ func (m Model) feedMutedCommand() (switcherCommand, bool) {
 			name: "Feed: hide muted channels",
 			tid:  "feed_hide_muted",
 			desc: "drop muted channels back out of the unread feed",
-			run:  func(m *Model, _ string) tea.Cmd { return m.toggleFeedMuted() },
+			run: func(m *Model, _ string) tea.Cmd {
+				m.recordFeedAction("toggle_muted", "palette")
+				return m.toggleFeedMuted()
+			},
 		}, true
 	}
 	return switcherCommand{
 		name: "Feed: show muted channels",
 		tid:  "feed_show_muted",
 		desc: "include unread messages from muted channels in the feed",
-		run:  func(m *Model, _ string) tea.Cmd { return m.toggleFeedMuted() },
+		run: func(m *Model, _ string) tea.Cmd {
+			m.recordFeedAction("toggle_muted", "palette")
+			return m.toggleFeedMuted()
+		},
 	}, true
 }
 
@@ -455,7 +462,10 @@ func (m Model) feedMarkAllCommand() (switcherCommand, bool) {
 		name: "Feed: mark all read (" + plural(len(m.feed.entries), "channel", "channels") + ")",
 		tid:  "feed_mark_all_read",
 		desc: "clear the unread state of every channel the feed is showing",
-		run:  func(m *Model, _ string) tea.Cmd { return m.markAllFeedRead() },
+		run: func(m *Model, _ string) tea.Cmd {
+			m.recordFeedAction("mark_all_read", "palette")
+			return m.markAllFeedRead()
+		},
 	}, true
 }
 

@@ -126,6 +126,7 @@ func (m *Model) openReactionPicker(postID string) tea.Cmd {
 	if postID == "" {
 		return nil
 	}
+	m.notePickerOpened()
 	m.reactionPickerPostID = postID
 	m.reactionPickerIdx = 0
 	m.reactionSearch.SetValue("")
@@ -360,6 +361,15 @@ func (m *Model) applyReactionPick() tea.Cmd {
 	postID := m.reactionPickerPostID
 	p := m.findPostByID(postID)
 	hasIt := m.userHasReacted(p, name)
+	// Built before the picker closes, while the search box and the post's
+	// existing reactions still say which slot the emoji came from. The emoji
+	// itself is never sent — see reactionSlot.
+	acted := m.actedRecord(reactAction(hasIt), p, "picker")
+	acted.ReactionSlot = reactionSlot(
+		strings.TrimSpace(m.reactionSearch.Value()) != "",
+		m.reactionPickerIdx,
+		len(m.postReactionEmojiOrder(p)),
+	)
 	m.closeReactionPicker()
 
 	userID := m.me.Id
@@ -370,7 +380,7 @@ func (m *Model) applyReactionPick() tea.Cmd {
 		m.removeLocalReaction(postID, userID, name)
 		m.renderMessages()
 		m.renderThread()
-		return m.removeReactionCmd(userID, postID, name)
+		return m.reportActed(m.removeReactionCmd(userID, postID, name), acted)
 	}
 	m.addLocalReaction(postID, userID, name)
 	m.renderMessages()
@@ -378,7 +388,8 @@ func (m *Model) applyReactionPick() tea.Cmd {
 	// Picking an emoji to react with is the same "I want this emoji" signal
 	// as accepting it from the `:` composer picker, so it feeds the shared
 	// popularity counter.
-	return tea.Batch(m.bumpEmojiStat(name), m.addReactionCmd(userID, postID, name))
+	return tea.Batch(m.bumpEmojiStat(name),
+		m.reportActed(m.addReactionCmd(userID, postID, name), acted))
 }
 
 func (m Model) addReactionCmd(userID, postID, emojiName string) tea.Cmd {
@@ -589,6 +600,9 @@ func (m Model) handleReactionPickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 	case "ctrl+c":
 		return m, tea.Quit
 	case "esc":
+		// Opened and dismissed without reacting: either the five configured
+		// emoji are the wrong five, or the key is too easy to hit by accident.
+		m.notePickerAbandoned("modal:reaction-picker", m.tel.pickerAt())
 		m.closeReactionPicker()
 		return m, nil
 	case "enter":

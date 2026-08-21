@@ -301,7 +301,7 @@ func (m *Model) dropChannel(channelID string) tea.Cmd {
 	m.filterValue = ""
 	m.filter.SetValue("")
 	if len(rest) == 0 {
-		m.enterChannel("")
+		m.enterChannel("", "restore")
 		m.channelIdx = 0
 		m.posts = nil
 		m.postIdx = 0
@@ -310,7 +310,9 @@ func (m *Model) dropChannel(channelID string) tea.Cmd {
 	}
 	next := rest[min(idx, len(rest)-1)]
 	m.switchToChannelHomeTeam(next)
-	return m.openChannelLoadCmd(next.Id)
+	// Not a conversation the user picked — the app landing them somewhere after
+	// the one they were in went away.
+	return m.openChannelLoadCmd(next.Id, "restore")
 }
 
 // renderChannelConfirm draws the centred yes/no modal, with the consequence

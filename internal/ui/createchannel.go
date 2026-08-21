@@ -410,6 +410,7 @@ func (m *Model) focusCreateChannelRow() tea.Cmd {
 // A failure keeps the modal open with the server's message so the user can fix
 // the field and retry.
 func (m Model) applyChannelCreated(msg channelCreatedMsg) (tea.Model, tea.Cmd) {
+	m.recordFeature("channel_create", "palette", noLatency, 0, msg.err)
 	if msg.err != nil {
 		if m.createChan == nil {
 			m.status = "create channel: " + oneLine(msg.err.Error())

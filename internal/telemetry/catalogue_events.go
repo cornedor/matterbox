@@ -61,7 +61,7 @@ var ChannelTypes = []string{"public", "private", "dm", "group_dm", "unknown"}
 var OpenVias = []string{
 	"sidebar_key", "sidebar_mouse", "switcher", "filter", "nav_key",
 	"team_jump", "dm_jump", "feed", "search_hit", "permalink", "cli",
-	"notification", "unread_jump", "restore", "unknown",
+	"notification", "unread_jump", "palette", "restore", "unknown",
 }
 
 // Outcomes are the coarse result of an operation that can fail. Deliberately
@@ -75,6 +75,10 @@ var ErrorClasses = []string{
 	"network", "auth", "permission", "not_found", "rate_limited",
 	"server", "config", "disk", "parse", "unsupported", "internal", "unknown",
 }
+
+// SetupSteps are the setup wizard's screens, in order. Shared by setup_step and
+// setup_finished so the funnel's stages and its endpoint can't drift apart.
+var SetupSteps = []string{"server", "login", "advanced", "telemetry"}
 
 // ImageProtocols are the terminal graphics protocols matterbox can use. Which
 // one is available decides whether image previews, emoji images and video are
@@ -301,7 +305,9 @@ var Events = []EventSpec{
 	{
 		Name:    "version_upgraded",
 		Emitter: "VersionUpgraded",
-		Planned: true,
+		// Call sites use CheckVersion, which owns the comparison against the
+		// remembered version and the write-back; see EventSpec.Trigger.
+		Trigger: "CheckVersion",
 		Desc:    "The first launch of a build whose version differs from the last one seen.",
 		Why: "Tells us whether people update at all, and how long a release takes to " +
 			"reach them — without which \"this bug is fixed\" and \"nobody is running the " +
@@ -316,26 +322,24 @@ var Events = []EventSpec{
 	{
 		Name:    "setup_step",
 		Emitter: "SetupStep",
-		Planned: true,
 		Desc:    "The setup wizard displayed a step.",
 		Why: "The wizard is the whole first impression, and a fresh install that fails " +
 			"here never becomes a user. Step-by-step events make it a funnel, so the step " +
 			"people abandon is visible instead of inferred.",
 		Props: []PropSpec{
-			{Name: "step", Kind: KindEnum, Values: []string{"server", "login", "advanced", "telemetry", "done"}, Desc: "Which wizard step."},
+			{Name: "step", Kind: KindEnum, Values: SetupSteps, Desc: "Which wizard step."},
 			{Name: "attempt", Kind: KindCount, Desc: "How many times this step has been shown this run — a step shown three times is a step being fought with."},
 		},
 	},
 	{
 		Name:    "setup_finished",
 		Emitter: "SetupFinished",
-		Planned: true,
 		Desc:    "The setup wizard completed or was abandoned.",
 		Why: "Closes the activation funnel: what fraction of fresh installs reach a " +
 			"working login, how long it takes, and where the rest stop.",
 		Props: []PropSpec{
 			{Name: "outcome", Kind: KindEnum, Values: []string{"completed", "abandoned"}, Desc: "Whether setup reached a working login."},
-			{Name: "last_step", Kind: KindEnum, Values: []string{"server", "login", "advanced", "telemetry", "done"}, Desc: "The step it ended on."},
+			{Name: "last_step", Kind: KindEnum, Values: SetupSteps, Desc: "The step it ended on. Always the telemetry question for a wizard that was answered — which is the only kind that can report anything at all — so this is here for a future step order rather than for today's."},
 			{Name: "duration", Kind: KindEnum, Values: SecondsBuckets, Desc: "How long setup took, bucketed."},
 			{Name: "auth_method", Kind: KindEnum, Values: []string{"password", "oauth", "token", "none"}, Desc: "How the login was obtained."},
 			{Name: "telemetry_opt_in", Kind: KindBool, Desc: "The answer to the telemetry question. Recorded only when the answer was yes — a `no` sends nothing at all, so this property is always true and exists to make the opt-in rate legible next to install counts."},
@@ -344,7 +348,6 @@ var Events = []EventSpec{
 	{
 		Name:    "login_failed",
 		Emitter: "LoginFailed",
-		Planned: true,
 		Desc:    "A login attempt was rejected.",
 		Why: "Login failures are invisible to us today and are the most likely reason a " +
 			"new install is abandoned. The class of failure separates \"our OAuth flow is " +
@@ -360,7 +363,6 @@ var Events = []EventSpec{
 	{
 		Name:    "channel_opened",
 		Emitter: "ChannelOpened",
-		Planned: true,
 		Desc:    "A conversation was opened and rendered.",
 		Why: "The central navigation question: how people get to a conversation, and " +
 			"whether it appears fast. `via` is the payoff — it ranks the sidebar against " +
@@ -402,7 +404,6 @@ var Events = []EventSpec{
 	{
 		Name:    "message_acted",
 		Emitter: "MessageActed",
-		Planned: true,
 		Desc:    "A message was edited, deleted, reacted to, copied, collapsed or saved.",
 		Why: "These are the actions the transcript exists to support, and several of them " +
 			"(edit history, collapse, code copy) were expensive to build with no evidence " +
@@ -423,7 +424,6 @@ var Events = []EventSpec{
 	{
 		Name:    "thread_opened",
 		Emitter: "ThreadOpened",
-		Planned: true,
 		Desc:    "A thread pane was opened on a message.",
 		Why: "Threading is the feature most likely to be either central or ignored, and " +
 			"we do not know which. Reply depth and the nested-reply flag also say whether " +
@@ -438,7 +438,6 @@ var Events = []EventSpec{
 	{
 		Name:    "search_run",
 		Emitter: "SearchRun",
-		Planned: true,
 		Desc:    "A search was executed.",
 		Why: "There are four search backends (server FTS, local FTS, semantic, and the " +
 			"agentic AI search) and no evidence about which earns its keep. Result count " +
@@ -458,7 +457,6 @@ var Events = []EventSpec{
 	{
 		Name:    "search_result_opened",
 		Emitter: "SearchResultOpened",
-		Planned: true,
 		Desc:    "A search hit was opened.",
 		Why: "The other half of search quality: a search that returns fifty results " +
 			"nobody opens has failed, and rank says whether the ranking is any good. " +
@@ -472,7 +470,6 @@ var Events = []EventSpec{
 	{
 		Name:    "feed_used",
 		Emitter: "FeedUsed",
-		Planned: true,
 		Desc:    "An action was taken in the unread feed.",
 		Why: "The feed is matterbox's own idea rather than a Mattermost concept, so " +
 			"whether it is the main way people triage — or an unused tab — is worth " +
@@ -488,7 +485,6 @@ var Events = []EventSpec{
 	{
 		Name:    "feature_used",
 		Emitter: "FeatureUsed",
-		Planned: true,
 		Desc: "A named feature was used, with the outcome and how long it took where that " +
 			"applies. The counted equivalent lives in usage_snapshot's `features` map; this " +
 			"event exists for the features whose *outcome* matters, not just their count.",
@@ -508,7 +504,6 @@ var Events = []EventSpec{
 	{
 		Name:    "forge_action",
 		Emitter: "ForgeAction",
-		Planned: true,
 		Desc:    "A Jira, GitLab or GitHub action was performed from the reference panel.",
 		Why: "The forge integrations are the largest optional subsystem in the app. " +
 			"Whether anyone changes a Jira status or approves a merge request from " +
@@ -528,7 +523,6 @@ var Events = []EventSpec{
 	{
 		Name:    "attachment_added",
 		Emitter: "AttachmentAdded",
-		Planned: true,
 		Desc:    "A file was attached to a message.",
 		Why: "Three separate paths exist (paste, drag-and-drop, picker) and we do not " +
 			"know whether any of them is discoverable. Size and kind say whether the " +
@@ -544,7 +538,6 @@ var Events = []EventSpec{
 	{
 		Name:    "media_rendered",
 		Emitter: "MediaRendered",
-		Planned: true,
 		Desc:    "An image, animated emoji or video frame was drawn in the terminal.",
 		Why: "Terminal graphics are the most fragile thing matterbox does and the most " +
 			"likely to be silently broken on a given terminal. Pairing the protocol with " +
@@ -597,7 +590,6 @@ var Events = []EventSpec{
 	{
 		Name:    "slow_frame",
 		Emitter: "SlowFrame",
-		Planned: true,
 		Desc:    "A render took long enough to be perceptible.",
 		Why: "Render cost is the recurring performance problem in this codebase and it " +
 			"has only ever been measured locally, on one machine, against one cache. This " +
@@ -616,7 +608,6 @@ var Events = []EventSpec{
 	{
 		Name:    "ws_disconnected",
 		Emitter: "WSDisconnected",
-		Planned: true,
 		Desc:    "The Mattermost websocket dropped.",
 		Why: "Silent disconnects are the worst failure this client has: the UI looks " +
 			"fine and messages stop arriving. Knowing how often it happens in the field, " +
@@ -631,7 +622,6 @@ var Events = []EventSpec{
 	{
 		Name:    "ws_reconnected",
 		Emitter: "WSReconnected",
-		Planned: true,
 		Desc:    "The websocket came back.",
 		Why: "Completes the disconnect picture: how long people spend disconnected, how " +
 			"many attempts it takes, and whether the catch-up resync works — a reconnect " +
@@ -696,7 +686,6 @@ var Events = []EventSpec{
 	{
 		Name:    "daemon_started",
 		Emitter: "DaemonStarted",
-		Planned: true,
 		Desc:    "The `matterbox listen` daemon started.",
 		Why: "The daemon runs unattended for weeks; its configuration is invisible to us " +
 			"and its rules engine is the most complex config surface in the product. How " +
@@ -712,7 +701,6 @@ var Events = []EventSpec{
 	{
 		Name:    "rule_fired",
 		Emitter: "RuleFired",
-		Planned: true,
 		Desc:    "A listen rule matched and its actions ran.",
 		Why: "Says which rule *kinds* are worth their complexity — and, through the " +
 			"outcome, whether the exec and notify actions people rely on are actually " +
@@ -728,7 +716,6 @@ var Events = []EventSpec{
 	{
 		Name:    "notification_actioned",
 		Emitter: "NotificationActioned",
-		Planned: true,
 		Desc:    "A delivered notification was acted on.",
 		Why: "The desktop notification buttons and inline reply took real work and sit " +
 			"outside the app where nothing can be observed. This says whether anyone " +

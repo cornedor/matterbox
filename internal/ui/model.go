@@ -29,6 +29,7 @@ import (
 	"matterbox/internal/languagetool"
 	"matterbox/internal/mm"
 	"matterbox/internal/opener"
+	"matterbox/internal/replyto"
 	"matterbox/internal/semindex"
 	"matterbox/internal/store"
 	"matterbox/internal/telemetry"
@@ -135,10 +136,18 @@ type Model struct {
 	statusPollStarted bool
 
 	// launchEnv holds the app_started properties between New() (which has the
-	// config) and the first WindowSizeMsg (which has the terminal size, the most
-	// useful environment fact a TUI has). Nil once sent, and nil for the whole
-	// session when telemetry is off. See telemetryapp.go.
+	// config) and the point every late-arriving fact is in (the graphics probe,
+	// the channel list). Nil once sent, and nil for the whole session when
+	// telemetry is off. See telemetryapp.go.
 	launchEnv *telemetry.Env
+
+	// tel carries the telemetry state that spans two events — a conversation
+	// opened here and painted there, a search issued on one goroutine and
+	// answered on another. Behind a pointer so an opted-out session pays eight
+	// bytes rather than the struct on every per-keystroke Model copy, and so
+	// View (value receiver) can still record a slow frame. Nil when telemetry
+	// is off; every method on it is nil-safe. See telemetryui.go.
+	tel *uiTelemetry
 
 	// mouseEnabled mirrors config.Mouse: when true, View requests mouse
 	// reporting — the wheel scrolls the focused message/thread pane and the
@@ -1032,7 +1041,17 @@ func New(client *mm.Client, cfg *config.Config) Model {
 			opts = append(opts, store.WithRecencyHalfLife(
 				time.Duration(cfg.Search.RecencyHalfLifeDays*float64(24*time.Hour))))
 		}
-		st, _ = store.Open(p, opts...)
+		var err error
+		if st, err = store.Open(p, opts...); err != nil {
+			// Silently degrading to no cache changes the whole product — no warm
+			// open, no local search, no semantic index — and the user is never
+			// told. Held until telemetry starts, if it does.
+			telemetry.OperationFailed(telemetry.Failure{
+				Where: "store.open",
+				Class: telemetry.ClassifyError(err),
+				Err:   err,
+			})
+		}
 	}
 
 	msgsView := viewport.New()
@@ -1278,6 +1297,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		showDateSeparators: showDateSeparators,
 		mouseEnabled:       mouseEnabled,
 		launchEnv:          newLaunchEnv(cfg, mouseEnabled),
+		tel:                newUITelemetry(),
 		attachOnDrop:       attachOnDrop,
 		focus:              focusMessages,
 		// Start the effects mid-sweep, so the first frame drawn for a post that is
@@ -1524,6 +1544,15 @@ func (m Model) Init() tea.Cmd {
 		splashTickCmd(), splashTimeoutCmd(),
 	}
 	if c := m.emojiProbeCmd(); c != nil {
+		cmds = append(cmds, c)
+	} else {
+		// No probe will run (images configured off, or tmux), so the graphics
+		// question is already settled for the launch event.
+		m.noteLaunchGraphics()
+	}
+	// Bounds how long app_started waits for the facts that arrive late; nil when
+	// telemetry is off.
+	if c := m.launchDeadlineCmd(); c != nil {
 		cmds = append(cmds, c)
 	}
 	return tea.Batch(cmds...)
@@ -1865,6 +1894,7 @@ func (m Model) cachedFilePath(f *model.FileInfo) (string, error) {
 }
 
 func (m Model) copyPostMarkdown(p *model.Post) tea.Cmd {
+	m.recordActed(m.actedRecord("copy_markdown", p, "key"))
 	return m.copyText(p.Message, "markdown")
 }
 
@@ -1929,8 +1959,16 @@ func (m Model) sendMessage(channelID, rootID, text string, fileIDs []string) tea
 		}
 		// Anonymous telemetry, if the user opted in: the shape of the message,
 		// never a word of it. See messageShape.
-		telemetry.MessageSent(messageShape(text, surface, rootID, len(fileIDs),
-			time.Since(started)))
+		shape := messageShape(text, surface, rootID, len(fileIDs), time.Since(started))
+		telemetry.MessageSent(shape)
+		// The two matterbox-only composing features, counted so they appear in
+		// the snapshot's adoption picture next to everything else.
+		if shape.HasEffect {
+			telemetry.Feature("text_effects")
+		}
+		if shape.IsNestedReply {
+			telemetry.Feature("nested_reply")
+		}
 		return postSentMsg{channelID: channelID, post: p}
 	}
 }
@@ -1941,20 +1979,28 @@ func (m Model) sendMessage(channelID, rootID, text string, fileIDs []string) tea
 // is a count or a flag, because what people write is theirs and how they
 // compose is what tells us where composer effort belongs.
 //
-// is_nested_reply and has_effect are deliberately absent: both live in the
-// invisible payload channel appended to the body, and reading that here would
-// mean decoding the message rather than measuring it.
+// is_nested_reply and has_effect are read off the invisible payload channel the
+// body carries (see internal/hidden), by asking whether the marker is present —
+// not by decoding it. They are the two matterbox-only composing features, so
+// nobody else's usage data can say whether they were worth building; the length
+// is measured on the visible text, so an invisible payload can't inflate it.
 func messageShape(text, surface, rootID string, files int, took time.Duration) telemetry.Sent {
+	visible := hidden.Strip(text)
 	return telemetry.Sent{
-		Surface:      surface,
-		IsReply:      rootID != "",
-		Length:       len([]rune(text)),
-		Lines:        strings.Count(text, "\n") + 1,
-		Attachments:  files,
-		Mentions:     strings.Count(text, "@"),
-		HasCodeBlock: strings.Contains(text, "```"),
-		HasLink:      strings.Contains(text, "http://") || strings.Contains(text, "https://"),
-		SendMs:       took.Milliseconds(),
+		Surface:       surface,
+		IsReply:       rootID != "",
+		IsNestedReply: replyto.Carries(text),
+		HasEffect:     hasEffectPayload(text),
+		Length:        len([]rune(visible)),
+		Lines:         strings.Count(visible, "\n") + 1,
+		Attachments:   files,
+		Mentions:      strings.Count(visible, "@"),
+		HasCodeBlock:  strings.Contains(visible, "```"),
+		HasLink:       strings.Contains(visible, "http://") || strings.Contains(visible, "https://"),
+		// The same shortcode pattern the renderer resolves against, so
+		// has_emoji means "matterbox would have drawn an emoji here".
+		HasEmoji: emojiShortcodeRe.MatchString(visible),
+		SendMs:   took.Milliseconds(),
 	}
 }
 
@@ -2687,7 +2733,15 @@ func (m Model) persistDelete(p *model.Post) tea.Cmd {
 // going through here lands replies in the previous channel (see the convroute
 // tests). Callers still own loading/placing posts and any focus/scroll changes.
 // Returns the draft-swap command to batch into the caller's result.
-func (m *Model) enterChannel(channelID string) tea.Cmd {
+//
+// via names how the conversation was reached, for channel_opened. It is a
+// parameter rather than a field somebody sets beforehand because this is the one
+// funnel every open goes through: a new entry point cannot be added without the
+// compiler asking how it got here, which is the only way `via` stays honest —
+// and `via` is the payoff of the whole event, since it ranks the sidebar against
+// the switcher against the keyboard jumps against the outside entry points.
+func (m *Model) enterChannel(channelID, via string) tea.Cmd {
+	m.armChannelOpen(channelID, via)
 	// Close a channel-info panel describing a different channel so it can't
 	// show stale info once the open channel changes out from under it.
 	if m.infoOpen && channelID != m.infoChannelID {
@@ -2723,8 +2777,8 @@ func (m *Model) enterChannel(channelID string) tea.Cmd {
 	return draftCmd
 }
 
-func (m *Model) openChannelLoadCmd(channelID string) tea.Cmd {
-	draftCmd := m.enterChannel(channelID)
+func (m *Model) openChannelLoadCmd(channelID, via string) tea.Cmd {
+	draftCmd := m.enterChannel(channelID, via)
 	// Freeze the read/unread boundary for this view, then let renderMessages
 	// resolve it to a concrete post. Only when the channel actually has unread
 	// messages — otherwise reopening an already-read channel would draw a stale
@@ -2739,6 +2793,7 @@ func (m *Model) openChannelLoadCmd(channelID string) tea.Cmd {
 		}
 	}
 	if cached := m.loadFromStore(channelID); len(cached) > 0 {
+		m.noteOpenCache(channelID, len(cached))
 		m.posts = cached
 		m.postIdx = len(m.posts) - 1
 		m.status = ""
@@ -2757,6 +2812,9 @@ func (m *Model) openChannelLoadCmd(channelID string) tea.Cmd {
 			m.anchorMsgSelBottom = true
 		}
 		m.renderMessages()
+		// The transcript is on screen out of the cache, before the network has
+		// answered: this is the warm open, and it is what render_ms measures.
+		m.recordChannelOpened(channelID)
 		// Reconcile the recent window against the server rather than only
 		// fetching posts *after* the newest cached one. The cache is not
 		// guaranteed contiguous: a message posted while matterbox was
@@ -3203,7 +3261,9 @@ func (m *Model) adoptChannel(ch *model.Channel) tea.Cmd {
 	m.filterValue = ""
 	m.filter.SetValue("")
 	m.focus = focusInput
-	return tea.Batch(m.input.Focus(), m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id))
+	// Reached by creating or joining a channel, both of which are command-palette
+	// entries — so "palette", not a navigation route.
+	return tea.Batch(m.input.Focus(), m.openChannelLoadCmd(ch.Id, "palette"), m.bumpChannelStat(ch.Id))
 }
 
 // sortDMBucket re-orders the DM bucket by most recent activity (newest

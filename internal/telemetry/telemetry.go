@@ -136,12 +136,16 @@ func Start(cfg *config.Config) { StartMode(cfg, ModeTUI) }
 // `matterbox listen`.
 func StartMode(cfg *config.Config, mode Mode) {
 	if cfg == nil || !cfg.TelemetryEnabled() {
+		// No consent: anything a pre-consent surface held is discarded here
+		// rather than left in memory for a client that will never open.
+		DropPending()
 		return
 	}
 	// Empty only when a build deliberately blanked it (a fork pointing
 	// somewhere else, or a test): there is nowhere to send, so do nothing.
 	key := envOr(KeyEnv, projectKey)
 	if key == "" {
+		DropPending()
 		return
 	}
 	mu.Lock()
@@ -221,6 +225,10 @@ func capture(event string, props map[string]any, personProps []string) {
 		if strict.Load() {
 			checkStrict(event, props)
 		}
+		// A surface that runs before consent can be checked holds its events
+		// instead of losing them; they are replayed only if a client later
+		// opens, which requires consent. See pending.go.
+		holdEvent(event, props)
 		return
 	}
 	spec, ok := Spec(event)
@@ -303,6 +311,9 @@ func Close() {
 	if c != nil {
 		_ = c.Close()
 	}
+	// Nothing can be replayed once the client is gone, so a buffer that
+	// outlived it is garbage rather than data.
+	DropPending()
 	resetExceptionBudget()
 }
 

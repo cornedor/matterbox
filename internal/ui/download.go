@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/mattermost/mattermost/server/public/model"
@@ -15,9 +16,12 @@ import (
 // written (so a partial run before an error still names what landed); err
 // is the first failure, if any.
 type attachmentsDownloadedMsg struct {
-	dir   string
-	saved []string
-	err   error
+	// started dates the transfer, for feature_used's latency: a download is
+	// slow enough for the missing progress indicator to be a real complaint.
+	started time.Time
+	dir     string
+	saved   []string
+	err     error
 }
 
 // expandUserPath expands a leading "~" (or "~/") in p to the user's home
@@ -70,23 +74,24 @@ func (m Model) downloadFiles(files []*model.FileInfo) tea.Cmd {
 	dir := m.downloadDir
 	client := m.client
 	ctx := m.ctx
+	started := featureStart()
 	return func() tea.Msg {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return attachmentsDownloadedMsg{dir: dir, err: err}
+			return attachmentsDownloadedMsg{dir: dir, err: err, started: started}
 		}
 		var saved []string
 		for _, f := range files {
 			data, err := client.DownloadFile(ctx, f.Id)
 			if err != nil {
-				return attachmentsDownloadedMsg{dir: dir, saved: saved, err: fmt.Errorf("%s: %w", downloadName(f), err)}
+				return attachmentsDownloadedMsg{dir: dir, saved: saved, started: started, err: fmt.Errorf("%s: %w", downloadName(f), err)}
 			}
 			dest := uniqueDownloadPath(dir, downloadName(f))
 			if err := os.WriteFile(dest, data, 0o644); err != nil {
-				return attachmentsDownloadedMsg{dir: dir, saved: saved, err: err}
+				return attachmentsDownloadedMsg{dir: dir, saved: saved, started: started, err: err}
 			}
 			saved = append(saved, filepath.Base(dest))
 		}
-		return attachmentsDownloadedMsg{dir: dir, saved: saved}
+		return attachmentsDownloadedMsg{dir: dir, saved: saved, started: started}
 	}
 }
 
@@ -126,6 +131,7 @@ func uniqueDownloadPath(dir, name string) string {
 // self-clearing toast on success, or a sticky error naming what (if anything)
 // was saved before the failure so a partial multi-file download isn't lost.
 func (m *Model) applyDownloadResult(msg attachmentsDownloadedMsg) tea.Cmd {
+	m.recordFeature("download", "key", msg.started, len(msg.saved), msg.err)
 	if msg.err != nil {
 		if len(msg.saved) > 0 {
 			m.status = fmt.Sprintf("download failed after %s: %v", countFiles(len(msg.saved)), msg.err)

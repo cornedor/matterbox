@@ -76,7 +76,7 @@ func TestJumpingToFeedDoesNotMarkDMRead(t *testing.T) {
 	dmPosts := []*model.Post{{Id: "p1", ChannelId: "dm", CreateAt: 1000, UserId: "u2", Message: "hi"}}
 
 	// Open the DM on a channel view; arm the dwell.
-	m.openChannelLoadCmd("dm")
+	m.openChannelLoadCmd("dm", "sidebar_key")
 	dmGen := m.viewGen
 	next, _ := m.update(postsLoadedMsg{channelID: "dm", posts: dmPosts, users: map[string]string{"u2": "u2"}})
 	m = next.(Model)
@@ -123,7 +123,7 @@ func TestSwitchingAwayBeforeDwellKeepsDMUnread(t *testing.T) {
 
 	// Open the DM (uncached: store is nil → fetchPosts path). This bumps viewGen
 	// to 1 and points openChannelID at the DM.
-	m.openChannelLoadCmd("dm")
+	m.openChannelLoadCmd("dm", "sidebar_key")
 	if m.openChannelID != "dm" {
 		t.Fatalf("openChannelID = %q; want dm", m.openChannelID)
 	}
@@ -134,7 +134,7 @@ func TestSwitchingAwayBeforeDwellKeepsDMUnread(t *testing.T) {
 	m = next.(Model)
 
 	// Switch to Food before the dwell elapses. This bumps viewGen again.
-	m.openChannelLoadCmd("food")
+	m.openChannelLoadCmd("food", "sidebar_key")
 	if m.openChannelID != "food" {
 		t.Fatalf("openChannelID = %q; want food", m.openChannelID)
 	}
@@ -170,7 +170,7 @@ func TestStayingOnDMUntilDwellMarksItRead(t *testing.T) {
 	}
 	dmPosts := []*model.Post{{Id: "p1", ChannelId: "dm", CreateAt: 1000, UserId: "u2", Message: "hi"}}
 
-	m.openChannelLoadCmd("dm")
+	m.openChannelLoadCmd("dm", "sidebar_key")
 	dmGen := m.viewGen
 	next, _ := m.update(postsLoadedMsg{channelID: "dm", posts: dmPosts, users: map[string]string{"u2": "u2"}})
 	m = next.(Model)
@@ -222,14 +222,14 @@ func TestSwitchingAwayBeforeDwellKeepsCachedDMUnread(t *testing.T) {
 
 	// Open the cached DM: loadFromStore paints, fetchRecent is returned (ignored
 	// here). viewGen advances to the DM's generation.
-	m.openChannelLoadCmd("dm")
+	m.openChannelLoadCmd("dm", "sidebar_key")
 	dmGen := m.viewGen
 	// fetchRecent's result arrives as a gap-fill → schedules the dwell tick.
 	next, _ := m.update(postsGapFilledMsg{channelID: "dm", posts: dmPosts, users: map[string]string{"u2": "u2"}})
 	m = next.(Model)
 
 	// Switch to Food before the dwell.
-	m.openChannelLoadCmd("food")
+	m.openChannelLoadCmd("food", "sidebar_key")
 	if m.viewGen == dmGen {
 		t.Fatalf("viewGen did not advance on switch")
 	}

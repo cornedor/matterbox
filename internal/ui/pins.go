@@ -58,7 +58,7 @@ func runTogglePinned(m *Model, _ string) tea.Cmd {
 	}
 	channelID, postID := p.ChannelId, p.Id
 	client, ctx := m.client, m.ctx
-	return func() tea.Msg {
+	return m.reportActed(func() tea.Msg {
 		var err error
 		if pinned {
 			err = client.PinPost(ctx, postID)
@@ -66,7 +66,7 @@ func runTogglePinned(m *Model, _ string) tea.Cmd {
 			err = client.UnpinPost(ctx, postID)
 		}
 		return pinnedChangedMsg{channelID: channelID, postID: postID, pinned: pinned, err: err}
-	}
+	}, m.actedRecord("pin", p, "palette"))
 }
 
 type pinnedChangedMsg struct {

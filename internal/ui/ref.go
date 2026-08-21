@@ -303,6 +303,10 @@ func (m Model) refreshRef() (tea.Model, tea.Cmd) {
 	if r == nil {
 		return m, nil
 	}
+	// The refetch itself reports as "open" when it lands; this records that the
+	// user asked for one — a panel people keep refreshing is a panel that looks
+	// stale to them.
+	m.recordForge(refProviderID(m, r), "refresh", noLatency, nil)
 	switch r.kind {
 	case refJira:
 		m.jiraClient.Invalidate(r.jiraKey)
@@ -396,6 +400,9 @@ func (m Model) handleRefKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.refJobsExpanded = !m.refJobsExpanded
 			m.refView.GotoTop()
 			m.renderRef()
+			// A local expand, so there is no round trip to time — but whether
+			// anyone unfolds the CI breakdown is the question the key exists for.
+			m.recordForge(forgeProviderID(m.forgeAt(r.forge)), "jobs", noLatency, nil)
 			return m, nil
 		}
 	}

@@ -85,7 +85,7 @@ func TestSidebarUnreadOnlyEnterChannelSnapsCursor(t *testing.T) {
 	m.openChannelID = "c3"
 	m.setSidebarUnreadOnly(true) // list c1,c3,c4; cursor 1
 	m.channelIdx = 2             // user moves ↓ to c4 and opens it
-	m.enterChannel("c4")
+	m.enterChannel("c4", "sidebar_key")
 	if got := visibleIDs(&m); got != "c1,c4" {
 		t.Fatalf("after open: %s (c3 is read and no longer open)", got)
 	}
@@ -96,7 +96,7 @@ func TestSidebarUnreadOnlyEnterChannelSnapsCursor(t *testing.T) {
 	// sidebar never re-derives its list).
 	m.setSidebarUnreadOnly(false)
 	m.channelIdx = 0
-	m.enterChannel("c2")
+	m.enterChannel("c2", "sidebar_key")
 	if m.channelIdx != 0 {
 		t.Fatalf("mode off: enterChannel moved the cursor to %d", m.channelIdx)
 	}

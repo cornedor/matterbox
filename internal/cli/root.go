@@ -87,6 +87,13 @@ func newRootCmd() *cobra.Command {
 // success, 1 on any error. main() is a one-liner around this.
 func Execute() int {
 	started := time.Now()
+	// Hold any event a subcommand emits until reportCommand can decide whether
+	// there is anyone to send it to. Telemetry is started after the work is
+	// done — so `matterbox decode` never reads a config it has no use for —
+	// which means an event emitted during the work would otherwise find no
+	// client and be dropped. One atomic store; the buffer is bounded and
+	// discarded when consent is absent.
+	telemetry.BeginPending()
 	root := newRootCmd()
 	// A panic escaping a subcommand would otherwise be a crash nobody hears
 	// about: several verbs are only ever run by scripts and notification

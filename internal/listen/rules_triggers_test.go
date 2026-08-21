@@ -195,7 +195,7 @@ func TestSelfReactionEchoIsIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compileAction: %v", err)
 	}
-	e.runReact(t.Context(), p, act)
+	e.runReact(t.Context(), msgTrigger(postedEvent(t, p, nil), p), act)
 	e.wg.Wait()
 
 	echo := reactionEvent(t, model.Reaction{UserId: "u-me", PostId: "p1", EmojiName: "eyes"})

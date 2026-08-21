@@ -18,6 +18,7 @@ import (
 	"matterbox/internal/mm"
 	"matterbox/internal/mmauth"
 	"matterbox/internal/opener"
+	"matterbox/internal/telemetry"
 )
 
 func newLoginCmd() *cobra.Command {
@@ -174,6 +175,11 @@ func runLogin(ctx context.Context, out io.Writer, noBrowser bool) error {
 func saveAndVerify(ctx context.Context, out io.Writer, server, token string) error {
 	me, err := mm.New(server, token).Me(ctx)
 	if err != nil {
+		// A rejected token is the most likely reason someone gives up on this
+		// command, and it is invisible to us otherwise: the exit code says the
+		// verb failed, not that the login did. Held until reportCommand opens
+		// the client, so it costs an opted-out run nothing.
+		telemetry.LoginFailed("oauth", telemetry.ClassifyError(err), false)
 		return fmt.Errorf("token didn't authenticate against %s: %w", server, err)
 	}
 	return saveToken(out, token, me.Username, me.Email)
@@ -243,7 +249,8 @@ func runPasswordLogin(ctx context.Context, out io.Writer, loginID string) error 
 
 	client := mm.New(server, "")
 	token, user, err := client.LoginWithPassword(ctx, loginID, pass, "")
-	if mm.MFARequired(err) {
+	mfaAsked := mm.MFARequired(err)
+	if mfaAsked {
 		code, perr := promptLine(in, out, "Two-factor code: ")
 		if perr != nil {
 			return perr
@@ -254,6 +261,7 @@ func runPasswordLogin(ctx context.Context, out io.Writer, loginID string) error 
 		token, user, err = client.LoginWithPassword(ctx, loginID, pass, code)
 	}
 	if err != nil {
+		telemetry.LoginFailed("password", telemetry.ClassifyError(err), mfaAsked)
 		return fmt.Errorf("sign-in failed: %w", err)
 	}
 	return saveToken(out, token, user.Username, user.Email)

@@ -6,6 +6,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+
+	"matterbox/internal/telemetry"
 )
 
 // Streaming video playback for the space-to-preview modal. Where an image or GIF
@@ -52,6 +54,10 @@ type streamOpenedMsg struct {
 	cols, rows int
 	caption    string
 	err        error
+	// started dates the open + first chunk, for media_rendered. Video is the
+	// most fragile graphics path and the one most likely to be missing
+	// altogether (the `video` build tag).
+	started time.Time
 }
 
 // streamChunkMsg carries one decode-ahead chunk. rows/cols record the placement
@@ -93,34 +99,35 @@ func (m Model) loadPreviewStream(gen int, id uint32, it previewItem) tea.Cmd {
 	cellPxW, cellPxH := m.cellPxW, m.cellPxH
 	ring := m.preview.streamRing
 	mm := m
+	started := featureStart()
 	return func() tea.Msg {
 		data, err := mm.readPreviewBytes(it)
 		if err != nil {
-			return streamOpenedMsg{gen: gen, err: err}
+			return streamOpenedMsg{gen: gen, err: err, started: started}
 		}
 		stream, err := openVideoStream(data, streamVideoProfile)
 		if err != nil {
-			return streamOpenedMsg{gen: gen, err: err}
+			return streamOpenedMsg{gen: gen, err: err, started: started}
 		}
 		frames, delays, eof, err := stream.nextChunk(streamChunkFrames)
 		if err != nil {
 			stream.close()
-			return streamOpenedMsg{gen: gen, err: err}
+			return streamOpenedMsg{gen: gen, err: err, started: started}
 		}
 		if len(frames) == 0 {
 			stream.close()
-			return streamOpenedMsg{gen: gen, err: errors.New("video produced no frames")}
+			return streamOpenedMsg{gen: gen, err: errors.New("video produced no frames"), started: started}
 		}
 		cols, rows := mm.computePreviewCells(frames[0].Bounds())
 		buf, err := encodeStreamFrames(frames, delays, cols, rows, ring, 0, cellPxW, cellPxH)
 		if err != nil {
 			stream.close()
-			return streamOpenedMsg{gen: gen, err: err}
+			return streamOpenedMsg{gen: gen, err: err, started: started}
 		}
 		w, h, size := streamCaptionDims(it, frames[0].Bounds(), len(data))
 		return streamOpenedMsg{
 			gen: gen, stream: stream, buf: buf, eof: eof, cols: cols, rows: rows,
-			caption: previewCaption(it.name, w, h, size),
+			caption: previewCaption(it.name, w, h, size), started: started,
 		}
 	}
 }
@@ -153,8 +160,11 @@ func (m Model) handleStreamOpened(msg streamOpenedMsg) (tea.Model, tea.Cmd) {
 	m.preview.loading = false
 	if msg.err != nil {
 		m.preview.err = msg.err
+		m.recordMedia("video", "error", telemetry.ClassifyError(msg.err), decodeMillis(msg.started))
 		return m, nil
 	}
+	m.recordMedia("video", "ok", "", decodeMillis(msg.started))
+	telemetry.Feature("video_preview")
 	m.preview.streaming = true
 	m.preview.stream = msg.stream
 	m.preview.streamBuf = msg.buf

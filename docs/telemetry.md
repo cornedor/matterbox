@@ -32,6 +32,20 @@ has two knobs. Neither grants consent:
 | `MATTERBOX_POSTHOG_KEY` | run time | Overrides the compiled-in key for one run, for pointing a build at your own project. |
 | `MATTERBOX_POSTHOG_HOST` | run time | Overrides the ingest host (default `https://eu.i.posthog.com`). |
 
+## The setup wizard, which asks before it can send
+
+The wizard asks the telemetry question on its last screen, so everything
+before it happens with the answer unknown. Its own funnel — which step you
+reached, how many times a step was shown, whether a sign-in was rejected — is
+therefore held in memory and **only sent if you answer yes**. Answer no, or
+quit before the question, and the buffer is discarded: it never reaches the
+network, and nothing on disk records that it existed.
+
+The same holds for the subcommands. Telemetry is started once a verb has
+finished — so `matterbox decode` never reads a config it has no use for —
+which means anything the verb wanted to report is held until then and
+discarded if consent is absent.
+
 ## What is never sent
 
 None of the following has any representation in the event catalogue below —
@@ -187,11 +201,7 @@ both mechanisms, and are named in full below.
 
 ## Events
 
-29 events, 9 of them sent by the current build.
-
-20 are declared but not yet emitted anywhere; they are listed so this page
-describes the whole design rather than a moving subset of it, and are marked
-**not yet sent**.
+29 events, 29 of them sent by the current build.
 
 Two events carry most of the volume. `usage_snapshot` is a periodic tally of
 everything too frequent to send individually — keystrokes, clicks, commands —
@@ -275,8 +285,6 @@ instead.
 
 ### `version_upgraded`
 
-**not yet sent**
-
 The first launch of a build whose version differs from the last one seen.
 
 **Why:** Tells us whether people update at all, and how long a release takes to reach
@@ -290,8 +298,6 @@ look identical in the data.
 
 ### `setup_step`
 
-**not yet sent**
-
 The setup wizard displayed a step.
 
 **Why:** The wizard is the whole first impression, and a fresh install that fails here
@@ -300,12 +306,10 @@ abandon is visible instead of inferred.
 
 | Property | Type | Meaning |
 |---|---|---|
-| `step` | enum | Which wizard step. One of `server`, `login`, `advanced`, `telemetry`, `done`. |
+| `step` | enum | Which wizard step. One of `server`, `login`, `advanced`, `telemetry`. |
 | `attempt` | count | How many times this step has been shown this run — a step shown three times is a step being fought with. |
 
 ### `setup_finished`
-
-**not yet sent**
 
 The setup wizard completed or was abandoned.
 
@@ -315,14 +319,12 @@ login, how long it takes, and where the rest stop.
 | Property | Type | Meaning |
 |---|---|---|
 | `outcome` | enum | Whether setup reached a working login. One of `completed`, `abandoned`. |
-| `last_step` | enum | The step it ended on. One of `server`, `login`, `advanced`, `telemetry`, `done`. |
+| `last_step` | enum | The step it ended on. Always the telemetry question for a wizard that was answered — which is the only kind that can report anything at all — so this is here for a future step order rather than for today's. One of `server`, `login`, `advanced`, `telemetry`. |
 | `duration` | enum | How long setup took, bucketed. |
 | `auth_method` | enum | How the login was obtained. One of `password`, `oauth`, `token`, `none`. |
 | `telemetry_opt_in` | bool | The answer to the telemetry question. Recorded only when the answer was yes — a `no` sends nothing at all, so this property is always true and exists to make the opt-in rate legible next to install counts. |
 
 ### `login_failed`
-
-**not yet sent**
 
 A login attempt was rejected.
 
@@ -337,8 +339,6 @@ broken" from "they typed the wrong password".
 | `mfa` | bool | Whether the server asked for MFA. |
 
 ### `channel_opened`
-
-**not yet sent**
 
 A conversation was opened and rendered.
 
@@ -383,8 +383,6 @@ where composer effort belongs. No part of the text is sent — only its shape.
 
 ### `message_acted`
 
-**not yet sent**
-
 A message was edited, deleted, reacted to, copied, collapsed or saved.
 
 **Why:** These are the actions the transcript exists to support, and several of them
@@ -403,8 +401,6 @@ three days ago is a different feature from fixing a typo ten seconds later.
 
 ### `thread_opened`
 
-**not yet sent**
-
 A thread pane was opened on a message.
 
 **Why:** Threading is the feature most likely to be either central or ignored, and we
@@ -419,8 +415,6 @@ matterbox-only nested reply tree is worth its complexity.
 | `depth` | enum | Deepest nesting level, bucketed. |
 
 ### `search_run`
-
-**not yet sent**
 
 A search was executed.
 
@@ -442,8 +436,6 @@ query itself is never sent, only how many words it had.
 
 ### `search_result_opened`
 
-**not yet sent**
-
 A search hit was opened.
 
 **Why:** The other half of search quality: a search that returns fifty results nobody
@@ -458,8 +450,6 @@ search_run this is a funnel — searched, opened, or gave up.
 
 ### `feed_used`
 
-**not yet sent**
-
 An action was taken in the unread feed.
 
 **Why:** The feed is matterbox's own idea rather than a Mattermost concept, so whether
@@ -473,8 +463,6 @@ before more is built on it.
 | `via` | enum | How it was invoked. One of `key`, `mouse`, `palette`, `unknown`. |
 
 ### `feature_used`
-
-**not yet sent**
 
 A named feature was used, with the outcome and how long it took where that
 applies. The counted equivalent lives in usage_snapshot's `features` map; this
@@ -496,8 +484,6 @@ visible at all.
 
 ### `forge_action`
 
-**not yet sent**
-
 A Jira, GitLab or GitHub action was performed from the reference panel.
 
 **Why:** The forge integrations are the largest optional subsystem in the app. Whether
@@ -515,8 +501,6 @@ worth building and which ones to extend.
 
 ### `attachment_added`
 
-**not yet sent**
-
 A file was attached to a message.
 
 **Why:** Three separate paths exist (paste, drag-and-drop, picker) and we do not know
@@ -532,8 +516,6 @@ needs progress feedback.
 | `outcome` | enum | Result. |
 
 ### `media_rendered`
-
-**not yet sent**
 
 An image, animated emoji or video frame was drawn in the terminal.
 
@@ -588,8 +570,6 @@ address. This is the "what needs better UX" half of the brief.
 
 ### `slow_frame`
 
-**not yet sent**
-
 A render took long enough to be perceptible.
 
 **Why:** Render cost is the recurring performance problem in this codebase and it has
@@ -607,8 +587,6 @@ loaded. It is rate-limited so a slow session cannot flood.
 
 ### `ws_disconnected`
 
-**not yet sent**
-
 The Mattermost websocket dropped.
 
 **Why:** Silent disconnects are the worst failure this client has: the UI looks fine
@@ -623,8 +601,6 @@ from a bug in our reconnect logic.
 | `clean` | bool | Whether it was a clean close. |
 
 ### `ws_reconnected`
-
-**not yet sent**
 
 The websocket came back.
 
@@ -689,7 +665,7 @@ months. This is the cheapest high-value event in the catalogue.
 
 ### `daemon_started`
 
-**not yet sent** · sent only by the `matterbox listen` daemon
+sent only by the `matterbox listen` daemon
 
 The `matterbox listen` daemon started.
 
@@ -706,7 +682,7 @@ that subsystem goes next.
 
 ### `rule_fired`
 
-**not yet sent** · sent only by the `matterbox listen` daemon
+sent only by the `matterbox listen` daemon
 
 A listen rule matched and its actions ran.
 
@@ -723,7 +699,7 @@ sent; only the action types are.
 
 ### `notification_actioned`
 
-**not yet sent** · sent only by the `matterbox listen` daemon
+sent only by the `matterbox listen` daemon
 
 A delivered notification was acted on.
 
@@ -817,9 +793,9 @@ The kind of conversation. Never its name or id.
 
 How a conversation was reached.
 
-`cli`, `dm_jump`, `feed`, `filter`, `nav_key`, `notification`, `permalink`,
-`restore`, `search_hit`, `sidebar_key`, `sidebar_mouse`, `switcher`,
-`team_jump`, `unknown`, `unread_jump`
+`cli`, `dm_jump`, `feed`, `filter`, `nav_key`, `notification`, `palette`,
+`permalink`, `restore`, `search_hit`, `sidebar_key`, `sidebar_mouse`,
+`switcher`, `team_jump`, `unknown`, `unread_jump`
 
 ### Outcomes
 

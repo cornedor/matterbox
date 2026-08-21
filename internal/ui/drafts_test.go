@@ -295,7 +295,7 @@ func TestOpenThreadDoesNotCarryChannelDraft(t *testing.T) {
 	m.focus = focusInput
 	m.input.SetValue("channel text")
 
-	out, _ := m.openThreadForPost(&model.Post{Id: "root1", ChannelId: "c1"})
+	out, _ := m.openThreadForPost(&model.Post{Id: "root1", ChannelId: "c1"}, "key")
 	got := out.(Model)
 
 	if v := got.input.Value(); v != "" {
@@ -317,7 +317,7 @@ func TestThreadDraftRoundTrip(t *testing.T) {
 	m.focus = focusInput
 	m.input.SetValue("channel text")
 
-	out, _ := m.openThreadForPost(&model.Post{Id: "root1", ChannelId: "c1"})
+	out, _ := m.openThreadForPost(&model.Post{Id: "root1", ChannelId: "c1"}, "key")
 	m = out.(Model)
 
 	// Type a reply, then close the thread.
@@ -332,7 +332,7 @@ func TestThreadDraftRoundTrip(t *testing.T) {
 	}
 
 	// Reopen the thread — the reply comes back, not the channel draft.
-	out, _ = m.openThreadForPost(&model.Post{Id: "root1", ChannelId: "c1"})
+	out, _ = m.openThreadForPost(&model.Post{Id: "root1", ChannelId: "c1"}, "key")
 	m = out.(Model)
 	if v := m.input.Value(); v != "my reply" {
 		t.Fatalf("reopening thread didn't restore the reply draft: %q", v)
@@ -343,7 +343,7 @@ func TestThreadDraftRoundTrip(t *testing.T) {
 // autosave writes the thread's draft (keyed by root id), never a channel draft.
 func TestThreadDraftAutosaveSavesThreadDraft(t *testing.T) {
 	m := navModel()
-	out, _ := m.openThreadForPost(&model.Post{Id: "root1", ChannelId: "c1"})
+	out, _ := m.openThreadForPost(&model.Post{Id: "root1", ChannelId: "c1"}, "key")
 	m = out.(Model)
 	m.input.SetValue("reply text")
 
@@ -366,7 +366,7 @@ func TestThreadDraftAutosaveSavesThreadDraft(t *testing.T) {
 // echo can't clobber the reply being typed; a delete clears a background one.
 func TestApplyDraftWSThreadDrafts(t *testing.T) {
 	m := navModel()
-	out, _ := m.openThreadForPost(&model.Post{Id: "open-root", ChannelId: "c1"})
+	out, _ := m.openThreadForPost(&model.Post{Id: "open-root", ChannelId: "c1"}, "key")
 	m = out.(Model)
 
 	m.applyDraftUpserted(draftEvent(model.WebsocketEventDraftUpdated,

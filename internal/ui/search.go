@@ -122,6 +122,14 @@ type searchState struct {
 	// states. See mouse.go.
 	zones      []bubbleZone
 	zonesTotal int
+
+	// from names how the Search tab was reached ("key", "palette", "slash"),
+	// for search_run. Kept on the state because the search itself is issued
+	// from a debounce tick that no longer knows. semantic records whether the
+	// last query opted into hybrid search with a leading "~", so the hit
+	// events can name the backend that produced the list.
+	from     string
+	semantic bool
 }
 
 // newSearchState constructs the textinput / viewport used by the Search
@@ -170,7 +178,11 @@ func (s searchState) onLoadMoreRow() bool {
 // openSearchTab switches to the synthetic Search tab and focuses the
 // input. Idempotent — calling it while already on Search just re-focuses
 // the input so F is a reliable "give me the search bar" key.
-func (m *Model) openSearchTab() tea.Cmd {
+//
+// from names the route in, for search_run: a search reached only through the
+// slash command and never through the key is a binding nobody found.
+func (m *Model) openSearchTab(from string) tea.Cmd {
+	m.search.from = from
 	for i := 0; i <= m.maxTeamIdx(); i++ {
 		if kind, _, _ := m.tabAt(i); kind == tabSearch {
 			m.teamIdx = i
@@ -193,11 +205,11 @@ func (m *Model) openSearchTab() tea.Cmd {
 // (which have no team). A trailing space leaves the cursor ready for the
 // search term. Falls back to an empty box when there's no resolvable
 // current channel (e.g. on the Feed tab).
-func (m *Model) openSearchHere() tea.Cmd {
+func (m *Model) openSearchHere(from string) tea.Cmd {
 	// Compute the scope before openSearchTab moves teamIdx onto the
 	// synthetic Search tab, which would change visibleChannels().
 	prefix := m.searchScopePrefix()
-	cmd := m.openSearchTab()
+	cmd := m.openSearchTab(from)
 	if prefix != "" {
 		m.search.input.SetValue(prefix)
 		m.search.input.CursorEnd()
@@ -311,6 +323,11 @@ func (m Model) runSearch(seq int, query string, limit int) tea.Cmd {
 	if limit <= 0 {
 		limit = searchPageSize
 	}
+	// Which backend is about to run, and the shape of the query — never the
+	// query itself. Reported when the results land (recordSearchRun), so the
+	// latency is what the user waited for.
+	m.search.semantic = semantic && m.embedClient != nil
+	m.armSearch(searchBackend(semantic && m.embedClient != nil), searchScope(parsed), searchTerms(parsed.text), searchHasOperators(query))
 
 	// Semantic path: embed the query, then fuse keyword + vector rankings. Needs
 	// the embeddings client; without it (not configured) "~" silently falls back
@@ -495,6 +512,7 @@ func (m Model) handleSearchKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.search.idx < 0 || m.search.idx >= len(m.search.hits) {
 			return m, nil
 		}
+		m.recordSearchHitOpened(m.search.idx)
 		return m.openHitChannel(m.search.hits[m.search.idx])
 	case msg.String() == "pgup":
 		// Kept literal: PageUp's ctrl+u alias is an emacs editing key the
@@ -589,6 +607,7 @@ func (m Model) handleAIDoneKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.startAIFollowup()
 		}
 		if m.search.idx < len(m.search.hits) {
+			m.recordSearchHitOpened(m.search.idx)
 			return m.openHitChannel(m.search.hits[m.search.idx])
 		}
 		return m, nil
@@ -667,7 +686,13 @@ func (m Model) applySearchResults(msg searchResultsMsg) (tea.Model, tea.Cmd) {
 	if msg.seq != m.search.seq {
 		return m, nil
 	}
+	// A new query replacing an untouched result set is the moment the old
+	// answer is known to have been useless (search_abandoned).
 	sameQuery := msg.query != "" && msg.query == m.search.query
+	if !sameQuery {
+		m.noteSearchAbandoned()
+	}
+	m.recordSearchRun(len(msg.hits), msg.err != "")
 	m.search.query = msg.query
 	m.search.hits = msg.hits
 	m.search.err = msg.err
@@ -704,6 +729,7 @@ func (m Model) gotoSearchHit(step int) (tea.Model, tea.Cmd) {
 		idx = n - 1
 	}
 	m.search.idx = idx
+	m.recordSearchHitOpened(idx)
 	return m.openHitChannel(m.search.hits[idx])
 }
 
@@ -743,7 +769,7 @@ func (m Model) openHitChannel(hit store.SearchHit) (tea.Model, tea.Cmd) {
 			// update) only merges into the pane when its channel matches
 			// openChannelID, and the read dwell is armed off that same match — so
 			// leaving it stale drops them silently.
-			draftCmd := m.enterChannel(ch.Id)
+			draftCmd := m.enterChannel(ch.Id, "search_hit")
 			m.posts = around
 			m.postIdx = len(around) - 1
 			for i, p := range around {
@@ -758,6 +784,8 @@ func (m Model) openHitChannel(hit store.SearchHit) (tea.Model, tea.Cmd) {
 			delete(m.unread, ch.Id)
 			delete(m.mentions, ch.Id)
 			m.renderMessages()
+			m.noteOpenCache(ch.Id, len(around))
+			m.recordChannelOpened(ch.Id)
 			// Gap-fill from the newest post we currently have cached so
 			// the user can scroll forward to live without an extra step.
 			gapID, _ := m.store.LatestPostID(ch.Id)
@@ -773,7 +801,7 @@ func (m Model) openHitChannel(hit store.SearchHit) (tea.Model, tea.Cmd) {
 	// position the selection if the loaded page happens to include the
 	// matched id.
 	m.pendingJumpPostID = hit.Match.Id
-	loadCmd := m.openChannelLoadCmd(ch.Id)
+	loadCmd := m.openChannelLoadCmd(ch.Id, "search_hit")
 	return m, tea.Batch(loadCmd, saveCmd)
 }
 

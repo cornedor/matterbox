@@ -330,7 +330,7 @@ func splitFirstArg(args string) (first, message string) {
 
 // slashSearch opens the Search tab and runs the query (empty just opens it).
 func slashSearch(m *Model, args string) tea.Cmd {
-	cmd := m.openSearchTab()
+	cmd := m.openSearchTab("slash")
 	q := strings.TrimSpace(args)
 	if q == "" {
 		return cmd

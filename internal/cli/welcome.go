@@ -5,6 +5,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"matterbox/internal/config"
+	"matterbox/internal/telemetry"
 	"matterbox/internal/welcome"
 )
 
@@ -43,6 +44,12 @@ func runWelcome(demo bool) error {
 	if demo {
 		defer welcome.StartDemoMusic()()
 	}
+	// The wizard holds its funnel events in memory until the telemetry question
+	// is answered yes, at which point it opens the client itself (see
+	// internal/welcome/telemetry.go). Close flushes whatever that produced —
+	// after the program has released the terminal, so a slow flush can't stall
+	// the exit mid-teardown — and is a no-op when the answer was no.
+	defer telemetry.Close()
 	if _, err := tea.NewProgram(welcome.New(cfg, demo)).Run(); err != nil {
 		return err
 	}

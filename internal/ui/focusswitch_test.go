@@ -166,7 +166,7 @@ func TestFeedSwitchBlursComposer(t *testing.T) {
 // focusSearch and must leave the composer dark (the Search tab has no composer).
 func TestSearchTabBlursComposer(t *testing.T) {
 	m := composingModel()
-	m.openSearchTab()
+	m.openSearchTab("key")
 	m.syncComposerFocus() // the Update net; called explicitly for the unit path
 	if m.focus != focusSearch {
 		t.Fatalf("openSearchTab: focus=%v, want focusSearch", m.focus)

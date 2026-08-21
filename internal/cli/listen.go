@@ -18,6 +18,7 @@ import (
 	"matterbox/internal/listen"
 	"matterbox/internal/store"
 	"matterbox/internal/telegram"
+	"matterbox/internal/telemetry"
 )
 
 func newListenCmd() *cobra.Command {
@@ -170,6 +171,20 @@ func runListen(ctx context.Context, out io.Writer, notifySelf bool) error {
 	// thing about the viewing gate that isn't visible from the outside when it
 	// silently never matches (wrong machine, wrong config dir).
 	logger.Printf("matterbox listen: tui_socket=%s", eng.TUISocketPath())
+
+	// Anonymous telemetry, if the user opted in. Started here rather than left
+	// to reportCommand, which only runs once the verb returns — for a daemon
+	// that is weeks later, so every rule_fired in between would have nowhere to
+	// go. ModeDaemon also buys a longer flush budget on the way out, since
+	// there is no interactive exit to hold up.
+	telemetry.StartMode(cfg, telemetry.ModeDaemon)
+	defer telemetry.Close()
+	stamp := readBuildStamp()
+	telemetry.SetBuild(versionName(stamp), stamp.tags)
+	eng.ReportStart(versionName(stamp))
+	// A daemon that has been running an old build for months is the most likely
+	// reason a fixed bug is still being reported.
+	telemetry.CheckVersion(st, versionName(stamp))
 
 	// SIGINT/SIGTERM trigger a graceful shutdown: Run drains in-flight
 	// notifications, then returns ctx.Err().

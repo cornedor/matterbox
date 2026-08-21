@@ -172,14 +172,19 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.vcache != nil && !preservesFrame(msg) {
 		m.vcache.viewValid = false
 	}
+	// Leave View a note about why it is about to run: a slow frame is a very
+	// different finding depending on whether it was a resize, an image transmit
+	// or ordinary work, and View itself has no idea.
+	m.noteFrameCause(frameCause(msg))
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		// The first size message is the earliest point the launch event can
-		// carry a terminal size, and the earliest point guaranteed to happen at
-		// all. A no-op on every later resize, and when telemetry is off.
-		m.recordLaunch()
+		// The launch event needs a terminal size and will not go out without
+		// one; the other late facts have their own hooks and a deadline. A
+		// no-op on every later resize, and when telemetry is off.
+		m.noteLaunchSize()
+		m.noteResize()
 		m.filter.SetWidth(channelsWidth - 4)
 		// A resize *drag* fires a storm of these. Re-laying-out the panes is
 		// cheap, so do it every frame — borders/scrollbars stay correct and
@@ -308,6 +313,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				m.emojiImg.setProbeResult(false)
 			}
+			m.noteLaunchGraphics()
 		}
 		return m, nil
 
@@ -315,6 +321,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.emojiImg != nil {
 			m.emojiImg.setProbeResult(false)
 		}
+		// The probe question is settled — as "no graphics" — which is exactly
+		// as informative for the launch event as a yes.
+		m.noteLaunchGraphics()
+		return m, nil
+
+	case launchDeadlineMsg:
+		m.noteLaunchDeadline()
 		return m, nil
 
 	case uv.CellSizeEvent:
@@ -420,6 +433,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.teams = msg.teams
 		m.applyTeamOrder()
 		m.teamsLoaded = true
+		m.noteLaunchLists()
 		m.splash.finish(splashTeams)
 		return m, tea.Batch(m.maybeFetchInitialPosts(), m.loadDrafts())
 
@@ -438,6 +452,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.bucketChannels(msg.channels)
 		m.channelsLoaded = true
+		m.noteLaunchLists()
 		m.splash.finish(splashChannels)
 		m.applyUnreadFromMembers()
 		cmds := []tea.Cmd{m.maybeFetchInitialPosts()}
@@ -555,6 +570,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// "select newest" position.
 		m.jumpToPendingPost()
 		m.renderMessages()
+		// A cold open: this is the first frame of the conversation, so it is
+		// what render_ms should measure. A no-op when the cache already
+		// painted it and reported the open.
+		m.recordChannelOpened(msg.channelID)
 		// Defer the mark-read (and badge clear) until the channel has been
 		// open for the configured dwell; a quick peek leaves it unread.
 		return m, tea.Batch(
@@ -665,6 +684,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Apply any queued search-result jump now that the gap is filled.
 		m.jumpToPendingPost()
 		m.renderMessages()
+		// Backstop for an open the cache could only partly satisfy: the warm
+		// path already reported (and this is then a no-op), but a jump that
+		// found nothing cached is first complete here.
+		m.recordChannelOpened(msg.channelID)
 		return m, tea.Batch(
 			m.scheduleMarkViewed(msg.channelID),
 			persistCmd,
@@ -851,6 +874,18 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if isUnauthorized(msg.err) {
 			m.status = "auth failed — run `matterbox login` to refresh the token"
 		}
+		// The catch-all failure path: every background fetch that has nothing
+		// more specific to say lands here, and until now all of it was a status
+		// line the user reads and nobody else ever sees. `where` is deliberately
+		// coarse — this is the shared funnel, so the honest label is the API,
+		// with the auth case split out because it means something different (a
+		// dead session, not a broken call).
+		telemetry.OperationFailed(telemetry.Failure{
+			Where:       errSite(msg.err),
+			Class:       telemetry.ClassifyError(msg.err),
+			UserVisible: true,
+			Err:         msg.err,
+		})
 		return m, nil
 
 	case wsConnectedMsg:
@@ -861,6 +896,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// resyncAfterReconnect). The clean first connect needs nothing — the
 		// startup fetches are already in flight.
 		resync := m.wsRetry > 0
+		attempts := m.wsRetry
 		m.wsRetry = 0
 		if strings.HasPrefix(m.status, "websocket") || strings.HasPrefix(m.status, "reconnecting") {
 			m.status = ""
@@ -870,6 +906,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if resync {
 			cmds = append(cmds, m.resyncAfterReconnect()...)
 		}
+		// A socket that came back without recovering the missed messages is
+		// still a failure, so the catch-up's reach is reported alongside it.
+		m.noteWSConnected(attempts, m.resyncReach())
 		return m, tea.Batch(cmds...)
 
 	case wsEventMsg:
@@ -877,6 +916,21 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmd, waitWSEvent(m.ws))
 
 	case wsClosedMsg:
+		// Silent disconnects are this client's worst failure: the UI looks fine
+		// and messages stop arriving. Reported before wsRetry moves, so the
+		// event describes the connection that just died.
+		m.noteWSDropped(msg.err)
+		if msg.err != nil {
+			// ws_disconnected counts the drop; this files it under the
+			// subsystem, which is what makes "our reconnect logic" separable
+			// from "their network".
+			telemetry.OperationFailed(telemetry.Failure{
+				Where:   "ws.read",
+				Class:   telemetry.ClassifyError(msg.err),
+				Retried: true,
+				Err:     msg.err,
+			})
+		}
 		m.ws = nil
 		m.wsRetry++
 		delay := wsBackoff(m.wsRetry)
@@ -957,6 +1011,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.threadSelectID = ""
 		m.renderThread()
+		// Now the reply count and the nesting depth exist, which is the whole
+		// reason thread_opened waits for the fetch.
+		m.recordThreadOpened(msg.rootID, m.threadPosts)
 		return m, nil
 
 	case infoMembersLoadedMsg:
@@ -1143,7 +1200,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if len(msg.payloads) > 0 {
-			return m, m.addAttachments(msg.payloads)
+			return m, m.addAttachments(msg.payloads, "paste")
 		}
 		if msg.text != "" {
 			// No file in clipboard but text is — route it as a paste so it
@@ -1852,7 +1909,10 @@ func (m *Model) maybeFetchInitialPosts() tea.Cmd {
 		return nil
 	}
 	m.splashOpening(vis[m.channelIdx])
-	return m.openChannelLoadCmd(vis[m.channelIdx].Id)
+	// Startup: ensureSelection has already pointed the cursor at the channel the
+	// last session left open, so this is the app restoring a conversation rather
+	// than the user choosing one.
+	return m.openChannelLoadCmd(vis[m.channelIdx].Id, "restore")
 }
 
 // ensureSelection clamps teamIdx/channelIdx to valid values given current
@@ -2214,10 +2274,10 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.gotoDMTab()
 	}
 	if key.Matches(msg, m.keys.NavFeed) { // alt+u → Feed (unread bubbles)
-		return m, m.openFeedTab()
+		return m, m.openFeedTab("key")
 	}
 	if key.Matches(msg, m.keys.Search) { // F / ctrl+shift+f → global search, empty box
-		return m, m.openSearchTab()
+		return m, m.openSearchTab("key")
 	}
 	if key.Matches(msg, m.keys.Compose) { // i → focus the composer
 		return m.focusComposer()
@@ -2230,6 +2290,9 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case key.Matches(msg, m.keys.Help):
+		if !m.help.ShowAll {
+			m.noteHelpOpened()
+		}
 		m.help.ShowAll = !m.help.ShowAll
 		m.resizeMessagesViewport()
 		return m, nil
@@ -2241,7 +2304,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	case key.Matches(msg, m.keys.SearchHere):
 		// "/" searches the current channel's messages (prefilled scope).
-		return m, m.openSearchHere()
+		return m, m.openSearchHere("key")
 	case key.Matches(msg, m.keys.Filter):
 		// "f" filters the channel-list sidebar. The sidebar is no longer a
 		// focus, so this works from any content pane on a channel/DM tab;
@@ -2548,10 +2611,15 @@ func (m Model) gotoTab(target int) (tea.Model, tea.Cmd) {
 	if m.onSearchTab() {
 		m.focus = focusSearch
 		m.search.input.Focus()
+		// Arrived by tab nav or a tab click rather than through the search key
+		// or the slash command — a real route, and one worth telling apart from
+		// them (see search_run's `from`).
+		m.search.from = "unknown"
 		return m, nil
 	}
 	if m.onFeedTab() {
 		m.focus = focusFeed
+		m.recordFeedAction("opened", "unknown")
 		return m, m.buildFeed()
 	}
 	if m.onSQLTab() {
@@ -2581,7 +2649,7 @@ func (m *Model) landOnTabChannel() tea.Cmd {
 	}
 	m.channelIdx = m.preferredChannelIdx(cands)
 	ch := cands[m.channelIdx]
-	return tea.Batch(m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id))
+	return tea.Batch(m.openChannelLoadCmd(ch.Id, "team_jump"), m.bumpChannelStat(ch.Id))
 }
 
 // switchTeamTab moves the active tab one step in `dir` (-1 left, +1 right) via
@@ -2657,7 +2725,7 @@ func (m Model) navChannel(dir int) (tea.Model, tea.Cmd) {
 	if ch.Id == m.openChannelID {
 		return m, nil
 	}
-	return m, tea.Batch(m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id))
+	return m, tea.Batch(m.openChannelLoadCmd(ch.Id, "sidebar_key"), m.bumpChannelStat(ch.Id))
 }
 
 // gotoDMTab jumps to the synthetic DMs tab (",d"). No-op with a hint when
@@ -2997,6 +3065,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// Silent no-op at the stack boundary — a sticky "nothing to undo"
 		// status would linger until the next action replaced it.
 		if v, ok := m.history.undo(m.composerContextKey(), m.input.Value()); ok {
+			m.noteUndo()
 			return m, m.applyComposerSnapshot(v)
 		}
 		return m, nil
@@ -3013,6 +3082,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.input.Value() == "" {
 			return m, nil
 		}
+		m.noteComposerDiscarded(m.input.Value())
 		m.input.Reset()
 		m.history.reset()
 		m.syncInputHeight()
@@ -3102,7 +3172,8 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			wire := m.attachReplyParent(compileEffects(text), m.editRootID(id))
 			m.clearReplyParent()
 			m.restoreInputPrompt()
-			return m, m.editPost(id, wire)
+			return m, m.reportActed(m.editPost(id, wire),
+				m.actedRecord("edit", m.findPostByID(id), "key"))
 		}
 		// A leading "/" + letter is a slash command, not a message: handle it
 		// (or forward it to the server) instead of posting the raw text.
@@ -3238,7 +3309,7 @@ func (m Model) handleFilterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				break
 			}
 		}
-		return m, tea.Batch(m.openChannelLoadCmd(ch.Id), m.bumpChannelStat(ch.Id))
+		return m, tea.Batch(m.openChannelLoadCmd(ch.Id, "filter"), m.bumpChannelStat(ch.Id))
 	case key.Matches(msg, m.keys.InputUp), key.Matches(msg, m.keys.InputDown):
 		// Arrow through the filtered list while still typing (input_up/down:
 		// ↑/ctrl+p, ↓/ctrl+n). We deliberately don't accept j/k here — the user
@@ -3584,6 +3655,7 @@ func (m *Model) paginateMsgsOnWheelTop() tea.Cmd {
 		m.status = "loading older messages…"
 	}
 	m.loadingOlder = true
+	m.noteScrollWall()
 	return m.fetchOlder(m.openChannelID, oldestID)
 }
 
@@ -3851,6 +3923,7 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// Mark the fetch in flight so a wheel flick onto the top doesn't stack a
 		// second PostsBefore on top of this keyboard-triggered one.
 		m.loadingOlder = true
+		m.noteScrollWall()
 		return m, tea.Batch(settle, m.fetchOlder(m.openChannelID, oldestID))
 	case key.Matches(msg, m.keys.Down):
 		settle := m.bumpChangeFetch()
@@ -3970,7 +4043,7 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if p.Id != "" && p.RootId != "" {
 			parent = p.Id
 		}
-		return m.openThreadAnswering(p, parent)
+		return m.openThreadAnswering(p, parent, "reply")
 	case key.Matches(msg, m.keys.OpenThread):
 		if m.postIdx < 0 || m.postIdx >= len(m.posts) {
 			return m, nil
@@ -3981,7 +4054,7 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.status = "message was deleted"
 			return m, nil
 		}
-		return m.openThreadForPost(m.posts[m.postIdx])
+		return m.openThreadForPost(m.posts[m.postIdx], "key")
 	case key.Matches(msg, m.keys.EditPost):
 		if m.postIdx < 0 || m.postIdx >= len(m.posts) {
 			return m, nil
@@ -4155,6 +4228,9 @@ func (m Model) toggleCollapse(pane focus) (tea.Model, tea.Cmd) {
 	} else {
 		m.renderMessages()
 	}
+	// Collapsing was expensive to build and there is no evidence anyone folds a
+	// message on purpose; which direction the key is pressed in is the answer.
+	m.recordActed(m.actedRecord(collapseAction(m.expandedPosts[p.Id]), p, "key"))
 	return m, nil
 }
 
@@ -4190,10 +4266,16 @@ func (m Model) handleDeleteConfirmKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 			m.cancelEdit()
 		}
 		m.status = "deleting…"
-		return m, m.deletePost(id)
+		return m, m.reportActed(m.deletePost(id),
+			m.actedRecord("delete", m.findPostByID(id), "key"))
 	case key.Matches(msg, m.keys.ConfirmNo), msg.String() == "esc", msg.String() == "q":
 		// esc / q are hardwired modal-cancel aliases alongside confirm_no (n).
+		p := m.findPostByID(m.deleteConfirmPostID)
 		m.closeDeleteConfirm()
+		a := m.actedRecord("delete", p, "key")
+		a.Outcome = "cancelled"
+		m.recordActed(a)
+		telemetry.Friction("delete_cancelled")
 		return m, nil
 	}
 	return m, nil
@@ -4204,8 +4286,8 @@ func (m Model) handleDeleteConfirmKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) 
 // thread sidebar. Optimistic stubs (empty Id) are ignored. The compose
 // textarea takes focus immediately so the user can start typing a reply
 // without a separate keystroke.
-func (m Model) openThreadForPost(p *model.Post) (tea.Model, tea.Cmd) {
-	return m.openThreadAnswering(p, "")
+func (m Model) openThreadForPost(p *model.Post, via string) (tea.Model, tea.Cmd) {
+	return m.openThreadAnswering(p, "", via)
 }
 
 // openThreadAnswering is openThreadForPost with the composer already aimed at
@@ -4213,7 +4295,7 @@ func (m Model) openThreadForPost(p *model.Post) (tea.Model, tea.Cmd) {
 // thread as a whole, which is what opening a thread to read it means; the reply
 // key passes the selected reply's own id, because "answer this" is what that key
 // has always meant and inside a thread it can now be taken literally.
-func (m Model) openThreadAnswering(p *model.Post, parentID string) (tea.Model, tea.Cmd) {
+func (m Model) openThreadAnswering(p *model.Post, parentID, via string) (tea.Model, tea.Cmd) {
 	rootID := p.RootId
 	if rootID == "" {
 		rootID = p.Id
@@ -4270,6 +4352,7 @@ func (m Model) openThreadAnswering(p *model.Post, parentID string) (tea.Model, t
 		m.threadSelectID = p.Id
 	}
 	m.threadLoading = true
+	m.armThreadOpen(rootID, via)
 	// Don't clobber a "✎ " prompt the user is mid-edit on — beginEditPost
 	// owns the prompt while editingPostID is set, and the patch will
 	// fire on the original post regardless of which pane is open.
@@ -4368,11 +4451,13 @@ func (m Model) handleTeamsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.LoadTeam):
 		if m.onSearchTab() {
 			m.focus = focusSearch
+			m.search.from = "key"
 			m.search.input.Focus()
 			return m, nil
 		}
 		if m.onFeedTab() {
 			m.focus = focusFeed
+			m.recordFeedAction("opened", "key")
 			return m, m.buildFeed()
 		}
 		if m.onSQLTab() {

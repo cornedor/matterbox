@@ -506,7 +506,7 @@ func TestTargetDoesNotOutliveItsThread(t *testing.T) {
 
 	m = nestThreadModel(t)
 	m.replyParentID = "r1"
-	next, _ := m.openThreadForPost(&model.Post{Id: "other", ChannelId: "c1"})
+	next, _ := m.openThreadForPost(&model.Post{Id: "other", ChannelId: "c1"}, "key")
 	if got := out(t, next); got.replyParentID != "" {
 		t.Fatal("target followed the composer into a different thread")
 	}

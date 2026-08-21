@@ -123,6 +123,9 @@ func (m *Model) recordKey(msg tea.KeyPressMsg) {
 		place,
 		m.keys.boundSomewhere(keystroke),
 	)
+	// Remembered so a help lookup in the next few seconds can be attributed to
+	// it — someone who got stuck and went looking.
+	m.noteUnhandledAt()
 }
 
 // bindingHasKey mirrors key.Matches for an already-derived keystroke: the same

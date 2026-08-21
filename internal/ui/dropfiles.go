@@ -160,5 +160,5 @@ func (m *Model) attachDroppedFiles(content string) (tea.Cmd, bool) {
 	}
 	// addAttachments overwrites status when it hits the per-post cap, so it
 	// runs after the optimistic message above.
-	return m.addAttachments(payloads), true
+	return m.addAttachments(payloads, "drop"), true
 }

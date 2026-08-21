@@ -140,12 +140,12 @@ func (m Model) applyJiraComment() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	client, ctx := m.jiraClient, m.ctx
-	verb := "comment on"
+	verb, action := "comment on", "comment"
 	if mention != nil {
-		verb = "reply to"
+		verb, action = "reply to", "reply"
 	}
 	m.status = fmt.Sprintf("posting %s %s…", verb, key)
-	return m, jiraMutateCmd(key, "comment", func() error {
+	return m, jiraMutateCmd(key, "comment", action, func() error {
 		return client.AddComment(ctx, key, text, mention)
 	})
 }

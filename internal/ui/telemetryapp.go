@@ -3,6 +3,8 @@ package ui
 import (
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+
 	"matterbox/internal/config"
 	"matterbox/internal/telemetry"
 )
@@ -10,17 +12,26 @@ import (
 // Launch telemetry: one app_started event per session, describing the machine
 // and the configuration rather than the person.
 //
-// It is assembled in two halves. New() has the config — Model deliberately
-// doesn't retain it, unpacking what it needs into fields instead — so the
-// feature and keybinding facts are gathered there and held in launchEnv. The
-// terminal size only arrives with the first WindowSizeMsg, and it is the single
-// most useful environment fact a TUI has (it decides whether the three-pane
-// layout fits at all), so that is where the event is finally sent.
+// It is assembled in stages, because the facts arrive at different times and the
+// most valuable ones arrive last. New() has the config — Model deliberately
+// doesn't retain it, unpacking what it needs into fields instead — so the feature
+// and keybinding facts are gathered there and held in launchEnv. The terminal
+// size arrives with the first WindowSizeMsg. The graphics protocol is only known
+// once the terminal has answered the startup probe, up to three seconds later.
+// The team and channel counts only once the sidebar has loaded.
 //
-// The first size message is also the earliest moment guaranteed to happen.
-// Waiting for the channel list would mean a launch that never reaches the
-// server goes uncounted, which would quietly bias every rate computed against
-// it — exactly the launches most worth knowing about.
+// So the event waits for all four, with a deadline: whichever comes first. That
+// deadline is the point. Waiting indefinitely for the channel list would mean a
+// launch that never reaches the server goes uncounted, which would quietly bias
+// every rate computed against it — exactly the launches most worth knowing
+// about. Waiting only for the size (which is what this did originally) meant
+// image_protocol and the counts were always absent, so "is this terminal capable" and
+// "how big is this sidebar" — the two questions most environment findings turn
+// on — could not be asked at all.
+//
+// A fact still missing when the deadline passes is left out rather than sent as
+// a wrong default: an absent property reads as "not known at launch", while a
+// zero would read as "this user has no channels".
 //
 // launchEnv is a pointer so an opted-out session carries eight nil bytes rather
 // than the struct, and so consuming it doubles as the "already sent" flag.
@@ -60,30 +71,88 @@ func newLaunchEnv(cfg *config.Config, mouseEnabled bool) *telemetry.Env {
 		OS:        telemetry.OSName(),
 		Arch:      telemetry.ArchName(),
 		Terminal:  telemetry.DetectTerminal(),
-		// ImageProtocol is deliberately left unset: terminal graphics support is
-		// only known once the startup probe has been answered, up to three
-		// seconds later (see emojiProbeCmd). media_rendered carries the protocol
-		// at the point it actually matters.
+		// Filled in later, when they are known: the graphics protocol once the
+		// probe has answered, the counts once the sidebar has loaded. See the
+		// package note above.
 		FeaturesOn:   enabledFeatures(cfg),
 		MouseEnabled: mouseEnabled,
 		NavModifier:  navModifierFromConfig(cfg),
 		Overridden:   overriddenActions(cfg),
-		// Not loaded yet at first layout, and a zero would read as "this user
-		// has no teams" rather than "we hadn't asked yet".
+		// Sentinel for "we hadn't asked yet"; a zero would read as "this user
+		// has no teams".
 		Teams:    -1,
 		Channels: -1,
 	}
 }
 
-// recordLaunch emits app_started, once, from the first WindowSizeMsg — the
-// earliest point the terminal size is known. Consuming launchEnv is what makes
-// it once: every later resize finds it nil.
-func (m *Model) recordLaunch() {
+// launchGrace is how long the launch event waits for the facts that arrive late
+// — the graphics probe (bounded at emojiProbeTimeout, 3s) and the channel list
+// (bounded by nothing at all). Past it the event goes out with whatever is
+// known, so a launch that never reaches the server is still counted.
+const launchGrace = 5 * time.Second
+
+// launchDeadlineMsg fires when launchGrace is up.
+type launchDeadlineMsg struct{}
+
+// launchDeadlineCmd arms the deadline. Returns nil when telemetry is off, so an
+// opted-out session gets no extra timer.
+func (m *Model) launchDeadlineCmd() tea.Cmd {
 	if m.launchEnv == nil {
+		return nil
+	}
+	return tea.Tick(launchGrace, func(time.Time) tea.Msg { return launchDeadlineMsg{} })
+}
+
+// noteLaunchSize records the first WindowSizeMsg. The terminal size is the single
+// most useful environment fact a TUI has — it decides whether the three-pane
+// layout fits at all — and it is also the only one the event will not go out
+// without, since a size of zero would describe no terminal anyone is using.
+func (m *Model) noteLaunchSize() { m.markLaunch(func(t *uiTelemetry) { t.sizeKnown = true }) }
+
+// noteLaunchGraphics records that the startup graphics probe has resolved, one
+// way or the other. Called from both the reply and the timeout, because both
+// settle the question.
+func (m *Model) noteLaunchGraphics() { m.markLaunch(func(t *uiTelemetry) { t.graphicsKnown = true }) }
+
+// noteLaunchLists records that the sidebar has loaded, once both halves are in.
+func (m *Model) noteLaunchLists() {
+	if !m.teamsLoaded || !m.channelsLoaded {
+		return
+	}
+	m.markLaunch(func(t *uiTelemetry) { t.listsKnown = true })
+}
+
+// noteLaunchDeadline gives up waiting and sends with what is known.
+func (m *Model) noteLaunchDeadline() { m.markLaunch(func(t *uiTelemetry) { t.launchOverdue = true }) }
+
+// markLaunch applies one readiness fact and sends the event if that was the
+// last one outstanding.
+//
+// The fact itself lands behind m.tel, so it sticks even when the caller holds a
+// Model copy (Init does). The send can't misfire from such a copy: it requires
+// sizeKnown, which is only ever set from the WindowSizeMsg handler on the live
+// model, and launchSent — also behind the pointer — makes it once regardless.
+func (m *Model) markLaunch(set func(*uiTelemetry)) {
+	if m.tel == nil || m.launchEnv == nil {
+		return
+	}
+	set(m.tel)
+	m.maybeRecordLaunch()
+}
+
+// maybeRecordLaunch emits app_started once the late-arriving facts are in, or
+// once the deadline has passed. Consuming launchEnv is what makes it once.
+func (m *Model) maybeRecordLaunch() {
+	t := m.tel
+	if m.launchEnv == nil || t == nil || t.launchSent || !t.sizeKnown {
+		return
+	}
+	if !t.launchOverdue && !(t.graphicsKnown && t.listsKnown) {
 		return
 	}
 	env := *m.launchEnv
 	m.launchEnv = nil
+	t.launchSent = true
 
 	env.Cols = m.width
 	env.Rows = m.height
@@ -91,7 +160,30 @@ func (m *Model) recordLaunch() {
 	// Anything already on screen came out of the local cache rather than the
 	// network — the warm-open path this measures.
 	env.CacheWarm = len(m.posts) > 0
+	if t.graphicsKnown {
+		env.ImageProtocol = m.imageProtocol()
+	}
+	if t.listsKnown {
+		env.Teams = len(m.teams)
+		env.Channels = m.sidebarChannelCount()
+	}
 	telemetry.AppStarted(env)
+	// The version this build is, against the last one this machine saw. Done
+	// here rather than at startup because it wants the message cache, which is
+	// where the last-seen version is remembered — and because it reads best
+	// immediately after app_started.
+	telemetry.CheckVersion(m.store, buildInfo.version)
+}
+
+// sidebarChannelCount is how many conversations the sidebar can show, across
+// every team and the DM buckets. Sidebar and switcher design depends on this
+// figure and we are currently guessing at it.
+func (m *Model) sidebarChannelCount() int {
+	n := 0
+	for _, list := range m.channels {
+		n += len(list)
+	}
+	return n
 }
 
 // enabledFeatures lists the optional features this config has switched on, as

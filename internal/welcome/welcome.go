@@ -160,6 +160,14 @@ type Model struct {
 	cap       mmauth.Capture
 	capturing bool
 
+	// The activation funnel (telemetry.go). funnel tracks which steps were
+	// shown and how often; usedSSO / usedPassword record which sign-in route
+	// produced the token, for setup_finished's auth_method. Nothing here is
+	// sent unless the telemetry question is answered yes.
+	funnel       wizardFunnel
+	usedSSO      bool
+	usedPassword bool
+
 	// Background frame cache. scene holds the pristine rendered scene for sceneT;
 	// frame is a per-View copy the overlay draws onto. The scene is re-rendered
 	// only when the animation time advances (see sceneFrame), so keystrokes — which
@@ -349,6 +357,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.phase == phaseIntro && m.t >= m.wizardAt() {
 			m.phase = phaseWizard
+			m.recordStep(m.step)
 		}
 		// frameRate() reflects the just-updated phase, so the tick rate drops as
 		// soon as the wizard opens.

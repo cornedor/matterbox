@@ -12,6 +12,8 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+
+	"matterbox/internal/telemetry"
 )
 
 // Mattermost's web client caps a post at 5 file attachments; mirror it
@@ -62,7 +64,7 @@ func newAttachmentSpinner() spinner.Model {
 // addAttachments appends payloads as pending uploads, kicks off each
 // upload, and starts the spinner ticking for each. Enforces the 5-file
 // cap; over-budget payloads are dropped with a status message.
-func (m *Model) addAttachments(payloads []clipboardPayload) tea.Cmd {
+func (m *Model) addAttachments(payloads []clipboardPayload, via string) tea.Cmd {
 	if len(payloads) == 0 {
 		return nil
 	}
@@ -97,11 +99,19 @@ func (m *Model) addAttachments(payloads []clipboardPayload) tea.Cmd {
 			spinner:   newAttachmentSpinner(),
 		}
 		m.attachments = append(m.attachments, att)
+		// Three separate paths exist (paste, drag-and-drop, the CLI) and nobody
+		// knows whether any of them is discoverable. The filename never leaves
+		// the machine — only its coarse kind and the size, which is what decides
+		// whether the upload needs progress feedback.
+		m.recordAttachment(via, att, "ok")
 		cmds = append(cmds, att.spinner.Tick, m.uploadAttachment(att.id, att.localPath, att.filename, channelID))
 	}
 
 	switch {
 	case dropped > 0 && len(payloads) == dropped:
+		// Every file was refused by the per-post cap — the attach worked, the
+		// budget didn't.
+		m.recordAttachment(via, pendingAttachment{}, "denied")
 		m.status = fmt.Sprintf("max %d attachments per post", maxAttachmentsPerPost)
 	case dropped > 0:
 		m.status = fmt.Sprintf("attached %d (max %d per post)", len(payloads)-dropped, maxAttachmentsPerPost)
@@ -149,6 +159,12 @@ func (m *Model) applyUploadResult(msg attachmentUploadedMsg) {
 			m.attachments[i].state = attFailed
 			m.attachments[i].err = msg.err
 			m.status = fmt.Sprintf("upload %s: %v", m.attachments[i].filename, msg.err)
+			telemetry.OperationFailed(telemetry.Failure{
+				Where:       "media.upload",
+				Class:       telemetry.ClassifyError(msg.err),
+				UserVisible: true,
+				Err:         msg.err,
+			})
 			return
 		}
 		m.attachments[i].state = attUploaded

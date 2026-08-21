@@ -1599,7 +1599,7 @@ func (e *Engine) runActions(ctx context.Context, t trigger, actions []Action) {
 	for _, a := range actions {
 		switch a.Type {
 		case ActionNotify:
-			e.notifyGate(ctx, t.ev, t.post, e.notifyOptsFor(a))
+			e.notifyGate(ctx, t, e.notifyOptsFor(a))
 		case ActionExec:
 			a := a
 			e.wg.Add(1)
@@ -1611,10 +1611,10 @@ func (e *Engine) runActions(ctx context.Context, t trigger, actions []Action) {
 		case ActionReact:
 			a := a
 			e.wg.Add(1)
-			go e.runReact(ctx, t.post, a)
+			go e.runReact(ctx, t, a)
 		case ActionMarkRead:
 			e.wg.Add(1)
-			go e.runMarkRead(ctx, t.post)
+			go e.runMarkRead(ctx, t)
 		case ActionSend:
 			a := a
 			e.wg.Add(1)
@@ -1660,7 +1660,8 @@ func (e *Engine) notifyOptsFor(a Action) notifyOpts {
 // settings. An urgent action bypasses the quiet-hours and muted-channel
 // suppression (but not the self / DM gates), so an on-call keyword still pages
 // while you're heads-down.
-func (e *Engine) notifyGate(ctx context.Context, ev *model.WebSocketEvent, p *model.Post, opts notifyOpts) {
+func (e *Engine) notifyGate(ctx context.Context, t trigger, opts notifyOpts) {
+	ev, p := t.ev, t.post
 	if e.me != nil && p.UserId == e.me.Id && !e.opts.NotifySelf {
 		return
 	}
@@ -1673,24 +1674,31 @@ func (e *Engine) notifyGate(ctx context.Context, ev *model.WebSocketEvent, p *mo
 	// a fact about having seen it.
 	if e.tuiStatus().Viewing(p.ChannelId) {
 		e.log.Printf("channel %s is open and focused in the TUI — notification skipped", p.ChannelId)
+		// Suppressed, not failed: the gates are the notification policy working,
+		// and counting them as errors would make a well-configured daemon look
+		// broken. "cancelled" is what a deliberate non-delivery is.
+		e.reportRuleOutcome(t, ActionNotify, "cancelled")
 		return
 	}
 	if !opts.urgent {
 		if e.opts.RespectDND && e.myStatus == model.StatusDnd {
 			e.log.Printf("notifications suppressed while status is dnd")
+			e.reportRuleOutcome(t, ActionNotify, "cancelled")
 			return
 		}
 		if e.opts.RespectMutes && e.isMuted(p.ChannelId) {
 			e.log.Printf("mention in muted channel %s — skipped", p.ChannelId)
+			e.reportRuleOutcome(t, ActionNotify, "cancelled")
 			return
 		}
 		if e.inQuietHoursNow() {
 			e.log.Printf("mention during quiet hours — skipped (cached; use /unread)")
+			e.reportRuleOutcome(t, ActionNotify, "cancelled")
 			return
 		}
 	}
 	e.wg.Add(1)
-	go e.notify(ctx, ev, p, opts)
+	go e.notify(ctx, t, opts)
 }
 
 // envelope is the JSON view of a post passed to exec/webhook actions. It is
@@ -1860,11 +1868,13 @@ func (e *Engine) runExec(ctx context.Context, t trigger, a Action) {
 	payload, err := json.Marshal(env)
 	if err != nil {
 		e.log.Printf("rule exec: marshal envelope: %v", err)
+		e.reportRuleOutcome(t, ActionExec, "error")
 		return
 	}
 	argv, err := renderCommand(a, env)
 	if err != nil {
 		e.log.Printf("rule exec: render command: %v", err)
+		e.reportRuleOutcome(t, ActionExec, "error")
 		return
 	}
 	cctx, cancel := context.WithTimeout(ctx, execTimeout)
@@ -1873,6 +1883,7 @@ func (e *Engine) runExec(ctx context.Context, t trigger, a Action) {
 	cmd.Stdin = bytes.NewReader(payload)
 	cmd.Env = execEnv(env)
 	out, err := cmd.CombinedOutput()
+	e.reportRule(t, ActionExec, err)
 	if err != nil {
 		e.log.Printf("rule exec %v failed: %v (%s)", argv, err, truncateForLog(string(out)))
 		return
@@ -1993,6 +2004,7 @@ func (e *Engine) runWebhook(ctx context.Context, t trigger, a Action) {
 	payload, err := json.Marshal(e.buildEnvelope(t))
 	if err != nil {
 		e.log.Printf("rule webhook: marshal envelope: %v", err)
+		e.reportRuleOutcome(t, ActionWebhook, "error")
 		return
 	}
 	cctx, cancel := context.WithTimeout(ctx, webhookTimeout)
@@ -2000,6 +2012,7 @@ func (e *Engine) runWebhook(ctx context.Context, t trigger, a Action) {
 	req, err := http.NewRequestWithContext(cctx, http.MethodPost, a.URL, bytes.NewReader(payload))
 	if err != nil {
 		e.log.Printf("rule webhook: build request: %v", err)
+		e.reportRuleOutcome(t, ActionWebhook, "error")
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -2011,26 +2024,32 @@ func (e *Engine) runWebhook(ctx context.Context, t trigger, a Action) {
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		e.reportRule(t, ActionWebhook, err)
 		e.log.Printf("rule webhook %s failed: %v", a.URL, err)
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		e.reportRuleOutcome(t, ActionWebhook, "error")
 		e.log.Printf("rule webhook %s: status %d", a.URL, resp.StatusCode)
 		return
 	}
+	e.reportRuleOutcome(t, ActionWebhook, "ok")
 	e.log.Printf("rule webhook %s ok (%d)", a.URL, resp.StatusCode)
 }
 
 // runReact adds an emoji reaction to the triggering post.
-func (e *Engine) runReact(ctx context.Context, p *model.Post, a Action) {
+func (e *Engine) runReact(ctx context.Context, t trigger, a Action) {
 	defer e.wg.Done()
 	if e.me == nil {
 		return
 	}
+	p := t.post
 	// Noted before the call so the echo can't arrive first on a fast server.
 	e.noteSelfReaction(p.Id, a.Emoji)
-	if err := e.client.AddReaction(ctx, e.me.Id, p.Id, a.Emoji); err != nil {
+	err := e.client.AddReaction(ctx, e.me.Id, p.Id, a.Emoji)
+	e.reportRule(t, ActionReact, err)
+	if err != nil {
 		e.log.Printf("rule react %q on %s: %v", a.Emoji, p.Id, err)
 	}
 }
@@ -2052,10 +2071,12 @@ func (e *Engine) runSend(ctx context.Context, t trigger, a Action) {
 	body, err := e.renderTemplate(a.textTmpl, t)
 	if err != nil {
 		e.log.Printf("rule send: render text: %v", err)
+		e.reportRuleOutcome(t, ActionSend, "error")
 		return
 	}
 	if strings.TrimSpace(body) == "" {
 		e.log.Printf("rule send: text rendered empty — skipped")
+		e.reportRuleOutcome(t, ActionSend, "empty")
 		return
 	}
 	channelID, rootID := p.ChannelId, ""
@@ -2068,11 +2089,14 @@ func (e *Engine) runSend(ctx context.Context, t trigger, a Action) {
 		id, err := e.resolveSendTarget(ctx, a.Channel)
 		if err != nil {
 			e.log.Printf("rule send: resolve %q: %v", a.Channel, err)
+			e.reportRule(t, ActionSend, err)
 			return
 		}
 		channelID, rootID = id, "" // a configured channel is not the trigger's thread
 	}
-	if _, err := e.client.Send(ctx, channelID, rootID, body, nil); err != nil {
+	_, err = e.client.Send(ctx, channelID, rootID, body, nil)
+	e.reportRule(t, ActionSend, err)
+	if err != nil {
 		e.log.Printf("rule send to %s: %v", channelID, err)
 	}
 }
@@ -2113,18 +2137,22 @@ func (e *Engine) resolveSendTarget(ctx context.Context, spec string) (string, er
 }
 
 // runMarkRead marks the triggering post's channel read.
-func (e *Engine) runMarkRead(ctx context.Context, p *model.Post) {
+func (e *Engine) runMarkRead(ctx context.Context, t trigger) {
 	defer e.wg.Done()
 	if e.me == nil {
 		return
 	}
-	if err := e.client.ViewChannel(ctx, e.me.Id, p.ChannelId); err != nil {
+	p := t.post
+	err := e.client.ViewChannel(ctx, e.me.Id, p.ChannelId)
+	e.reportRule(t, ActionMarkRead, err)
+	if err != nil {
 		e.log.Printf("rule mark_read %s: %v", p.ChannelId, err)
 	}
 }
 
 // runLog writes a single line about the matched post to the daemon log.
 func (e *Engine) runLog(t trigger, a Action) {
+	e.reportRuleOutcome(t, ActionLog, "ok")
 	prefix := strings.TrimSpace(a.Text)
 	if prefix == "" {
 		prefix = "rule matched"
