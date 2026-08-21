@@ -183,9 +183,18 @@ func (m *Model) buildStep(p *panelBuilder) {
 		p.blank()
 		p.wrap("May we collect anonymous usage telemetry and error reports?", valueC)
 		p.blank()
-		p.wrap("It is anonymous: a random id, never your name, your server, or "+
-			"anything anyone types — just which features get used and what "+
-			"breaks.", labelC)
+		// Says what is sent rather than asserting "it is anonymous", and names
+		// the one thing that isn't in our gift: PostHog sees the sender's IP.
+		// docs/telemetry.md has always said so, but this is the moment someone
+		// decides, and the caveat belongs beside the claim it qualifies.
+		//
+		// The wording is tight because the row budget is: at 60x20 this step
+		// fills the panel exactly, and drawPanel clips from the bottom, so a
+		// longer sentence takes the answers off the screen rather than
+		// wrapping. TestTelemetryStepFitsSmallTerminal is the guard.
+		p.wrap("A random id, never your name, your server, or anything you "+
+			"type — just what gets used and what breaks. PostHog does see "+
+			"the IP it arrives from.", labelC)
 		p.blank()
 		p.text("What we collect, and how to turn it off later:", dimC)
 		p.textU("  "+telemetryDocsURL, telemetryDocsURL, accentCyan)
