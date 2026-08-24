@@ -74,10 +74,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Take the startup splash down as soon as the first transcript is ready,
 	// from whichever open path got there (see splashSettle).
 	nm.splashSettle()
-	// And once it is down, mention a newer release if the startup check found
-	// one and the status slot is free (see flushUpdateNotice). Must follow
-	// splashSettle: the notice waits for the splash, and this is the event that
-	// takes it away.
+	// And once it is down, mention a newer release if the startup check found one
+	// (see flushUpdateNotice). Must follow splashSettle: the notice waits for the
+	// splash, and this is the event that takes it away.
 	if notice := nm.flushUpdateNotice(); notice != nil {
 		cmd = tea.Batch(cmd, notice)
 	}
@@ -242,9 +241,13 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case updateFoundMsg:
-		// Held rather than shown: the splash is usually still up at this point,
-		// and the status slot may be busy. flushUpdateNotice picks the moment.
+		// Held rather than shown: the splash is usually still up at this point.
+		// flushUpdateNotice picks the moment.
 		m.updateFound = msg.rel
+		return m, nil
+
+	case toastExpireMsg:
+		m.expireToast(msg.gen)
 		return m, nil
 
 	case tea.KeyPressMsg:

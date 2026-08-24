@@ -1711,10 +1711,22 @@ func (m *Model) renderViewContent() string {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, panes...)
 	}
 	// A full-body overlay replaces everything above it — see bodyOverlays.
-	if ov := m.activeBodyOverlay(); ov != nil {
+	ov := m.activeBodyOverlay()
+	if ov != nil {
 		body = lipgloss.Place(m.width, bodyH, lipgloss.Center, lipgloss.Center, ov.render(m, bodyH))
 		joins = nil // nothing but padding under the strip while a popup is up
 	}
+	// The toast floats over the body's top-right corner (see toast.go). A popup
+	// owns the whole body while it is open, so the box waits under it rather than
+	// being stamped across its border — the timer runs either way, which is the
+	// right trade for a notice nobody is waiting on.
+	box := ""
+	if ov == nil {
+		if box = m.renderToast(bodyH); box != "" {
+			body = stampBlock(body, box, toastTop, m.toastCol(box))
+		}
+	}
+	m.armToastZone(box)
 
 	tabs := m.renderTeamTabs(joins)
 

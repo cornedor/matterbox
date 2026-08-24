@@ -444,8 +444,9 @@ installs with. It reveals no more about you than opening the website does,
 which is why it is not behind the telemetry question.
 
 Nothing is ever installed on its own. When a newer release exists matterbox
-mentions it twice and then stops: a note in the footer for a few seconds, and a
-line when you quit, where the command can actually be typed.
+mentions it twice and then stops: a small box in the top-right corner, which goes
+away by itself or when you click it, and a line when you quit, where the command
+can actually be typed.
 
 ```yaml
 update_check:
@@ -465,8 +466,8 @@ Two things the check will not do. It will not tell you to go *back*: a build a
 few commits past v1.1.0 is stamped `v1.1.0-3-gabc1234`, and only the numeric
 `1.1.0` is compared, so being ahead of a release never reads as being behind
 one. And it will not nag: a failed check waits an hour, a successful one waits
-a day, and the note in the footer never takes the line off something you are
-waiting on.
+a day, the notice is said once per session, and it waits for a frame with no
+popup on it rather than being stamped over whatever you had open.
 
 ### `matterbox upgrade`
 

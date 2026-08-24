@@ -125,7 +125,8 @@ var ActionIDs = []string{
 // clicks may not need to be clickable.
 var MouseTargets = []string{
 	"tab", "channel", "message", "thread", "feed", "search", "reference",
-	"info", "sql", "composer", "jump_bottom", "feed_mark_all", "nothing",
+	"info", "sql", "composer", "jump_bottom", "feed_mark_all", "toast",
+	"nothing",
 }
 
 // PaletteIDs are the ">" command-palette entries, by stable id rather than by

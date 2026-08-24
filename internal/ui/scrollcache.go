@@ -62,6 +62,10 @@ type viewCache struct {
 	// by renderFeedPane and read back by the mouse layer. Cleared each render
 	// alongside jumpZone, so another tab can't inherit the target.
 	feedBtnZone rectZone
+	// toastZone is the overlay notice's screen rect, written by renderViewContent
+	// while a toast is drawn and disarmed on every frame without one. A click on
+	// it dismisses the box instead of reaching the content underneath.
+	toastZone boxZone
 }
 
 // scrollGeom caches one viewport's total wrapped-row count. That total depends
