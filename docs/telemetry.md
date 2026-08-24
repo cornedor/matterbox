@@ -885,11 +885,11 @@ channel name, which is never sent.
 `channel_mute`, `channel_unmute`, `create_channel`, `debug_copy_channel_id`,
 `debug_copy_message_id`, `debug_key_inspector`, `feed_hide_muted`,
 `feed_mark_all_read`, `feed_show_muted`, `gorillas`, `gorillas_hotseat`,
-`index_channel`, `join_channel`, `keys`, `kurve`, `kurve_hotseat`,
-`message_stats`, `rejoin_game`, `saved_messages`, `sidebar_all_channels`,
-`sidebar_unread_channels`, `start_group_dm`, `status_away`,
-`status_custom_clear`, `status_custom_set`, `status_dnd`, `status_offline`,
-`status_online`, `summarize`, `typing_animation`
+`image_click`, `index_channel`, `join_channel`, `keys`, `kurve`,
+`kurve_hotseat`, `message_stats`, `rejoin_game`, `saved_messages`,
+`sidebar_all_channels`, `sidebar_unread_channels`, `start_group_dm`,
+`status_away`, `status_custom_clear`, `status_custom_set`, `status_dnd`,
+`status_offline`, `status_online`, `summarize`, `typing_animation`
 
 ### Slash commands
 
