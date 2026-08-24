@@ -744,6 +744,8 @@ func iconForExt(f *model.FileInfo) string {
 		return "📄"
 	case "zip", "tar", "gz", "tgz", "bz2", "7z", "rar", "xz", "zst":
 		return "📦"
+	case "stl", "3mf", "obj", "step", "stp", "ply", "gltf", "glb":
+		return "🧊"
 	}
 	return "📎"
 }

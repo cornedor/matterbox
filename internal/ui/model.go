@@ -411,6 +411,9 @@ type Model struct {
 	// kurve is the open "Achtung, die Kurve" game, if any. See kurve.go.
 	kurve kurveState
 
+	// stl is the open 3D viewer for an .stl attachment, if any. See stlview.go.
+	stl stlState
+
 	// typingIndicator drives the animated three-dot cue on the composer
 	// separator when someone else is typing in the open channel. Unlike
 	// `typing` above, it's fed by inbound `typing` WebSocket events, not a

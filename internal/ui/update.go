@@ -226,7 +226,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.postLineCache = nil
 		m.renderAllPanes()
 		// A resize while the image preview or a game is open re-fits + re-transmits it.
-		return m, tea.Batch(m.resizePreview(), m.resizeGorillas(), m.resizeKurve())
+		return m, tea.Batch(m.resizePreview(), m.resizeGorillas(), m.resizeKurve(), m.resizeSTLView())
 
 	case splashTickMsg:
 		// Spinner frame on the startup splash. The chain dies with the splash:
@@ -322,6 +322,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case uv.KittyGraphicsEvent:
+		// Reply to the STL viewer's arming a=f — the one frame edit it sends with
+		// q=0, to find out whether this terminal can double-buffer frames at all
+		// (see stlState). Checked before the probe: they are told apart by image
+		// id, and this one only exists while the viewer is open.
+		if m.stl.active && m.stl.imgID != 0 && msg.Options.ID == int(m.stl.imgID) {
+			(&m).applySTLFrameReply(string(msg.Payload))
+			return m, nil
+		}
 		// Reply to the startup graphics-support probe (see emojiProbeCmd).
 		// Transmits use q=2, so only the probe reply should reach here.
 		if m.emojiImg != nil && msg.Options.ID == kittyProbeID {
@@ -1333,6 +1341,15 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.applyKurveResumed(msg)
 	case kurveFrameMsg:
 		return m, m.applyKurveFrame(msg)
+
+	case stlLoadedMsg:
+		return m, m.applySTLLoaded(msg)
+	case stlFrameMsg:
+		return m, m.applySTLFrame(msg)
+	case stlSettleMsg:
+		return m, m.applySTLSettle(msg)
+	case stlSpinMsg:
+		return m, m.applySTLSpin(msg)
 	case cmdShimmerTickMsg:
 		return m, m.applyCmdShimmerTick()
 
@@ -2119,6 +2136,11 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.kurve.active {
 		return m.handleKurveKey(msg)
+	}
+	// The 3D viewer is fully modal for the same reason a game is: the arrows,
+	// hjkl and the axis keys are the whole interface.
+	if m.stl.active {
+		return m.handleSTLKey(msg)
 	}
 	// Delete-confirmation modal is fully modal: y/enter performs the
 	// delete, n/esc cancels. Anything else is ignored.
@@ -3491,6 +3513,12 @@ func (m *Model) wheelStep(t wheelTarget) int {
 // than snapping back to the selection. Horizontal wheels, and wheels on the
 // composer, are ignored.
 func (m Model) handleMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
+	// The 3D viewer owns the wheel while it is up: it zooms. Checked before the
+	// scroll targets below, which would otherwise resolve to wheelNone (a modal
+	// with no scrollable view) and swallow it.
+	if m.stl.active {
+		return m.stlMouseWheel(msg)
+	}
 	var dir int
 	switch msg.Button {
 	case tea.MouseWheelUp:

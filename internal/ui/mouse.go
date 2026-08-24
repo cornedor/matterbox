@@ -179,6 +179,14 @@ func absDiff(a, b int) int {
 // the message / thread panes. Non-left buttons and clicks over nothing
 // actionable are ignored.
 func (m Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
+	// The 3D viewer takes the press before the left-button filter below: it uses
+	// the right and middle buttons too (pan, as a 3D application does), and it
+	// needs the press to arm a drag rather than to act on the panes underneath.
+	// Checked before mouseBlocked for the same reason the image preview is —
+	// both are inModal states that would otherwise ignore every click.
+	if m.stl.active {
+		return m.stlMouseClick(msg)
+	}
 	if msg.Button != tea.MouseLeft {
 		return m, nil
 	}
@@ -347,6 +355,9 @@ func (m Model) clickSearchHit(idx int) (tea.Model, tea.Cmd) {
 // click while mouseEnabled — see linkclick.go). A click on a rendered inline
 // thumbnail dispatches config.image_click instead (see imageclick.go).
 func (m Model) handleMouseRelease(msg tea.MouseReleaseMsg) (tea.Model, tea.Cmd) {
+	if m.stl.active {
+		return m.stlMouseRelease()
+	}
 	if msg.Button != tea.MouseLeft {
 		return m, nil
 	}
@@ -387,6 +398,10 @@ func (m Model) handleMouseRelease(msg tea.MouseReleaseMsg) (tea.Model, tea.Cmd) 
 // don't move between elements are dropped so the (always-on) re-render after
 // each motion stays a cache hit.
 func (m Model) handleMouseMotion(msg tea.MouseMotionMsg) (tea.Model, tea.Cmd) {
+	// A drag inside the 3D viewer orbits (or pans) the model.
+	if m.stl.active {
+		return m.stlMouseMotion(msg)
+	}
 	if m.mouseBlocked() {
 		if m.hover.zone != hitNone {
 			m.hover = hoverState{}

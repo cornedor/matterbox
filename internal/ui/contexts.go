@@ -77,7 +77,7 @@ func (m *Model) inModal() bool {
 		m.summary.active() || m.switcherMode || m.keysSheetMode || m.textPopup.active ||
 		m.templatePicker.active || m.savedPosts.active || m.kaomojiPicker.active || m.preview.active ||
 		m.createChan != nil || m.chanEdit != nil || m.chanConfirm != nil || m.joinChan != nil ||
-		m.gorillas.active || m.kurve.active || m.keyDebugMode ||
+		m.gorillas.active || m.kurve.active || m.stl.active || m.keyDebugMode ||
 		m.jiraPicker.active || m.jiraPointsActive || m.jiraCommentActive ||
 		m.refConfirm.active || m.linkConfirm.active
 }
@@ -123,6 +123,28 @@ var keyContexts = []keyContext{
 		active:   func(m *Model) bool { return m.gorillas.active || m.kurve.active },
 		terminal: true,
 		claims:   func(m *Model) []key.Binding { return []key.Binding{hardwired("quit the game", "esc", "q")} },
+	},
+	{
+		// The 3D viewer for an .stl attachment. Like a game it owns every key —
+		// the arrows, hjkl, the axis snaps and the zoom keys are the interface,
+		// and they are drawn on the viewer rather than listed here.
+		name:     "modal:stl-view",
+		active:   func(m *Model) bool { return m.stl.active },
+		terminal: true,
+		claims: func(m *Model) []key.Binding {
+			return []key.Binding{
+				hardwired("orbit", "up", "down", "left", "right", "h", "j", "k", "l"),
+				hardwired("pan", "shift+up", "shift+down", "shift+left", "shift+right", "H", "J", "K", "L"),
+				hardwired("zoom", "+", "=", "-", "_", "pgup", "pgdown"),
+				hardwired("standard views", "x", "y", "z"),
+				hardwired("reset the view", "r", "0"),
+				hardwired("fit to the frame", "f"),
+				hardwired("spin the turntable", "s"),
+				hardwired("next / previous model", "n", "p", "tab", "shift+tab"),
+				m.keys.Preview, // the key that opened it closes it
+				hardwired("close", "esc", "q"),
+			}
+		},
 	},
 	{
 		name:     "modal:delete-confirm",
@@ -652,6 +674,7 @@ var shadowProbeStates = []struct {
 	{"keys-sheet", func(m *Model) { m.keysSheetMode = true }},
 	{"text-popup", func(m *Model) { m.textPopup.active = true }},
 	{"image-preview", func(m *Model) { m.preview.active = true }},
+	{"stl-view", func(m *Model) { m.stl.active = true }},
 }
 
 // keySet flattens a binding slice to the set of key strings it matches.

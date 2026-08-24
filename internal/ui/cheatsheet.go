@@ -39,6 +39,7 @@ var keysSheetSections = []struct {
 	// rows are built from a synthetic source (rows func) that merges them with
 	// the bound toggle, like navSheetRows above.
 	{title: "Image preview", contexts: []string{"modal:image-preview"}, rows: (*Model).previewSheetRows},
+	{title: "3D model viewer (.stl)", contexts: []string{"modal:stl-view"}},
 	{title: "Compose", contexts: []string{"focus:input"}},
 	// The editing keys live in internal/editor's own keymap, below every
 	// context (they are what a text input does with the keys nothing above it
