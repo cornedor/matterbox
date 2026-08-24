@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 
@@ -33,9 +34,12 @@ type Client struct {
 
 // New builds a Client4 wrapper pointed at the given Mattermost server.
 // The URL must include the scheme (https://… or http://…); the WS URL
-// is derived by swapping http→ws / https→wss.
+// is derived by swapping http→ws / https→wss. Client4's default HTTP client is
+// swapped for one that replays a read-only call whose connection dies (see
+// retryOnce).
 func New(serverURL, token string) *Client {
 	c := model.NewAPIv4Client(serverURL)
+	c.HTTPClient = &http.Client{Transport: retryOnce{delay: retryDelay}}
 	c.SetToken(token)
 	return &Client{c: c, token: token, serverURL: serverURL}
 }

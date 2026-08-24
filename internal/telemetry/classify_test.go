@@ -28,6 +28,10 @@ func TestClassify(t *testing.T) {
 		{"missing channel", errors.New("no such channel"), "error", "not_found"},
 		{"rate limited", errors.New("429 rate limit exceeded"), "error", "rate_limited"},
 		{"dial", errors.New("dial tcp 10.0.0.1:443: connection refused"), "error", "network"},
+		// The real PostHog report that added this rule: a keep-alive connection
+		// dying mid-fetch used to classify as "unknown" and raise an issue.
+		{"reset", errors.New(`get posts: Get "https://chat.example.com/api/v4/channels/c/posts": ` +
+			"read tcp 192.168.1.2:51818->10.0.0.1:443: read: connection reset by peer"), "error", "network"},
 		{"server", errors.New("502 bad gateway: internal server error"), "error", "server"},
 		{"yaml", errors.New("yaml: line 3: did not find expected key"), "error", "parse"},
 		{"unknown", errors.New("something nobody anticipated"), "error", "unknown"},
