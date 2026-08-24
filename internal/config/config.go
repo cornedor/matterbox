@@ -209,6 +209,29 @@ type Config struct {
 	// silent until its owner runs the wizard. See internal/telemetry and
 	// https://matterbox.work/docs/telemetry.
 	Telemetry TelemetryConfig `yaml:"telemetry"`
+	// UpdateCheck controls the daily "is there a newer matterbox" check. On by
+	// default, unlike telemetry: it reports nothing about you — the request
+	// carries no version, no platform and no identifier, and the comparison
+	// happens on this machine — so it is a request for a file rather than
+	// something to consent to. See internal/update.
+	UpdateCheck UpdateCheckConfig `yaml:"update_check"`
+}
+
+// UpdateCheckConfig holds the one switch on the update check: whether it runs.
+// What it does when it finds something is not configurable — a four-second note
+// in the footer and a line when you quit, and nothing is ever installed without
+// `matterbox upgrade`.
+type UpdateCheckConfig struct {
+	// Enabled turns the daily check on. Pointer so an absent key can default to
+	// true in fillDefaults while an explicit `enabled: false` still turns it
+	// off — the distinction a plain bool cannot make.
+	Enabled *bool `yaml:"enabled"`
+}
+
+// UpdateCheckEnabled reports whether the daily update check may run. Absent
+// means yes: this one is opt-out, and the reasoning is on UpdateCheck above.
+func (c Config) UpdateCheckEnabled() bool {
+	return c.UpdateCheck.Enabled == nil || *c.UpdateCheck.Enabled
 }
 
 // TelemetryConfig records the answer to the telemetry question the setup
@@ -1130,6 +1153,10 @@ func (c *Config) fillDefaults() {
 	if c.SQLTab == nil {
 		f := false
 		c.SQLTab = &f
+	}
+	if c.UpdateCheck.Enabled == nil {
+		t := true
+		c.UpdateCheck.Enabled = &t
 	}
 	if c.LanguageTool.Enabled == nil {
 		f := false

@@ -184,6 +184,9 @@
     },
     "telemetry": {
       "$ref": "#/definitions/telemetry"
+    },
+    "update_check": {
+      "$ref": "#/definitions/updateCheck"
     }
   },
   "definitions": {
@@ -568,6 +571,18 @@
         "anonymous_id": {
           "type": "string",
           "description": "Random id the reports are grouped by, minted when you opt in. Not derived from your account, server or machine; delete it to become a new, unrelated user."
+        }
+      }
+    },
+    "updateCheck": {
+      "type": "object",
+      "description": "The daily check for a newer matterbox. On by default, unlike telemetry: the request carries no version, no platform and no identifier and the comparison happens on your machine, so it reports nothing about you. Nothing is ever installed without `matterbox upgrade`.",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Check https://matterbox.work/latest.json once a day and mention it when a newer release exists (default true). `matterbox upgrade` still works with this off.",
+          "default": true
         }
       }
     },

@@ -33,6 +33,7 @@ import (
 	"matterbox/internal/semindex"
 	"matterbox/internal/store"
 	"matterbox/internal/telemetry"
+	"matterbox/internal/update"
 	"matterbox/internal/viewport"
 )
 
@@ -485,6 +486,15 @@ type Model struct {
 	// splash is the startup progress screen shown until the first transcript
 	// is ready; see splash.go. Inactive (the zero value) at every other time.
 	splash splashState
+
+	// updateCheck is config update_check.enabled, snapshotted at New(). On
+	// unless the config turns it off.
+	updateCheck bool
+	// updateFound is the newer release the startup check turned up, held until
+	// there is a free moment to mention it; updateNoticed marks it mentioned,
+	// so it is said once per session and not again. See updatecheck.go.
+	updateFound   *update.Release
+	updateNoticed bool
 
 	ws      *model.WebSocketClient
 	wsRetry int
@@ -1102,6 +1112,8 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	var jiraProjects []string
 	var gitlabCfg gitlab.Config
 	var githubCfg github.Config
+	// Opt-out, not opt-in: absent means on. See config.UpdateCheckEnabled.
+	updateCheck := true
 	var serverURL string
 	var kaomojiOptions []string
 	if cfg != nil {
@@ -1195,6 +1207,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 			Token:   cfg.GitHub.Token,
 		}
 		kaomojiOptions = append(kaomojiOptions, cfg.KaomojiOptions...)
+		updateCheck = cfg.UpdateCheckEnabled()
 	}
 	// The GIPHY_API_KEY env var overrides the config key (handy for keeping a
 	// secret out of the YAML file).
@@ -1285,6 +1298,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	return Model{
 		client:             client,
 		serverURL:          serverURL,
+		updateCheck:        updateCheck,
 		ctx:                context.Background(),
 		channels:           map[string][]*model.Channel{},
 		drafts:             map[string]string{},
@@ -1542,6 +1556,9 @@ func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{
 		m.fetchMe(), m.connectWS(), m.startEmbedder(), tea.RequestBackgroundColor,
 		splashTickCmd(), splashTimeoutCmd(),
+	}
+	if c := m.checkUpdateCmd(); c != nil {
+		cmds = append(cmds, c)
 	}
 	if c := m.emojiProbeCmd(); c != nil {
 		cmds = append(cmds, c)

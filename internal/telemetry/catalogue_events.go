@@ -798,7 +798,7 @@ var CLICommands = []string{
 	"welcome", "login", "url-handler", "register-handler", "github", "send",
 	"reply", "react", "read", "unread", "mark-read", "open", "search",
 	"channels", "digest", "whoami", "embed", "listen", "rules", "keys",
-	"decode",
+	"decode", "upgrade",
 }
 
 // reportableKeySet indexes ReportableKeys for the lookup below.

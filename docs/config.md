@@ -118,8 +118,9 @@ Then `matterbox login`. Everything below is optional.
 | `server_url` | `https://mattermost.example.com` | Base URL of your Mattermost instance. |
 
 The default is a **placeholder**: commands that need a real server (`login`)
-treat a `server_url` still equal to it as "not configured yet" and send you to
-`matterbox welcome`.
+treat a `server_url` still equal to it as "not configured yet" and stop, naming
+the file to edit and the command to re-run. A `matterbox` with no saved login
+runs the setup wizard instead, which is where the value usually comes from.
 
 ### Reading and display
 
@@ -429,6 +430,61 @@ to tag you with. Re-running `matterbox welcome` is how you change your answer:
 the question opens on whatever the config currently says. The config key is the
 only gate: the PostHog key is compiled into every build, including one you built
 yourself, and does nothing without an explicit `enabled: true`.
+
+### `update_check`
+
+Whether matterbox looks for a newer release. **On unless you turn it off** —
+which is the opposite of `telemetry`, deliberately, because it is a different
+kind of thing. Once a day it fetches
+<https://matterbox.work/latest.json>: a small file that answers everyone the
+same way. The request carries no version, no platform and no identifier, and
+the comparison happens on your machine, so there is nothing in it to count
+installs with. It reveals no more about you than opening the website does,
+which is why it is not behind the telemetry question.
+
+Nothing is ever installed on its own. When a newer release exists matterbox
+mentions it twice and then stops: a note in the footer for a few seconds, and a
+line when you quit, where the command can actually be typed.
+
+```yaml
+update_check:
+  enabled: false
+```
+
+| Key | Default | What it does |
+|---|---|---|
+| `update_check.enabled` | `true` | Check once a day whether a newer release exists, and say so if it does. |
+
+Turning it off stops the check, not the upgrade path: `matterbox upgrade` still
+works, and still asks the same URL, because you asked it to. A build with no
+release name — a plain `go build`, or an install from a branch — never checks
+at all, having nothing to compare itself against.
+
+Two things the check will not do. It will not tell you to go *back*: a build a
+few commits past v1.1.0 is stamped `v1.1.0-3-gabc1234`, and only the numeric
+`1.1.0` is compared, so being ahead of a release never reads as being behind
+one. And it will not nag: a failed check waits an hour, a successful one waits
+a day, and the note in the footer never takes the line off something you are
+waiting on.
+
+### `matterbox upgrade`
+
+Not a config key, but the other half of the same story. It installs the current
+release over this one by running the same installer the website hands out, and
+works out *how* rather than guessing:
+
+```
+matterbox upgrade                    # the latest release
+matterbox upgrade --check            # say what is current, change nothing
+matterbox upgrade --version v1.0.0   # a specific release, including an older one
+```
+
+A binary compiled with optional features — inline video, the `--demo`
+soundtrack — is rebuilt from source so it keeps them; one without is replaced by
+the release binary, which is pure Go and carries neither. `matterbox --version`
+prints which of the two you have. It installs alongside the binary it replaces,
+so an upgrade lands wherever the original `--dir` put it, and stays on your
+PATH.
 
 ## Environment variables
 
