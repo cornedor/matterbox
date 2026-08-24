@@ -689,6 +689,27 @@ func TestStepCountCountsEveryStep(t *testing.T) {
 	}
 }
 
+// TestDoneScreenFitsSmallTerminal: the closing panel reports every setting the
+// wizard decided, so it grows every time one is added — and drawPanel clips
+// from the bottom, which would take the way out with it. There is no headroom
+// left at 60x20: an added line has to buy its rows from an existing one.
+func TestDoneScreenFitsSmallTerminal(t *testing.T) {
+	for _, sz := range [][2]int{{80, 24}, {60, 20}} {
+		m := newWizard(t)
+		m.t = 7
+		m.phase = phaseDone
+		m.width, m.height = sz[0], sz[1]
+		m.rend.Resize(sz[0], sz[1])
+		m.sceneValid = false
+		text := ansiSGR.ReplaceAllString(m.View().Content, "")
+		for _, want := range []string{"You're all set", "Settings saved", "enter  exit"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%dx%d: done screen clipped %q off the panel", sz[0], sz[1], want)
+			}
+		}
+	}
+}
+
 // TestTelemetryStepFitsSmallTerminal: drawPanel clips a too-tall panel from the
 // bottom, so growing the consent copy could quietly cut the answers off the
 // screen. Both buttons and the key hint must survive a small terminal.

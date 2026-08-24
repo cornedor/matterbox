@@ -37,6 +37,22 @@ To see where all of that landed on your own machine, ask the binary:
 send anything — and if not, whether that is because nobody has answered the
 question, because the answer was no, or because the build carries no key.
 
+## The update check, which is not this
+
+One other thing matterbox does over the network on its own, and it is worth
+naming here because this is the page people read to find out. Once a day it
+fetches <https://matterbox.work/latest.json> to see whether a newer release
+exists. That is not telemetry and is not behind this consent: the request
+carries no version, no platform and no identifier, the file answers everyone
+the same way, and the comparison happens on your machine — so there is nothing
+in it to count installs with, and it reveals no more than opening the website
+does. It is on by default, and `update_check.enabled: false` turns it off. See
+[config.md](config.md).
+
+The two do meet in one place. Whether people upgrade at all is a real
+question, and `version_upgraded` below is what answers it — with consent,
+like everything else on this page.
+
 ## The setup wizard, which asks before it can send
 
 The wizard asks the telemetry question on its last screen, so everything
@@ -944,7 +960,7 @@ never derived from data.
 
 `channels`, `decode`, `digest`, `embed`, `github`, `keys`, `listen`, `login`,
 `mark-read`, `open`, `react`, `read`, `register-handler`, `reply`, `rules`,
-`search`, `send`, `unread`, `url-handler`, `welcome`, `whoami`
+`search`, `send`, `unread`, `upgrade`, `url-handler`, `welcome`, `whoami`
 
 ## Checking for yourself
 

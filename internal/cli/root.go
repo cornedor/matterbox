@@ -45,8 +45,9 @@ func newRootCmd() *cobra.Command {
 			"login) it opens the `welcome` setup wizard first, so a fresh install is usable\n" +
 			"out of the box. Or use a subcommand (login, send, reply, react, read, unread,\n" +
 			"mark-read, open, search, channels, digest, whoami, embed, listen, rules,\n" +
-			"keys, decode) to work with messages non-interactively for scripting or to run\n" +
-			"the background sync/notification daemon (listen).",
+			"keys, decode, upgrade) to work with messages non-interactively for scripting,\n" +
+			"run the background sync/notification daemon (listen), or install the latest\n" +
+			"release over this one (upgrade).",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       versionBlock(),
@@ -84,7 +85,7 @@ func newRootCmd() *cobra.Command {
 		"print the build, its optional features, and the platform")
 	root.Flags().StringVar(&pprofAddr, "pprof", "",
 		"if set (e.g. localhost:6060), serve net/http/pprof on this address")
-	root.AddCommand(newWelcomeCmd(), newLoginCmd(), newURLHandlerCmd(), newRegisterHandlerCmd(), newGithubCmd(), newSendCmd(), newReplyCmd(), newReactCmd(), newReadCmd(), newUnreadCmd(), newMarkReadCmd(), newOpenCmd(), newSearchCmd(), newChannelsCmd(), newDigestCmd(), newWhoamiCmd(), newEmbedCmd(), newListenCmd(), newRulesCmd(), newKeysCmd(), newDecodeCmd())
+	root.AddCommand(newWelcomeCmd(), newLoginCmd(), newURLHandlerCmd(), newRegisterHandlerCmd(), newGithubCmd(), newSendCmd(), newReplyCmd(), newReactCmd(), newReadCmd(), newUnreadCmd(), newMarkReadCmd(), newOpenCmd(), newSearchCmd(), newChannelsCmd(), newDigestCmd(), newWhoamiCmd(), newEmbedCmd(), newListenCmd(), newRulesCmd(), newKeysCmd(), newDecodeCmd(), newUpgradeCmd())
 	return root
 }
 
@@ -195,5 +196,9 @@ func runTUI() error {
 		return err
 	}
 	telemetry.AppStopped("quit")
+	// The terminal is ours again, so this lands on the shell's screen rather
+	// than under the alt-screen the TUI just gave back. Nothing to say unless
+	// the session's own check found a newer release (see internal/update).
+	printUpdateNotice(os.Stdout, versionName(stamp))
 	return nil
 }

@@ -74,6 +74,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Take the startup splash down as soon as the first transcript is ready,
 	// from whichever open path got there (see splashSettle).
 	nm.splashSettle()
+	// And once it is down, mention a newer release if the startup check found
+	// one and the status slot is free (see flushUpdateNotice). Must follow
+	// splashSettle: the notice waits for the splash, and this is the event that
+	// takes it away.
+	if notice := nm.flushUpdateNotice(); notice != nil {
+		cmd = tea.Batch(cmd, notice)
+	}
 	// Reconcile the composer's cursor with m.focus *after* the handler ran, so no
 	// focus-changing path can leave the editor visibly focused (or dark) by
 	// forgetting to blur/focus it. Every event funnels through here, so this is
@@ -225,6 +232,12 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case splashTimeoutMsg:
 		m.splash.stop()
+		return m, nil
+
+	case updateFoundMsg:
+		// Held rather than shown: the splash is usually still up at this point,
+		// and the status slot may be busy. flushUpdateNotice picks the moment.
+		m.updateFound = msg.rel
 		return m, nil
 
 	case tea.KeyPressMsg:
