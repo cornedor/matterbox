@@ -64,8 +64,13 @@ func Classify(err error) (outcome, class string) {
 		return "error", "not_found"
 	case contains("429", "rate limit"):
 		return "error", "rate_limited"
+	// "connection reset by peer" / "broken pipe" are the shapes a keep-alive
+	// connection dies in mid-request; without them a flaky link lands in
+	// "unknown", which is the one class that does become an issue.
 	case contains("no such host", "connection refused", "dial tcp", "eof",
-		"network is unreachable", "tls", "timeout", "deadline exceeded"):
+		"connection reset", "broken pipe", "connection aborted",
+		"no route to host", "network is unreachable", "tls", "timeout",
+		"deadline exceeded"):
 		return "error", "network"
 	case contains("500", "502", "503", "504", "internal server error"):
 		return "error", "server"
