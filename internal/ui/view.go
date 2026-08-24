@@ -2787,8 +2787,8 @@ func (m *Model) renderFooter() string {
 	// Hovering a link shows where it goes, taking over the status slot for as long
 	// as the pointer rests on it (truncated so a long URL can't crowd out the help).
 	if m.hoverLink.url != "" {
-		if label, ok := actionHoverHint(m.hoverLink.url); ok {
-			right = label // a copy chip / spoiler shows a friendly label, not its internal URL
+		if label, ok := m.actionHoverHint(m.hoverLink.url); ok {
+			right = label // a copy chip / spoiler / image shows a friendly label, not its internal URL
 		} else {
 			hint := m.width / 2
 			if hint < 24 {

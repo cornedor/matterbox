@@ -299,7 +299,8 @@ func revealSpoiler(body, url string) string {
 
 // actionHoverHint is the footer text for a hovered copy/spoiler link — a friendly
 // label rather than the internal URL a plain link would show. ok is false for an
-// ordinary link, which keeps its "↗ url".
+// ordinary link, which keeps its "↗ url". Image-click links go through
+// Model.actionHoverHint so the label can name the configured action.
 func actionHoverHint(url string) (string, bool) {
 	switch {
 	case strings.HasPrefix(url, copyURLScheme):
@@ -308,6 +309,24 @@ func actionHoverHint(url string) (string, bool) {
 		return "spoiler — hidden until you hover it", true
 	}
 	return "", false
+}
+
+// actionHoverHint is the Model-aware footer hint: image clicks name the configured
+// action (preview / open / download) so the footer matches what the click will do.
+func (m *Model) actionHoverHint(url string) (string, bool) {
+	if strings.HasPrefix(url, imageClickURLScheme) {
+		switch m.imageClick {
+		case "open":
+			return "🖼 click to open", true
+		case "download":
+			return "🖼 click to save", true
+		case "off":
+			return "", false
+		default:
+			return "🖼 click to preview", true
+		}
+	}
+	return actionHoverHint(url)
 }
 
 // injectEffectSentinels brackets each span of visible with start/end sentinels.

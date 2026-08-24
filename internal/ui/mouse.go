@@ -179,7 +179,20 @@ func absDiff(a, b int) int {
 // the message / thread panes. Non-left buttons and clicks over nothing
 // actionable are ignored.
 func (m Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
-	if msg.Button != tea.MouseLeft || m.mouseBlocked() {
+	if msg.Button != tea.MouseLeft {
+		return m, nil
+	}
+	// Image preview owns the screen while open: a click outside its box dismisses
+	// it (same as esc/space); a click inside is swallowed so it doesn't act on
+	// the panes underneath. Checked before mouseBlocked — preview is an inModal
+	// state that would otherwise ignore every click.
+	if m.preview.active {
+		if m.clickOutsidePreview(msg.X, msg.Y) {
+			return m, m.closeImagePreview()
+		}
+		return m, nil
+	}
+	if m.mouseBlocked() {
 		return m, nil
 	}
 	count := m.nextClickCount(msg.X, msg.Y)
@@ -224,6 +237,11 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		// rendered at click time — before clickSQLRow moves the selection bar.
 		if h.idx >= 0 {
 			if url, ok := m.linkAt(focusSQLResults, h.line, h.col); ok {
+				if key, ok := parseImageClickURL(url); ok {
+					next, _ := m.clickSQLRow(h.idx) // select so handleImageClick finds it
+					m = next.(Model)
+					return m.handleImageClick(focusSQLResults, key)
+				}
 				return m.activateLink(url)
 			}
 		}
@@ -326,7 +344,8 @@ func (m Model) clickSearchHit(idx int) (tea.Model, tea.Cmd) {
 // movement was just a click — the message was already selected on mousedown, so
 // the armed selection is cleared and, if the click landed on a link, it opens
 // (the terminal would do this itself via OSC 8, but mouse capture intercepts the
-// click while mouseEnabled — see linkclick.go).
+// click while mouseEnabled — see linkclick.go). A click on a rendered inline
+// thumbnail dispatches config.image_click instead (see imageclick.go).
 func (m Model) handleMouseRelease(msg tea.MouseReleaseMsg) (tea.Model, tea.Cmd) {
 	if msg.Button != tea.MouseLeft {
 		return m, nil
@@ -346,6 +365,9 @@ func (m Model) handleMouseRelease(msg tea.MouseReleaseMsg) (tea.Model, tea.Cmd) 
 		pane, line, col := m.textSel.pane, m.textSel.anchorLine, m.textSel.anchorCol
 		m.clearTextSel()
 		if url, ok := m.linkAt(pane, line, col); ok {
+			if key, ok := parseImageClickURL(url); ok {
+				return m.handleImageClick(pane, key)
+			}
 			return m.activateLink(url)
 		}
 		if pane == focusInfo && line >= 0 {

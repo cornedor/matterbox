@@ -1022,9 +1022,9 @@ func (m *Model) renderPreviewPopup() string {
 		body = lipgloss.JoinVertical(lipgloss.Center, m.previewImageBlock(), caption)
 	}
 
-	hint := "space/esc/q close"
+	hint := "space/esc/q · click outside to close"
 	if len(m.preview.items) > 1 {
-		hint = fmt.Sprintf("%d/%d · ←/→ next · space/esc/q close",
+		hint = fmt.Sprintf("%d/%d · ←/→ next · space/esc/q · click outside to close",
 			m.preview.idx+1, len(m.preview.items))
 	}
 	hintLine := lipgloss.NewStyle().Foreground(dimColor).Italic(true).Render(hint)
@@ -1036,4 +1036,40 @@ func (m *Model) renderPreviewPopup() string {
 		BorderForeground(focusedColor).
 		Padding(0, 1).
 		Render(content)
+}
+
+// clickOutsidePreview reports whether screen cell (x, y) falls outside the
+// centered preview modal. Used to dismiss on a bare click away from the box
+// (handleMouseClick). Re-renders the popup to measure it the same way
+// switcherCursor / jiraCommentCursor reconstruct overlay geometry.
+func (m *Model) clickOutsidePreview(x, y int) bool {
+	x0, y0, x1, y1, ok := m.previewBoxBounds()
+	if !ok {
+		return true
+	}
+	return x < x0 || x >= x1 || y < y0 || y >= y1
+}
+
+// previewBoxBounds returns the screen-absolute inclusive-start / exclusive-end
+// rectangle of the preview modal, matching lipgloss.Place centering in
+// renderViewContent. ok is false when there's nothing to measure.
+func (m *Model) previewBoxBounds() (x0, y0, x1, y1 int, ok bool) {
+	if !m.preview.active {
+		return 0, 0, 0, 0, false
+	}
+	bodyH := 0
+	if m.vcache != nil {
+		bodyH = m.vcache.bodyH
+	}
+	if bodyH <= 0 || m.width <= 0 {
+		return 0, 0, 0, 0, false
+	}
+	box := m.renderPreviewPopup()
+	bw, bh := lipgloss.Width(box), lipgloss.Height(box)
+	if bw <= 0 || bh <= 0 {
+		return 0, 0, 0, 0, false
+	}
+	x0 = placeOffset(m.width, bw)
+	y0 = tabsHeight + placeOffset(bodyH, bh)
+	return x0, y0, x0 + bw, y0 + bh, true
 }

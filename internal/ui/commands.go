@@ -120,6 +120,14 @@ func builtinCommands() []switcherCommand {
 			run:  runClearCustomStatus,
 		},
 		{
+			name:           "Image click on thumbnail",
+			tid:            "image_click",
+			desc:           "what a mouse click on an inline thumbnail does (needs image_thumbnails: auto)",
+			argPrompt:      "action: ",
+			argPlaceholder: "preview | open | download | off",
+			run:            runSetImageClick,
+		},
+		{
 			name:           "Index channel",
 			tid:            "index_channel",
 			desc:           "cache N days of history to the local DB",
