@@ -178,3 +178,46 @@ func (m Model) handlePermalinkResolved(msg permalinkResolvedMsg) (tea.Model, tea
 	}
 	return m.openChannelAtPost(ch, msg.postID)
 }
+
+// linkTeamName returns the URL name of the team a channel is reachable under,
+// for building web links. DMs and group DMs belong to no team but the web
+// client serves them under any of them, so those fall back to a real team
+// (fallbackTeamID). Empty when the user is on no teams at all.
+func (m *Model) linkTeamName(channelID string) string {
+	teamID := ""
+	if c := m.findChannel(channelID); c != nil {
+		teamID = c.TeamId
+	}
+	if teamID == "" {
+		teamID = m.fallbackTeamID()
+	}
+	for _, t := range m.teams {
+		if t.Id == teamID {
+			return t.Name
+		}
+	}
+	return ""
+}
+
+// messageLink builds the shareable permalink of a post — the same
+// {serverURL}/{team}/pl/{postID} shape parsePermalinkPostID reads back, so a
+// link copied here opens in-app for the next matterbox user who clicks it.
+// Empty when there's no server URL or no team to hang it off.
+func (m *Model) messageLink(p *model.Post) string {
+	team := m.linkTeamName(p.ChannelId)
+	if m.serverURL == "" || team == "" {
+		return ""
+	}
+	return strings.TrimRight(m.serverURL, "/") + "/" + team + "/pl/" + p.Id
+}
+
+// channelLink builds the web URL of a channel, {serverURL}/{team}/channels/{name}.
+// A DM's name is its composite user-id pair, which the web client resolves like
+// any other channel name. Empty under the same conditions as messageLink.
+func (m *Model) channelLink(c *model.Channel) string {
+	team := m.linkTeamName(c.Id)
+	if m.serverURL == "" || team == "" {
+		return ""
+	}
+	return strings.TrimRight(m.serverURL, "/") + "/" + team + "/channels/" + c.Name
+}
