@@ -137,6 +137,7 @@ var PaletteIDs = []string{
 	"status_dnd", "status_offline", "status_custom_set", "status_custom_clear",
 	"image_click", "index_channel", "typing_animation", "gorillas", "gorillas_hotseat",
 	"kurve", "kurve_hotseat", "rejoin_game", "debug_key_inspector",
+	"copy_message_link", "copy_channel_link",
 	"debug_copy_message_id", "debug_copy_channel_id", "channel_mute",
 	"channel_unmute", "feed_hide_muted", "feed_show_muted", "feed_mark_all_read",
 	"sidebar_all_channels", "sidebar_unread_channels",

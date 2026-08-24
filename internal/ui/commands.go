@@ -82,6 +82,18 @@ func builtinCommands() []switcherCommand {
 			run:  runMessageStats,
 		},
 		{
+			name: "Copy link to message",
+			tid:  "copy_message_link",
+			desc: "permalink to the selected message, for pasting elsewhere",
+			run:  runCopyMessageLink,
+		},
+		{
+			name: "Copy link to channel",
+			tid:  "copy_channel_link",
+			desc: "web link to the open channel, for pasting elsewhere",
+			run:  runCopyChannelLink,
+		},
+		{
 			name: "Status: online",
 			tid:  "status_online",
 			desc: "set your presence to online",
@@ -212,6 +224,38 @@ func runCopyMessageID(m *Model, _ string) tea.Cmd {
 		return nil
 	}
 	return m.copyText(p.Id, "message ID")
+}
+
+// runCopyMessageLink copies a shareable permalink to the selected message
+// (see selectedPost). Clicking it in another matterbox opens the message
+// in-app; anywhere else it opens the web client.
+func runCopyMessageLink(m *Model, _ string) tea.Cmd {
+	p := m.selectedPost()
+	if p == nil {
+		m.status = "no message selected"
+		return nil
+	}
+	link := m.messageLink(p)
+	if link == "" {
+		m.status = "message link: set server_url in your config"
+		return nil
+	}
+	return m.copyText(link, "message link")
+}
+
+// runCopyChannelLink copies a web link to the currently open channel.
+func runCopyChannelLink(m *Model, _ string) tea.Cmd {
+	c := m.findChannel(m.openChannelID)
+	if c == nil {
+		m.status = "no channel open"
+		return nil
+	}
+	link := m.channelLink(c)
+	if link == "" {
+		m.status = "channel link: set server_url in your config"
+		return nil
+	}
+	return m.copyText(link, "channel link")
 }
 
 // selectedPost returns the message the selection bar is on: the thread reply
