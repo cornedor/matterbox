@@ -94,7 +94,7 @@ load, so it always describes the build you are running.
   immediately.
 
 Values that name a fixed set of choices (`nav_modifier`, `vim_nav`,
-`emoji_images`, `image_thumbnails`, `image_click`, `code_theme`) **fall back to their default**
+`emoji_images`, `image_thumbnails`, `file_previews`, `image_click`, `code_theme`) **fall back to their default**
 when you write something unrecognised — a typo costs you the setting, not the
 app. Keybinding overrides are the exception: an unknown action
 id, an unparseable chord, or a binding that collides with another action is a
@@ -148,6 +148,7 @@ runs the setup wizard instead, which is where the value usually comes from.
 | `attach_on_drop` | `true` | Attach a file dragged onto the terminal. Terminals have no drag-and-drop protocol — the emulator delivers a drop by *pasting the path* — so this is a heuristic: a paste that is nothing but existing absolute file paths becomes an attachment. `false` pastes such paths as text. |
 | `emoji_images` | `auto` | `auto` renders custom (server) emoji as real inline images on a Kitty/Ghostty-class truecolor terminal outside tmux; `off` keeps literal `:name:` text everywhere. Unicode emoji are unaffected — they are always font glyphs. |
 | `image_thumbnails` | `off` | `auto` draws image attachments as inline thumbnails in the transcript, wherever `emoji_images` works (same terminal gate). `off` shows only the 🖼️ filename line. Space opens the full-size preview either way. |
+| `file_previews` | `auto` | `auto` previews the attachments that are text rather than pixels: the first 10 lines of a log, diff, JSON or source file, syntax-highlighted, and a CSV/TSV drawn as a box table, above the file's own 📄 chip. `off` leaves them as plain chips. Needs no terminal graphics. Only files under 2MB are fetched, and only when they scroll near the viewport; `z` collapses them along with any thumbnails. |
 | `image_click` | `preview` | What a mouse click on a rendered inline thumbnail does (`image_thumbnails: auto`). `preview` opens the in-app full-size preview (same as space); `open` hands it to the OS/browser (same as `o`); `download` saves it to `download_dir` (same as `s` for attachments); `off` leaves the click as a plain message select. Only the thumbnail cells themselves are clickable — not the filename chip or the rest of the message. Also settable live via `>` → **Image click on thumbnail**. |
 
 `animations:` groups the motion toggles, so movement you find distracting can go
@@ -158,7 +159,7 @@ away one piece at a time:
 | `animations.custom_emoji` | `true` | Animate GIF custom emoji in place. No effect unless `emoji_images` renders them as images at all. |
 | `animations.image_preview` | `true` | Animate GIFs in the space-to-preview modal. |
 | `animations.inline_images` | `true` | Animate GIF thumbnails in the transcript — only while they are on screen, so a channel full of GIFs costs nothing once scrolled away. |
-| `animations.native_animation` | `false` | **Experimental.** Play all of the above through the Kitty graphics protocol's native animation frames: every frame is uploaded once and the terminal times and loops it, instead of matterbox re-transmitting on a timer. In a binary built with the `video` tag it also unlocks video (mp4/webm/mov/animated-webp) — looping inline previews, and space streams the whole clip. Opt-in because it needs animation-frame support beyond what most Kitty-class terminals implement, and a terminal that only does the basics may show a frozen or blank image rather than falling back. |
+| `animations.native_animation` | `false` | **Experimental.** Play all of the above through the Kitty graphics protocol's native animation frames: every frame is uploaded once and the terminal times and loops it, instead of matterbox re-transmitting on a timer. In a binary built with the `video` tag it also unlocks video (mp4/webm/mov/animated-webp/animated-avif) — looping inline previews, and space streams the whole clip. A still WebP, BMP or TIFF needs none of this and always renders; HEIC and AVIF need only the `video` tag, not this flag. Opt-in because it needs animation-frame support beyond what most Kitty-class terminals implement, and a terminal that only does the basics may show a frozen or blank image rather than falling back. |
 
 `native_gif_protocol` is the former name of `native_animation` and is still read,
 so an old config keeps working; the next rewrite drops it in favour of the new

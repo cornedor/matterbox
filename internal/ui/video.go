@@ -174,20 +174,33 @@ func looksLikeVideo(b []byte) bool {
 }
 
 // isVideoAttachment reports whether an uploaded file is one decodeVideoFrames
-// can play — by MIME (video/*, plus animated webp) or, since Mattermost leaves
-// mime_type empty for a fair slice of uploads, by extension. Mirrors the icon
-// list in fileIcon (info.go). webp rides along because libav plays its
-// animation, which the stdlib image path cannot.
+// can play — by MIME (video/*, plus animated webp and avif) or, since Mattermost
+// leaves mime_type empty for a fair slice of uploads, by extension. Mirrors the
+// icon list in fileIcon (info.go).
+//
+// webp and avif ride along because both can carry animation that only libav can
+// play: a webp holds a VP8 sequence, an AVIF an AV1 one. The still image path
+// still owns the static case of each (see stillimg.go), and the two paths do not
+// have to agree in advance — looksLikeVideo routes the bytes to libav either way,
+// and a file with one frame simply comes back as one frame.
+//
+// HEIC is deliberately *not* here. A heic/heif file can hold several images too,
+// but a multi-image HEIF is usually a burst or a depth map rather than an
+// animation, so playing it as a loop would be a misreading. Its first frame is
+// what we want, and the still path already gives us that.
 func isVideoAttachment(f *model.FileInfo) bool {
 	if f == nil {
 		return false
 	}
 	mime, _, _ := strings.Cut(f.MimeType, ";")
-	if strings.HasPrefix(mime, "video/") || mime == "image/webp" {
+	if strings.HasPrefix(mime, "video/") || mime == "image/webp" || mime == "image/avif" {
 		return true
 	}
-	switch strings.ToLower(strings.TrimPrefix(f.Extension, ".")) {
-	case "mp4", "mov", "mkv", "webm", "avi", "m4v", "wmv", "flv", "mpg", "mpeg", "webp":
+	// attachmentExt, not f.Extension: the server leaves *that* field empty for a
+	// fair slice of uploads too, so the filename has to be the fallback — the same
+	// reasoning isSVGAttachment and isSTLAttachment already apply.
+	switch strings.ToLower(attachmentExt(f)) {
+	case "mp4", "mov", "mkv", "webm", "avi", "m4v", "wmv", "flv", "mpg", "mpeg", "webp", "avif":
 		return true
 	}
 	return false
@@ -201,13 +214,19 @@ func isVideoAttachment(f *model.FileInfo) bool {
 func (m *Model) videoPlayable() bool { return videoBuild && m.nativeAnim }
 
 // filePreviewable reports whether an attachment can be shown inline / in the
-// preview modal: a stdlib-decodable image always, or a short-clip video when
-// this session can play one. The Model-aware superset of previewableMIME.
+// preview modal: a still image this build decodes (always — including the
+// libav-only HEIC/AVIF tier, which needs no animation support), or a short-clip
+// video when this session can actually play one. The Model-aware superset of
+// isStillImageAttachment.
+//
+// The two halves are gated differently on purpose: decoding one frame and playing
+// a clip are separate capabilities, and conflating them is what used to leave a
+// static .webp showing a paperclip on a build that could decode it perfectly well.
 func (m *Model) filePreviewable(f *model.FileInfo) bool {
 	if f == nil {
 		return false
 	}
-	return previewableMIME(f.MimeType) || isSVGAttachment(f) || (m.videoPlayable() && isVideoAttachment(f))
+	return isStillImageAttachment(f) || isSVGAttachment(f) || (m.videoPlayable() && isVideoAttachment(f))
 }
 
 // decodePreviewFrames decodes bytes for the space-to-preview modal: a video at

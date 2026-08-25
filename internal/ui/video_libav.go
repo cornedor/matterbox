@@ -117,12 +117,7 @@ func openVideoInput(raw []byte) (vi *videoInput, err error) {
 	if err = vi.fc.FindStreamInfo(nil); err != nil {
 		return vi, fmt.Errorf("video: find stream info: %w", err)
 	}
-	for _, s := range vi.fc.Streams() {
-		if s.CodecParameters().MediaType() == astiav.MediaTypeVideo {
-			vi.vs = s
-			break
-		}
-	}
+	vi.vs = pickVideoStream(vi.fc.Streams())
 	if vi.vs == nil {
 		return vi, errVideoUnsupported
 	}
@@ -140,6 +135,36 @@ func openVideoInput(raw []byte) (vi *videoInput, err error) {
 		return vi, fmt.Errorf("video: open codec: %w", err)
 	}
 	return vi, nil
+}
+
+// pickVideoStream chooses which video stream to decode: the first one that has
+// more than one frame, falling back to the first video stream of any kind.
+//
+// Not simply "the first video stream", because an animated AVIF is written as a
+// one-frame still item *followed by* the animated sequence — so taking the first
+// would show a single frame of a file that has motion in it. The same shape turns
+// up in an mp4 carrying cover art ahead of the real track.
+//
+// The fallback is what keeps this safe. nb_frames is unknown (0) in plenty of
+// containers — a webm, a fragmented mp4 — and a genuinely still image has exactly
+// one frame, so in both of those cases the loop finds nothing and we take the
+// first video stream, which is what the code did before and what those files want.
+// The preference can therefore only ever move us off a stream that was provably a
+// single frame.
+func pickVideoStream(streams []*astiav.Stream) *astiav.Stream {
+	var first *astiav.Stream
+	for _, s := range streams {
+		if s.CodecParameters().MediaType() != astiav.MediaTypeVideo {
+			continue
+		}
+		if first == nil {
+			first = s
+		}
+		if s.NbFrames() > 1 {
+			return s
+		}
+	}
+	return first
 }
 
 func (vi *videoInput) free() {

@@ -1007,7 +1007,19 @@ func (m *Model) thumbsHidden(p *model.Post) bool {
 // had. The chevron is per *post*, not per image: z collapses everything a post
 // draws, so every indicator in it points the same way.
 func (m *Model) thumbChevron(postID string) string {
-	if !m.inlineImagesActive() || postID == "" {
+	if !m.inlineImagesActive() {
+		return ""
+	}
+	return m.collapseChevron(postID)
+}
+
+// collapseChevron is thumbChevron without the graphics gate: the chevron for
+// post id purely on whether it is collapsed. For callers that have already
+// established something collapsible is drawn — renderAttachments asks about one
+// specific file, and a text preview needs no terminal graphics at all, so the
+// image gate would be the wrong question there.
+func (m *Model) collapseChevron(postID string) string {
+	if postID == "" {
 		return ""
 	}
 	if m.thumbsCollapsed[postID] {

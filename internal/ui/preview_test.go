@@ -27,12 +27,17 @@ func activeEmojiImages() *emojiImages {
 	return e
 }
 
+// imagePost builds a post carrying one attachment per MIME type. The filename
+// tracks the MIME rather than being a fixed "pic.png", because previewability is
+// decided by extension first and MIME second (see isStillImageAttachment) — a
+// PDF called pic.png is previewable, and rightly so.
 func imagePost(mimes ...string) *model.Post {
 	files := make([]*model.FileInfo, 0, len(mimes))
 	for i, mime := range mimes {
+		name := "file" + string(rune('0'+i)) + testExtForMIME(mime)
 		files = append(files, &model.FileInfo{
 			Id:       "f" + string(rune('0'+i)),
-			Name:     "pic.png",
+			Name:     name,
 			Size:     1234,
 			MimeType: mime,
 		})
@@ -40,15 +45,53 @@ func imagePost(mimes ...string) *model.Post {
 	return &model.Post{Id: "p1", Metadata: &model.PostMetadata{Files: files}}
 }
 
+// testExtForMIME is the extension a real upload of that MIME type would carry.
+// Only the types the preview tests use; an unknown one gets none, which is itself
+// a realistic case (Mattermost often records neither).
+func testExtForMIME(mime string) string {
+	switch mime {
+	case "image/png":
+		return ".png"
+	case "image/jpeg", "image/jpg":
+		return ".jpg"
+	case "image/gif":
+		return ".gif"
+	case "image/webp":
+		return ".webp"
+	case "image/svg+xml":
+		return ".svg"
+	case "image/heic":
+		return ".heic"
+	case "application/pdf":
+		return ".pdf"
+	case "video/mp4":
+		return ".mp4"
+	case "text/plain":
+		return ".txt"
+	}
+	return ""
+}
+
 func TestPreviewableMIME(t *testing.T) {
-	for _, mime := range []string{"image/png", "image/jpeg", "image/jpg", "image/gif", "image/svg+xml"} {
+	for _, mime := range []string{
+		"image/png", "image/jpeg", "image/jpg", "image/gif", "image/svg+xml",
+		// The x/image tier: decodable in every build, and the same set the
+		// Mattermost server itself decodes.
+		"image/webp", "image/bmp", "image/x-ms-bmp", "image/tiff",
+	} {
 		if !previewableMIME(mime) {
 			t.Errorf("previewableMIME(%q) = false, want true", mime)
 		}
 	}
-	for _, mime := range []string{"image/webp", "application/pdf", "text/plain", ""} {
+	for _, mime := range []string{"application/pdf", "text/plain", "video/mp4", ""} {
 		if previewableMIME(mime) {
 			t.Errorf("previewableMIME(%q) = true, want false", mime)
+		}
+	}
+	// HEIC/AVIF need libav, so whether they preview is exactly videoBuild.
+	for _, mime := range []string{"image/heic", "image/avif"} {
+		if previewableMIME(mime) != videoBuild {
+			t.Errorf("previewableMIME(%q) = %v, want %v (videoBuild)", mime, !videoBuild, videoBuild)
 		}
 	}
 }
@@ -473,10 +516,20 @@ func TestIsPreviewableImageURL(t *testing.T) {
 			t.Errorf("isPreviewableImageURL(%q) = false, want true", u)
 		}
 	}
+	yes = append(yes,
+		"https://example.com/image.webp", // x/image decodes these now
+		"https://example.com/scan.tiff",
+		"https://example.com/old.bmp",
+	)
+	for _, u := range yes {
+		if !isPreviewableImageURL(u) {
+			t.Errorf("isPreviewableImageURL(%q) = false, want true", u)
+		}
+	}
 	no := []string{
-		"https://example.com/page",       // no extension
-		"https://example.com/video.mp4",  // not an image
-		"https://example.com/image.webp", // stdlib can't decode
+		"https://example.com/page",      // no extension
+		"https://example.com/video.mp4", // not an image
+		"https://example.com/doc.pdf",   // not an image
 		"",
 	}
 	for _, u := range no {

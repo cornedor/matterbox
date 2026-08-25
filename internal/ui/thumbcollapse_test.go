@@ -115,12 +115,12 @@ func TestNoChevronWhenThumbnailsOff(t *testing.T) {
 }
 
 // TestNonImageAttachmentHasNoChevron: a PDF draws no thumbnail, so its chip gets no
-// chevron — and neither does an image format we can't decode.
+// chevron — and neither does an archive, whatever its extension suggests.
 func TestNonImageAttachmentHasNoChevron(t *testing.T) {
 	m := thumbModel()
 	p := &model.Post{Id: "post1", Metadata: &model.PostMetadata{Files: []*model.FileInfo{
 		{Id: "f2", Name: "spec.pdf", MimeType: "application/pdf", Size: 1000},
-		{Id: "f3", Name: "logo.webp", MimeType: "image/webp", Size: 1000},
+		{Id: "f3", Name: "logs.zip", MimeType: "application/zip", Size: 1000},
 	}}}
 
 	out := m.renderAttachments(p, 80)

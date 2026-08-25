@@ -1489,6 +1489,12 @@ func (m *Model) renderAttachments(p *model.Post, maxWidth int) string {
 		// and running it through attachmentStyle (or any lipgloss style) would
 		// overwrite that and collapse the image to blank cells.
 		lines = append(lines, m.inlineFileThumbLines(p, f, maxWidth)...)
+		// A text/table preview for the files no image decoder can help with (a log,
+		// a diff, a CSV). Mutually exclusive with the thumbnail above in practice:
+		// filePreviewKindOf refuses anything another renderer claims. The shape is
+		// resolved once here and reused by the icon and the chevron below.
+		prevKind, prevLexer := m.filePreviewShape(f)
+		lines = append(lines, m.filePreviewFileLines(p, f, prevKind, prevLexer, maxWidth)...)
 
 		icon := "📎"
 		var info, chev string
@@ -1507,14 +1513,19 @@ func (m *Model) renderAttachments(p *model.Post, maxWidth int) string {
 				icon = "🧊" // a 3D model: rendered inline, and orbitable with space
 			case isSVGAttachment(f):
 				icon = "🖼️" // a drawing the server left untyped, but still an image
+			case isStillImageAttachment(f):
+				icon = "🖼️" // an image the server left untyped (a HEIC, usually)
+			case prevKind != filePreviewNone:
+				icon = "📄" // a log/diff/CSV whose head we're drawing above
 			}
 			info = " (" + humanSize(f.Size) + ")"
 		}
-		// Only a file we can actually draw gets a chevron: a format we can't decode
-		// (a .webp, or a video in a build that can't play one) shows no thumbnail,
-		// so there is nothing for the chevron to describe and z has nothing to hide.
-		if m.drawsFileThumb(f) {
-			if c := m.thumbChevron(p.Id); c != "" {
+		// Only a file we actually draw something for gets a chevron — a thumbnail or
+		// a text/table preview. A format we can't decode (a HEIC without the video
+		// tag, or a video in a build that can't play one) draws neither, so there is
+		// nothing for the chevron to describe and z has nothing to hide.
+		if (m.inlineImagesActive() && m.drawsFileThumb(f)) || prevKind != filePreviewNone {
+			if c := m.collapseChevron(p.Id); c != "" {
 				chev = c + " "
 			}
 		}

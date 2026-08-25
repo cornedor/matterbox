@@ -47,6 +47,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if fetch := nm.fetchPendingInlineImages(); fetch != nil {
 		cmd = tea.Batch(cmd, fetch)
 	}
+	if fetch := nm.fetchPendingFilePreviews(); fetch != nil {
+		cmd = tea.Batch(cmd, fetch)
+	}
 	// After the render: re-transmit any thumbnail that was drawn but is no longer in
 	// terminal memory, and free whatever is now over a cap. Must follow the fetch, so
 	// an image installed this event is on screen before the caps are enforced.
@@ -437,6 +440,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case inlineImagesFetchedMsg:
 		return m.handleInlineImagesFetched(msg)
+
+	case filePreviewsFetchedMsg:
+		return m.handleFilePreviewsFetched(msg)
 
 	case inlineThumbFramesMsg:
 		return m.handleInlineThumbFrames(msg)
@@ -4253,18 +4259,25 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // shown — so they are tracked in mirrored sets (expandedPosts, thumbsCollapsed) and
 // what one z press means depends on which of them the post has:
 //
-//   - No image: exactly as before. z expands the folded body, z again re-folds it.
-//   - An image: the post starts collapsible, so the first z *collapses* — the
+//   - No media: exactly as before. z expands the folded body, z again re-folds it.
+//   - Media: the post starts collapsible, so the first z *collapses* — the
 //     thumbnails go, and a long body folds back with them — and the second expands
-//     both. The image is the thing the eye is drawn to, so it decides the direction.
+//     both. The media is the thing the eye is drawn to, so it decides the direction.
+//
+// "Media" is a thumbnail *or* a text/table file preview (see filepreview.go). Both
+// are blocks a post draws above its text, both are hidden by the same
+// thumbsCollapsed set, so both have to make z mean "collapse" — a post whose only
+// block is a boxed log would otherwise have no way to fold it away at all.
 //
 // Collapsing a post is not merely visual: its thumbnails stop being fetched,
-// animated and held in terminal memory (see releaseThumbs and thumbKeysInRows), so
-// a channel of GIFs can be quietened one message at a time.
+// animated and held in terminal memory (see releaseThumbs and thumbKeysInRows),
+// and its previews stop being fetched too (fetchPendingFilePreviews shares that
+// reach test), so a channel of GIFs or 2MB logs can be quietened one message at a
+// time.
 //
 // No-ops when nothing is selected, or the post hasn't landed on the server yet (an
 // optimistic stub has no stable id to key on). Body collapsing can be switched off
-// (collapse_long_messages: 0) — thumbnails still collapse, since that hides an image
+// (collapse_long_messages: 0) — media still collapses, since that hides a block
 // rather than text.
 func (m Model) toggleCollapse(pane focus) (tea.Model, tea.Cmd) {
 	var p *model.Post
@@ -4279,8 +4292,8 @@ func (m Model) toggleCollapse(pane focus) (tea.Model, tea.Cmd) {
 		}
 		p = m.posts[m.postIdx]
 	}
-	hasThumbs := m.inlineImagesActive() && len(m.postThumbKeys(p)) > 0
-	if m.collapseRows <= 0 && !hasThumbs {
+	hasMedia := (m.inlineImagesActive() && len(m.postThumbKeys(p)) > 0) || m.postHasFilePreview(p)
+	if m.collapseRows <= 0 && !hasMedia {
 		m.status = "message collapsing is disabled"
 		return m, nil
 	}
@@ -4291,7 +4304,7 @@ func (m Model) toggleCollapse(pane focus) (tea.Model, tea.Cmd) {
 	if m.expandedPosts == nil {
 		m.expandedPosts = map[string]bool{}
 	}
-	if hasThumbs {
+	if hasMedia {
 		if m.thumbsCollapsed == nil {
 			m.thumbsCollapsed = map[string]bool{}
 		}

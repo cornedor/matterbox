@@ -23,7 +23,10 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/mattermost/mattermost/server/public/model"
+	_ "golang.org/x/image/bmp" // BMP attachments
 	xdraw "golang.org/x/image/draw"
+	_ "golang.org/x/image/tiff" // TIFF attachments
+	_ "golang.org/x/image/webp" // still WebP attachments (animated ones go to libav)
 
 	"matterbox/internal/svgimg"
 	"matterbox/internal/telemetry"
@@ -251,23 +254,29 @@ type previewTickMsg struct{ gen int }
 // wakeup rate for a GIF that claims very short per-frame delays.
 const previewAnimMinInterval = 50 * time.Millisecond
 
-// previewableMIME reports whether we can decode and preview a file inline. We
-// render Kitty-only and decode with the stdlib image package (+gif/jpeg/png),
-// plus SVG which we rasterise ourselves (svg.go); anything else (webp, tiff, …)
-// is left to `o`.
+// previewableMIME reports whether a MIME type alone names something we can
+// decode and preview inline: any still-image format this build handles (see
+// stillimg.go) plus SVG, which we rasterise ourselves (svg.go). Rendering is
+// Kitty-only either way.
+//
+// MIME is only half the question — Mattermost leaves mime_type empty for a fair
+// slice of uploads — so callers holding a whole FileInfo should ask
+// isStillImageAttachment, which reads the filename too.
 func previewableMIME(mime string) bool {
+	mime = strings.ToLower(strings.TrimSpace(mime))
 	switch mime {
-	case "image/png", "image/jpeg", "image/jpg", "image/gif", "image/svg+xml", "image/svg":
+	case "image/svg+xml", "image/svg":
 		return true
 	}
-	return false
+	return stillImageMIME(mime) || (videoBuild && libavStillMIME(mime))
 }
 
 // previewImages enumerates a post's previewable images: uploaded attachments
-// (previewable MIME, metadata order) followed by image URLs in the body — the
+// (a decodable still format, metadata order) followed by image URLs in the body — the
 // ![](…) links a GIF picker posts, plus any bare/linked URL whose path looks
 // like an image. Reuses collectOpenables so the extraction + dedup matches what
-// `o` opens. URLs are previewable only if their extension is one stdlib decodes.
+// `o` opens. URLs are previewable only if their extension names a format this
+// build decodes (see stillimg.go).
 //
 // allowVideo also admits short-clip video attachments (mp4/webm/…), which only
 // this session's Model can decide (needs the video build + native_animation on);
@@ -281,7 +290,7 @@ func previewImages(p *model.Post, allowVideo bool) []previewItem {
 	for _, o := range collectOpenables(p) {
 		switch {
 		case o.file != nil:
-			if previewableMIME(o.file.MimeType) || isSVGAttachment(o.file) || (allowVideo && isVideoAttachment(o.file)) {
+			if isStillImageAttachment(o.file) || isSVGAttachment(o.file) || (allowVideo && isVideoAttachment(o.file)) {
 				out = append(out, previewItem{file: o.file, name: o.file.Name})
 			}
 		case isPreviewableImageURL(o.url):
@@ -292,18 +301,18 @@ func previewImages(p *model.Post, allowVideo bool) []previewItem {
 }
 
 // isPreviewableImageURL reports whether a URL's path ends in an extension we can
-// decode and render (Kitty-only, stdlib decoders). The query string — which a
-// CDN like Giphy stuffs with cache keys — is ignored.
+// decode and render (Kitty-only): any still-image format this build handles, plus
+// SVG. The query string — which a CDN like Giphy stuffs with cache keys — is
+// ignored.
 func isPreviewableImageURL(raw string) bool {
+	if isStillImageURL(raw) {
+		return true
+	}
 	u, err := url.Parse(raw)
 	if err != nil {
 		return false
 	}
-	switch strings.ToLower(path.Ext(u.Path)) {
-	case ".png", ".jpg", ".jpeg", ".gif", ".svg":
-		return true
-	}
-	return false
+	return strings.EqualFold(path.Ext(u.Path), ".svg")
 }
 
 // openImagePreview raises the preview modal for the first previewable image on

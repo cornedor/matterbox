@@ -154,6 +154,16 @@ type Config struct {
 	// thumbnail cells themselves are clickable — not the 🖼️ filename chip or
 	// the rest of the message. See internal/ui/imageclick.go.
 	ImageClick string `yaml:"image_click"`
+	// FilePreviews previews the attachments that are text rather than pixels: the
+	// first few lines of a log, diff, JSON or source file, syntax-highlighted, and
+	// a CSV/TSV drawn as a box table, above the file's own chip in the transcript.
+	// "auto" (default) draws them; "off" leaves every such file as a plain chip.
+	//
+	// Unlike ImageThumbnails this defaults on: the blocks are ordinary text lines,
+	// so there is no terminal-support question and nothing to probe. Only files
+	// under 2MB are fetched, and only when they come near the viewport.
+	// See internal/ui/filepreview.go.
+	FilePreviews string `yaml:"file_previews"`
 	// CodeTheme is the colour scheme used to syntax-highlight fenced code
 	// blocks in messages: any chroma style name (e.g. monokai, dracula,
 	// github-dark, gruvbox, nord, catppuccin-mocha, tokyonight-night) plus the
@@ -1071,7 +1081,7 @@ func Load() (*Config, error) {
 	if stalePrompt {
 		cfg.AISearch.Prompt = ""
 	}
-	addDefaults := stalePrompt || cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.CollapseLongMessages == nil || cfg.CollapsePreviewLines == nil || cfg.DownloadDir == "" || cfg.SQLTab == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.ImageThumbnails == "" || cfg.ImageClick == "" || cfg.CodeTheme == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Animations.InlineImages == nil || cfg.Animations.NativeGIFProtocol != nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.RespectDND == nil || cfg.Listen.TwoWay == nil || cfg.Listen.NotifyDMs == nil || cfg.Listen.NotifyDelaySeconds == nil
+	addDefaults := stalePrompt || cfg.Summary == (SummaryConfig{}) || cfg.AISearch == (AISearchConfig{}) || cfg.Embeddings == (EmbeddingsConfig{}) || cfg.Embeddings.AutoIndex == nil || cfg.Search == (SearchConfig{}) || cfg.MarkReadDelaySeconds == nil || cfg.GroupMessageSeconds == nil || cfg.CollapseLongMessages == nil || cfg.CollapsePreviewLines == nil || cfg.DownloadDir == "" || cfg.SQLTab == nil || cfg.Keybindings.NavModifier == "" || cfg.Keybindings.VimNav == "" || cfg.EmojiImages == "" || cfg.ImageThumbnails == "" || cfg.ImageClick == "" || cfg.FilePreviews == "" || cfg.CodeTheme == "" || cfg.Animations.CustomEmoji == nil || cfg.Animations.ImagePreview == nil || cfg.Animations.InlineImages == nil || cfg.Animations.NativeGIFProtocol != nil || cfg.Giphy.Rendition == "" || cfg.Listen.NotifyOnMention == nil || cfg.Listen.Summarize == nil || cfg.Listen.NotifyPrompt == "" || cfg.Listen.RespectMutes == nil || cfg.Listen.RespectDND == nil || cfg.Listen.TwoWay == nil || cfg.Listen.NotifyDMs == nil || cfg.Listen.NotifyDelaySeconds == nil
 	cfg.fillDefaults()
 	if addDefaults {
 		if werr := writeConfig(p, cfg); werr != nil {
@@ -1202,6 +1212,11 @@ func (c *Config) fillDefaults() {
 	// The welcome wizard's last step offers it, which is where people find it.
 	if c.ImageThumbnails == "" {
 		c.ImageThumbnails = "off"
+	}
+	switch c.FilePreviews {
+	case "auto", "off":
+	default:
+		c.FilePreviews = "auto"
 	}
 	switch c.ImageClick {
 	case "preview", "open", "download", "off":

@@ -3,6 +3,7 @@ package ui
 import (
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"github.com/alecthomas/chroma/v2"
@@ -71,6 +72,66 @@ func buildCodeStyle(name string) *chroma.Style {
 	return s
 }
 
+// Chroma's registry lookups are startlingly expensive when they miss, and both
+// callers below miss routinely — a fence tagged with a language chroma doesn't
+// know (```console, ```mermaid, a typo), and a filename lookup for an attachment
+// that turns out not to be source at all. Measured on this machine:
+//
+//	lexers.Get("go")          9ns    (name hit: a map lookup)
+//	lexers.Get("nosuchlang")  6.2ms  (miss: falls through to filename, MIME and
+//	                                  content analysis over every lexer)
+//	lexers.Match("main.go")   2.3ms  (glob-matches every lexer, hit or miss)
+//
+// Milliseconds are not affordable here. renderFilePreview asks per attachment per
+// width, and the markdown renderer asks per fenced block — both on paths that a
+// resize or a cache miss can re-run for a screenful of posts at once. So memoise:
+// the answer is a pure function of the key, and there are only ever a handful of
+// distinct keys in a session.
+//
+// A nil lexer is cached too — that is the expensive case, so not caching it would
+// miss the point entirely.
+const lexerCacheCap = 1024
+
+var (
+	lexerCacheMu sync.Mutex
+	lexerCache   = make(map[string]chroma.Lexer)
+)
+
+// lexerFor resolves a fence info string ("go", "json", …) to a lexer, or nil.
+func lexerFor(lang string) chroma.Lexer {
+	return cachedLexer("l:"+lang, func() chroma.Lexer { return lexers.Get(lang) })
+}
+
+// lexerForFilename resolves an attachment's filename to a lexer, or nil. Knows
+// several hundred patterns, including extensionless ones (Dockerfile, Makefile).
+func lexerForFilename(name string) chroma.Lexer {
+	return cachedLexer("f:"+strings.ToLower(name), func() chroma.Lexer { return lexers.Match(name) })
+}
+
+// cachedLexer memoises resolve under key. Past lexerCacheCap distinct keys it
+// stops inserting rather than growing without bound — a session with a thousand
+// distinct fence languages is pathological, and being merely slow again is a
+// better failure than holding a map that never shrinks.
+func cachedLexer(key string, resolve func() chroma.Lexer) chroma.Lexer {
+	lexerCacheMu.Lock()
+	if l, ok := lexerCache[key]; ok {
+		lexerCacheMu.Unlock()
+		return l
+	}
+	lexerCacheMu.Unlock()
+
+	// Resolved outside the lock: it takes milliseconds, and holding the mutex
+	// across it would serialise every other caller behind it.
+	l := resolve()
+
+	lexerCacheMu.Lock()
+	if len(lexerCache) < lexerCacheCap {
+		lexerCache[key] = l
+	}
+	lexerCacheMu.Unlock()
+	return l
+}
+
 // highlightCode syntax-highlights a fenced block's body lines for the terminal,
 // returning exactly one rendered line per input line. lang is the fence info
 // string (may be empty). chroma and all its lexers are already linked (glamour
@@ -78,11 +139,18 @@ func buildCodeStyle(name string) *chroma.Style {
 // the historical single-colour rendering — when colour is disabled, the language
 // is unknown/unset, or chroma errors, so callers always get len(body) lines.
 func highlightCode(body []string, lang string) []string {
-	if !codeColorEnabled || lang == "" || len(body) == 0 {
+	if lang == "" {
 		return flatCodeLines(body)
 	}
-	lexer := lexers.Get(lang)
-	if lexer == nil {
+	return highlightWithLexer(body, lexerFor(lang))
+}
+
+// highlightWithLexer is highlightCode with the lexer already resolved — the form
+// the file-preview path needs, which finds its lexer by filename (lexers.Match)
+// rather than by a fence's info string. A nil lexer, colour disabled or a chroma
+// error all fall back to flatCodeLines, so callers always get len(body) lines.
+func highlightWithLexer(body []string, lexer chroma.Lexer) []string {
+	if !codeColorEnabled || lexer == nil || len(body) == 0 {
 		return flatCodeLines(body)
 	}
 	it, err := chroma.Coalesce(lexer).Tokenise(nil, strings.Join(body, "\n"))
@@ -93,10 +161,16 @@ func highlightCode(body []string, lang string) []string {
 	if err := formatters.TTY16m.Format(&buf, codeHLStyle(), it); err != nil {
 		return flatCodeLines(body)
 	}
-	// We joined with "\n", so chroma should emit exactly len(body) lines. If it
-	// ever disagrees (e.g. a trailing newline), fall back rather than risk
+	// We joined with "\n", so chroma should emit exactly len(body) lines. Some
+	// lexers append a trailing newline anyway (the Diff one does), which used to
+	// trip the guard below and cost every ```diff block — and every .diff/.patch
+	// attachment — its colour. One trailing empty line is that, and only that, so
+	// drop it; any other disagreement still falls back rather than risk
 	// mis-aligning the block against the surrounding rows.
 	lines := strings.Split(buf.String(), "\n")
+	if len(lines) == len(body)+1 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
 	if len(lines) != len(body) {
 		return flatCodeLines(body)
 	}

@@ -135,6 +135,15 @@
       ],
       "default": "off"
     },
+    "file_previews": {
+      "type": "string",
+      "description": "Preview the attachments that are text rather than pixels: the first lines of a log, diff, JSON or source file, syntax-highlighted, and a CSV/TSV drawn as a box table, above the file's own chip. \"auto\" (default) draws them; \"off\" leaves every such file as a plain chip. Needs no terminal graphics support. Only files under 2MB are fetched, and only when they scroll near the viewport.",
+      "enum": [
+        "auto",
+        "off"
+      ],
+      "default": "auto"
+    },
     "image_click": {
       "type": "string",
       "description": "What a mouse click on a rendered inline thumbnail does (needs image_thumbnails: auto). \"preview\" (default) opens the in-app full-size preview (same as space); \"open\" hands it to the OS/browser (same as o); \"download\" saves it to download_dir (same as s for attachments); \"off\" leaves the click as a plain message select. Only the thumbnail cells are clickable — not the filename chip or the rest of the message.",

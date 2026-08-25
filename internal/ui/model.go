@@ -892,6 +892,13 @@ type Model struct {
 	// rather than running its own: the placeholder encoding is identical.
 	inlineImg *inlineImages
 
+	// filePrev previews the attachments that are text rather than pixels — the
+	// head of a log/diff/JSON/source file, or a CSV as a box table (file_previews:
+	// auto — see filepreview.go). A pointer for the same reason as inlineImg, and
+	// nil-safe throughout. It needs no terminal probe at all: the blocks it draws
+	// are ordinary text lines.
+	filePrev *filePreviews
+
 	// effectPopup is the composer's "\" effect picker (see effectpopup.go) — how
 	// anyone finds out \shimmer{...} exists.
 	effectPopup effectPopupState
@@ -1117,6 +1124,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	animateEmoji := true
 	animatePreview := true
 	thumbMode := "off" // mirrors config: opt-in, so an upgrade doesn't change how images render
+	// Text previews default on, unlike the image thumbnails above: they need no
+	// terminal capability, so there is no class of terminal they can misbehave on.
+	filePreviewMode := "auto"
 	animateInline := true
 	nativeAnim := false
 	var giphyAPIKey string
@@ -1191,6 +1201,9 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		}
 		if cfg.ImageThumbnails != "" {
 			thumbMode = cfg.ImageThumbnails
+		}
+		if cfg.FilePreviews != "" {
+			filePreviewMode = cfg.FilePreviews
 		}
 		if cfg.CodeTheme != "" {
 			setCodeTheme(cfg.CodeTheme)
@@ -1404,6 +1417,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		collapseKeyHint:     collapseKey,
 		emojiImg:            newEmojiImages(emojiMode, animateEmoji),
 		inlineImg:           newInlineImages(thumbMode),
+		filePrev:            newFilePreviews(filePreviewMode),
 		animatePreview:      animatePreview,
 		animateInline:       animateInline,
 		nativeAnim:          nativeAnim,
