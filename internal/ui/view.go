@@ -1500,15 +1500,18 @@ func (m *Model) renderAttachments(p *model.Post, maxWidth int) string {
 				info = " (" + humanSize(f.Size) + ")"
 			}
 		} else {
-			if m.videoPlayable() && isVideoAttachment(f) {
+			switch {
+			case m.videoPlayable() && isVideoAttachment(f):
 				icon = "🎬" // a clip we're about to draw a thumbnail for, not a plain file
+			case isSTLAttachment(f):
+				icon = "🧊" // a 3D model: rendered inline, and orbitable with space
 			}
 			info = " (" + humanSize(f.Size) + ")"
 		}
 		// Only a file we can actually draw gets a chevron: a format we can't decode
 		// (an .svg, or a video in a build that can't play one) shows no thumbnail,
 		// so there is nothing for the chevron to describe and z has nothing to hide.
-		if m.filePreviewable(f) {
+		if m.drawsFileThumb(f) {
 			if c := m.thumbChevron(p.Id); c != "" {
 				chev = c + " "
 			}
@@ -1760,6 +1763,7 @@ func init() {
 		{func(m *Model) bool { return m.switcherMode }, func(m *Model, h int) string { return m.renderSwitcher(h) }},
 		{func(m *Model) bool { return m.gorillas.active }, func(m *Model, h int) string { return m.renderGorillas(h) }},
 		{func(m *Model) bool { return m.kurve.active }, func(m *Model, h int) string { return m.renderKurve(h) }},
+		{func(m *Model) bool { return m.stl.active }, func(m *Model, _ int) string { return m.renderSTLView() }},
 		{func(m *Model) bool { return m.historyMode }, func(m *Model, _ int) string { return m.renderHistoryPopup() }},
 		{func(m *Model) bool { return m.keysSheetMode }, func(m *Model, _ int) string { return m.renderKeysSheetPopup() }},
 		{func(m *Model) bool { return m.keyDebugMode }, func(m *Model, _ int) string { return m.renderKeyDebugPopup() }},

@@ -901,6 +901,12 @@ func inlineThumbCells(wPx, hPx, box, cellPxW, cellPxH int) (cols, rows int) {
 // Only a genuinely tiny image (shorter than the cap) reserves wrong, and it merely
 // shrinks by a row or two when it loads.
 func (m *Model) reserveThumbCells(it previewItem, box int) (cols, rows int) {
+	// A 3D model has no dimensions to read and needs none: we pick the camera,
+	// so we pick the aspect, and the reservation is therefore exactly right
+	// rather than a prediction. See stlThumbCells.
+	if it.file != nil && isSTLAttachment(it.file) {
+		return stlThumbCells(box, m.cellPxW, m.cellPxH)
+	}
 	w, h := nominalBodyImageW, nominalBodyImageH
 	if it.file != nil && it.file.Width > 0 && it.file.Height > 0 {
 		w, h = it.file.Width, it.file.Height
@@ -964,10 +970,18 @@ func (m *Model) inlineThumbLines(it previewItem, paneWidth int) []string {
 // thumbnails are collapsed — and nothing means *nothing*: the image is never
 // sighted, so it is never fetched, never built and never animated (see sight).
 func (m *Model) inlineFileThumbLines(p *model.Post, f *model.FileInfo, paneWidth int) []string {
-	if !m.filePreviewable(f) || m.thumbsHidden(p) {
+	if !m.drawsFileThumb(f) || m.thumbsHidden(p) {
 		return nil
 	}
 	return m.inlineThumbLines(previewItem{file: f, name: f.Name}, paneWidth)
+}
+
+// drawsFileThumb reports whether an attachment contributes a thumbnail to its
+// post: an image or short-clip video we can decode, or an STL we can render.
+// The single question the transcript, the collapse chevron and the click target
+// all ask, so none of them can disagree about which files own one.
+func (m *Model) drawsFileThumb(f *model.FileInfo) bool {
+	return m.filePreviewable(f) || m.stlThumbnailable(f)
 }
 
 // --- collapsing a post's thumbnails (z) -----------------------------------
@@ -1034,7 +1048,7 @@ func (m *Model) hasBodyThumbnail(p *model.Post) bool {
 // postThumbKeys is every thumbnail post p draws — what z collapses, and what
 // releaseThumbs frees when it does.
 func (m *Model) postThumbKeys(p *model.Post) []string {
-	items := previewImages(p, m.videoPlayable())
+	items := m.thumbItems(p)
 	if len(items) == 0 {
 		return nil
 	}
@@ -1245,6 +1259,12 @@ func (m Model) loadInlineImages(items []previewItem, box int) tea.Msg {
 // to a full decode's frame 0, so the still lands on precisely the cell box the frames
 // will need, and completing it later moves nothing.
 func (m Model) buildInlineThumb(it previewItem, box int) (readyInlineImg, error) {
+	// A 3D model isn't decoded, it's rendered — a different first step onto the
+	// same encode-and-transmit tail. Everything downstream (the entry, the
+	// placeholder, the LRU, the collapse) treats it as one more thumbnail.
+	if it.file != nil && isSTLAttachment(it.file) {
+		return m.buildSTLThumb(it, box)
+	}
 	raw, err := m.readThumbBytes(it)
 	if err != nil {
 		return readyInlineImg{}, err

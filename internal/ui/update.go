@@ -161,13 +161,34 @@ func (m *Model) syncComposerFocus() {
 //     writes its upload, but leaves the cells naming the frame on screen: only
 //     the promote sequenced behind that upload moves them (see advanceStream).
 //     So the tick preserves the frame and the promote — which does change the
-//     text — invalidates. (The RawMsg carrying the upload still invalidates too,
-//     as every tea.Raw does; making that one frame-preserving is a wider claim
-//     than this list wants to make.)
-func preservesFrame(msg tea.Msg) bool {
-	switch msg.(type) {
-	case tea.MouseWheelMsg, imgAnimTickMsg, inlineThumbFramesMsg, previewStreamTickMsg:
+//     text — invalidates.
+//   - A RawMsg is bytes on their way to the terminal and nothing else: no case
+//     below reads one, so the model — and therefore the frame — is exactly what
+//     the last render already built. Everything that pushes pixels out of band
+//     (the 3D viewer, the GIF paths, the video player, the games) ends with one.
+//   - The 3D viewer's own messages, which is the one that pays. With the viewer
+//     open the frame contains a 143×43 grid of Kitty placeholder cells, and
+//     lipgloss measuring that grid — three astral-plane runes per cell, walked
+//     again by the border, the Place and the JoinVertical — is ~12ms of a ~12ms
+//     frame. None of it can have changed: the pixels go out of band under a fixed
+//     image id and a fixed cell box, and neither the caption nor the hint says
+//     anything about the camera. A drag was paying that three times per rendered
+//     frame — the motion, the frame it asked for, and the RawMsg that writes it —
+//     which is why the viewer felt slow long after the rasterizer stopped being
+//     the problem. A motion is only safe while no wheel delta is queued, since
+//     the flush at the top of update() would move a pane the frame does draw —
+//     which update() handles itself, since by here the delta has been zeroed.
+func (m *Model) preservesFrame(msg tea.Msg) bool {
+	switch msg := msg.(type) {
+	case tea.MouseWheelMsg, imgAnimTickMsg, inlineThumbFramesMsg, previewStreamTickMsg, tea.RawMsg:
 		return true
+	case stlFrameMsg:
+		// An error is the one thing a frame can carry that the modal draws.
+		return msg.err == nil
+	case stlSettleMsg, stlSpinMsg:
+		return m.stl.active
+	case tea.MouseMotionMsg:
+		return m.stl.active
 	}
 	return false
 }
@@ -176,13 +197,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// User input that acts on the scroll position must see any coalesced wheel
 	// delta applied first (see handleMouseWheel). Background msgs and further
 	// wheel events deliberately don't flush — that would defeat the coalescing.
+	var wheelFlushed bool
 	switch msg.(type) {
 	case tea.KeyPressMsg, tea.MouseClickMsg, tea.MouseReleaseMsg, tea.MouseMotionMsg, tea.PasteMsg:
-		m.applyPendingWheel()
+		wheelFlushed = m.applyPendingWheel()
 	}
 	// Invalidate the memoized screen (viewCache.view) by default; see
-	// preservesFrame for the two messages that don't change it.
-	if m.vcache != nil && !preservesFrame(msg) {
+	// preservesFrame for the messages that don't change it. A flush above moved a
+	// pane, whatever the message was, so it invalidates on its own account —
+	// preservesFrame can't see it, since the flush has already zeroed the delta
+	// it would have to read.
+	if m.vcache != nil && (wheelFlushed || !m.preservesFrame(msg)) {
 		m.vcache.viewValid = false
 	}
 	// Leave View a note about why it is about to run: a slow frame is a very
@@ -225,7 +250,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.postLineCache = nil
 		m.renderAllPanes()
 		// A resize while the image preview or a game is open re-fits + re-transmits it.
-		return m, tea.Batch(m.resizePreview(), m.resizeGorillas(), m.resizeKurve())
+		return m, tea.Batch(m.resizePreview(), m.resizeGorillas(), m.resizeKurve(), m.resizeSTLView())
 
 	case splashTickMsg:
 		// Spinner frame on the startup splash. The chain dies with the splash:
@@ -325,6 +350,14 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case uv.KittyGraphicsEvent:
+		// Reply to the STL viewer's arming a=f — the one frame edit it sends with
+		// q=0, to find out whether this terminal can double-buffer frames at all
+		// (see stlState). Checked before the probe: they are told apart by image
+		// id, and this one only exists while the viewer is open.
+		if m.stl.active && m.stl.imgID != 0 && msg.Options.ID == int(m.stl.imgID) {
+			(&m).applySTLFrameReply(string(msg.Payload))
+			return m, nil
+		}
 		// Reply to the startup graphics-support probe (see emojiProbeCmd).
 		// Transmits use q=2, so only the probe reply should reach here.
 		if m.emojiImg != nil && msg.Options.ID == kittyProbeID {
@@ -1336,6 +1369,15 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.applyKurveResumed(msg)
 	case kurveFrameMsg:
 		return m, m.applyKurveFrame(msg)
+
+	case stlLoadedMsg:
+		return m, m.applySTLLoaded(msg)
+	case stlFrameMsg:
+		return m, m.applySTLFrame(msg)
+	case stlSettleMsg:
+		return m, m.applySTLSettle(msg)
+	case stlSpinMsg:
+		return m, m.applySTLSpin(msg)
 	case cmdShimmerTickMsg:
 		return m, m.applyCmdShimmerTick()
 
@@ -2122,6 +2164,11 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	if m.kurve.active {
 		return m.handleKurveKey(msg)
+	}
+	// The 3D viewer is fully modal for the same reason a game is: the arrows,
+	// hjkl and the axis keys are the whole interface.
+	if m.stl.active {
+		return m.handleSTLKey(msg)
 	}
 	// Delete-confirmation modal is fully modal: y/enter performs the
 	// delete, n/esc cancels. Anything else is ignored.
@@ -3494,6 +3541,12 @@ func (m *Model) wheelStep(t wheelTarget) int {
 // than snapping back to the selection. Horizontal wheels, and wheels on the
 // composer, are ignored.
 func (m Model) handleMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
+	// The 3D viewer owns the wheel while it is up: it zooms. Checked before the
+	// scroll targets below, which would otherwise resolve to wheelNone (a modal
+	// with no scrollable view) and swallow it.
+	if m.stl.active {
+		return m.stlMouseWheel(msg)
+	}
 	var dir int
 	switch msg.Button {
 	case tea.MouseWheelUp:
@@ -3584,13 +3637,16 @@ func (m *Model) applyWheel(t wheelTarget, delta int) {
 
 // applyPendingWheel flushes any coalesced wheel delta immediately. Called before
 // handling user input that acts on the scroll position (a keypress, a click) so
-// it sees the final offset rather than one up to a frame stale.
-func (m *Model) applyPendingWheel() {
+// it sees the final offset rather than one up to a frame stale. Reports whether
+// there was anything to flush, i.e. whether it just moved a pane — which is what
+// tells the caller the memoized frame is now stale (see preservesFrame).
+func (m *Model) applyPendingWheel() bool {
 	if m.wheelPending == 0 {
-		return
+		return false
 	}
 	m.applyWheel(m.wheelTarget, m.wheelPending)
 	m.wheelPending = 0
+	return true
 }
 
 // selStillVisible reports whether the selected item's whole visual span sits

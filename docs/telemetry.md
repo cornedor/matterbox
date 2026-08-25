@@ -802,7 +802,7 @@ which is the app's own tested model of which bindings are live where.
 `modal:jira-comment`, `modal:jira-picker`, `modal:jira-points`,
 `modal:kaomoji-picker`, `modal:key-debug`, `modal:keys-sheet`,
 `modal:open-picker`, `modal:poll-dialog`, `modal:reaction-picker`,
-`modal:saved-posts`, `modal:summary`, `modal:switcher`,
+`modal:saved-posts`, `modal:stl-view`, `modal:summary`, `modal:switcher`,
 `modal:template-picker`, `modal:text-popup`, `mode:filter`, `unknown`,
 `welcome`
 

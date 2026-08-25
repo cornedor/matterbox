@@ -307,9 +307,17 @@ func isPreviewableImageURL(raw string) bool {
 // openImagePreview raises the preview modal for the first previewable image on
 // p (←/→ cycle the rest). No image → a status hint; no terminal graphics → a
 // hint to use `o`, since we render Kitty-only.
+//
+// A post carrying no image but a 3D model gets the STL viewer instead, so the
+// one "look at this attachment" key does the obvious thing either way. Images
+// win when a post has both: they are the far commoner case, and the model is
+// still one click on its thumbnail away.
 func (m Model) openImagePreview(p *model.Post) (tea.Model, tea.Cmd) {
 	items := previewImages(p, m.videoPlayable())
 	if len(items) == 0 {
+		if models := stlItems(p); len(models) > 0 {
+			return m.openSTLView(models, 0)
+		}
 		m.status = "no image to preview on this message"
 		return m, nil
 	}

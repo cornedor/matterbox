@@ -70,7 +70,7 @@ func (m Model) handleImageClick(pane focus, key string) (tea.Model, tea.Cmd) {
 	if p == nil {
 		return m, nil
 	}
-	items := previewImages(p, m.videoPlayable())
+	items := m.thumbItems(p)
 	idx := -1
 	var it previewItem
 	for i, cand := range items {
@@ -101,6 +101,20 @@ func (m Model) handleImageClick(pane focus, key string) (tea.Model, tea.Cmd) {
 		m.status = fmt.Sprintf("downloading %s…", downloadName(it.file))
 		return m, m.downloadFiles([]*model.FileInfo{it.file})
 	default: // preview (and any unrecognised value treated as preview)
+		// A 3D model previews in its own viewer — and it previews from its own
+		// gallery, so ←/→ there walk the post's models rather than landing on an
+		// image the STL viewer can't draw.
+		if it.file != nil && isSTLAttachment(it.file) {
+			models := stlItems(p)
+			start := 0
+			for i, cand := range models {
+				if thumbKey(cand) == key {
+					start = i
+					break
+				}
+			}
+			return m.openSTLView(models, start)
+		}
 		return m.openPreviewItems(items, idx)
 	}
 }

@@ -193,3 +193,42 @@ func buildNativeAnimSetup(enc *png.Encoder, id uint32, frames []image.Image, del
 	sb.WriteString(kittyAnimateStart(id))
 	return sb.String(), nil
 }
+
+// --- frames as a double buffer --------------------------------------------
+//
+// The three below are the animation protocol used for something it was not
+// primarily meant for: not a terminal-driven loop, but a place to put pixels
+// where they cannot be seen until they are complete. Playback stays stopped
+// (every image starts that way, and nothing here ever sends s=), so the frames
+// only ever change when a=a,c= says so. The STL viewer drives it — see
+// stlState's frame-double-buffering note for why re-transmitting an id strobes
+// and this doesn't.
+
+// kittyCreateBlankFrame appends one frame to an already-transmitted image
+// (a=f). No c= key, so the new frame starts as background — transparent — rather
+// than a copy of another, and the payload is a single transparent pixel: the
+// frame is stored at the image's full size regardless, and every pixel of it is
+// overwritten by kittyEditFrame before it is ever displayed.
+//
+// quiet 0 asks for the reply. That reply is the only way to find out whether the
+// terminal implements frame edits at all: one that doesn't ignores the APC
+// without a word, so silence has to be read as "no" (see applySTLFrameReply).
+// Ghostty and kitty both answer OK.
+func kittyCreateBlankFrame(id uint32, quiet int) string {
+	opts := []string{
+		"a=f", fmt.Sprintf("i=%d", id),
+		fmt.Sprintf("f=%d", kitty.RGBA), "s=1", "v=1", "X=1",
+	}
+	if quiet > 0 {
+		opts = append(opts, fmt.Sprintf("q=%d", quiet))
+	}
+	return ansi.KittyGraphics([]byte("AAAAAA=="), opts...) // one RGBA pixel, all zero
+}
+
+// kittyShowFrame switches which frame an image displays (a=a with c=<frame>).
+// This is the client-driven animation primitive: it moves the current frame and
+// nothing else, so the terminal repaints that image once, with a whole frame,
+// and then waits to be told again.
+func kittyShowFrame(id uint32, frame int) string {
+	return ansi.KittyGraphics(nil, "a=a", fmt.Sprintf("i=%d", id), fmt.Sprintf("c=%d", frame), "q=1")
+}
