@@ -62,12 +62,18 @@ const stlThumbMaxBytes = 24 << 20
 // pays for one, short enough to feel immediate when you let go.
 const stlSettleDelay = 90 * time.Millisecond
 
-// stlSpinDelay is one frame of the auto-spin turntable.
-const stlSpinDelay = 50 * time.Millisecond
+// stlSpinDelay is one frame of the auto-spin turntable — a 30fps tick. It was
+// 50ms, which capped the turntable at 20fps however cheap a frame got, and a
+// turntable is the one thing here with nothing to hide behind: a drag's own
+// jitter covers a dropped frame, a steady rotation shows every one. A tick
+// faster than a frame costs nothing but a dropped frame, since at most one
+// render is ever in flight (see stlFrameCmd's pending).
+const stlSpinDelay = 33 * time.Millisecond
 
-// stlSpinStep is how far the turntable turns per frame — a full revolution in
-// about eight seconds, which is slow enough to actually read the shape.
-const stlSpinStep = float32(2 * math.Pi / 160)
+// stlSpinStep is how far the turntable turns per frame — scaled with the tick to
+// keep the revolution at about eight seconds, which is slow enough to actually
+// read the shape. Faster frames make it smoother, not quicker.
+const stlSpinStep = float32(2 * math.Pi / 240)
 
 // Orbit sensitivities. The keyboard step is a visible nudge rather than a nudge
 // you have to hold; the mouse figures are radians per cell dragged, tuned so a

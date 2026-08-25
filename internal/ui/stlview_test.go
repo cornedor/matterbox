@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -1102,3 +1103,61 @@ func kittyOpts(seq string) string {
 	}
 	return strings.Join(out, " | ")
 }
+
+// The 3D viewer's messages must not invalidate the memoized frame. A drag
+// produces three messages per rendered frame — the motion, the frame it asked
+// for, and the RawMsg that writes it — and rebuilding the screen for any of them
+// costs more than the render does: the frame is a grid of Kitty placeholder cells
+// and lipgloss re-measures every one of them. Nothing the camera touches is
+// drawn, so there is nothing to rebuild.
+func TestSTLFramePathPreservesTheMemoizedFrame(t *testing.T) {
+	prime := func(m *Model) {
+		t.Helper()
+		m.vcache.viewValid = true
+	}
+	for _, tc := range []struct {
+		what string
+		msg  tea.Msg
+		want bool
+	}{
+		{"a frame that rendered", stlFrameMsg{}, true},
+		{"the settle tick", stlSettleMsg{}, true},
+		{"a turntable tick", stlSpinMsg{}, true},
+		{"the raw write", tea.RawMsg{Msg: "\x1b_Ga=a\x1b\\"}, true},
+		{"an orbit drag", tea.MouseMotionMsg{X: 40, Y: 20, Button: tea.MouseLeft}, true},
+		// The modal draws these, so they have to invalidate.
+		{"a frame that failed", stlFrameMsg{err: errStlTest}, false},
+		{"the mesh arriving", stlLoadedMsg{}, false},
+		{"a keypress", stlPress("r"), false},
+	} {
+		m := stlViewModel(t)
+		if m.vcache == nil {
+			m.vcache = &viewCache{}
+		}
+		m.stl.drag = true
+		prime(m)
+		out, _ := m.update(tc.msg)
+		if got := out.(Model).vcache.viewValid; got != tc.want {
+			t.Errorf("%s: viewValid = %v, want %v", tc.what, got, tc.want)
+		}
+	}
+}
+
+// A wheel delta queued before the viewer opened is flushed by the next motion
+// (see applyPendingWheel), and that moves a pane the frame does draw — so a
+// motion is only frame-preserving while nothing is queued.
+func TestSTLMotionWithQueuedWheelStillInvalidates(t *testing.T) {
+	m := stlViewModel(t)
+	if m.vcache == nil {
+		m.vcache = &viewCache{}
+	}
+	m.stl.drag = true
+	m.wheelPending = -3
+	m.vcache.viewValid = true
+	out, _ := m.update(tea.MouseMotionMsg{X: 40, Y: 20, Button: tea.MouseLeft})
+	if out.(Model).vcache.viewValid {
+		t.Error("a motion that flushed a wheel delta kept the memoized frame")
+	}
+}
+
+var errStlTest = errors.New("render failed")
