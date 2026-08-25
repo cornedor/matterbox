@@ -211,8 +211,7 @@ stopped the rest. [docs/rules.md](docs/rules.md) is the full reference.
 [Apache License 2.0](LICENSE). Much of the code was written with AI assistance under
 human review.
 
-Two pieces of art in here belong to other people and keep their own terms, both
-recorded in [NOTICE](NOTICE): the `--demo` soundtrack is "Paradox #3" by **dubmood /
-Razor1911**, and the empty-feed sailing ship is by **Sebastian Stöcker (SSt)** — whose
-terms are why the signature stays on the art. Release binaries also ship a
-`THIRD_PARTY_LICENSES` file covering every Go module linked into them.
+One piece of art in here belongs to someone else and keeps its own terms, recorded
+in [NOTICE](NOTICE): the `--demo` soundtrack is "Paradox #3" by **dubmood /
+Razor1911**. Release binaries also ship a `THIRD_PARTY_LICENSES` file covering
+every Go module linked into them.

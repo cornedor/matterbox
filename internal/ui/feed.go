@@ -78,20 +78,11 @@ type feedState struct {
 	// for the session by the toggle key (M) or the "> Feed: …" command.
 	showMuted bool
 
-	// Empty-state splash animation. wavePhase advances each frame to drift
-	// the water; waveActive guards against running more than one tick loop.
-	// Both only matter while the feed has no entries (see feedart.go).
-	wavePhase  int
-	waveActive bool
-
-	// Gull fly-bys, advanced once per wave frame (see advanceFeedBird). A bird
-	// crosses a few times an hour: birdWait counts down the random idle frames
-	// until the next fly-by; while birdActive, birdStep advances the crossing
-	// and birdYOff holds that fly-by's random sky height.
-	birdActive bool
-	birdStep   int
-	birdWait   int
-	birdYOff   int
+	// Empty-state animation. blobPhase advances each frame to drift the blob
+	// field; blobActive guards against running more than one tick loop. Both
+	// only matter while the feed has no entries (see feedblobs.go).
+	blobPhase  int
+	blobActive bool
 
 	// zones maps viewport visual rows to feed-entry indices for mouse
 	// hit-testing; zonesTotal is the rendered list's full height. Both are
@@ -107,9 +98,7 @@ type feedState struct {
 func newFeedState(showMuted bool) feedState {
 	vp := viewport.New()
 	vp.SoftWrap = true
-	// Seed a short initial idle so the first gull appears soon after the splash
-	// is first viewed, then settles into the rare random cadence.
-	return feedState{view: vp, showMuted: showMuted, birdWait: int(birdGapFirst / feedWaveInterval)}
+	return feedState{view: vp, showMuted: showMuted}
 }
 
 // feedTarget is a snapshot of one unread channel taken on the UI
@@ -458,7 +447,7 @@ func (m Model) applyFeedResults(msg feedLoadedMsg) (tea.Model, tea.Cmd) {
 	}
 	m.renderFeedResults()
 	// An empty build lands on the calm-water splash — start the waves.
-	return m, m.maybeStartFeedWaves()
+	return m, m.maybeStartFeedBlobs()
 }
 
 // handleFeedKey owns the keystrokes routed to focus == focusFeed that
@@ -595,7 +584,7 @@ func (m Model) markFeedEntryRead() (tea.Model, tea.Cmd) {
 	m.status = "marked read"
 	m.renderFeedResults()
 	// Reading the last entry reveals the splash — animate it.
-	return m, tea.Batch(m.markChannelViewed(e.channelID), m.maybeStartFeedWaves())
+	return m, tea.Batch(m.markChannelViewed(e.channelID), m.maybeStartFeedBlobs())
 }
 
 // markAllFeedRead clears every bubble at once: the same thing m does to the
@@ -619,7 +608,7 @@ func (m *Model) markAllFeedRead() tea.Cmd {
 	m.status = "marked " + plural(len(ids), "channel", "channels") + " read"
 	m.renderFeedResults()
 	// Emptying the feed reveals the splash — animate it.
-	return tea.Batch(m.markChannelsViewed(ids), m.maybeStartFeedWaves())
+	return tea.Batch(m.markChannelsViewed(ids), m.maybeStartFeedBlobs())
 }
 
 // removeFeedEntry drops the bubble for channelID and clamps the selection.
@@ -795,8 +784,8 @@ func (m *Model) renderFeedResults() {
 				lipgloss.NewStyle().Foreground(dimColor).Render("  gathering unread messages…"))
 			return
 		}
-		// Nothing unread: the calm ship-on-water splash, with slowly
-		// drifting waves (animation armed by maybeStartFeedWaves).
+		// Nothing unread: the calm drifting blob field (animation armed
+		// by maybeStartFeedBlobs).
 		m.feed.view.SetContent(m.feedEmptyContent())
 		return
 	}

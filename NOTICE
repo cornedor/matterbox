@@ -12,10 +12,10 @@ Third-party content included in this repository
 --------------------------------------------------------------------------------
 
 The Apache-2.0 license above covers matterbox's own source. It does NOT cover
-the two artistic works below: they remain the property of their authors and are
-included here under the authors' own terms, which are narrower than Apache-2.0
-(in particular they do not grant the right to modify or sublicense the work).
-If you redistribute matterbox, these terms travel with these files.
+the artistic work below: it remains the property of its author and is included
+here under the author's own terms, which are narrower than Apache-2.0 (in
+particular they do not grant the right to modify or sublicense the work). If
+you redistribute matterbox, these terms travel with this file.
 
 internal/welcome/demo.xm — "Paradox #3"
     Copyright dubmood / Razor1911. Used as the `--demo` soundtrack, and
@@ -27,22 +27,6 @@ internal/welcome/demo.xm — "Paradox #3"
          feel free to spread it in any way you like..."
 
         https://web.archive.org/web/20170707150701/https://razor1911.com/dubmood/old-index.html
-
-internal/ui/feedart.txt — sailing ship
-    Copyright © 2000-2005 Sebastian Stöcker (SSt), https://ascii-art.net/.
-    Drawn on the Feed tab when nothing is unread. Included under the terms
-    published by the artist:
-
-        "You are free to copy and use any of my pictures as long as you leave
-         them intact and - of course - the initials (SSt) on them."
-
-        https://ascii-art.net/about.php
-
-    Accordingly, feedart.txt is a verbatim copy of the artist's piece, kept
-    intact including the "SSt" signature on its last wave row, and the renderer
-    preserves the signature: the wave animation only moves '~' glyphs into
-    cells that are already blank, so it can never overwrite it.
-    TestFeedArtKeepsArtistSignature in internal/ui guards this.
 
 --------------------------------------------------------------------------------
 
