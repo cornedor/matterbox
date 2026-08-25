@@ -8,6 +8,7 @@ import (
 	"image/color"
 	"image/png"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -131,6 +132,129 @@ func TestKittyRawReusesAcrossSizes(t *testing.T) {
 		}
 		if last := got[len(got)-4:]; last[0] != 9 || last[3] != 0xff {
 			t.Errorf("width %d: last pixel = % x", w, last)
+		}
+	}
+}
+
+// --- strip-parallel frame edits -------------------------------------------
+
+// kittyCmd is one reassembled APC: its first chunk's keys and the payload of
+// every chunk joined back together.
+type kittyCmd struct {
+	opts    map[string]string
+	payload []byte
+}
+
+// parseKittySeq splits a string of Kitty graphics commands back into commands,
+// rejoining the m=1/m=0 chunk runs the transmit is cut into.
+func parseKittySeq(t *testing.T, seq string) []kittyCmd {
+	t.Helper()
+	var out []kittyCmd
+	var cur *kittyCmd
+	for _, block := range strings.Split(seq, "\x1b_G")[1:] {
+		body, ok := strings.CutSuffix(block, "\x1b\\")
+		if !ok {
+			t.Fatalf("APC block not terminated: %q", block)
+		}
+		keys, payload, _ := strings.Cut(body, ";")
+		opts := map[string]string{}
+		for _, kv := range strings.Split(keys, ",") {
+			if k, v, ok := strings.Cut(kv, "="); ok {
+				opts[k] = v
+			}
+		}
+		if cur == nil {
+			out = append(out, kittyCmd{opts: opts})
+			cur = &out[len(out)-1]
+		}
+		cur.payload = append(cur.payload, payload...)
+		if opts["m"] != "1" {
+			cur = nil
+		}
+	}
+	if cur != nil {
+		t.Fatal("last command never closed with m=0")
+	}
+	return out
+}
+
+// A striped frame has to be the same pixels as an unstriped one, laid into the
+// same frame: every row written exactly once, in the right place. Anything else
+// and the model comes out sheared, doubled, or with a band of the frame before it
+// still showing.
+func TestKittyEditFrameRawStripsCoverTheFrameExactly(t *testing.T) {
+	const w, h = 1024, 512
+	if n := rawStrips(w, h); n < 2 {
+		t.Skipf("machine encodes %dx%d in %d strip(s)", w, h, n)
+	}
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := range h {
+		for x := range w {
+			img.SetRGBA(x, y, color.RGBA{uint8(x), uint8(y), uint8(x ^ y), 0xff})
+		}
+	}
+	seq, err := kittyEditFrameRaw(77, 3, img)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmds := parseKittySeq(t, seq)
+	if len(cmds) != rawStrips(w, h) {
+		t.Fatalf("got %d commands, want %d strips", len(cmds), rawStrips(w, h))
+	}
+
+	got := make([]byte, 4*w*h)
+	covered := make([]int, h)
+	for i, c := range cmds {
+		for k, want := range map[string]string{
+			"a": "f", "i": "77", "r": "3", "f": "32", "o": "z", "X": "1", "q": "1",
+			"x": "0", "s": "1024",
+		} {
+			if c.opts[k] != want {
+				t.Errorf("strip %d: %s=%q, want %q", i, k, c.opts[k], want)
+			}
+		}
+		y0, err := strconv.Atoi(c.opts["y"])
+		if err != nil {
+			t.Fatalf("strip %d: y=%q: %v", i, c.opts["y"], err)
+		}
+		rows, err := strconv.Atoi(c.opts["v"])
+		if err != nil {
+			t.Fatalf("strip %d: v=%q: %v", i, c.opts["v"], err)
+		}
+		pix := decodeRawPayload(t, c.payload)
+		if len(pix) != 4*w*rows {
+			t.Fatalf("strip %d: %d bytes for %d rows of %d", i, len(pix), rows, w)
+		}
+		copy(got[4*w*y0:], pix)
+		for y := y0; y < y0+rows; y++ {
+			covered[y]++
+		}
+	}
+	for y, n := range covered {
+		if n != 1 {
+			t.Fatalf("row %d written %d times", y, n)
+		}
+	}
+	// The reference is what a single stream sends for the same image.
+	if want := decodeRawPayload(t, mustRawPayload(t, img)); !bytes.Equal(got, want) {
+		t.Error("reassembled strips differ from the whole-frame encoding")
+	}
+}
+
+// A frame small enough not to be cut up must go out as exactly the command it
+// went out as before there were strips — the fallback path is the proven one.
+func TestKittyEditFrameRawSmallFrameIsUnstriped(t *testing.T) {
+	seq, err := kittyEditFrameRaw(4242, 3, alphaFrame())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmds := parseKittySeq(t, seq)
+	if len(cmds) != 1 {
+		t.Fatalf("got %d commands for a 4x2 frame, want 1", len(cmds))
+	}
+	for _, k := range []string{"x", "y"} {
+		if v, ok := cmds[0].opts[k]; ok {
+			t.Errorf("unstriped frame carries %s=%s", k, v)
 		}
 	}
 }

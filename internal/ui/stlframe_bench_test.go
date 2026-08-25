@@ -12,12 +12,15 @@ import (
 )
 
 // One frame of the interactive 3D viewer, end to end — what stlFrameCmd's
-// closure does: rasterize, then PNG-encode and chunk it for the terminal. ssaa=1
-// is the drag case (the camera is moving), ssaa=0 is auto, which is what a
-// settled camera renders at.
+// closure does: rasterize, then encode and chunk it for the terminal. ssaa=1 is
+// the drag case (the camera is moving), ssaa=0 is auto, which is what a settled
+// camera renders at.
 //
-// The split benchmark below is the one that matters: at a typical modal size the
-// encode is the larger half of a drag frame, not the rasterizer.
+// Both halves are now spread over the cores (renderWorkers, rawStrips), so these
+// measure a frame as the viewer actually pays for it. The split benchmark below
+// separates them, and stlreal_bench_test.go runs the same thing on real files at
+// the pixel box a HiDPI terminal really hands the modal — which is where the
+// numbers that mattered came from: a tessellated sphere is not a downloaded part.
 
 // benchMesh builds a tessellated sphere of roughly n triangles, through the real
 // decoder so the Mesh is bounded exactly as a loaded file would be.
