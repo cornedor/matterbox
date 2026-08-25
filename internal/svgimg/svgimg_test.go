@@ -51,8 +51,8 @@ func TestDecodeDrawsShapes(t *testing.T) {
 		t.Fatalf("Decode: %v", err)
 	}
 	b := res.Image.Bounds()
-	if b.Dx() != 64 || b.Dy() != 64 {
-		t.Errorf("raster is %dx%d, want 64x64", b.Dx(), b.Dy())
+	if want := 64 * Supersample; b.Dx() != want || b.Dy() != want {
+		t.Errorf("raster is %dx%d, want %dx%d (the box, supersampled)", b.Dx(), b.Dy(), want, want)
 	}
 	if res.W != 100 || res.H != 100 {
 		t.Errorf("intrinsic size = %dx%d, want 100x100", res.W, res.H)
@@ -72,10 +72,13 @@ func TestDecodeCompactArcKeepsTheHole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
-	if got := alphaAt(t, res.Image, 64, 64); got != 0 {
+	// Coordinates are fractions of the raster, which is the box supersampled.
+	b := res.Image.Bounds()
+	cx, cy := b.Dx()/2, b.Dy()/2
+	if got := alphaAt(t, res.Image, cx, cy); got != 0 {
 		t.Errorf("centre of the ring is filled (alpha %d): the arcs were misparsed", got)
 	}
-	if got := alphaAt(t, res.Image, 64, 20); got == 0 {
+	if got := alphaAt(t, res.Image, cx, b.Dy()*20/128); got == 0 {
 		t.Error("the ring itself was not drawn")
 	}
 }
@@ -105,10 +108,11 @@ func TestDecodePercentageSizeUsesViewBox(t *testing.T) {
 	if res.W != 20 || res.H != 10 {
 		t.Errorf("intrinsic size = %dx%d, want 20x10 from the viewBox", res.W, res.H)
 	}
-	if b := res.Image.Bounds(); b.Dx() != 40 || b.Dy() != 20 {
-		t.Errorf("raster is %dx%d, want 40x20 (aspect kept)", b.Dx(), b.Dy())
+	b := res.Image.Bounds()
+	if wantW, wantH := 40*Supersample, 20*Supersample; b.Dx() != wantW || b.Dy() != wantH {
+		t.Errorf("raster is %dx%d, want %dx%d (aspect kept)", b.Dx(), b.Dy(), wantW, wantH)
 	}
-	if got := alphaAt(t, res.Image, 20, 10); got == 0 {
+	if got := alphaAt(t, res.Image, b.Dx()/2, b.Dy()/2); got == 0 {
 		t.Error("nothing was drawn")
 	}
 }
@@ -119,7 +123,7 @@ func TestDecodeCurrentColor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
-	r, g, b, a := res.Image.At(10, 10).RGBA()
+	r, g, b, a := res.Image.At(res.Image.Bounds().Dx()/2, res.Image.Bounds().Dy()/2).RGBA()
 	if a == 0 {
 		t.Fatal("currentColor shape drew nothing")
 	}
@@ -278,15 +282,20 @@ func TestDecodeUniformScale(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
-	if got := alphaAt(t, res.Image, 25, 25); got == 0 {
+	// In quarters of the raster, whatever size supersampling made it.
+	b := res.Image.Bounds()
+	q := func(fx, fy float64) uint32 {
+		return alphaAt(t, res.Image, int(float64(b.Dx())*fx), int(float64(b.Dy())*fy))
+	}
+	if got := q(0.25, 0.25); got == 0 {
 		t.Error("nothing inside the scaled box: the Y axis was flattened")
 	}
 	// Middle of the frame is outside the scaled box.
-	if got := alphaAt(t, res.Image, 75, 75); got != 0 {
+	if got := q(0.75, 0.75); got != 0 {
 		t.Errorf("paint outside the scaled box (alpha %d): scale was not applied", got)
 	}
 	// The bottom row is where a flattened Y axis piles everything up.
-	if got := alphaAt(t, res.Image, 25, 99); got != 0 {
+	if got := q(0.25, 0.99); got != 0 {
 		t.Errorf("paint on the bottom row (alpha %d): the Y axis collapsed", got)
 	}
 }
@@ -311,5 +320,43 @@ func TestDecodeRefusesTooMuchDrawing(t *testing.T) {
 	// Small enough a box and the same document is cheap, so it must go through.
 	if _, err := Decode(raw, Options{MaxW: 64, MaxH: 64}); err != nil {
 		t.Errorf("the same document in a small box was refused: %v", err)
+	}
+}
+
+// TestDecodeSupersamples guards the antialiasing: the raster must come back
+// larger than the destination box so the placement's downscale has coverage to
+// work with. Drawn at 1:1 the rasteriser turns a hairline into a blob, which is
+// what a thumbnail of a detailed drawing looks like without this.
+func TestDecodeSupersamples(t *testing.T) {
+	res, err := Decode([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10"/></svg>`),
+		Options{MaxW: 100, MaxH: 100})
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if got := res.Image.Bounds().Dx(); got != 100*Supersample {
+		t.Errorf("raster is %dpx for a 100px box, want %dpx (%d× supersampled)", got, 100*Supersample, Supersample)
+	}
+}
+
+// TestDecodeDegradesBeforeRefusing pins the order of retreat for a drawing too
+// detailed to supersample: drop to the destination box (a quarter of the work)
+// rather than refuse, since a refusal costs the user the picture entirely.
+func TestDecodeDegradesBeforeRefusing(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">`)
+	for i := 0; i < 900; i++ {
+		fmt.Fprintf(&b, `<path d="M%d 0h1v1h-1z" fill="black"/>`, i%100)
+	}
+	b.WriteString(`</svg>`)
+	raw := []byte(b.String())
+
+	// 900 shapes at 700² supersampled is 1.76G — over budget — but 900 at 700² is
+	// 441M, which is not, so it must come back at the box rather than as an error.
+	res, err := Decode(raw, Options{MaxW: 700, MaxH: 700})
+	if err != nil {
+		t.Fatalf("degraded case was refused instead: %v", err)
+	}
+	if got := res.Image.Bounds().Dx(); got != 700 {
+		t.Errorf("raster is %dpx, want the un-supersampled 700px", got)
 	}
 }

@@ -32,17 +32,26 @@ const (
 	// (they are text, and compress); a bigger one is refused rather than turned
 	// into an unbounded amount of rasterising.
 	MaxBytes = 8 << 20
-	// maxPathPixels bounds the drawing itself. Rasterising costs roughly one unit
-	// per shape per pixel of the target, and both numbers are known after parsing
-	// and before a single pixel is filled — which is the one moment a pathological
-	// document can be turned away for free.
+	// Supersample is how many raster pixels we draw per destination pixel on each
+	// axis. The extra coverage becomes antialiasing when the placement scales the
+	// frame down to its cells, and it is not optional: at 1:1 the rasteriser's own
+	// edge handling turns a whisker a pixel wide into a blob, which is plainly
+	// visible on any drawing with fine linework. Two is enough — three is
+	// indistinguishable from it and costs another 2.25×.
+	Supersample = 2
+	// maxPathPixels bounds one drawing. Rasterising costs about one unit per shape
+	// per target pixel — measured at ~225M units/sec, steady across documents as
+	// different as a symbolic icon and a 300-path illustration — and both numbers
+	// are known after parsing and before a single pixel is filled, which is the
+	// one moment a pathological document can be turned away for free.
 	//
-	// The measured rate is 80–200M units/sec, so this is a ceiling of a second or
-	// two on the slowest case we let through. It is deliberately generous: a
-	// detailed illustration is worth waiting for on a keypress, and the tighter
-	// bar for work nobody asked for is a separate matter (see svgThumbMaxBytes in
-	// the UI, which turns big drawings away before they are even fetched).
-	maxPathPixels = 200_000_000
+	// 800M is therefore ~3.5 seconds on the slowest drawing allowed through, set
+	// so that no ordinary detailed illustration is ever refused — only a document
+	// dense enough that every size worth showing would hang. The bar for
+	// work nobody asked for is a separate and tighter matter — see
+	// svgThumbMaxBytes in the UI, which turns big drawings away before they are
+	// even fetched.
+	maxPathPixels = 800_000_000
 	// maxPixels caps the raster, whatever aspect ratio asks for.
 	maxPixels = 16 << 20
 	// defaultW/defaultH size a document that declares no intrinsic size at all,
@@ -192,9 +201,17 @@ func rasterize(raw []byte, maxW, maxH int, currentColor string) (res Result, err
 		icon.ViewBox.W, icon.ViewBox.H = vw, vh
 	}
 
-	w, h := fit(icon.ViewBox.W, icon.ViewBox.H, maxW, maxH)
-	if n := len(icon.SVGPaths); n*w*h > maxPathPixels {
-		return Result{}, fmt.Errorf("svg too complex to draw (%d shapes at %d×%d)", n, w, h)
+	// Draw at the supersampled size when the budget allows it, and at the plain
+	// destination box when it does not: a quarter of the work, at the cost of
+	// coarser thin strokes. Refuse only when even that is out of reach, which
+	// takes a document dense enough that any size worth showing would hang.
+	n := len(icon.SVGPaths)
+	w, h := fit(icon.ViewBox.W, icon.ViewBox.H, maxW*Supersample, maxH*Supersample)
+	if n*w*h > maxPathPixels {
+		w, h = fit(icon.ViewBox.W, icon.ViewBox.H, maxW, maxH)
+		if n*w*h > maxPathPixels {
+			return Result{}, fmt.Errorf("svg too detailed to draw at %d×%d (%d shapes)", maxW, maxH, n)
+		}
 	}
 
 	icon.SetTarget(0, 0, float64(w), float64(h))

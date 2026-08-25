@@ -29,9 +29,18 @@ const (
 	// svgEmojiBox sizes the one drawing path with no destination box to ask —
 	// a custom emoji, which is a couple of cells either way.
 	svgEmojiBox = 64
-	// svgMaxBox caps the modal's raster however large the terminal is. Rasterising
-	// costs pixels, and beyond this the extra ones buy nothing anyone can see.
-	svgMaxBox = 2048
+	// svgThumbMaxBox and svgPreviewMaxBox cap how large a box we will render into.
+	//
+	// A thumbnail is bounded by its ten rows long before its width matters, so its
+	// ceiling only has to stop an absurdly wide pane. The preview's is what keeps
+	// a detailed drawing from costing seconds on a high-density terminal: past
+	// this the terminal's own scaling fills the rest of the modal, which is a
+	// little softer and enormously cheaper than rasterising four times the pixels.
+	// The placement is allowed to enlarge by the display's pixel ratio (see
+	// fitImageCells), which is exactly the headroom that makes this free on the
+	// dense displays where the box gets big enough to matter.
+	svgThumbMaxBox   = 2048
+	svgPreviewMaxBox = 1280
 )
 
 // svgThumbMaxBytes is the cap on a drawing we render *unasked*. Rendering is the
@@ -113,12 +122,12 @@ func (m *Model) cellPx() (w, h int) {
 }
 
 // svgThumbBox is the pixel box an inline thumbnail is actually drawn in: as wide
-// as the pane allows and at most inlineThumbRows tall. Rendering to exactly this
-// leaves the thumbnail the same size on screen as a larger raster would — the
-// placement never enlarges past natural size — for a fraction of the work.
+// as the pane allows and at most inlineThumbRows tall. Sizing the render to where
+// it is actually going — rather than to a fixed square — is what keeps a drawing
+// cheap; svgimg supersamples it from here for the antialiasing.
 func (m *Model) svgThumbBox(box int) (w, h int) {
 	cw, ch := m.cellPx()
-	return clampBox(box * cw), clampBox(inlineThumbRows * ch)
+	return clampBox(box*cw, svgThumbMaxBox), clampBox(inlineThumbRows*ch, svgThumbMaxBox)
 }
 
 // svgPreviewBox is the pixel box the preview modal will draw into, from the same
@@ -126,16 +135,16 @@ func (m *Model) svgThumbBox(box int) (w, h int) {
 func (m *Model) svgPreviewBox() (w, h int) {
 	cols, rows := m.previewMaxBox()
 	cw, ch := m.cellPx()
-	return clampBox(cols * cw), clampBox(rows * ch)
+	return clampBox(cols*cw, svgPreviewMaxBox), clampBox(rows*ch, svgPreviewMaxBox)
 }
 
-// clampBox keeps a box positive and below the rasterising ceiling.
-func clampBox(px int) int {
+// clampBox keeps a box positive and below the given rasterising ceiling.
+func clampBox(px, ceiling int) int {
 	if px < 1 {
 		return 1
 	}
-	if px > svgMaxBox {
-		return svgMaxBox
+	if px > ceiling {
+		return ceiling
 	}
 	return px
 }

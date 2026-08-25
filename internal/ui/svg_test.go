@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/svgimg"
 )
 
 func TestIsSVGAttachment(t *testing.T) {
@@ -96,10 +98,11 @@ func TestDecodeImageFramesRoutesSVG(t *testing.T) {
 	if delays != nil {
 		t.Error("delays should be nil for a still drawing")
 	}
-	// This path has no destination box, so it renders to the emoji box.
+	// This path has no destination box, so it renders to the emoji box —
+	// supersampled, like every other raster.
 	b := frames[0].Bounds()
-	if b.Dx() != svgEmojiBox || b.Dy() != svgEmojiBox/2 {
-		t.Errorf("raster is %dx%d, want %dx%d", b.Dx(), b.Dy(), svgEmojiBox, svgEmojiBox/2)
+	if wantW, wantH := svgEmojiBox*svgimg.Supersample, svgEmojiBox*svgimg.Supersample/2; b.Dx() != wantW || b.Dy() != wantH {
+		t.Errorf("raster is %dx%d, want %dx%d", b.Dx(), b.Dy(), wantW, wantH)
 	}
 }
 
@@ -148,11 +151,12 @@ func TestSVGPreviewBoxBounds(t *testing.T) {
 	if w != cols*8 || h != rows*16 {
 		t.Errorf("preview box = %dx%d, want %dx%d from the modal's cell box", w, h, cols*8, rows*16)
 	}
-	// A huge terminal is capped rather than asked for.
+	// A huge terminal is capped rather than asked for: past the ceiling the
+	// terminal's own scaling fills the modal far more cheaply than we can.
 	m = Model{width: 10000, height: 10000, cellPxW: 10, cellPxH: 20}
 	w, h = m.svgPreviewBox()
-	if w != svgMaxBox || h != svgMaxBox {
-		t.Errorf("preview box = %dx%d, want both capped at %d", w, h, svgMaxBox)
+	if w != svgPreviewMaxBox || h != svgPreviewMaxBox {
+		t.Errorf("preview box = %dx%d, want both capped at %d", w, h, svgPreviewMaxBox)
 	}
 }
 
