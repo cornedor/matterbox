@@ -252,7 +252,7 @@ func decodeImageFrames(raw []byte, animate bool) (frames []image.Image, delays [
 		// real box (see svg.go), which is what keeps a drawing cheap.
 		return decodeSVGFrames(raw, svgEmojiBox, svgEmojiBox)
 	}
-	if videoBuild && looksLikeVideo(raw) {
+	if routesToLibav(raw) {
 		return decodeVideoFrames(raw, animate, thumbVideoProfile)
 	}
 	if animate && isGIF(raw) {

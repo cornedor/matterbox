@@ -268,7 +268,7 @@ func previewableMIME(mime string) bool {
 	case "image/svg+xml", "image/svg":
 		return true
 	}
-	return stillImageMIME(mime) || (videoBuild && libavStillMIME(mime))
+	return decodableStillMIME(mime)
 }
 
 // previewImages enumerates a post's previewable images: uploaded attachments

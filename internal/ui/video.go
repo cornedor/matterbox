@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"bytes"
 	"errors"
 	"image"
 	"strings"
@@ -149,6 +150,43 @@ func (m *Model) streamsPreviewVideo(it previewItem) bool {
 // falls back to its icon.
 var errVideoUnsupported = errors.New("video decoding not available (build with -tags video)")
 
+// JPEG XL magic. Two forms, because the format ships as either a bare codestream
+// or that codestream wrapped in an ISO-BMFF container:
+//
+//	ff 0a                                            naked codestream
+//	00 00 00 0c 4a 58 4c 20 0d 0a 87 0a              container (a "JXL " signature box)
+//
+// Note what neither of them is: an `ftyp` box at offset 4. HEIC and AVIF came for
+// free precisely because they are, so looksLikeVideo already matched them — JXL
+// needs its own sniff.
+var (
+	jxlNakedMagic = []byte{0xFF, 0x0A}
+	jxlBoxMagic   = []byte{0x00, 0x00, 0x00, 0x0C, 0x4A, 0x58, 0x4C, 0x20, 0x0D, 0x0A, 0x87, 0x0A}
+)
+
+// looksLikeJXL reports whether bytes are a JPEG XL image, in either of its two
+// container forms.
+func looksLikeJXL(b []byte) bool {
+	return bytes.HasPrefix(b, jxlBoxMagic) || bytes.HasPrefix(b, jxlNakedMagic)
+}
+
+// routesToLibav reports whether these bytes should be decoded by libav rather
+// than by the Go image decoders: a video container, or a JPEG XL in a build whose
+// ffmpeg can actually decode one.
+//
+// The JXL half is a *runtime* question, unlike every other format here. HEVC and
+// AV1 — so HEIC and AVIF — are native FFmpeg decoders, always present wherever
+// FFmpeg is, which is why videoBuild alone gates them. libjxl is an optional
+// --enable-libjxl external library, so the same commit and the same build tag can
+// produce a binary that decodes JXL and one that does not, and only the linked
+// library knows which. See jxlDecodable.
+func routesToLibav(raw []byte) bool {
+	if !videoBuild {
+		return false
+	}
+	return looksLikeVideo(raw) || (jxlDecodable() && looksLikeJXL(raw))
+}
+
 // looksLikeVideo sniffs the container magic of the formats libav decodes for us,
 // deliberately excluding the still/animated image formats the stdlib path
 // already owns (GIF/PNG/JPEG) so those never route through libav. It gates the
@@ -184,6 +222,10 @@ func looksLikeVideo(b []byte) bool {
 // have to agree in advance — looksLikeVideo routes the bytes to libav either way,
 // and a file with one frame simply comes back as one frame.
 //
+// JPEG XL is here on the same footing as those two — it carries animation in an
+// "jpegxl_anim" stream — but gated by jxlDecodable rather than by the build tag,
+// for the reason routesToLibav explains.
+//
 // HEIC is deliberately *not* here. A heic/heif file can hold several images too,
 // but a multi-image HEIF is usually a burst or a depth map rather than an
 // animation, so playing it as a loop would be a misreading. Its first frame is
@@ -194,6 +236,14 @@ func isVideoAttachment(f *model.FileInfo) bool {
 	}
 	mime, _, _ := strings.Cut(f.MimeType, ";")
 	if strings.HasPrefix(mime, "video/") || mime == "image/webp" || mime == "image/avif" {
+		return true
+	}
+	// JPEG XL animates too, but only where the linked ffmpeg has libjxl at all —
+	// and this predicate means "one decodeVideoFrames can play", so the runtime
+	// probe belongs inside it. Without the gate, a session that can animate would
+	// claim a .jxl it has no decoder for and reserve rows for an image that never
+	// arrives.
+	if jxlDecodable() && (jxlMIME(mime) || jxlExt(attachmentExt(f))) {
 		return true
 	}
 	// attachmentExt, not f.Extension: the server leaves *that* field empty for a
@@ -240,7 +290,7 @@ func (m *Model) decodePreviewFrames(raw []byte, animate bool) ([]image.Image, []
 		w, h := m.svgPreviewBox()
 		return decodeSVGFrames(raw, w, h)
 	}
-	if videoBuild && looksLikeVideo(raw) {
+	if routesToLibav(raw) {
 		return decodeVideoFrames(raw, animate, m.previewProfile())
 	}
 	return decodeImageFrames(raw, animate)

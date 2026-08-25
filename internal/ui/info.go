@@ -733,7 +733,7 @@ func iconForExt(f *model.FileInfo) string {
 		_, ext, _ = strings.Cut(strings.ToLower(filepath.Ext(f.Name)), ".")
 	}
 	switch ext {
-	case "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "tiff", "heic", "heif", "avif":
+	case "png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "tiff", "heic", "heif", "avif", "jxl":
 		return "🖼"
 	case "mp4", "mov", "mkv", "webm", "avi", "m4v", "wmv", "flv", "mpg", "mpeg":
 		return "🎬"

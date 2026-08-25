@@ -865,7 +865,8 @@ func attachmentKind(filename, mime string) string {
 		return "text"
 	}
 	switch strings.ToLower(filepath.Ext(filename)) {
-	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".avif":
+	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".svg",
+		".avif", ".heic", ".heif", ".jxl":
 		return "image"
 	case ".mp4", ".mkv", ".webm", ".mov", ".avi":
 		return "video"

@@ -26,6 +26,23 @@ func init() {
 	astiav.SetLogLevel(astiav.LogLevelQuiet)
 }
 
+// jxlOK is whether the linked ffmpeg can decode JPEG XL, resolved once. Both
+// codec ids are required, not either: a still .jxl arrives as AV_CODEC_ID_JPEGXL
+// and an animated one as AV_CODEC_ID_JPEGXL_ANIM, and claiming the format while
+// only half of it decodes would reserve thumbnail rows for images that never come.
+//
+// FindDecoder is a lookup over libavcodec's static decoder list — no context, no
+// allocation — so asking at init costs nothing and saves every later caller from
+// asking again.
+var jxlOK = astiav.FindDecoder(astiav.CodecIDJpegxl) != nil &&
+	astiav.FindDecoder(astiav.CodecIDJpegxlAnim) != nil
+
+// jxlDecodable reports whether this binary can decode JPEG XL. True only when
+// the system ffmpeg was built --enable-libjxl, which many are not — see
+// routesToLibav for why this one format has to be asked at runtime while every
+// other libav format is settled by the build tag.
+func jxlDecodable() bool { return jxlOK }
+
 // decodeVideoFrames decodes a short clip into the same []image.Image +
 // []time.Duration a GIF produces, so the Kitty native-animation pipeline plays
 // it unchanged. It caps the clip hard (see video.go's constants): decimate to
@@ -188,8 +205,21 @@ func (vi *videoInput) free() {
 
 // decimation returns the frame step (keep every step-th source frame to
 // approximate targetFPS) and the display delay each kept frame stands in for.
+//
+// Thinning is skipped entirely when the container does not report a real average
+// frame rate. That is not a corner case: an animated-image demuxer (jpegxl_anim,
+// and the same shape elsewhere) leaves avg_frame_rate at 0/0 and exposes only its
+// timebase as r_frame_rate — 100Hz for JPEG XL — which is a unit, not a cadence.
+// Decimating from it computed step=7 on a five-frame animation and kept exactly
+// one frame, turning every animated JXL into a still. When the rate is unknown
+// there is nothing to thin *from*, and an image container holds a handful of
+// frames anyway, so keeping all of them is both correct and cheap; the profile's
+// frame ceiling is still the backstop.
 func decimation(vs *astiav.Stream, targetFPS float64) (step int, delay time.Duration) {
-	srcFPS := frameRate(vs)
+	srcFPS, known := sourceFrameRate(vs)
+	if !known {
+		return 1, time.Second / time.Duration(targetFPS)
+	}
 	step = int(math.Round(srcFPS / targetFPS))
 	if step < 1 {
 		step = 1
@@ -309,17 +339,18 @@ func (s *videoScaler) free() {
 	}
 }
 
-// frameRate reports a source frame rate to decimate from, trying the stream's
-// average then its real (r) frame rate, falling back to 25fps when neither is
-// known — enough for the decimation step, which only needs a rough cadence.
-func frameRate(s *astiav.Stream) float64 {
+// sourceFrameRate reports the stream's average frame rate and whether it is a
+// real cadence at all.
+//
+// Only avg_frame_rate counts as known. r_frame_rate is the smallest unit that can
+// express every timestamp in the stream, which for a real video happens to equal
+// the frame rate but for an animated-image container is just its timebase — see
+// decimation for what trusting it did to a five-frame JPEG XL.
+func sourceFrameRate(s *astiav.Stream) (float64, bool) {
 	if r := s.AvgFrameRate().Float64(); r > 0 {
-		return r
+		return r, true
 	}
-	if r := s.RFrameRate().Float64(); r > 0 {
-		return r
-	}
-	return 25
+	return 0, false
 }
 
 // fitVideoSize scales w×h down so the longest edge is at most maxSide, never up,

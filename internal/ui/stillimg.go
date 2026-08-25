@@ -18,6 +18,9 @@ import (
 //	                                        cost three blank imports and no new
 //	                                        dependency — see preview.go)
 //	libav               heic, heif, avif    only with -tags video
+//	libav + libjxl      jxl                 only with -tags video AND an ffmpeg
+//	                                        built --enable-libjxl (asked at
+//	                                        runtime — see jxlDecodable)
 //
 // The last tier is the interesting one. HEIC is what every iPhone photo is, and
 // AVIF is spreading fast on the web, and neither has a pure-Go decoder worth
@@ -72,6 +75,36 @@ func stillImageMIME(mime string) bool {
 	return false
 }
 
+// jxlExt reports whether an extension names a JPEG XL image. Separate from
+// libavStillExt because it is gated differently — by a runtime probe rather than
+// by the build tag. See jxlDecodable.
+func jxlExt(ext string) bool { return strings.EqualFold(ext, "jxl") }
+
+// jxlMIME reports the same by MIME type. image/jxl is the registered type;
+// image/jpegxl and image/x-jxl turn up from older tooling.
+func jxlMIME(mime string) bool {
+	switch mime {
+	case "image/jxl", "image/jpegxl", "image/x-jxl":
+		return true
+	}
+	return false
+}
+
+// decodableStillExt folds all three tiers into the one question the callers below
+// actually have: can this build turn a file with that extension into pixels?
+func decodableStillExt(ext string) bool {
+	return stillImageExt(ext) ||
+		(videoBuild && libavStillExt(ext)) ||
+		(jxlDecodable() && jxlExt(ext))
+}
+
+// decodableStillMIME is decodableStillExt by MIME type.
+func decodableStillMIME(mime string) bool {
+	return stillImageMIME(mime) ||
+		(videoBuild && libavStillMIME(mime)) ||
+		(jxlDecodable() && jxlMIME(mime))
+}
+
 // libavStillExt reports whether an extension names an image only libav can decode.
 // Gated by videoBuild at every call site, never here, so the list itself stays
 // readable as "what FFmpeg adds". "Still" names the common case: an .avif may be
@@ -111,13 +144,18 @@ func isStillImageAttachment(f *model.FileInfo) bool {
 	// Extension first: it is a short string compare, where the MIME test has to
 	// split a parameter off first. This is asked of every attachment on every
 	// uncached render (see drawsFileThumb), so the order is worth the thought.
-	ext := attachmentExt(f)
-	if stillImageExt(ext) || (videoBuild && libavStillExt(ext)) {
+	if decodableStillExt(attachmentExt(f)) {
 		return true
 	}
-	mime := attachmentMIME(f)
-	return stillImageMIME(mime) || (videoBuild && libavStillMIME(mime))
+	return decodableStillMIME(attachmentMIME(f))
 }
+
+// JPEGXLDecodable reports whether this binary can decode JPEG XL. Exported for
+// `matterbox --version`, which is the only place a user can find out: the answer
+// depends on how the system ffmpeg was configured, so two binaries from the same
+// commit and the same build tag can disagree, and the only symptom otherwise is a
+// .jxl quietly keeping its paperclip.
+func JPEGXLDecodable() bool { return jxlDecodable() }
 
 // isStillImageURL reports whether a URL's path ends in a still-image extension
 // this build can decode. The query string — which a CDN like Giphy stuffs with
@@ -131,5 +169,5 @@ func isStillImageURL(raw string) bool {
 	if ext == "" {
 		return false
 	}
-	return stillImageExt(ext) || (videoBuild && libavStillExt(ext))
+	return decodableStillExt(ext)
 }

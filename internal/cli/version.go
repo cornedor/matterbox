@@ -8,6 +8,7 @@ import (
 
 	"matterbox/internal/libav"
 	"matterbox/internal/telemetry"
+	"matterbox/internal/ui"
 )
 
 // version is the release name, stamped at link time by the Makefile:
@@ -113,10 +114,24 @@ func versionBlock() string {
 	// every release build.
 	if sum := libav.Linked().Summary(); sum != "" {
 		fmt.Fprintf(&b, "ffmpeg:    %s\n", sum)
+		// Which image formats that ffmpeg unlocks is not the same question as
+		// whether it is linked. HEIC and AVIF ride on decoders every ffmpeg has;
+		// JPEG XL needs an optional --enable-libjxl, so it has to be asked. This
+		// line is the only way a user finds out why a .jxl shows a paperclip.
+		fmt.Fprintf(&b, "images:    heic, avif%s\n", jxlNote())
 	}
 	fmt.Fprintf(&b, "go:        %s %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
 	fmt.Fprintf(&b, "telemetry: %s\n", telemetryState())
 	return b.String()
+}
+
+// jxlNote completes the "images:" line with JPEG XL's availability, which depends
+// on the linked ffmpeg rather than on the build.
+func jxlNote() string {
+	if ui.JPEGXLDecodable() {
+		return ", jxl"
+	}
+	return " (no jxl — this ffmpeg lacks libjxl)"
 }
 
 // telemetryState is the "telemetry:" line: whether this binary would report

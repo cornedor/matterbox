@@ -16,6 +16,10 @@ import (
 // decoder in video_libav.go.
 const videoBuild = false
 
+// jxlDecodable is false without libav: JPEG XL needs FFmpeg's libjxl wrapper, so
+// no tag means no decoder. See video_libav.go for the real probe.
+func jxlDecodable() bool { return false }
+
 // decodeVideoFrames is a no-op stub in this build: it is only ever reached
 // behind `if videoBuild`, which is false here, so it never actually runs — it
 // exists solely so the shared code compiles. See video_libav.go for the real one.
