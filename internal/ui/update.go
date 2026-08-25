@@ -158,9 +158,16 @@ func (m *Model) syncComposerFocus() {
 //     thumbnail's animation frames, under the id and cell box the still on screen
 //     already uses. Nothing about the *text* of the screen changes — that is the
 //     whole premise of building them late (see buildInlineThumb).
+//   - A streaming-video tick (previewStreamTickMsg) parks the next frame and
+//     writes its upload, but leaves the cells naming the frame on screen: only
+//     the promote sequenced behind that upload moves them (see advanceStream).
+//     So the tick preserves the frame and the promote — which does change the
+//     text — invalidates. (The RawMsg carrying the upload still invalidates too,
+//     as every tea.Raw does; making that one frame-preserving is a wider claim
+//     than this list wants to make.)
 func preservesFrame(msg tea.Msg) bool {
 	switch msg.(type) {
-	case tea.MouseWheelMsg, imgAnimTickMsg, inlineThumbFramesMsg:
+	case tea.MouseWheelMsg, imgAnimTickMsg, inlineThumbFramesMsg, previewStreamTickMsg:
 		return true
 	}
 	return false
@@ -427,6 +434,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case previewStreamTickMsg:
 		return m.handleStreamTick(msg)
+
+	case streamPromoteMsg:
+		m.promoteStreamFrame(msg)
+		return m, nil
 
 	case streamReencodeMsg:
 		return m.handleStreamReencode(msg)
