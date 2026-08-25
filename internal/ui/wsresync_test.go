@@ -512,3 +512,63 @@ func TestGapFillIgnoresChannelSwitchedAwayFrom(t *testing.T) {
 		t.Fatalf("stale-channel page mutated the view: got %v", order)
 	}
 }
+
+// The skip that protects the conversation being read must not extend to a
+// conversation that only *lingers* as openChannelID. A full-window tab (Feed,
+// Search, SQL) replaces the transcript without opening anything, so nothing
+// marked the channel underneath it read — the server's count is the truth, and
+// dropping it strands unread messages with no badge, no bubble and no way back.
+func TestUnreadKeptForOpenChannelBehindFeedTab(t *testing.T) {
+	m := unreadSeedModel()
+	m.openChannelID = "c1"
+	for i := 0; i <= m.maxTeamIdx(); i++ {
+		if kind, _, _ := m.tabAt(i); kind == tabFeed {
+			m.teamIdx = i
+			break
+		}
+	}
+	if !m.onFeedTab() {
+		t.Fatal("setup: expected the Feed tab to be showing")
+	}
+	seedUnread(&m, "c1", 5, 2, 1)
+
+	m.applyUnreadFromMembers()
+
+	if m.unread["c1"] != 3 {
+		t.Errorf("unread = %d; want 3 — the Feed tab is on screen, not the DM", m.unread["c1"])
+	}
+	if m.mentions["c1"] != 1 {
+		t.Errorf("mentions = %d; want 1", m.mentions["c1"])
+	}
+}
+
+// Same reasoning for a blurred terminal: the mark-read was suppressed, so the
+// server's counters are not lagging us — they are ahead of us.
+func TestUnreadKeptForOpenChannelWhileBlurred(t *testing.T) {
+	m := unreadSeedModel()
+	m.openChannelID = "c1"
+	m.termFocusKnown, m.termFocused = true, false
+	seedUnread(&m, "c1", 5, 2, 0)
+
+	m.applyUnreadFromMembers()
+
+	if m.unread["c1"] != 3 {
+		t.Errorf("unread = %d; want 3 — a blurred terminal never marked it read", m.unread["c1"])
+	}
+}
+
+// Startup keeps its cursor fallback, but only while the terminal is focused:
+// blurred, the first open won't mark anything read either.
+func TestUnreadKeptForCursorChannelWhileBlurred(t *testing.T) {
+	m := unreadSeedModel()
+	m.openChannelID = ""
+	m.channelIdx = 0
+	m.termFocusKnown, m.termFocused = true, false
+	seedUnread(&m, "c0", 3, 0, 0)
+
+	m.applyUnreadFromMembers()
+
+	if m.unread["c0"] != 3 {
+		t.Errorf("unread = %d; want 3 — nothing has been marked read yet", m.unread["c0"])
+	}
+}

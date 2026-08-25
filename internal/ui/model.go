@@ -1750,6 +1750,15 @@ func (m *Model) liveMarkRead(channelID string) tea.Cmd {
 	return m.markChannelViewed(channelID)
 }
 
+// clearUnread drops every local trace of channelID being unread: both badge
+// counters and its feed bubble. The local half of markChannelViewed — the two
+// go together, or the feed keeps showing what the server now calls read.
+func (m *Model) clearUnread(channelID string) {
+	delete(m.unread, channelID)
+	delete(m.mentions, channelID)
+	m.removeFeedEntry(channelID)
+}
+
 // scheduleMarkViewed defers marking channelID read until it has been open
 // for m.markReadDelay, so a quick peek doesn't clear unread. It returns a
 // tick carrying the current viewGen; the markViewedMsg handler only acts if
@@ -1767,8 +1776,7 @@ func (m *Model) scheduleMarkViewed(channelID string) tea.Cmd {
 		return nil
 	}
 	if m.markReadDelay <= 0 {
-		delete(m.unread, channelID)
-		delete(m.mentions, channelID)
+		m.clearUnread(channelID)
 		m.viewSettled = true
 		return m.markChannelViewed(channelID)
 	}
@@ -1780,7 +1788,7 @@ func (m *Model) scheduleMarkViewed(channelID string) tea.Cmd {
 
 // applyUnreadFromMembers seeds m.unread / m.mentions from the
 // server-side channel-member state. Only runs once both channels and
-// members have arrived; the currently-focused channel is skipped so an
+// members have arrived; the channel being read is skipped so an
 // in-progress fetchPosts that beat us here keeps its zero badge.
 func (m *Model) applyUnreadFromMembers() {
 	if !m.channelsLoaded || !m.membersLoaded {
@@ -1792,17 +1800,24 @@ func (m *Model) applyUnreadFromMembers() {
 			chByID[c.Id] = c
 		}
 	}
-	// The open conversation keeps its zero badge: it was cleared when opened,
-	// and the server's counters can still lag the ViewChannel we sent. That's
-	// m.openChannelID, not the sidebar cursor — the two diverge the moment the
-	// user moves the cursor without opening, which is the common state by the
-	// time a reconnect re-runs this. Before anything is open (startup, where
-	// members can land ahead of the first fetchPosts) fall back to the cursor,
-	// which is the channel about to be opened.
-	current := m.openChannelID
-	if current == "" {
-		if vis := m.visibleChannels(); m.channelIdx < len(vis) {
-			current = vis[m.channelIdx].Id
+	// The conversation being read keeps its zero badge: it was cleared when
+	// opened, and the server's counters can still lag the ViewChannel we sent.
+	// That exemption reaches exactly as far as the mark-read does. A channel
+	// m.openChannelID still points at while a full-window tab (Feed, Search,
+	// SQL) covers it was never marked read, and neither was anything that
+	// arrived while the terminal was blurred — for those the server's count is
+	// not lagging us, it is the only record, so it wins. Before anything is
+	// open (startup, where members can land ahead of the first fetchPosts) the
+	// cursor stands in for the channel about to be opened.
+	current := ""
+	if m.terminalFocused() {
+		switch {
+		case m.openChannelID == "":
+			if vis := m.visibleChannels(); m.channelIdx < len(vis) {
+				current = vis[m.channelIdx].Id
+			}
+		case m.isCurrentChannel(m.openChannelID):
+			current = m.openChannelID
 		}
 	}
 	for _, mb := range m.members {

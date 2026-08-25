@@ -913,8 +913,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.gen != m.viewGen || !m.isCurrentChannel(msg.channelID) || !m.terminalFocused() {
 			return m, nil
 		}
-		delete(m.unread, msg.channelID)
-		delete(m.mentions, msg.channelID)
+		m.clearUnread(msg.channelID)
 		m.viewSettled = true
 		return m, m.markChannelViewed(msg.channelID)
 
@@ -1607,6 +1606,18 @@ func (m *Model) applyPosted(ev *model.WebSocketEvent) tea.Cmd {
 			m.renderMessages()
 			if cmd := m.liveMarkRead(p.ChannelId); cmd != nil {
 				cmds = append(cmds, cmd)
+			} else if !m.terminalFocused() {
+				// The message landed in front of a buried window, so nothing
+				// told the server we read it — and it is unread there. Then it
+				// is unread here too: the badge, the feed and the switcher all
+				// read m.unread, and nothing re-derives it for the open channel
+				// (applyUnreadFromMembers skips the one being read), so a post
+				// dropped here stays invisible until the app restarts.
+				// Refocusing clears it again, with the mark-read it sends.
+				//
+				// A merely-pending dwell needs none of this: the queued
+				// markViewedMsg covers this post too.
+				m.noteUnread(p, ev)
 			}
 			if needsFileInfoFetch(p) {
 				cmds = append(cmds, m.fetchFileInfos(p.Id))
@@ -1618,12 +1629,7 @@ func (m *Model) applyPosted(ev *model.WebSocketEvent) tea.Cmd {
 		// matterbox renders them inline, and the unread seed
 		// (applyUnreadFromMembers) combines the all-posts counters, so
 		// counting replies here keeps the live badge consistent with it.
-		m.unread[p.ChannelId]++
-		if m.me != nil && wsMentions(ev)[m.me.Id] {
-			m.mentions[p.ChannelId]++
-		}
-		// Keep the unread feed live without a manual refresh.
-		m.feedAppendPosted(p)
+		m.noteUnread(p, ev)
 	}
 
 	if m.isThreadPost(p) {
@@ -1632,6 +1638,19 @@ func (m *Model) applyPosted(ev *model.WebSocketEvent) tea.Cmd {
 	}
 
 	return tea.Batch(cmds...)
+}
+
+// noteUnread records a post that nothing has marked read: the badge counters,
+// the mention counters and the feed bubble, which are three views of the one
+// fact and must never disagree. Every live-post path that leaves a message
+// unread goes through here.
+func (m *Model) noteUnread(p *model.Post, ev *model.WebSocketEvent) {
+	m.unread[p.ChannelId]++
+	if m.me != nil && wsMentions(ev)[m.me.Id] {
+		m.mentions[p.ChannelId]++
+	}
+	// Keep the unread feed live without a manual refresh.
+	m.feedAppendPosted(p)
 }
 
 // isThreadPost reports whether p belongs to the currently-open thread.

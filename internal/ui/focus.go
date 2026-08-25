@@ -60,8 +60,10 @@ func (m *Model) applyTerminalFocus(focused bool) tea.Cmd {
 		return nil
 	}
 	// Focus came back. Anything that arrived while we were away was deliberately
-	// left unread on the server (see terminalFocused), so catch up now: finish
-	// the dwell if it never completed, otherwise mark the channel read outright.
+	// left unread on the server (see terminalFocused) and counted unread here
+	// (see noteUnread), so catch up now: finish the dwell if it never completed,
+	// otherwise mark the channel read outright and drop the badge and bubble
+	// those arrivals left behind.
 	id := m.openChannelID
 	if !m.isCurrentChannel(id) {
 		return nil
@@ -69,6 +71,7 @@ func (m *Model) applyTerminalFocus(focused bool) tea.Cmd {
 	if !m.viewSettled {
 		return m.scheduleMarkViewed(id)
 	}
+	m.clearUnread(id)
 	return m.markChannelViewed(id)
 }
 
