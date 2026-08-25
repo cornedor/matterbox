@@ -116,27 +116,32 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # Also needed on a cache hit: cgo finds the restored libs through
-      # pkg-config, and `make tags` decides with it.
-      - name: make sure pkg-config is there
+      # Both are needed on a cache hit too, so they cannot live in the build
+      # step below: cgo finds the restored libs through pkg-config and `make
+      # tags` decides with it, and the restored libavcodec.so is linked against
+      # libdav1d.so — without it here, loading the library fails outright.
+      - name: install pkg-config and libdav1d
         run: |
-          command -v pkg-config >/dev/null || {
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends pkg-config
-          }
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libdav1d-dev
 
       - name: restore the ffmpeg build
         id: ffmpeg-cache
         uses: actions/cache@v4
         with:
           path: ~/ffmpeg
-          key: ffmpeg-${{ env.FFMPEG_VERSION }}-${{ runner.os }}-${{ runner.arch }}
+          key: ffmpeg-${{ env.FFMPEG_VERSION }}-dav1d-${{ runner.os }}-${{ runner.arch }}
 
       # Shared libraries, so cgo's plain `pkg-config --libs` is enough (a static
       # ffmpeg needs its Libs.private, which cgo never asks for). Default codec
       # set: the video tests decode a real h264/mp4 clip, and a stripped ffmpeg
       # would make this job pass on something no user runs. No programs, docs or
       # debug info — nothing here invokes ffmpeg(1), and it keeps the cache small.
+      #
+      # libdav1d is not optional for the tests: ffmpeg's own "av1" decoder only
+      # drives hardware, so on a runner with no accelerator every .avif comes
+      # back ENOSYS and the AVIF tests fail. Every distribution's ffmpeg has
+      # dav1d, so a build without it is also not the thing users have.
       - name: build ffmpeg ${{ env.FFMPEG_VERSION }}
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         run: |
@@ -147,6 +152,7 @@ jobs:
           cd "$RUNNER_TEMP/ffmpeg-src"
           ./configure --prefix="$HOME/ffmpeg" \
             --enable-shared --disable-static \
+            --enable-libdav1d \
             --disable-programs --disable-doc --disable-debug
           make -j"$(nproc)"
           make install
