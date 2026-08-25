@@ -240,15 +240,18 @@ jobs:
   # release.yml links a static FFmpeg into the binary with cgo, on a native
   # runner per target. None of that is exercised by any job above, so without
   # this a tag would be the first time it ran — and a tag that fails is a
-  # release nobody gets. Two of the four targets, one per operating system:
-  # linux and darwin differ in how they link (fully static vs system libraries),
-  # amd64 and arm64 don't.
+  # release nobody gets. All four targets, though only the operating system
+  # changes how the binary links (fully static vs system libraries): the ffmpeg
+  # cache key is per runner, so a runner missing here has no cached build on
+  # main, and a tag cannot borrow the one its own last release saved.
   release-build:
     strategy:
       fail-fast: false
       matrix:
         include:
           - { goos: linux, runner: ubuntu-latest }
+          - { goos: linux, runner: ubuntu-24.04-arm }
+          - { goos: darwin, runner: macos-15-intel }
           - { goos: darwin, runner: macos-latest }
     runs-on: ${{ matrix.runner }}
     env:
@@ -274,8 +277,9 @@ jobs:
             command -v pkg-config >/dev/null || brew install pkgconf
           fi
 
-      # Same cache key as release.yml, so a tag usually starts from a build a PR
-      # already paid for.
+      # Same cache key as release.yml, so a tag starts from a build a PR already
+      # paid for. Only main's copy is reachable: a cache written by a tag run is
+      # scoped to that tag's ref, and no later tag — or main — can read it.
       - name: restore the static ffmpeg
         id: ffmpeg-cache
         uses: actions/cache@v4
