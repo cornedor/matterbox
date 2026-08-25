@@ -218,7 +218,8 @@ func (m *Model) filePreviewable(f *model.FileInfo) bool {
 // what resolution, they pull.
 func (m *Model) decodePreviewFrames(raw []byte, animate bool) ([]image.Image, []time.Duration, error) {
 	if svgimg.Looks(raw) {
-		return decodeSVGFrames(raw, m.svgPreviewSide())
+		w, h := m.svgPreviewBox()
+		return decodeSVGFrames(raw, w, h)
 	}
 	if videoBuild && looksLikeVideo(raw) {
 		return decodeVideoFrames(raw, animate, m.previewProfile())

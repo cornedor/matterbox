@@ -96,9 +96,10 @@ func TestDecodeImageFramesRoutesSVG(t *testing.T) {
 	if delays != nil {
 		t.Error("delays should be nil for a still drawing")
 	}
+	// This path has no destination box, so it renders to the emoji box.
 	b := frames[0].Bounds()
-	if b.Dx() != svgThumbSide || b.Dy() != svgThumbSide/2 {
-		t.Errorf("thumbnail raster is %dx%d, want %dx%d", b.Dx(), b.Dy(), svgThumbSide, svgThumbSide/2)
+	if b.Dx() != svgEmojiBox || b.Dy() != svgEmojiBox/2 {
+		t.Errorf("raster is %dx%d, want %dx%d", b.Dx(), b.Dy(), svgEmojiBox, svgEmojiBox/2)
 	}
 }
 
@@ -120,18 +121,38 @@ func TestSVGCaptionReportsDocumentSize(t *testing.T) {
 	}
 }
 
-func TestSVGPreviewSideBounds(t *testing.T) {
-	m := Model{width: 1, cellPxW: 1}
-	if got := m.svgPreviewSide(); got != svgPreviewMinSide {
-		t.Errorf("tiny terminal gave side %d, want the %d floor", got, svgPreviewMinSide)
+// TestSVGThumbBoxMatchesPlacement pins the sizing that keeps a drawing cheap:
+// the raster is the pixel box the thumbnail actually occupies — as wide as the
+// pane, at most inlineThumbRows tall — not a fixed oversized square.
+func TestSVGThumbBoxMatchesPlacement(t *testing.T) {
+	m := Model{cellPxW: 8, cellPxH: 16}
+	w, h := m.svgThumbBox(60)
+	if w != 60*8 {
+		t.Errorf("thumb box width = %d, want the pane's %d px", w, 60*8)
 	}
-	m = Model{width: 10000, cellPxW: 10}
-	if got := m.svgPreviewSide(); got != svgPreviewMaxSide {
-		t.Errorf("huge terminal gave side %d, want the %d ceiling", got, svgPreviewMaxSide)
+	if h != inlineThumbRows*16 {
+		t.Errorf("thumb box height = %d, want %d px (%d rows)", h, inlineThumbRows*16, inlineThumbRows)
 	}
-	m = Model{width: 100, cellPxW: 10}
-	if got := m.svgPreviewSide(); got != 1000 {
-		t.Errorf("side = %d, want the terminal's 1000px width", got)
+	// Unknown cell metrics fall back to the same assumption the placement makes.
+	m = Model{}
+	w, h = m.svgThumbBox(60)
+	if w != 60*svgFallbackCellW || h != inlineThumbRows*svgFallbackCellH {
+		t.Errorf("fallback thumb box = %dx%d, want %dx%d", w, h, 60*svgFallbackCellW, inlineThumbRows*svgFallbackCellH)
+	}
+}
+
+func TestSVGPreviewBoxBounds(t *testing.T) {
+	m := Model{width: 100, height: 40, cellPxW: 8, cellPxH: 16}
+	cols, rows := m.previewMaxBox()
+	w, h := m.svgPreviewBox()
+	if w != cols*8 || h != rows*16 {
+		t.Errorf("preview box = %dx%d, want %dx%d from the modal's cell box", w, h, cols*8, rows*16)
+	}
+	// A huge terminal is capped rather than asked for.
+	m = Model{width: 10000, height: 10000, cellPxW: 10, cellPxH: 20}
+	w, h = m.svgPreviewBox()
+	if w != svgMaxBox || h != svgMaxBox {
+		t.Errorf("preview box = %dx%d, want both capped at %d", w, h, svgMaxBox)
 	}
 }
 
@@ -191,7 +212,7 @@ func TestSVGThumbnailByteCap(t *testing.T) {
 // as a blank patch in a terminal.
 func TestSVGThumbEncodesToKitty(t *testing.T) {
 	raw := []byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 16"><rect width="32" height="16" fill="#3daee9"/></svg>`)
-	frames, _, err := decodeSVGFrames(raw, svgThumbSide)
+	frames, _, err := decodeSVGFrames(raw, 480, 160)
 	if err != nil {
 		t.Fatalf("decodeSVGFrames: %v", err)
 	}

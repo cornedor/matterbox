@@ -32,23 +32,38 @@ const (
 	// (they are text, and compress); a bigger one is refused rather than turned
 	// into an unbounded amount of rasterising.
 	MaxBytes = 8 << 20
-	// maxPaths caps how many shapes we will fill. A document is cheap to parse
-	// and expensive to draw, so the count — known after parsing, before drawing —
-	// is where a pathological file gets stopped.
-	maxPaths = 50_000
+	// maxPathPixels bounds the drawing itself. Rasterising costs roughly one unit
+	// per shape per pixel of the target, and both numbers are known after parsing
+	// and before a single pixel is filled — which is the one moment a pathological
+	// document can be turned away for free.
+	//
+	// The measured rate is 80–200M units/sec, so this is a ceiling of a second or
+	// two on the slowest case we let through. It is deliberately generous: a
+	// detailed illustration is worth waiting for on a keypress, and the tighter
+	// bar for work nobody asked for is a separate matter (see svgThumbMaxBytes in
+	// the UI, which turns big drawings away before they are even fetched).
+	maxPathPixels = 200_000_000
 	// maxPixels caps the raster, whatever aspect ratio asks for.
 	maxPixels = 16 << 20
 	// defaultW/defaultH size a document that declares no intrinsic size at all,
 	// matching what a browser gives a replaced element with none (CSS 2.1 §10.3.2).
 	defaultW, defaultH = 300.0, 150.0
+	// defaultBox is the fallback destination box, for a caller that named none.
+	defaultBox = 512
 )
 
 // Options controls one rasterisation.
 type Options struct {
-	// MaxSide is the length the longest edge is drawn at: a small icon is scaled
-	// up to it and a large drawing down to it, so the result is always sized for
-	// where it is going rather than for whatever units the document used.
-	MaxSide int
+	// MaxW, MaxH are the box the drawing is rendered to fill, in pixels. It is
+	// scaled — up for a small icon, down for a large drawing — to fit inside them
+	// with its aspect kept, so the raster is sized for where it is going rather
+	// than for whatever units the document happened to use.
+	//
+	// Passing the real destination box matters for more than sharpness: nothing
+	// downstream upscales a placement past its natural size, so the raster's own
+	// dimensions decide how large the drawing appears. A box twice the size it
+	// will be shown at is four times the rasterising for the same picture.
+	MaxW, MaxH int
 	// CurrentColor is what `currentColor` resolves to — in a document that is one
 	// colour driven from outside (the shape every symbolic icon set takes), this
 	// is the whole of its colour. Callers pass the colour the surrounding text is
@@ -58,7 +73,7 @@ type Options struct {
 
 // Result is a rasterised document.
 type Result struct {
-	// Image is the drawing, MaxSide on its longest edge, with transparency intact.
+	// Image is the drawing, fitted to the requested box, transparency intact.
 	Image image.Image
 	// W, H is the document's own size (its viewBox, or its width/height), which is
 	// what a caption should report — not the size we happened to draw it at.
@@ -140,22 +155,25 @@ func Decode(raw []byte, opt Options) (Result, error) {
 	if len(raw) > MaxBytes {
 		return Result{}, fmt.Errorf("svg too large (%d bytes, max %d)", len(raw), MaxBytes)
 	}
-	side := opt.MaxSide
-	if side <= 0 {
-		side = 512
+	maxW, maxH := opt.MaxW, opt.MaxH
+	if maxW <= 0 {
+		maxW = defaultBox
+	}
+	if maxH <= 0 {
+		maxH = defaultBox
 	}
 	color := opt.CurrentColor
 	if color == "" {
 		color = "#000000"
 	}
-	return rasterize(raw, side, color)
+	return rasterize(raw, maxW, maxH, color)
 }
 
 // rasterize is Decode's body, split out so the recover covers exactly the parse
 // and the drawing. Neither library promises anything about a malformed document,
 // and this runs on a background goroutine where a panic would take the whole app
 // down with it — so a bad file has to come back as an error, not a crash.
-func rasterize(raw []byte, side int, currentColor string) (res Result, err error) {
+func rasterize(raw []byte, maxW, maxH int, currentColor string) (res Result, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			res, err = Result{}, fmt.Errorf("svg render failed: %v", r)
@@ -166,10 +184,6 @@ func rasterize(raw []byte, side int, currentColor string) (res Result, err error
 	if err != nil {
 		return Result{}, err
 	}
-	if n := len(icon.SVGPaths); n > maxPaths {
-		return Result{}, fmt.Errorf("svg too complex (%d shapes, max %d)", n, maxPaths)
-	}
-
 	// Size the drawing from our own read of the root element, not the renderer's:
 	// it abandons the whole element if any one attribute will not parse, and a
 	// width="100%" alongside a perfectly good viewBox is enough to do that.
@@ -178,7 +192,11 @@ func rasterize(raw []byte, side int, currentColor string) (res Result, err error
 		icon.ViewBox.W, icon.ViewBox.H = vw, vh
 	}
 
-	w, h := fit(icon.ViewBox.W, icon.ViewBox.H, side)
+	w, h := fit(icon.ViewBox.W, icon.ViewBox.H, maxW, maxH)
+	if n := len(icon.SVGPaths); n*w*h > maxPathPixels {
+		return Result{}, fmt.Errorf("svg too complex to draw (%d shapes at %d×%d)", n, w, h)
+	}
+
 	icon.SetTarget(0, 0, float64(w), float64(h))
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	scanner := rasterx.NewScannerGV(w, h, img, img.Bounds())
@@ -225,12 +243,14 @@ func parse(raw []byte, currentColor string) (*oksvg.SvgIcon, error) {
 	return icon, nil
 }
 
-// fit sizes the raster so its longest edge is side, keeping the aspect ratio and
-// staying inside maxPixels. A small icon is scaled up on purpose: everything
-// downstream only ever scales down, and downscaling is what antialiases well.
-func fit(vw, vh float64, side int) (w, h int) {
-	longest := math.Max(vw, vh)
-	scale := float64(side) / longest
+// fit scales the drawing to fill a maxW×maxH box without distorting it or
+// exceeding maxPixels. A small icon is scaled up on purpose — it is vector art,
+// and the placement will not enlarge it later.
+func fit(vw, vh float64, maxW, maxH int) (w, h int) {
+	if vw <= 0 || vh <= 0 {
+		return 1, 1
+	}
+	scale := math.Min(float64(maxW)/vw, float64(maxH)/vh)
 	w = int(math.Round(vw * scale))
 	h = int(math.Round(vh * scale))
 	if w < 1 {

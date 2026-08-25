@@ -18,22 +18,20 @@ import (
 //
 // Rendering happens at the size the drawing is about to be shown at rather than
 // at whatever units the document used, which is the one advantage vector art has
-// here: see svgimg.Options.MaxSide.
+// here: see svgimg.Options.
 
 const (
-	// svgThumbSide is the raster size for an inline thumbnail. Larger than any
-	// thumbnail box, because everything downstream only scales down and
-	// downscaling is what antialiases well — a 16px icon drawn at 16px and then
-	// stretched would look far worse than this costs.
-	svgThumbSide = 512
-	// svgPreviewMinSide / svgPreviewMaxSide bound the modal's raster. The real
-	// figure tracks the terminal's own pixel width (svgPreviewSide), so a drawing
-	// is as crisp as the screen can show; these only stop a tiny or enormous
-	// terminal from asking for something silly. The ceiling matters: rasterising
-	// is quadratic in the side, and the placement never shows more than the
-	// terminal's own pixels anyway (fitImageCells caps at natural logical size).
-	svgPreviewMinSide = 640
-	svgPreviewMaxSide = 1280
+	// svgFallbackCellW / svgFallbackCellH stand in when the terminal never told us
+	// its cell size, matching the assumption fitFrameToCells makes so a raster and
+	// its placement agree about how big a cell is.
+	svgFallbackCellW = 8
+	svgFallbackCellH = 16
+	// svgEmojiBox sizes the one drawing path with no destination box to ask —
+	// a custom emoji, which is a couple of cells either way.
+	svgEmojiBox = 64
+	// svgMaxBox caps the modal's raster however large the terminal is. Rasterising
+	// costs pixels, and beyond this the extra ones buy nothing anyone can see.
+	svgMaxBox = 2048
 )
 
 // svgThumbMaxBytes is the cap on a drawing we render *unasked*. Rendering is the
@@ -57,18 +55,30 @@ func isSVGAttachment(f *model.FileInfo) bool {
 	if f == nil {
 		return false
 	}
-	mime, _, _ := strings.Cut(strings.ToLower(f.MimeType), ";")
-	switch strings.TrimSpace(mime) {
-	case "image/svg+xml", "image/svg":
+	// Extension first: it is a three-byte compare, where recognising the MIME type
+	// means splitting a parameter off it. This question is asked of every
+	// attachment on every uncached render, so which half runs first is worth the
+	// thought — and EqualFold does the case-insensitive compare without scanning a
+	// lowercase copy into existence.
+	if strings.EqualFold(attachmentExt(f), "svg") {
 		return true
 	}
-	ext := strings.ToLower(strings.TrimPrefix(f.Extension, "."))
-	if ext == "" {
-		if i := strings.LastIndex(f.Name, "."); i >= 0 {
-			ext = strings.ToLower(f.Name[i+1:])
-		}
+	mime, _, _ := strings.Cut(f.MimeType, ";")
+	mime = strings.TrimSpace(mime)
+	return strings.EqualFold(mime, "image/svg+xml") || strings.EqualFold(mime, "image/svg")
+}
+
+// attachmentExt is an upload's extension without its dot, falling back to the
+// filename: Mattermost leaves Extension empty for a fair slice of uploads.
+// Returns a slice of the existing strings, never a new one.
+func attachmentExt(f *model.FileInfo) string {
+	if ext := strings.TrimPrefix(f.Extension, "."); ext != "" {
+		return ext
 	}
-	return ext == "svg"
+	if i := strings.LastIndex(f.Name, "."); i >= 0 {
+		return f.Name[i+1:]
+	}
+	return ""
 }
 
 // svgThumbnailable reports whether a drawing gets an inline render in the
@@ -93,26 +103,49 @@ func svgCurrentColor() string {
 	return "#d7d7d7"
 }
 
-// svgPreviewSide is the raster size for the preview modal: the terminal's pixel
-// width, bounded. Mirrors what previewProfile does for video, and for the same
-// reason — the modal is worth rendering at the resolution it will be shown at.
-func (m *Model) svgPreviewSide() int {
-	side := m.width * m.cellPxW
-	if side < svgPreviewMinSide {
-		return svgPreviewMinSide
+// cellPx is the terminal's cell size, with the same fallback the placement code
+// uses when the terminal never reported one.
+func (m *Model) cellPx() (w, h int) {
+	if m.cellPxW > 0 && m.cellPxH > 0 {
+		return m.cellPxW, m.cellPxH
 	}
-	if side > svgPreviewMaxSide {
-		return svgPreviewMaxSide
+	return svgFallbackCellW, svgFallbackCellH
+}
+
+// svgThumbBox is the pixel box an inline thumbnail is actually drawn in: as wide
+// as the pane allows and at most inlineThumbRows tall. Rendering to exactly this
+// leaves the thumbnail the same size on screen as a larger raster would — the
+// placement never enlarges past natural size — for a fraction of the work.
+func (m *Model) svgThumbBox(box int) (w, h int) {
+	cw, ch := m.cellPx()
+	return clampBox(box * cw), clampBox(inlineThumbRows * ch)
+}
+
+// svgPreviewBox is the pixel box the preview modal will draw into, from the same
+// cell box that sizes the placement.
+func (m *Model) svgPreviewBox() (w, h int) {
+	cols, rows := m.previewMaxBox()
+	cw, ch := m.cellPx()
+	return clampBox(cols * cw), clampBox(rows * ch)
+}
+
+// clampBox keeps a box positive and below the rasterising ceiling.
+func clampBox(px int) int {
+	if px < 1 {
+		return 1
 	}
-	return side
+	if px > svgMaxBox {
+		return svgMaxBox
+	}
+	return px
 }
 
 // decodeSVGFrames renders a drawing into the single-frame form the transmit
 // pipeline expects, so it lands on the same encode-fit-and-place tail as every
 // other still. SVG animation (SMIL, CSS) is not rendered, hence never a second
 // frame and never a delay.
-func decodeSVGFrames(raw []byte, side int) ([]image.Image, []time.Duration, error) {
-	res, err := svgimg.Decode(raw, svgimg.Options{MaxSide: side, CurrentColor: svgCurrentColor()})
+func decodeSVGFrames(raw []byte, maxW, maxH int) ([]image.Image, []time.Duration, error) {
+	res, err := svgimg.Decode(raw, svgimg.Options{MaxW: maxW, MaxH: maxH, CurrentColor: svgCurrentColor()})
 	if err != nil {
 		return nil, nil, err
 	}

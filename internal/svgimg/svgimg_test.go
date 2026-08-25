@@ -46,7 +46,7 @@ func alphaAt(t *testing.T, img image.Image, x, y int) uint32 {
 
 func TestDecodeDrawsShapes(t *testing.T) {
 	src := `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="red"/></svg>`
-	res, err := Decode([]byte(src), Options{MaxSide: 64})
+	res, err := Decode([]byte(src), Options{MaxW: 64, MaxH: 64})
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestDecodeDrawsShapes(t *testing.T) {
 // filled blob, so the assertion is that the middle is still empty.
 func TestDecodeCompactArcKeepsTheHole(t *testing.T) {
 	ring := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="m8 2a6 6 0 0 0-6 6 6 6 0 0 0 6 6 6 6 0 0 0 6-6 6 6 0 0 0-6-6zm0 1a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5 5 5 0 0 1 5-5z" fill="black"/></svg>`
-	res, err := Decode([]byte(ring), Options{MaxSide: 128})
+	res, err := Decode([]byte(ring), Options{MaxW: 128, MaxH: 128})
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestDecodeCompactArcKeepsTheHole(t *testing.T) {
 // with no separator at all ("a7 7 0 100 14" is flags 1, 0 then x=0).
 func TestDecodePackedArcFlags(t *testing.T) {
 	src := `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><path d="M8 1a7 7 0 100 14 7 7 0 000-14z" fill="black"/></svg>`
-	res, err := Decode([]byte(src), Options{MaxSide: 64})
+	res, err := Decode([]byte(src), Options{MaxW: 64, MaxH: 64})
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestDecodePackedArcFlags(t *testing.T) {
 // the viewBox that came after it.
 func TestDecodePercentageSizeUsesViewBox(t *testing.T) {
 	src := `<svg xmlns='http://www.w3.org/2000/svg' width='100%' height='100%' viewBox='0 0 20 10'><rect width='20' height='10' fill='black'/></svg>`
-	res, err := Decode([]byte(src), Options{MaxSide: 40})
+	res, err := Decode([]byte(src), Options{MaxW: 40, MaxH: 40})
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestDecodePercentageSizeUsesViewBox(t *testing.T) {
 
 func TestDecodeCurrentColor(t *testing.T) {
 	src := `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="currentColor"/></svg>`
-	res, err := Decode([]byte(src), Options{MaxSide: 20, CurrentColor: "#ff0000"})
+	res, err := Decode([]byte(src), Options{MaxW: 20, MaxH: 20, CurrentColor: "#ff0000"})
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestDecodeEntityDeclarations(t *testing.T) {
 	src := `<?xml version="1.0"?>
 <!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "svg11.dtd" [<!ENTITY ns_svg "http://www.w3.org/2000/svg">]>
 <svg xmlns="&ns_svg;" width="10" height="10"><rect width="10" height="10" fill="black"/></svg>`
-	res, err := Decode([]byte(src), Options{MaxSide: 20})
+	res, err := Decode([]byte(src), Options{MaxW: 20, MaxH: 20})
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestDecodeEntityDeclarations(t *testing.T) {
 
 func TestDecodeReportsDroppedText(t *testing.T) {
 	withText := `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><text x="1" y="15">hi</text></svg>`
-	res, err := Decode([]byte(withText), Options{MaxSide: 40})
+	res, err := Decode([]byte(withText), Options{MaxW: 40, MaxH: 40})
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestDecodeReportsDroppedText(t *testing.T) {
 		t.Error("TextDropped = false for a document whose only content is text")
 	}
 	plain := `<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10"/></svg>`
-	res, err = Decode([]byte(plain), Options{MaxSide: 10})
+	res, err = Decode([]byte(plain), Options{MaxW: 10, MaxH: 10})
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestDecodeReportsDroppedText(t *testing.T) {
 
 func TestDecodeNoIntrinsicSize(t *testing.T) {
 	src := `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%"><rect width="10" height="10"/></svg>`
-	res, err := Decode([]byte(src), Options{MaxSide: 60})
+	res, err := Decode([]byte(src), Options{MaxW: 60, MaxH: 60})
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestDecodeSurvivesGarbage(t *testing.T) {
 	for i, src := range cases {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {
 			// Any outcome is fine except a panic escaping.
-			if _, err := Decode([]byte(src), Options{MaxSide: 32}); err != nil {
+			if _, err := Decode([]byte(src), Options{MaxW: 32, MaxH: 32}); err != nil {
 				t.Logf("rejected: %v", err)
 			}
 		})
@@ -216,7 +216,7 @@ func TestDescribeMatchesDecode(t *testing.T) {
 		`<svg xmlns="http://www.w3.org/2000/svg" width="40" height="20"><text x="0" y="10">hi</text></svg>`,
 	} {
 		w, h, dropped := Describe([]byte(src))
-		res, err := Decode([]byte(src), Options{MaxSide: 32})
+		res, err := Decode([]byte(src), Options{MaxW: 32, MaxH: 32})
 		if err != nil {
 			t.Fatalf("Decode: %v", err)
 		}
@@ -243,18 +243,27 @@ func TestParseLength(t *testing.T) {
 	}
 }
 
-func TestFitKeepsAspectAndBounds(t *testing.T) {
-	w, h := fit(200, 100, 50)
-	if w != 50 || h != 25 {
-		t.Errorf("fit(200,100,50) = %dx%d, want 50x25", w, h)
+func TestFitFillsBoxKeepingAspect(t *testing.T) {
+	// Width-bound: a wide drawing in a square box.
+	if w, h := fit(200, 100, 50, 50); w != 50 || h != 25 {
+		t.Errorf("fit(200,100 -> 50x50) = %dx%d, want 50x25", w, h)
 	}
-	// A small drawing is scaled up: downstream only ever scales down.
-	if w, h := fit(16, 16, 512); w != 512 || h != 512 {
-		t.Errorf("fit(16,16,512) = %dx%d, want 512x512", w, h)
+	// Height-bound: the thumbnail case, a wide box only ten rows tall.
+	if w, h := fit(100, 100, 800, 160); w != 160 || h != 160 {
+		t.Errorf("fit(100,100 -> 800x160) = %dx%d, want 160x160", w, h)
+	}
+	// A small drawing is scaled up: it is vector art and the placement will not
+	// enlarge it later.
+	if w, h := fit(16, 16, 512, 512); w != 512 || h != 512 {
+		t.Errorf("fit(16,16 -> 512x512) = %dx%d, want 512x512", w, h)
 	}
 	// An extreme aspect ratio stays inside the pixel cap.
-	if w, h := fit(1, 100000, 100000); w*h > maxPixels {
+	if w, h := fit(1, 100000, 100000, 100000); w*h > maxPixels {
 		t.Errorf("fit produced %dx%d = %d pixels, over the %d cap", w, h, w*h, maxPixels)
+	}
+	// A degenerate document cannot produce a zero-size raster.
+	if w, h := fit(0, 0, 100, 100); w < 1 || h < 1 {
+		t.Errorf("fit(0,0) = %dx%d, want at least 1x1", w, h)
 	}
 }
 
@@ -265,7 +274,7 @@ func TestFitKeepsAspectAndBounds(t *testing.T) {
 func TestDecodeUniformScale(t *testing.T) {
 	// A 100x100 box scaled by .5 should fill the top-left quarter and nothing else.
 	src := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><g transform="scale(.5)"><rect width="100" height="100" fill="black"/></g></svg>`
-	res, err := Decode([]byte(src), Options{MaxSide: 100})
+	res, err := Decode([]byte(src), Options{MaxW: 100, MaxH: 100})
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
@@ -279,5 +288,28 @@ func TestDecodeUniformScale(t *testing.T) {
 	// The bottom row is where a flattened Y axis piles everything up.
 	if got := alphaAt(t, res.Image, 25, 99); got != 0 {
 		t.Errorf("paint on the bottom row (alpha %d): the Y axis collapsed", got)
+	}
+}
+
+// TestDecodeRefusesTooMuchDrawing pins the work guard: a document asking for more
+// rasterising than the budget allows is turned away before any of it is paid, so
+// a pathological drawing cannot hold the preview for ten seconds. The same
+// document may still be fine in a smaller box, which is why the check is on the
+// shape count against the target size rather than on the file.
+func TestDecodeRefusesTooMuchDrawing(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">`)
+	for i := 0; i < 4000; i++ {
+		fmt.Fprintf(&b, `<path d="M%d 0h1v1h-1z" fill="black"/>`, i%100)
+	}
+	b.WriteString(`</svg>`)
+	raw := []byte(b.String())
+
+	if _, err := Decode(raw, Options{MaxW: 2048, MaxH: 2048}); err == nil {
+		t.Error("a 4000-shape drawing at 2048px was accepted; the budget did not bind")
+	}
+	// Small enough a box and the same document is cheap, so it must go through.
+	if _, err := Decode(raw, Options{MaxW: 64, MaxH: 64}); err != nil {
+		t.Errorf("the same document in a small box was refused: %v", err)
 	}
 }

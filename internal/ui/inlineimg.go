@@ -11,6 +11,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/svgimg"
 )
 
 // Image attachments rendered as inline thumbnails in the transcript, so an image
@@ -1273,6 +1275,18 @@ func (m Model) buildInlineThumb(it previewItem, box int) (readyInlineImg, error)
 	raw, err := m.readThumbBytes(it)
 	if err != nil {
 		return readyInlineImg{}, err
+	}
+	// A drawing is rendered rather than decoded, and it needs the destination box
+	// to do it: rasterising to the cells it will occupy costs a fraction of what a
+	// fixed-size raster does and looks identical. Sniffed from the bytes, so a
+	// body-linked .svg is caught the same way an attachment is.
+	if svgimg.Looks(raw) {
+		bw, bh := m.svgThumbBox(box)
+		frames, _, err := decodeSVGFrames(raw, bw, bh)
+		if err != nil {
+			return readyInlineImg{}, decodeFailure{err}
+		}
+		return m.encodeInlineThumb(0, frames, box)
 	}
 	// Animate any GIF, whether it arrived as an attachment or a body link — a
 	// Giphy link is the latter, and a frozen Giphy would be a strange thing to ship.

@@ -247,9 +247,10 @@ func isGIF(b []byte) bool {
 // is dead in practice for the non-video build regardless.
 func decodeImageFrames(raw []byte, animate bool) (frames []image.Image, delays []time.Duration, err error) {
 	if svgimg.Looks(raw) {
-		// A drawing, not a decode: rendered at a size the fit step can only scale
-		// down from. See svg.go.
-		return decodeSVGFrames(raw, svgThumbSide)
+		// A drawing, not a decode. This is the path with no destination box to
+		// render to — a custom emoji; the thumbnail and preview paths pass their
+		// real box (see svg.go), which is what keeps a drawing cheap.
+		return decodeSVGFrames(raw, svgEmojiBox, svgEmojiBox)
 	}
 	if videoBuild && looksLikeVideo(raw) {
 		return decodeVideoFrames(raw, animate, thumbVideoProfile)
