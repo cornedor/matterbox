@@ -30,13 +30,13 @@ func TestFlushUpdateNoticeWaitsItsTurn(t *testing.T) {
 			},
 		},
 		{
-			// "downloading 3 files…" is something the user asked for and is
-			// waiting on. Stepping on it to advertise a release is exactly the
-			// nagging this is trying not to be.
-			name: "the status slot is busy",
+			// The channel switcher is something the user asked for and is looking
+			// at. Stamping a release announcement across it is exactly the nagging
+			// this is trying not to be.
+			name: "a popup owns the body",
 			setup: func(m *Model) {
 				m.updateFound = rel("v9.9.9")
-				m.status = "downloading 3 files…"
+				m.switcherMode = true
 			},
 		},
 		{
@@ -51,13 +51,12 @@ func TestFlushUpdateNoticeWaitsItsTurn(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			var m Model
 			c.setup(&m)
-			before := m.status
 
 			if cmd := m.flushUpdateNotice(); cmd != nil {
 				t.Error("flushUpdateNotice returned a command, want it to hold off")
 			}
-			if m.status != before {
-				t.Errorf("status = %q, want it left as %q", m.status, before)
+			if m.toast.active() {
+				t.Errorf("toast = %q, want nothing up yet", m.toast.title)
 			}
 		})
 	}
@@ -71,21 +70,26 @@ func TestFlushUpdateNoticeShowsItOnceTheSplashIsDown(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("flushUpdateNotice returned nothing, want the toast")
 	}
-	if !strings.Contains(m.status, "v9.9.9") {
-		t.Errorf("status = %q, want it to name the release", m.status)
+	if !strings.Contains(m.toast.title, "v9.9.9") {
+		t.Errorf("toast title = %q, want it to name the release", m.toast.title)
 	}
-	if !strings.Contains(m.status, "matterbox upgrade") {
-		t.Errorf("status = %q, want it to name the command", m.status)
+	if !strings.Contains(m.toast.body, "matterbox upgrade") {
+		t.Errorf("toast body = %q, want it to name the command", m.toast.body)
+	}
+	// The footer slot is a mode line and no longer carries this — that is the
+	// whole point of the overlay.
+	if m.status != "" {
+		t.Errorf("status = %q, want the notice to stay off the footer", m.status)
 	}
 
-	// Said once. A second event must not re-flash it, or a release nobody
-	// installs becomes a toast on every keystroke for the rest of the session.
-	m.status = ""
+	// Said once. A second event must not re-raise it, or a release nobody
+	// installs becomes a box on screen for the rest of the session.
+	m.toast = toastState{}
 	if cmd := m.flushUpdateNotice(); cmd != nil {
 		t.Error("flushUpdateNotice fired twice in one session")
 	}
-	if m.status != "" {
-		t.Errorf("status = %q on the second call, want it left alone", m.status)
+	if m.toast.active() {
+		t.Errorf("toast = %q on the second call, want it left down", m.toast.title)
 	}
 }
 

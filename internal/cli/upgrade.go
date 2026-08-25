@@ -238,10 +238,10 @@ func runInstaller(ctx context.Context, script string, args []string) error {
 	return nil
 }
 
-// printUpdateNotice is the second half of the update notice: the footer note is
-// gone in four seconds and cannot be acted on without quitting first, so the
-// same fact is said once more here — after the TUI has released the terminal,
-// where the command is one paste away.
+// printUpdateNotice is the second half of the update notice: the toast in the
+// TUI is gone in twenty seconds and cannot be acted on without quitting first,
+// so the same fact is said once more here — after the TUI has released the
+// terminal, where the command is one paste away.
 //
 // Silent when stdout is not a terminal: `matterbox > log` is somebody's script,
 // and a script has no use for this.

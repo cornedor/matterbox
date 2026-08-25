@@ -249,8 +249,8 @@ func writeState(s state) {
 
 // pending is the answer the TUI found, kept for the command layer to print
 // after the program has released the terminal. Two surfaces, one fact: the
-// footer toast is easy to miss, and the line on exit lands where the command
-// can actually be typed.
+// toast in the TUI is easy to miss, and the line on exit lands where the
+// command can actually be typed.
 var pending struct {
 	mu  sync.Mutex
 	rel *Release

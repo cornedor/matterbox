@@ -38,6 +38,7 @@ const (
 	hitComposer
 	hitJumpBottom
 	hitFeedMarkAll
+	hitToast
 )
 
 // hit is the result of hitTest. idx's meaning depends on zone: a tab index
@@ -226,6 +227,10 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 	case hitFeedMarkAll:
 		m.recordFeedAction("mark_all_read", "mouse")
 		return m, m.markAllFeedRead()
+	case hitToast:
+		// A click on the notice is the user saying they have read it.
+		m.dismissToast()
+		return m, nil
 	case hitFeed:
 		return m.clickFeedEntry(h.idx)
 	case hitSearch:
@@ -434,6 +439,12 @@ func (m *Model) hoverAt(x, y int) hoverState {
 				}
 			}
 		}
+		return hoverState{}
+	}
+	// The toast covers the top-right corner of whatever is under it: nothing
+	// there is hoverable while it does, or the pointer would light up a row the
+	// user cannot see.
+	if m.vcache != nil && m.vcache.toastZone.contains(x, y) {
 		return hoverState{}
 	}
 	if x < channelsWidth && !m.onSearchTab() && !m.onFeedTab() && !m.onSQLTab() {
@@ -712,6 +723,12 @@ func (m *Model) hitTest(x, y int) hit {
 			}
 		}
 		return hit{zone: hitNone}
+	}
+	// The toast is stamped over the body's top-right corner on every tab, so it
+	// wins over whatever it covers — a click meant for the box must not reach the
+	// message hidden under it.
+	if m.vcache != nil && m.vcache.toastZone.contains(x, y) {
+		return hit{zone: hitToast}
 	}
 	// Below the strip. The Search / Feed panes own the whole body on their
 	// synthetic tabs; map the click to the bubble under it — or, on the Feed

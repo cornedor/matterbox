@@ -189,6 +189,8 @@ func (z hitZone) telemetryTarget() string {
 		return "jump_bottom"
 	case hitFeedMarkAll:
 		return "feed_mark_all"
+	case hitToast:
+		return "toast"
 	}
 	return "nothing"
 }

@@ -501,6 +501,11 @@ type Model struct {
 	updateFound   *update.Release
 	updateNoticed bool
 
+	// toast is the overlay notice in the body's top-right corner — the update
+	// notice's surface, kept off the footer's status slot because that slot is a
+	// mode line that takes itself back. See toast.go.
+	toast toastState
+
 	ws      *model.WebSocketClient
 	wsRetry int
 
