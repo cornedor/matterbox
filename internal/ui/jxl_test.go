@@ -74,3 +74,47 @@ func TestJXLIsNotTextPreviewed(t *testing.T) {
 		t.Errorf("filePreviewKindOf(.jxl) = %v, want none", kind)
 	}
 }
+
+// TestAnimatedImagesDoNotStreamLikeClips: the streaming player stops on its last
+// frame, which is right for a video and wrong for an animated image — a WebP,
+// AVIF or JXL stands in for a GIF and has to loop like one. So they must take the
+// whole-decode path, which loops on both animation routes.
+func TestAnimatedImagesDoNotStreamLikeClips(t *testing.T) {
+	// A session that can stream: video build, native animation, preview animation.
+	m := &Model{nativeAnim: true, animatePreview: true}
+	if !videoBuild {
+		// Without libav nothing streams at all, so there is nothing to separate.
+		if m.streamsPreviewVideo(previewItem{file: &model.FileInfo{Name: "clip.mp4"}}) {
+			t.Error("streamsPreviewVideo = true without the video tag")
+		}
+		return
+	}
+	for _, name := range []string{"loop.webp", "loop.avif", "loop.jxl", "LOOP.AVIF"} {
+		f := &model.FileInfo{Id: "f", Name: name, Size: 4096}
+		if !isAnimatedImageAttachment(f) {
+			t.Errorf("isAnimatedImageAttachment(%q) = false", name)
+		}
+		if m.streamsPreviewVideo(previewItem{file: f, name: name}) {
+			t.Errorf("%q would stream as a clip, so it would stop instead of looping", name)
+		}
+	}
+	// A real clip still streams — that is what the path is for.
+	for _, name := range []string{"clip.mp4", "clip.webm", "clip.mov"} {
+		f := &model.FileInfo{Id: "f", Name: name, Size: 4096}
+		if isAnimatedImageAttachment(f) {
+			t.Errorf("isAnimatedImageAttachment(%q) = true, want false", name)
+		}
+		if !m.streamsPreviewVideo(previewItem{file: f, name: name}) {
+			t.Errorf("%q no longer streams", name)
+		}
+	}
+	if isAnimatedImageAttachment(nil) {
+		t.Error("isAnimatedImageAttachment(nil) = true")
+	}
+	// By MIME alone, for the uploads that carry no usable filename.
+	for _, mime := range []string{"image/webp", "image/avif", "image/jxl"} {
+		if !isAnimatedImageAttachment(&model.FileInfo{Name: "upload", MimeType: mime}) {
+			t.Errorf("isAnimatedImageAttachment(mime %q) = false", mime)
+		}
+	}
+}

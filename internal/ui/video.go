@@ -140,8 +140,36 @@ type streamFrame struct {
 // stream it as video rather than decode a still/animation: a playable video
 // attachment, with animation on (image_preview off means the user wants stills,
 // so the poster path handles it instead).
+//
+// An animated *image* is excluded, and that exclusion is the whole difference
+// between the two paths' semantics. Streaming plays a clip once and stops on its
+// last frame (see advanceStream's streamDone) — right for a video, wrong for an
+// animated WebP, AVIF or JXL, which is a looping image and has to behave like the
+// GIF it stands in for. Decoded whole instead, it loops on either animation path:
+// the terminal drives the loop natively, and the manual tick wraps with a modulo.
 func (m *Model) streamsPreviewVideo(it previewItem) bool {
-	return videoBuild && m.videoPlayable() && m.animatePreview && it.file != nil && isVideoAttachment(it.file)
+	return videoBuild && m.videoPlayable() && m.animatePreview && it.file != nil &&
+		isVideoAttachment(it.file) && !isAnimatedImageAttachment(it.file)
+}
+
+// isAnimatedImageAttachment reports whether an upload is an image format that may
+// carry animation, as opposed to a video clip. Both go through libav — see
+// isVideoAttachment, which claims all of them — but only a clip should be
+// *played* like one.
+//
+// These stay on the whole-decode path, which is bounded the same way an animated
+// GIF's is (the preview profile's frame and duration ceilings), so admitting them
+// costs no more than the GIF they are posted in place of.
+func isAnimatedImageAttachment(f *model.FileInfo) bool {
+	if f == nil {
+		return false
+	}
+	switch strings.ToLower(attachmentExt(f)) {
+	case "webp", "avif", "jxl":
+		return true
+	}
+	mime := attachmentMIME(f)
+	return mime == "image/webp" || mime == "image/avif" || jxlMIME(mime)
 }
 
 // errVideoUnsupported is what the non-video build's decodeVideoFrames returns,
