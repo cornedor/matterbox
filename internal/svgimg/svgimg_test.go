@@ -360,3 +360,87 @@ func TestDecodeDegradesBeforeRefusing(t *testing.T) {
 		t.Errorf("raster is %dpx, want the un-supersampled 700px", got)
 	}
 }
+
+// inkPixels counts how much of a raster got painted, for comparing one drawing
+// against a variant of itself.
+func inkPixels(t *testing.T, img image.Image) int {
+	t.Helper()
+	b := img.Bounds()
+	var n int
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			if _, _, _, a := img.At(x, y).RGBA(); a > 0 {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// TestDecodeStrokeFollowsTransform is the fix that mattered most: a stroke inside
+// a scaled group has to be scaled with it. Both documents draw the same line in
+// the same place at the same device size; only the second reaches it through a
+// scale, so its stroke must come out four times as wide. Unfixed, the two are
+// indistinguishable.
+func TestDecodeStrokeFollowsTransform(t *testing.T) {
+	plain := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><line x1="0" y1="50" x2="100" y2="50" stroke="black" stroke-width="1"/></svg>`
+	scaled := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><g transform="scale(4)"><line x1="0" y1="12.5" x2="25" y2="12.5" stroke="black" stroke-width="1"/></g></svg>`
+
+	a, err := Decode([]byte(plain), Options{MaxW: 200, MaxH: 200})
+	if err != nil {
+		t.Fatalf("Decode plain: %v", err)
+	}
+	b, err := Decode([]byte(scaled), Options{MaxW: 200, MaxH: 200})
+	if err != nil {
+		t.Fatalf("Decode scaled: %v", err)
+	}
+	thin, thick := inkPixels(t, a.Image), inkPixels(t, b.Image)
+	if thin == 0 {
+		t.Fatal("the plain line drew nothing")
+	}
+	ratio := float64(thick) / float64(thin)
+	if ratio < 3 || ratio > 5 {
+		t.Errorf("stroke through scale(4) is %.2f× the ink, want about 4× — the transform is not reaching the stroke width", ratio)
+	}
+}
+
+// TestDecodeStrokeSurvivesFlip covers the case a mean-of-the-diagonal scale gets
+// wrong: a matrix that flips Y has diagonal terms that cancel, so averaging them
+// yields zero and the stroke disappears. The geometric mean does not.
+func TestDecodeStrokeSurvivesFlip(t *testing.T) {
+	src := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><g transform="matrix(1 0 0 -1 0 100)"><line x1="10" y1="50" x2="90" y2="50" stroke="black" stroke-width="4"/></g></svg>`
+	res, err := Decode([]byte(src), Options{MaxW: 200, MaxH: 200})
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if n := inkPixels(t, res.Image); n == 0 {
+		t.Error("a stroke under a Y flip drew nothing: its width was scaled to zero")
+	}
+}
+
+// TestDecodeImplicitRepetition covers the parameter-set handling for the commands
+// that carry several sets under one letter. Arcs are the pair that were broken;
+// the rest are here so a future edit to the vendored parser cannot quietly take
+// them with it.
+func TestDecodeImplicitRepetition(t *testing.T) {
+	for _, tc := range []struct{ name, d string }{
+		{"lineto", "M10 10 L90 10 L90 90 L10 90 Z"},
+		{"implicit lineto", "M10 10 90 10 90 90 10 90 Z"},
+		{"implicit cubic", "M10 50c10-40 30-40 40 0 10 40 30 40 40 0"},
+		{"implicit arc", "m50 10a40 40 0 0 0-40 40 40 40 0 0 0 40 40 40 40 0 0 0 40-40 40 40 0 0 0-40-40z"},
+		{"packed arc flags", "M50 10a40 40 0 100 80 40 40 0 000-80z"},
+		{"exponent", "M1e1 1e1L9e1 9e1"},
+		{"abutting decimals", "M10.5.5L90.5 90.5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path d="` + tc.d + `" fill="black" stroke="black" stroke-width="2"/></svg>`
+			res, err := Decode([]byte(src), Options{MaxW: 100, MaxH: 100})
+			if err != nil {
+				t.Fatalf("Decode: %v", err)
+			}
+			if inkPixels(t, res.Image) == 0 {
+				t.Error("nothing was drawn: the parameter sets were not read")
+			}
+		})
+	}
+}

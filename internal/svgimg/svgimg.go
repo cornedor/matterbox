@@ -2,11 +2,11 @@
 //
 // SVG is the odd one out among the formats matterbox previews: there is nothing
 // to decode, only a document to draw, and no pure-Go renderer covers all of it.
-// oksvg — the one we use — is BSD-licensed, pulls in nothing we do not already
-// have, and gets shapes, transforms, strokes and gradients right; measured
-// against librsvg over a corpus of real-world files it is pixel-close on the
-// large majority once path data is normalised (see path.go, which fixes the one
-// class of failure that mattered).
+// The drawing is done by ./oksvg — a vendored copy of a BSD-licensed renderer
+// that stopped taking changes in 2022, with four of its bugs fixed in place;
+// that directory's README says which and why. Measured against librsvg on a
+// stroke-heavy drawing it now agrees on ink coverage within half a percentage
+// point at every size.
 //
 // What it does not do is text: a <text> element draws nothing. That is the whole
 // of the known gap, so Decode reports it rather than leaving the caller to
@@ -23,8 +23,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/srwiley/oksvg"
 	"github.com/srwiley/rasterx"
+
+	"matterbox/internal/svgimg/oksvg"
 )
 
 const (
@@ -189,7 +190,7 @@ func rasterize(raw []byte, maxW, maxH int, currentColor string) (res Result, err
 		}
 	}()
 
-	icon, err := parse(normalizeTransformAttrs(normalizePathAttrs(raw)), currentColor)
+	icon, err := parse(raw, currentColor)
 	if err != nil {
 		return Result{}, err
 	}
@@ -282,27 +283,6 @@ func fit(vw, vh float64, maxW, maxH int) (w, h int) {
 		h = max(1, int(float64(h)*shrink))
 	}
 	return w, h
-}
-
-var dAttrRe = regexp.MustCompile(`(?s)(\sd\s*=\s*)("[^"]*"|'[^']*')`)
-
-// normalizePathAttrs rewrites every path's data into the one-set-per-command
-// form the rasteriser handles correctly. See path.go for why.
-func normalizePathAttrs(raw []byte) []byte {
-	return dAttrRe.ReplaceAllFunc(raw, func(m []byte) []byte {
-		i := bytes.IndexAny(m, `"'`)
-		if i < 0 || len(m) < i+2 {
-			return m
-		}
-		quote, val := m[i], string(m[i+1:len(m)-1])
-		if !looksLikePathData(val) {
-			return m
-		}
-		out := make([]byte, 0, len(m)+len(m)/4)
-		out = append(out, m[:i+1]...)
-		out = append(out, normalizePath(val)...)
-		return append(out, quote)
-	})
 }
 
 var (

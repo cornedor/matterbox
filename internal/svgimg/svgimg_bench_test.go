@@ -55,24 +55,6 @@ func drawing(n int) []byte {
 	return []byte(b.String())
 }
 
-// BenchmarkNormalize measures the two preprocessing passes that work around the
-// rasteriser's bugs — a regex sweep over the whole document each. On a detailed
-// drawing this is the part we added, as distinct from the drawing itself.
-func BenchmarkNormalize(b *testing.B) {
-	detailed := drawing(300)
-	for _, tc := range []struct {
-		name string
-		raw  []byte
-	}{{"icon", icon}, {"detailed_300paths", detailed}} {
-		b.Run(tc.name, func(b *testing.B) {
-			b.ReportAllocs()
-			for b.Loop() {
-				_ = normalizeTransformAttrs(normalizePathAttrs(tc.raw))
-			}
-		})
-	}
-}
-
 // BenchmarkDecode is the whole cost of turning a drawing into pixels, at both
 // sizes the app asks for: the inline-thumbnail raster and the preview modal's.
 func BenchmarkDecode(b *testing.B) {
