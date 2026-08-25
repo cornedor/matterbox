@@ -159,7 +159,7 @@ away one piece at a time:
 | `animations.custom_emoji` | `true` | Animate GIF custom emoji in place. No effect unless `emoji_images` renders them as images at all. |
 | `animations.image_preview` | `true` | Animate GIFs in the space-to-preview modal. |
 | `animations.inline_images` | `true` | Animate GIF thumbnails in the transcript — only while they are on screen, so a channel full of GIFs costs nothing once scrolled away. |
-| `animations.native_animation` | `false` | **Experimental.** Play all of the above through the Kitty graphics protocol's native animation frames: every frame is uploaded once and the terminal times and loops it, instead of matterbox re-transmitting on a timer. In a binary built with the `video` tag it also unlocks video (mp4/webm/mov/animated-webp/animated-avif) — looping inline previews, and space streams the whole clip. A still WebP, BMP or TIFF needs none of this and always renders; HEIC, AVIF and JPEG XL need only the `video` tag, not this flag (JXL additionally needs an ffmpeg built with libjxl — see `matterbox --version`). An animated AVIF or JXL plays under this flag exactly as an animated WebP does: all three loop, since they are images standing in for a GIF, while a real clip streams once and stops on its last frame. Opt-in because it needs animation-frame support beyond what most Kitty-class terminals implement, and a terminal that only does the basics may show a frozen or blank image rather than falling back. |
+| `animations.native_animation` | `false` | **Experimental.** Play all of the above through the Kitty graphics protocol's native animation frames: every frame is uploaded once and the terminal times and loops it, instead of matterbox re-transmitting on a timer. In a binary built with the `video` tag it also unlocks video (mp4/webm/mov/animated-webp/animated-avif) — looping inline previews, and space streams the whole clip. A still WebP, BMP or TIFF needs none of this and always renders; HEIC, AVIF and JPEG XL need only the `video` tag, not this flag (AVIF additionally needs an ffmpeg built with libdav1d and JXL one built with libjxl — the release binaries have both, and `matterbox --version` says what yours has). An animated AVIF or JXL plays under this flag exactly as an animated WebP does: all three loop, since they are images standing in for a GIF, while a real clip streams once and stops on its last frame. Opt-in because it needs animation-frame support beyond what most Kitty-class terminals implement, and a terminal that only does the basics may show a frozen or blank image rather than falling back. |
 
 `native_gif_protocol` is the former name of `native_animation` and is still read,
 so an old config keeps working; the next rewrite drops it in favour of the new
@@ -482,10 +482,9 @@ matterbox upgrade --check            # say what is current, change nothing
 matterbox upgrade --version v1.0.0   # a specific release, including an older one
 ```
 
-A binary compiled with optional features — inline video, the `--demo`
-soundtrack — is rebuilt from source so it keeps them; one without is replaced by
-the release binary, which is pure Go and carries neither. `matterbox --version`
-prints which of the two you have. It installs alongside the binary it replaces,
+The release binaries carry inline video, so a build with that is simply replaced
+by one. A build with the `--demo` soundtrack is rebuilt from source instead,
+because no release has it. `matterbox --version` prints which you have. It installs alongside the binary it replaces,
 so an upgrade lands wherever the original `--dir` put it, and stays on your
 PATH.
 

@@ -9,10 +9,12 @@ import (
 	"matterbox/internal/update"
 )
 
-// TestInstallerArgs pins the decision that actually matters here: a build with
-// optional features compiled in must be rebuilt from source, because the
-// release binaries are pure Go and would silently take inline video and the
-// --demo soundtrack away.
+// TestInstallerArgs pins the decision that actually matters here: a build
+// carrying an optional feature the release binaries don't have must be rebuilt
+// from source, or the upgrade would silently take that feature away. The
+// releases carry video, so only demoaudio forces the source path now — get that
+// backwards in either direction and someone loses their soundtrack or spends
+// ten minutes compiling for nothing.
 func TestInstallerArgs(t *testing.T) {
 	cases := []struct {
 		name string
@@ -21,10 +23,28 @@ func TestInstallerArgs(t *testing.T) {
 		want []string
 	}{
 		{
-			name: "a build with optional features rebuilds from source",
+			name: "a build with the soundtrack rebuilds from source",
 			tags: "demoaudio,video",
 			opts: upgradeOpts{dir: "/opt/bin"},
 			want: []string{"--source", "--dir", "/opt/bin"},
+		},
+		{
+			name: "demoaudio alone is enough to force source",
+			tags: "demoaudio",
+			opts: upgradeOpts{dir: "/opt/bin"},
+			want: []string{"--source", "--dir", "/opt/bin"},
+		},
+		{
+			name: "a video build takes the release binary, which has video too",
+			tags: "video",
+			opts: upgradeOpts{dir: "/opt/bin"},
+			want: []string{"--prebuilt", "--dir", "/opt/bin"},
+		},
+		{
+			name: "the static release tags are not features to preserve",
+			tags: "video,netgo,osusergo",
+			opts: upgradeOpts{dir: "/opt/bin"},
+			want: []string{"--prebuilt", "--dir", "/opt/bin"},
 		},
 		{
 			name: "a plain build takes the release binary",

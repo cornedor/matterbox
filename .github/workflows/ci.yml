@@ -71,29 +71,33 @@ jobs:
           go build -tags demoaudio ./...
           go vet -tags demoaudio ./...
 
-      # Compiling the GPL path is fine — only distributing it isn't, and nothing
-      # here is distributed. What this checks is that the release-time guard
-      # still recognises the situation: demoaudio links gotracker/opl2
-      # (GPL-2.0-or-later) through the tracker library's core packages, so the
-      # licence bundler MUST refuse this build. If it ever stops refusing, opl2
-      # left the dependency graph and the Apache-2.0 caveat in the README (plus
-      # this check) can go. demoaudio alone, deliberately: add video and the
-      # guard stops at the linked ffmpeg's licence instead of reaching the Go
-      # module tally, which is the video job's check, not this one.
-      - name: the audio build must still be rejected by the licence guard
+      # demoaudio links gotracker/opl2 (GPL-2.0-or-later) through the tracker
+      # library's core packages. Under matterbox's own GPL-3.0-or-later that is
+      # compatible — an "or later" grant upgrades to v3 — so the licence bundler
+      # must ACCEPT this build, reproduce opl2's licence in the bundle, and say
+      # on stderr that the binary has to go out under the GPL. It refused this
+      # build while matterbox was Apache-2.0; this check is what would catch the
+      # guard drifting back. demoaudio alone, deliberately: add video and the
+      # guard also has to reach a linked ffmpeg, which is the video job's check,
+      # not this one.
+      - name: the audio build must pass the licence guard, naming opl2
         run: |
-          if TAGS=demoaudio scripts/third-party-licenses \
-              >/dev/null 2>/tmp/guard-err.txt; then
-            echo "the GPL guard accepted a demoaudio build — it should have refused."
-            echo "if gotracker/opl2 is gone, remove this check and the README caveat."
-            exit 1
-          fi
-          if ! grep -q 'github.com/gotracker/opl2' /tmp/guard-err.txt; then
-            echo "the guard refused, but not because of opl2:"
+          if ! TAGS=demoaudio scripts/third-party-licenses \
+              >/tmp/bundle.txt 2>/tmp/guard-err.txt; then
+            echo "the licence guard refused a demoaudio build — it should accept it:"
             cat /tmp/guard-err.txt
             exit 1
           fi
-          echo "ok: the licence guard rejects the demoaudio build, naming opl2"
+          if ! grep -q 'github.com/gotracker/opl2' /tmp/guard-err.txt; then
+            echo "the guard accepted the build without reporting opl2 as GPL:"
+            cat /tmp/guard-err.txt
+            exit 1
+          fi
+          if ! grep -q 'github.com/gotracker/opl2' /tmp/bundle.txt; then
+            echo "the bundle does not reproduce opl2's licence"
+            exit 1
+          fi
+          echo "ok: the licence guard accepts the demoaudio build, naming opl2"
 
   # `video` binds ffmpeg through go-astiav, and astiav tracks exactly one ffmpeg
   # release (v0.41 -> n8.0): against an older API it doesn't fail to link, it
@@ -179,10 +183,12 @@ jobs:
           echo "ok: the probe classified the ffmpeg we built"
 
       # The other half of the same question, and the one release.yml would ask:
-      # an LGPL ffmpeg may ship inside an Apache-2.0 binary, so the guard must
-      # accept this build *and* carry FFmpeg's notice into the bundle. Nothing
-      # exercises this path anywhere else — without an ffmpeg to link, the guard
-      # can't even run the probe.
+      # the guard must accept this build *and* carry FFmpeg's notice into the
+      # bundle. Both LGPL and GPL ffmpeg pass now, so this no longer tests the
+      # accept/refuse decision (only --enable-nonfree is refused, and we have no
+      # such build to test with) — what it still proves is that the bundle is
+      # complete. Nothing exercises this path anywhere else: without an ffmpeg
+      # to link, the guard can't even run the probe.
       - name: a video build against an LGPL ffmpeg must pass the licence guard
         run: |
           TAGS=video scripts/third-party-licenses > /tmp/bundle.txt
@@ -190,8 +196,11 @@ jobs:
             || { echo "the bundle carries no FFmpeg notice"; exit 1; }
           echo "ok: the guard accepts the build and names FFmpeg in the bundle"
 
-  # Prove the release targets still compile. Same matrix as release.yml, so a
-  # tag never fails on something a PR could have caught.
+  # Prove every target still compiles as plain Go. This is no longer what the
+  # release builds — that is the release-build job below, which needs cgo and a
+  # native runner per target — but it stays because it is the cheapest way to
+  # catch GOOS-specific breakage on all four, and because the licence bundler
+  # runs here tag-free the way release.yml runs it tagged.
   cross-build:
     strategy:
       fail-fast: false
@@ -217,7 +226,105 @@ jobs:
           go build -o /dev/null .
           # release.yml does more than compile: it bundles the licences of every
           # module linked into the binary, and that step can fail (a dependency
-          # arriving without a licence file, GPL code entering the default
+          # arriving without a licence file, an incompatible licence entering
           # build). Run it here too, tag-free like the release, so a tag never
           # fails on something a PR could have caught.
           scripts/third-party-licenses > /dev/null
+
+  # release.yml links a static FFmpeg into the binary with cgo, on a native
+  # runner per target. None of that is exercised by any job above, so without
+  # this a tag would be the first time it ran — and a tag that fails is a
+  # release nobody gets. Two of the four targets, one per operating system:
+  # linux and darwin differ in how they link (fully static vs system libraries),
+  # amd64 and arm64 don't.
+  release-build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, runner: ubuntu-latest }
+          - { goos: darwin, runner: macos-latest }
+    runs-on: ${{ matrix.runner }}
+    env:
+      FFMPEG_PREFIX: ${{ github.workspace }}/.ffmpeg-static
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: install the build tools
+        run: |
+          if [ "${{ matrix.goos }}" = linux ]; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends nasm cmake pkg-config meson ninja-build
+          else
+            command -v nasm >/dev/null || brew install nasm
+            command -v cmake >/dev/null || brew install cmake
+            command -v meson >/dev/null || brew install meson
+            command -v ninja >/dev/null || brew install ninja
+            command -v pkg-config >/dev/null || brew install pkgconf
+          fi
+
+      # Same cache key as release.yml, so a tag usually starts from a build a PR
+      # already paid for.
+      - name: restore the static ffmpeg
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.FFMPEG_PREFIX }}
+          key: ffmpeg-static-n8.0-dav1d-1.5.1-libjxl-v0.11.1-${{ matrix.runner }}
+
+      - name: build the static ffmpeg
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: scripts/ffmpeg-static "$FFMPEG_PREFIX"
+
+      - name: build the way a release does
+        env:
+          CGO_ENABLED: "1"
+          PKG_CONFIG: ${{ github.workspace }}/scripts/pkg-config-static
+          PKG_CONFIG_LIBDIR: ${{ github.workspace }}/.ffmpeg-static/lib/pkgconfig
+        run: |
+          tags=video
+          ldflags="-s -w"
+          if [ "${{ matrix.goos }}" = linux ]; then
+            tags="$tags,netgo,osusergo"
+            ldflags="$ldflags -extldflags -static"
+          fi
+          go build -trimpath -tags "$tags" -ldflags "$ldflags" -o matterbox .
+
+      - name: the binary must carry ffmpeg, not need it
+        run: |
+          ./matterbox --version
+          v=$(./matterbox --version)
+          echo "$v" | grep -q '^ffmpeg:' || { echo "no ffmpeg linked in"; exit 1; }
+          echo "$v" | grep -q 'jxl' || { echo "libjxl did not make it into ffmpeg"; exit 1; }
+          if [ "${{ matrix.goos }}" = linux ]; then
+            ldd matterbox 2>&1 | grep -q 'not a dynamic executable' || {
+              echo "the linux binary is not static:"; ldd matterbox; exit 1; }
+          else
+            if otool -L matterbox | grep -qE 'libav|libsw|libjxl'; then
+              echo "the binary links ffmpeg dynamically:"; otool -L matterbox; exit 1
+            fi
+          fi
+
+      # The decoder is only real in this job, so this is the only place the
+      # video tests run against the FFmpeg a user will actually get.
+      - name: test against the ffmpeg the release ships
+        env:
+          CGO_ENABLED: "1"
+          PKG_CONFIG: ${{ github.workspace }}/scripts/pkg-config-static
+          PKG_CONFIG_LIBDIR: ${{ github.workspace }}/.ffmpeg-static/lib/pkgconfig
+        run: go test -tags video ./internal/ui/ ./internal/libav/
+
+      - name: the licence bundle must cover the tagged build
+        env:
+          CGO_ENABLED: "1"
+          PKG_CONFIG: ${{ github.workspace }}/scripts/pkg-config-static
+          PKG_CONFIG_LIBDIR: ${{ github.workspace }}/.ffmpeg-static/lib/pkgconfig
+        run: |
+          TAGS=video scripts/third-party-licenses > /tmp/bundle.txt
+          grep -q 'FFmpeg (libav\*)' /tmp/bundle.txt \
+            || { echo "the bundle carries no FFmpeg notice"; exit 1; }

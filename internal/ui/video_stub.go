@@ -20,6 +20,10 @@ const videoBuild = false
 // no tag means no decoder. See video_libav.go for the real probe.
 func jxlDecodable() bool { return false }
 
+// avifDecodable is false for the same reason: AVIF is AV1, and software AV1 is
+// an ffmpeg external library. See video_libav.go for the real probe.
+func avifDecodable() bool { return false }
+
 // decodeVideoFrames is a no-op stub in this build: it is only ever reached
 // behind `if videoBuild`, which is false here, so it never actually runs — it
 // exists solely so the shared code compiles. See video_libav.go for the real one.

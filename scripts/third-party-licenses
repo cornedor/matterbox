@@ -2,7 +2,7 @@
 # Collect the license texts of every Go module linked into the matterbox binary
 # and print them as one THIRD_PARTY_LICENSES file on stdout.
 #
-# Why this exists: matterbox itself is Apache-2.0 (see LICENSE), but a compiled
+# Why this exists: matterbox itself is GPL-3.0-or-later (see LICENSE), but a compiled
 # binary statically links ~90 third-party modules, and the MIT/BSD/ISC/Apache
 # licenses they carry all require their notices to travel with a *binary*
 # distribution. The source repo has no such duty (it vendors nothing), so this
@@ -19,19 +19,21 @@
 # binary. Output is sorted by module path and carries no timestamps, so the same
 # inputs always produce a byte-identical file.
 #
-# It also fails the build if a GPL/AGPL module has crept into the link, because
-# such a binary cannot be distributed under Apache-2.0. Today that catches
-# exactly one thing: `-tags demoaudio` pulls in github.com/gotracker/opl2 (a
-# GPL-2.0-or-later port of DOSBox's dbopl) through gotracker/playback's core
-# packages, so a demoaudio binary is only conveyable under GPLv3. The release
-# workflow builds tag-free and stays clean. Set ALLOW_COPYLEFT=1 to generate
-# the file anyway for a local build you are not going to hand to anyone.
+# It also fails the build if a module that cannot live inside a GPL-3.0-or-later
+# work has crept into the link. Two cases: AGPL, which would impose its section
+# 13 network-source duty on the whole binary, and GPL without an "or later"
+# clause, since GPL-2.0-only is incompatible with GPLv3. Plain copyleft is fine
+# and is reported, not refused — `-tags demoaudio` pulls in
+# github.com/gotracker/opl2 (a GPL-2.0-or-later port of DOSBox's dbopl) through
+# gotracker/playback's core packages, and an "or later" grant upgrades to v3.
+# Set ALLOW_INCOMPATIBLE=1 to generate the file anyway for a local build you are
+# not going to hand to anyone.
 
 set -eu
 
 GO=${GO:-go}
 TAGS=${TAGS:-}
-ALLOW_COPYLEFT=${ALLOW_COPYLEFT:-0}
+ALLOW_INCOMPATIBLE=${ALLOW_INCOMPATIBLE:-0}
 tagflag=""
 [ -n "$TAGS" ] && tagflag="-tags=$TAGS"
 
@@ -49,8 +51,12 @@ trap 'rm -rf "$work"' EXIT INT TERM
 cat <<'EOF'
                         THIRD-PARTY SOFTWARE NOTICES
 
-matterbox is licensed under the Apache License, Version 2.0 — see the LICENSE
-and NOTICE files distributed alongside this one.
+matterbox is licensed under the GNU General Public License, version 3 or later
+— see the LICENSE and NOTICE files distributed alongside this one. The complete
+corresponding source of this binary, and of the exact revision it was built
+from, is at:
+
+    https://github.com/cornedor/matterbox
 
 The matterbox binary is statically linked, so it contains code from the
 third-party Go modules listed below. Each module remains under its own license,
@@ -102,9 +108,20 @@ while IFS='|' read -r path version dir; do
 	# grep: the MPL-2.0 text names the GPL/LGPL/AGPL in its "Secondary License"
 	# definition, so grepping whole files would flag every hashicorp module.
 	primary=$(head -1 "$work/files")
-	if head -8 "$primary" | grep -qiE 'GNU (AFFERO )?GENERAL PUBLIC LICENSE' &&
+	if head -8 "$primary" | grep -qi 'AFFERO GENERAL PUBLIC LICENSE'; then
+		echo "$path@$version (AGPL)" >> "$work/incompatible"
+	elif head -8 "$primary" | grep -qi 'GNU GENERAL PUBLIC LICENSE' &&
 		! head -8 "$primary" | grep -qi 'LESSER'; then
-		echo "$path@$version" >> "$work/copyleft"
+		# GPL rides along inside a GPL-3.0-or-later work, but only as an "or
+		# later" grant — GPL-2.0-only cannot be upgraded to v3. Don't look for
+		# that in the licence text: the GPL's own how-to-apply appendix contains
+		# "any later version", so every copy would match. The disposition is
+		# stated in the source headers, so ask those.
+		if grep -rq --include='*.go' 'any later version' "$dir" 2>/dev/null; then
+			echo "$path@$version" >> "$work/copyleft"
+		else
+			echo "$path@$version (GPL, no \"or later\" clause in its sources)" >> "$work/incompatible"
+		fi
 	fi
 
 	echo "================================================================================"
@@ -152,19 +169,21 @@ case ",$(printf '%s' "$TAGS" | tr ' ' ',')," in
 	if [ "$av_ok" != "1" ]; then
 		echo >&2
 		echo "third-party-licenses: this build links ffmpeg under \"$av_license\"." >&2
-		echo "  A binary containing it cannot be distributed under Apache-2.0." >&2
-		echo "  Build against an LGPL ffmpeg (configured without --enable-gpl)," >&2
+		echo "  A binary containing it cannot be conveyed at all — not under" >&2
+		echo "  matterbox's GPL-3.0-or-later, not under anything else." >&2
+		echo "  Rebuild against an ffmpeg configured without --enable-nonfree," >&2
 		echo "  drop -tags video, or do not distribute this binary." >&2
-		if [ "$ALLOW_COPYLEFT" != "1" ]; then
-			echo "  (set ALLOW_COPYLEFT=1 to generate anyway for local use)" >&2
+		if [ "$ALLOW_INCOMPATIBLE" != "1" ]; then
+			echo "  (set ALLOW_INCOMPATIBLE=1 to generate anyway for local use)" >&2
 			exit 1
 		fi
 	fi
 
-	# An LGPL ffmpeg may ship with an Apache-2.0 binary, but not silently: LGPL
-	# 2.1 section 4 wants the library named, its licence text available, and its
-	# source obtainable. Emit that section so a video build's bundle is complete
-	# rather than merely un-refused.
+	# LGPL and GPL ffmpeg both ship fine inside a GPL-3.0-or-later binary, but
+	# neither does so silently: LGPL 2.1 section 4 and GPL 3 section 6 both want
+	# the library named, its licence text available, and its source obtainable.
+	# Emit that section so a video build's bundle is complete rather than merely
+	# un-refused.
 	echo "================================================================================"
 	echo "FFmpeg (libav*) — linked C libraries, not a Go module"
 	echo "  version: $av_version"
@@ -184,8 +203,11 @@ case ",$(printf '%s' "$TAGS" | tr ' ' ',')," in
 	echo "which licence, are at https://www.ffmpeg.org/legal.html ."
 	echo
 	# Distros ship the text on disk; include it verbatim when we can find it,
-	# since a pointer is weaker than the copy the licence asks for.
-	for d in /usr/share/licenses/ffmpeg-libs /usr/share/licenses/ffmpeg \
+	# since a pointer is weaker than the copy the licence asks for. A release
+	# build has no distro copy — it compiled its own FFmpeg — so look where
+	# scripts/ffmpeg-static staged the texts first.
+	for d in ${FFMPEG_PREFIX:+"$FFMPEG_PREFIX/share/licenses/ffmpeg"} \
+		/usr/share/licenses/ffmpeg-libs /usr/share/licenses/ffmpeg \
 		/usr/share/doc/libavutil* /usr/share/doc/ffmpeg; do
 		[ -d "$d" ] || continue
 		# No cap: a distro ships several (GPLv2, GPLv3, LGPLv2.1, LGPLv3) and
@@ -202,18 +224,57 @@ case ",$(printf '%s' "$TAGS" | tr ' ' ',')," in
 		done
 		break
 	done
+
+	# dav1d and libjxl are compiled into that same FFmpeg by
+	# scripts/ffmpeg-static, so they are in the binary too and their notices
+	# have to travel with it. Nothing else in this file would ever see them:
+	# they are not Go modules, and FFmpeg reports only its own licence.
+	if [ -n "${FFMPEG_PREFIX:-}" ]; then
+		for d in "$FFMPEG_PREFIX/share/licenses"/*; do
+			[ -d "$d" ] || continue
+			name=$(basename "$d")
+			[ "$name" = ffmpeg ] && continue
+			echo "================================================================================"
+			echo "$name — compiled into the linked FFmpeg, not a Go module"
+			echo "================================================================================"
+			echo
+			echo "This binary links a static FFmpeg built with $name, so $name's code is"
+			echo "inside it. Its source is available from its own project; the licence"
+			echo "below is the copy shipped with the version that was built."
+			echo
+			for f in "$d"/*; do
+				[ -f "$f" ] || continue
+				echo "--- $(basename "$f") ---"
+				echo
+				cat "$f"
+				echo
+			done
+		done
+	fi
 	;;
 esac
 
+# Copyleft that fits: reported, not refused. Worth naming anyway — it is the
+# difference between a binary conveyable under any GPL-compatible terms and one
+# that must go out under the GPL itself.
 if [ -f "$work/copyleft" ]; then
 	echo >&2
-	echo "third-party-licenses: GPL/AGPL module(s) linked into this build:" >&2
+	echo "third-party-licenses: GPL module(s) linked into this build:" >&2
 	sed 's/^/    /' "$work/copyleft" >&2
+	echo "  Compatible with matterbox's GPL-3.0-or-later. The binary must be" >&2
+	echo "  conveyed under the GPL, with source available for the whole work." >&2
+fi
+
+if [ -f "$work/incompatible" ]; then
 	echo >&2
-	echo "  A binary containing these cannot be distributed under Apache-2.0." >&2
+	echo "third-party-licenses: module(s) that cannot live in a GPL-3.0-or-later work:" >&2
+	sed 's/^/    /' "$work/incompatible" >&2
+	echo >&2
+	echo "  AGPL would impose its section 13 network-source duty on the whole" >&2
+	echo "  binary; GPL-2.0-only is simply incompatible with GPLv3." >&2
 	echo "  Build without the offending tag, or do not distribute this binary." >&2
-	if [ "$ALLOW_COPYLEFT" != "1" ]; then
-		echo "  (set ALLOW_COPYLEFT=1 to generate anyway for local use)" >&2
+	if [ "$ALLOW_INCOMPATIBLE" != "1" ]; then
+		echo "  (set ALLOW_INCOMPATIBLE=1 to generate anyway for local use)" >&2
 		exit 1
 	fi
 fi

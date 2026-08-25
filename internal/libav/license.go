@@ -13,18 +13,19 @@
 //	--enable-gpl --enable-version3 GPL-3.0-or-later
 //	--enable-nonfree               not redistributable at all
 //
-// Dynamically linking LGPL FFmpeg from an Apache-2.0 program is fine: LGPL-2.1
-// section 4 lets you distribute a work that merely uses the library under terms
-// of your choice as long as the user can relink it against their own copy, which
-// linking a .so satisfies. GPL FFmpeg is a different matter — a binary linking
-// it is a combined work that has to be conveyed under the GPL, so it cannot be
-// handed out under matterbox's Apache-2.0.
+// matterbox is GPL-3.0-or-later, which makes all four free configurations fine:
+// LGPL is GPL-compatible, and every GPL configuration FFmpeg reports is "or
+// later", so it upgrades to v3. That was not true while matterbox was
+// Apache-2.0 — a GPL FFmpeg then produced a binary nobody could hand out under
+// the project's own license, and since almost every distribution builds FFmpeg
+// with --enable-gpl, that was most builds. It is why this package exists.
 //
-// So the same source, built on two machines, can produce one binary that is
-// distributable and one that is not, and nothing in the source records which.
-// FFmpeg knows the answer at runtime (avutil_license), so ask it: `matterbox
-// version` prints it, and scripts/third-party-licenses refuses to build a
-// license bundle for a copyleft-contaminated build.
+// --enable-nonfree is the one remaining dead end: such a build may not be
+// conveyed on any terms, by us or by anyone. So the question is now narrow, but
+// it still has to be asked, and only the linked library can answer it
+// (avutil_license). `matterbox version` prints the answer, and
+// scripts/third-party-licenses refuses to build a license bundle for a build
+// that cannot be conveyed at all.
 package libav
 
 import "strings"
@@ -43,10 +44,11 @@ type Class int
 const (
 	// ClassNone: no libav linked, so it constrains nothing.
 	ClassNone Class = iota
-	// ClassPermissive: LGPL. Dynamically linked, an Apache-2.0 binary may ship.
+	// ClassPermissive: LGPL. GPL-compatible, so it rides along inside a
+	// GPL-3.0-or-later binary; its notice and source offer go in the bundle.
 	ClassPermissive
-	// ClassCopyleft: GPL. The whole binary would have to be conveyed under the
-	// GPL, so not under Apache-2.0.
+	// ClassCopyleft: GPL. Compatible with matterbox's own GPL-3.0-or-later,
+	// because every GPL license FFmpeg reports is an "or later" one.
 	ClassCopyleft
 	// ClassForbidden: built --enable-nonfree. Not redistributable on any terms.
 	ClassForbidden
@@ -72,9 +74,12 @@ func (c Class) String() string {
 }
 
 // Distributable reports whether a binary carrying this libav may be handed out
-// under matterbox's Apache-2.0 license. Unknown counts as no.
+// under matterbox's GPL-3.0-or-later license. Unknown counts as no.
+//
+// Listed positively rather than as "not forbidden": a class added later should
+// have to be admitted deliberately, not let through by a negation.
 func (c Class) Distributable() bool {
-	return c == ClassNone || c == ClassPermissive
+	return c == ClassNone || c == ClassPermissive || c == ClassCopyleft
 }
 
 // Class classifies the license string FFmpeg reports. The strings come from
@@ -85,7 +90,9 @@ func (c Class) Distributable() bool {
 // Order matters. "nonfree" is checked first because such a build is out of
 // bounds regardless of what else the string says, and GPL is checked before
 // LGPL because "LGPL" contains "GPL" — a substring test in the other order
-// would wave a GPL build straight through.
+// would report a GPL build as LGPL. Nothing now hangs on telling those two
+// apart for distribution, but the bundle names the library's own license, and
+// naming the wrong one is still wrong.
 func (i Info) Class() Class {
 	if !i.Linked {
 		return ClassNone
@@ -119,8 +126,11 @@ func (i Info) Summary() string {
 	if i.Version != "" {
 		s = i.Version + ", " + lic
 	}
-	if !i.Class().Distributable() {
-		s += " — this binary is NOT distributable under Apache-2.0"
+	switch i.Class() {
+	case ClassForbidden:
+		s += " — nonfree: this binary may NOT be distributed at all"
+	case ClassUnknown:
+		s += " — unrecognised license: treat this binary as not distributable"
 	}
 	return s
 }

@@ -1,21 +1,37 @@
 matterbox
 Copyright 2026 Corné Dorrestijn
 
-Licensed under the Apache License, Version 2.0 (the "License"); you may not
-use this software except in compliance with the License. A copy of the
-License is in the LICENSE file at the root of this repository.
+matterbox is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. A copy of the License is in the LICENSE file at the root of this
+repository.
+
+matterbox is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+Up to and including v1.2.1 matterbox was released under the Apache License 2.0.
+Those releases stay available under those terms, and every contribution made
+before the change remains licensed that way by its author; Apache-2.0 section 2
+is what permits conveying that work as part of this GPL-3.0-or-later one.
 
 Much of this codebase was written with AI assistance under human review.
 
 --------------------------------------------------------------------------------
-Third-party content included in this repository
+Third-party artwork — an exception to the GNU GPL
 --------------------------------------------------------------------------------
 
-The Apache-2.0 license above covers matterbox's own source. It does NOT cover
-the artistic work below: it remains the property of its author and is included
-here under the author's own terms, which are narrower than Apache-2.0 (in
-particular they do not grant the right to modify or sublicense the work). If
-you redistribute matterbox, these terms travel with this file.
+The GNU GPL above covers matterbox's own source. It does NOT cover the artistic
+work below: it remains the property of its author and is included here under the
+author's own terms, which are narrower than the GPL (in particular they do not
+grant the right to modify or sublicense the work).
+
+As an explicit additional permission under GNU GPL version 3 section 7, you have
+permission to convey matterbox, in source or binary form, while it contains this
+file. It stays governed solely by its author's terms, which travel with it; this
+permission grants no GPL rights over it, and removing or replacing it affects
+nothing else in matterbox.
 
 internal/welcome/demo.xm — "Paradox #3"
     Copyright dubmood / Razor1911. Used as the `--demo` soundtrack, and

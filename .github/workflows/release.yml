@@ -5,11 +5,16 @@ name: Release
 #
 #   git tag -a v1.0.0 -m "v1.0.0" && git push origin v1.0.0
 #
-# The binaries are pure Go (CGO_ENABLED=0), so they run anywhere on their
-# platform — but they carry neither optional feature (the --demo soundtrack
-# and inline video need ALSA/ffmpeg at build time). Those still want
-# `make install` from source; `matterbox --version` prints which tags a binary
-# was built with.
+# The binaries carry inline video: FFmpeg is compiled from source per platform
+# (scripts/ffmpeg-static) and linked into them, so nothing has to be installed
+# alongside. That needs cgo, which needs a native runner per target — hence the
+# runner column in the matrix instead of one machine cross-compiling four ways.
+# The Linux binaries are then linked fully static, so they keep running on
+# distributions older than the runner that built them.
+#
+# The --demo soundtrack is still not included: it needs ALSA, which would put a
+# shared library back into a binary whose whole point is not needing one.
+# `matterbox --version` prints which tags a binary was built with.
 on:
   push:
     tags: ["v*"]
@@ -28,11 +33,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { goos: linux, goarch: amd64 }
-          - { goos: linux, goarch: arm64 }
-          - { goos: darwin, goarch: amd64 }
-          - { goos: darwin, goarch: arm64 }
-    runs-on: ubuntu-latest
+          - { goos: linux, goarch: amd64, runner: ubuntu-latest }
+          - { goos: linux, goarch: arm64, runner: ubuntu-24.04-arm }
+          # macos-15-intel is the last x86_64 image Actions offers (through
+          # August 2027); macos-latest is Apple silicon.
+          - { goos: darwin, goarch: amd64, runner: macos-15-intel }
+          - { goos: darwin, goarch: arm64, runner: macos-latest }
+    runs-on: ${{ matrix.runner }}
+    env:
+      FFMPEG_PREFIX: ${{ github.workspace }}/.ffmpeg-static
+      # Everything compiled on a mac — FFmpeg, libjxl, the cgo objects — has to
+      # keep running on macs older than the runner. 12.0 is Go's own floor.
+      MACOSX_DEPLOYMENT_TARGET: "12.0"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -42,25 +54,103 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+
+      - name: install the build tools
+        run: |
+          if [ "${{ matrix.goos }}" = linux ]; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends nasm cmake pkg-config meson ninja-build
+          else
+            # Ask the tool, not brew: the runner images already carry most of
+            # these, and pkg-config is the formula brew renamed to pkgconf, so a
+            # `brew list pkg-config` can miss one that is right there on PATH.
+            command -v nasm >/dev/null || brew install nasm
+            command -v cmake >/dev/null || brew install cmake
+            command -v meson >/dev/null || brew install meson
+            command -v ninja >/dev/null || brew install ninja
+            command -v pkg-config >/dev/null || brew install pkgconf
+          fi
+
+      # Building FFmpeg is the expensive part of this job (and libjxl with it),
+      # so it is cached per runner image. The key names both versions: bump
+      # either in scripts/ffmpeg-static and the cache misses on purpose.
+      - name: restore the static ffmpeg
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.FFMPEG_PREFIX }}
+          key: ffmpeg-static-n8.0-dav1d-1.5.1-libjxl-v0.11.1-${{ matrix.runner }}
+
+      - name: build the static ffmpeg
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        run: scripts/ffmpeg-static "$FFMPEG_PREFIX"
+
       - name: build
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: "0"
+          CGO_ENABLED: "1"
+          PKG_CONFIG: ${{ github.workspace }}/scripts/pkg-config-static
+          PKG_CONFIG_LIBDIR: ${{ github.workspace }}/.ffmpeg-static/lib/pkgconfig
           VERSION: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           mkdir -p dist/pkg
-          go build -trimpath \
-            -ldflags "-s -w -X matterbox/internal/cli.version=${VERSION}" \
-            -o dist/pkg/matterbox .
+          tags=video
+          ldflags="-s -w -X matterbox/internal/cli.version=${VERSION}"
+          if [ "$GOOS" = linux ]; then
+            # A fully static binary can't use glibc's NSS, which is dlopen-based:
+            # netgo takes Go's own resolver and osusergo its own user lookup, so
+            # nothing reaches for a shared object that isn't there.
+            tags="$tags,netgo,osusergo"
+            ldflags="$ldflags -extldflags -static"
+          fi
+          go build -trimpath -tags "$tags" -ldflags "$ldflags" -o dist/pkg/matterbox .
+
+      # The point of the whole job: the binary must contain FFmpeg rather than
+      # look for one. A dynamically linked libav here would run on the runner
+      # and fail on everyone else's machine, which no later step would notice.
+      - name: the binary must carry ffmpeg, not need it
+        run: |
+          ./dist/pkg/matterbox --version
+          v=$(./dist/pkg/matterbox --version)
+          echo "$v" | grep -qE '^tags: +.*video' || { echo "built without the video tag"; exit 1; }
+          echo "$v" | grep -q '^ffmpeg:' || { echo "no ffmpeg linked in"; exit 1; }
+          echo "$v" | grep -q 'jxl' || { echo "libjxl did not make it into ffmpeg"; exit 1; }
+          if [ "${{ matrix.goos }}" = linux ]; then
+            ldd dist/pkg/matterbox 2>&1 | grep -q 'not a dynamic executable' || {
+              echo "the linux binary is not static:"; ldd dist/pkg/matterbox; exit 1; }
+          else
+            if otool -L dist/pkg/matterbox | grep -qE 'libav|libsw|libjxl'; then
+              echo "the binary links ffmpeg dynamically:"; otool -L dist/pkg/matterbox; exit 1
+            fi
+          fi
+
+      # A release that silently lost a format is the failure this whole job is
+      # most likely to produce: the decoders come from the FFmpeg built above,
+      # and a missing one shows up as a paperclip, not as a build error. The
+      # image and video tests decode real files, so run them against exactly the
+      # library being shipped.
+      - name: test against the ffmpeg being shipped
+        env:
+          CGO_ENABLED: "1"
+          PKG_CONFIG: ${{ github.workspace }}/scripts/pkg-config-static
+          PKG_CONFIG_LIBDIR: ${{ github.workspace }}/.ffmpeg-static/lib/pkgconfig
+        run: go test -tags video ./internal/ui/ ./internal/libav/
+
+      - name: bundle the licences and pack
+        env:
+          CGO_ENABLED: "1"
+          PKG_CONFIG: ${{ github.workspace }}/scripts/pkg-config-static
+          PKG_CONFIG_LIBDIR: ${{ github.workspace }}/.ffmpeg-static/lib/pkgconfig
+          VERSION: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
           cp README.md LICENSE NOTICE dist/pkg/
-          # The binary is statically linked, so the tarball has to carry the
-          # licenses of everything linked into it. Generated per-platform (the
-          # module set differs between linux and darwin) and tag-free, matching
-          # the build above — the script fails the job if a GPL module ever
-          # lands in the link.
-          scripts/third-party-licenses > dist/pkg/THIRD_PARTY_LICENSES
-          tar -czf "dist/matterbox_${VERSION}_${GOOS}_${GOARCH}.tar.gz" -C dist/pkg .
+          # The binary carries every module it links plus FFmpeg itself, so the
+          # tarball carries their licences. TAGS=video matches the build above —
+          # the script asks the linked FFmpeg what it is and fails the job on
+          # anything that can't be conveyed.
+          TAGS=video scripts/third-party-licenses > dist/pkg/THIRD_PARTY_LICENSES
+          tar -czf "dist/matterbox_${VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}.tar.gz" -C dist/pkg .
       - uses: actions/upload-artifact@v4
         with:
           name: matterbox-${{ matrix.goos }}-${{ matrix.goarch }}

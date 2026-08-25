@@ -43,6 +43,20 @@ var jxlOK = astiav.FindDecoder(astiav.CodecIDJpegxl) != nil &&
 // other libav format is settled by the build tag.
 func jxlDecodable() bool { return jxlOK }
 
+// av1OK is whether this ffmpeg can decode AV1 — and so AVIF — in software.
+//
+// FindDecoder(CodecIDAv1) is the wrong question, and answers yes on builds that
+// cannot decode a single .avif: ffmpeg's own "av1" decoder is a hardware
+// wrapper, so with no accelerator behind it every packet comes back ENOSYS.
+// Software AV1 is always an external library, and either of the two will do.
+var av1OK = astiav.FindDecoderByName("libdav1d") != nil ||
+	astiav.FindDecoderByName("libaom-av1") != nil
+
+// avifDecodable reports whether this binary can decode AVIF. Same runtime
+// question as JPEG XL, for the same reason: the decoder is an optional library
+// the build tag says nothing about.
+func avifDecodable() bool { return av1OK }
+
 // decodeVideoFrames decodes a short clip into the same []image.Image +
 // []time.Duration a GIF produces, so the Kitty native-animation pipeline plays
 // it unchanged. It caps the clip hard (see video.go's constants): decimate to

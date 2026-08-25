@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -35,10 +36,10 @@ func newUpgradeCmd() *cobra.Command {
 		Short: "Install the latest matterbox over this one",
 		Long: "Replace this binary with the current release, by running the same installer\n" +
 			"the website hands out (https://matterbox.work/install.sh).\n\n" +
-			"How it rebuilds matters, so it is worked out rather than guessed: a binary\n" +
-			"compiled with optional features — inline video, the --demo soundtrack — is\n" +
-			"rebuilt from source so it keeps them, and one without is replaced by the\n" +
-			"release binary. `matterbox --version` prints which of the two you have.\n\n" +
+			"How it rebuilds matters, so it is worked out rather than guessed: the release\n" +
+			"binaries carry inline video, so a build with that is simply replaced by one.\n" +
+			"A build with the --demo soundtrack is rebuilt from source, because no release\n" +
+			"has it. `matterbox --version` prints which you have.\n\n" +
 			"It installs next to the binary it replaces, whatever `--dir` that took.\n\n" +
 			"  matterbox upgrade\n" +
 			"  matterbox upgrade --check          # say what is current, change nothing\n" +
@@ -144,11 +145,34 @@ func runUpgrade(ctx context.Context, out io.Writer, o upgradeOpts) error {
 	return runInstaller(ctx, script, args)
 }
 
+// releaseTags is what the prebuilt release binaries are compiled with — keep it
+// in step with the build step in .github/workflows/release.yml. netgo and
+// osusergo are in there because the Linux releases are linked static; they are
+// not features anyone could notice losing, but they are tags, and a build that
+// carries them must not be sent down the source path for it.
+var releaseTags = map[string]bool{
+	"video":    true,
+	"netgo":    true,
+	"osusergo": true,
+}
+
+// keptByRelease reports whether a release binary would still have everything
+// this build was compiled with.
+func keptByRelease(tags string) bool {
+	for _, t := range strings.Split(tags, ",") {
+		if t = strings.TrimSpace(t); t != "" && !releaseTags[t] {
+			return false
+		}
+	}
+	return true
+}
+
 // installerArgs works out what to tell the installer. The mode is the decision
-// worth getting right: the release binaries are pure Go and carry neither
-// optional feature, so replacing a build that has them with one that does not
-// would silently take away inline video and the --demo soundtrack. The build
-// itself is the only thing that knows, and it recorded it.
+// worth getting right: a build carrying an optional feature the release binaries
+// don't have must be rebuilt from source, or the upgrade would silently take
+// that feature away. Today that means the --demo soundtrack — the releases carry
+// inline video, so a video build can simply take one. The build itself is the
+// only thing that knows what it has, and it recorded it.
 func installerArgs(stamp buildStamp, o upgradeOpts) ([]string, error) {
 	args := []string{}
 	switch {
@@ -156,7 +180,7 @@ func installerArgs(stamp buildStamp, o upgradeOpts) ([]string, error) {
 		args = append(args, "--source")
 	case o.prebuilt:
 		args = append(args, "--prebuilt")
-	case stamp.tags != "":
+	case !keptByRelease(stamp.tags):
 		args = append(args, "--source")
 	default:
 		args = append(args, "--prebuilt")

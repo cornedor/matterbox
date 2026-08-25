@@ -1,0 +1,163 @@
+#!/bin/sh
+# Build the static FFmpeg that a release binary links, and install it into
+# $1 (default $HOME/ffmpeg-static). Used by .github/workflows/release.yml and
+# by the CI job that proves the same recipe still links.
+#
+#   scripts/ffmpeg-static ~/ffmpeg-static
+#
+# Why build it at all: matterbox's `video` tag binds FFmpeg through go-astiav,
+# and astiav tracks exactly one FFmpeg release (see FFMPEG_VERSION below). No
+# distribution ships that version everywhere, and a release binary cannot depend
+# on the machine it lands on having any FFmpeg at all — so the libraries are
+# compiled here and linked into the binary.
+#
+# The configure line is deliberately narrow:
+#
+#   --disable-autodetect  nothing gets linked because the build machine happened
+#                         to have its headers. Without it a Fedora box picks up
+#                         VAAPI and a mac picks up VideoToolbox, and the binary
+#                         then needs those libraries wherever it runs. This is
+#                         the flag that makes the four platforms' builds alike.
+#   --disable-encoders    matterbox only ever decodes. Same for muxers and
+#   --disable-muxers      filters: astiav needs libavfilter to link, not any
+#   --disable-filters     filter to exist. Together they take ~15MB off.
+#   --enable-pic          the archives get linked into a PIE.
+#
+# Two external decoders are worth the trouble and get built here first, because
+# without them the binary quietly loses formats it advertises:
+#
+#   libdav1d  AV1, and so AVIF. FFmpeg's own "av1" decoder is hwaccel-only — with
+#             no VAAPI or VideoToolbox to hand it a frame it returns ENOSYS — so
+#             a build without dav1d fails on every .avif. BSD-2, meson build.
+#   libjxl    JPEG XL, the one format FFmpeg has no decoder for at all. BSD-3,
+#             cmake build, vendors its own highway and brotli.
+#
+# DAV1D=0 / JXL=0 skip them.
+#
+# What the narrow line still costs: no zlib (a handful of matroska/mov files
+# with compressed headers) and no hardware decoding. Clips in a chat window are
+# small; software decoding is not the bottleneck.
+#
+# The licence: this is a plain LGPL FFmpeg (no --enable-gpl), and matterbox
+# links it statically, which LGPL 2.1 section 6 would normally answer with "then
+# ship relinkable object files". It doesn't have to: matterbox is
+# GPL-3.0-or-later, and LGPL section 3 permits taking a copy of the library
+# under the GPL instead. The whole binary then goes out under the GPL, with the
+# source of every part of it published — which is the arrangement the tarball
+# already documents.
+set -eu
+
+PREFIX=${1:-$HOME/ffmpeg-static}
+# The release go-astiav declares compatibility with. Bump it together with the
+# astiav dependency in go.mod and FFMPEG_VERSION in .github/workflows/ci.yml.
+FFMPEG_VERSION=${FFMPEG_VERSION:-n8.0}
+SRC=${FFMPEG_SRC:-${TMPDIR:-/tmp}/ffmpeg-src-$FFMPEG_VERSION}
+JXL=${JXL:-1}
+LIBJXL_VERSION=${LIBJXL_VERSION:-v0.11.1}
+JXL_SRC=${LIBJXL_SRC:-${TMPDIR:-/tmp}/libjxl-src-$LIBJXL_VERSION}
+DAV1D=${DAV1D:-1}
+DAV1D_VERSION=${DAV1D_VERSION:-1.5.1}
+DAV1D_SRC=${DAV1D_SRC:-${TMPDIR:-/tmp}/dav1d-src-$DAV1D_VERSION}
+jobs=$(nproc 2>/dev/null || sysctl -n hw.ncpu)
+
+if [ -f "$PREFIX/lib/pkgconfig/libavcodec.pc" ]; then
+	echo "ffmpeg-static: $PREFIX already has a build, leaving it alone" >&2
+	exit 0
+fi
+
+dav1dflag=
+if [ "$DAV1D" = 1 ]; then
+	# --libdir=lib: meson otherwise picks a multiarch directory on some
+	# distributions, and the ffmpeg configure below looks in exactly one place.
+	[ -d "$DAV1D_SRC" ] || git clone --depth 1 --branch "$DAV1D_VERSION" \
+		https://code.videolan.org/videolan/dav1d.git "$DAV1D_SRC"
+	# meson refuses to configure into a directory it already configured, which
+	# is what a retry after a failed run looks like.
+	wipe=
+	[ -d "$DAV1D_SRC/build" ] && wipe=--wipe
+	meson setup $wipe "$DAV1D_SRC/build" "$DAV1D_SRC" \
+		--prefix="$PREFIX" --libdir=lib \
+		--default-library=static --buildtype=release \
+		-Denable_tools=false -Denable_tests=false
+	ninja -C "$DAV1D_SRC/build" install
+	dav1dflag=--enable-libdav1d
+fi
+
+jxlflag=
+extralibs=
+if [ "$JXL" = 1 ]; then
+	# libjxl is C++, and its libjxl_threads.pc names neither the C++ runtime nor
+	# (unlike libjxl.pc) anything that pulls it in. Every link that touches it —
+	# ffmpeg's own configure test first, then cgo's — therefore has to be told,
+	# or it fails on std::thread with configure reporting the library as simply
+	# "not found". --extra-libs carries it into the .pc files ffmpeg writes, so
+	# the matterbox build inherits it.
+	case "$(uname -s)" in
+	Darwin) extralibs=-lc++ ;;
+	*) extralibs=-lstdc++ ;;
+	esac
+	# --recursive: highway and brotli are submodules, and building them here is
+	# the point — a system copy would be a shared library the release binary
+	# can't carry. CMAKE_INSTALL_LIBDIR is pinned to lib because cmake defaults
+	# it to lib64 on some distributions, and the ffmpeg configure below looks in
+	# exactly one place.
+	[ -d "$JXL_SRC" ] || git clone --recursive --depth 1 \
+		--branch "$LIBJXL_VERSION" https://github.com/libjxl/libjxl "$JXL_SRC"
+	cmake -S "$JXL_SRC" -B "$JXL_SRC/build" \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DCMAKE_INSTALL_PREFIX="$PREFIX" \
+		-DCMAKE_INSTALL_LIBDIR=lib \
+		-DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+		-DBUILD_SHARED_LIBS=OFF -DBUILD_TESTING=OFF \
+		-DJPEGXL_ENABLE_TOOLS=OFF -DJPEGXL_ENABLE_BENCHMARK=OFF \
+		-DJPEGXL_ENABLE_EXAMPLES=OFF -DJPEGXL_ENABLE_MANPAGES=OFF \
+		-DJPEGXL_ENABLE_JNI=OFF -DJPEGXL_ENABLE_SJPEG=OFF \
+		-DJPEGXL_ENABLE_OPENEXR=OFF -DJPEGXL_ENABLE_DOXYGEN=OFF
+	cmake --build "$JXL_SRC/build" -j"$jobs"
+	cmake --install "$JXL_SRC/build"
+	jxlflag=--enable-libjxl
+fi
+
+[ -d "$SRC" ] || git clone --depth 1 --branch "$FFMPEG_VERSION" \
+	https://github.com/FFmpeg/FFmpeg "$SRC"
+
+cd "$SRC"
+# --pkg-config-flags=--static so ffmpeg resolves libjxl the way the final link
+# will have to: through its Requires (highway, brotli), which a non-static
+# resolution leaves for a dynamic loader that won't be there.
+PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}" \
+./configure --prefix="$PREFIX" \
+	--disable-autodetect \
+	--disable-shared --enable-static --enable-pic \
+	--disable-programs --disable-doc --disable-debug \
+	--disable-encoders --disable-muxers --disable-filters \
+	--disable-devices --disable-network \
+	--pkg-config-flags=--static $dav1dflag $jxlflag \
+	${extralibs:+--extra-libs=$extralibs}
+make -j"$jobs"
+make install
+
+# Everything built here ends up inside the release binary, so its licence text
+# has to travel with that binary. Stage the texts next to the libraries and
+# scripts/third-party-licenses picks them up from $FFMPEG_PREFIX, the same way
+# it reads a distribution's /usr/share/licenses for a system FFmpeg.
+mkdir -p "$PREFIX/share/licenses/ffmpeg"
+for f in COPYING.LGPLv2.1 COPYING.LGPLv3 COPYING.GPLv2 COPYING.GPLv3 LICENSE.md; do
+	[ -f "$SRC/$f" ] && cp "$SRC/$f" "$PREFIX/share/licenses/ffmpeg/"
+done
+if [ "$DAV1D" = 1 ]; then
+	mkdir -p "$PREFIX/share/licenses/dav1d"
+	[ -f "$DAV1D_SRC/COPYING" ] && cp "$DAV1D_SRC/COPYING" "$PREFIX/share/licenses/dav1d/"
+fi
+if [ "$JXL" = 1 ]; then
+	mkdir -p "$PREFIX/share/licenses/libjxl"
+	[ -f "$JXL_SRC/LICENSE" ] && cp "$JXL_SRC/LICENSE" "$PREFIX/share/licenses/libjxl/"
+	# libjxl links its vendored copies of these in, so their notices ride along
+	# with it rather than appearing anywhere else.
+	[ -f "$JXL_SRC/third_party/highway/LICENSE" ] &&
+		cp "$JXL_SRC/third_party/highway/LICENSE" "$PREFIX/share/licenses/libjxl/LICENSE.highway"
+	[ -f "$JXL_SRC/third_party/brotli/LICENSE" ] &&
+		cp "$JXL_SRC/third_party/brotli/LICENSE" "$PREFIX/share/licenses/libjxl/LICENSE.brotli"
+fi
+
+echo "ffmpeg-static: installed $FFMPEG_VERSION into $PREFIX" >&2

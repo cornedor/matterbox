@@ -240,9 +240,10 @@ third-party-licenses: ## Write THIRD_PARTY_LICENSES for a release build (LICENSE
 	@TAGS='$(LICENSE_TAGS)' scripts/third-party-licenses > THIRD_PARTY_LICENSES
 	@echo "wrote THIRD_PARTY_LICENSES ($(if $(LICENSE_TAGS),tags: $(LICENSE_TAGS),tag-free, as released))"
 
-# Deliberately NOT $(TAGS): release tarballs are built tag-free, so that's what
-# this describes by default. Auto-detected tags would make the target fail on
-# any machine that can build demoaudio (which links GPL code — see the script).
+# Deliberately NOT $(TAGS): this describes a tag-free build by default, which is
+# the one a plain `go build` produces. Release tarballs are built with
+# LICENSE_TAGS=video (see .github/workflows/release.yml); pass that here to
+# describe one of those, or your own tag set to describe your own build.
 LICENSE_TAGS ?=
 
 .PHONY: version

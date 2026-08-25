@@ -9,7 +9,11 @@
 //	version=8.1.2
 //	license=GPL version 3 or later
 //	class=gpl
-//	distributable=0
+//	distributable=1
+//
+// distributable is about matterbox's own GPL-3.0-or-later: a GPL ffmpeg is
+// compatible with it, so only an --enable-nonfree build (or one whose license
+// string we don't recognise) reports 0.
 //
 // scripts/third-party-licenses parses `class` and `distributable`. It always
 // exits 0 — a probe that cannot answer is a different failure from a probe that

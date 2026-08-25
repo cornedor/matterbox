@@ -107,31 +107,52 @@ func versionBlock() string {
 		tags = "(none)"
 	}
 	fmt.Fprintf(&b, "tags:      %s\n", tags)
+	// matterbox's own terms. Printing them is the cheap way to satisfy GPLv3
+	// section 5(d) for an interactive program, and it answers the question the
+	// ffmpeg line below exists to complicate: what may I do with this binary?
+	fmt.Fprintf(&b, "license:   GPL-3.0-or-later (see LICENSE)\n")
 	// A `video` build links the system's ffmpeg, whose license depends on how
-	// that ffmpeg was configured — so two binaries from the same commit can
-	// differ on whether they may be handed to anyone. Only the binary itself
-	// knows, so it says. Omitted entirely when no libav is linked, which is
+	// that ffmpeg was configured. Every free configuration is GPL-compatible,
+	// so this is no longer a question of whether the binary may be handed out —
+	// but the bundle has to name the right license, and an --enable-nonfree
+	// build may not be conveyed at all. Only the binary itself knows which it
+	// linked, so it says. Omitted entirely when no libav is linked, which is
 	// every release build.
 	if sum := libav.Linked().Summary(); sum != "" {
 		fmt.Fprintf(&b, "ffmpeg:    %s\n", sum)
 		// Which image formats that ffmpeg unlocks is not the same question as
-		// whether it is linked. HEIC and AVIF ride on decoders every ffmpeg has;
-		// JPEG XL needs an optional --enable-libjxl, so it has to be asked. This
-		// line is the only way a user finds out why a .jxl shows a paperclip.
-		fmt.Fprintf(&b, "images:    heic, avif%s\n", jxlNote())
+		// whether it is linked. HEIC rides on HEVC, which every ffmpeg decodes;
+		// AVIF and JPEG XL each need an optional external library, so each has to
+		// be asked. This line is the only way a user finds out why a .jxl or an
+		// .avif shows a paperclip.
+		fmt.Fprintf(&b, "images:    %s\n", imageFormats())
 	}
 	fmt.Fprintf(&b, "go:        %s %s/%s\n", runtime.Version(), runtime.GOOS, runtime.GOARCH)
 	fmt.Fprintf(&b, "telemetry: %s\n", telemetryState())
 	return b.String()
 }
 
-// jxlNote completes the "images:" line with JPEG XL's availability, which depends
-// on the linked ffmpeg rather than on the build.
-func jxlNote() string {
-	if ui.JPEGXLDecodable() {
-		return ", jxl"
+// imageFormats is the "images:" line: what the linked ffmpeg actually decodes,
+// rather than what the build tag implies. The missing ones are named with the
+// library that would have supplied them, because "no avif" on its own sends
+// people looking for a matterbox setting that does not exist.
+func imageFormats() string {
+	formats := "heic"
+	var missing []string
+	if ui.AVIFDecodable() {
+		formats += ", avif"
+	} else {
+		missing = append(missing, "avif needs libdav1d")
 	}
-	return " (no jxl — this ffmpeg lacks libjxl)"
+	if ui.JPEGXLDecodable() {
+		formats += ", jxl"
+	} else {
+		missing = append(missing, "jxl needs libjxl")
+	}
+	if len(missing) > 0 {
+		formats += " (" + strings.Join(missing, ", ") + ")"
+	}
+	return formats
 }
 
 // telemetryState is the "telemetry:" line: whether this binary would report

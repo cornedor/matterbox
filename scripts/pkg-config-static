@@ -1,0 +1,49 @@
+#!/bin/sh
+# pkg-config, but resolved for static linking. Point cgo at it when linking a
+# static FFmpeg into a release binary:
+#
+#   PKG_CONFIG=scripts/pkg-config-static \
+#   PKG_CONFIG_LIBDIR=~/ffmpeg-static/lib/pkgconfig \
+#   go build -tags video .
+#
+# cgo runs `pkg-config --libs` with no flags of its own and offers no way to add
+# any, so a static build otherwise links against Libs alone and misses both
+# Libs.private (the C libraries FFmpeg itself needs) and the transitive
+# Requires.private (libavcodec needs libavutil and libswresample, and with
+# shared objects the dynamic linker would have supplied those). cmd/go honours
+# $PKG_CONFIG as the program to run, which is the seam this uses.
+#
+# PKG_CONFIG_LIBDIR rather than PKG_CONFIG_PATH in that example on purpose: PATH
+# prepends to the system directories, so a build machine that also has FFmpeg
+# installed — most developer machines — could resolve some of the seven packages
+# against the system's shared libraries and some against ours. LIBDIR replaces
+# the search path outright, so either every package comes from the static build
+# or the build fails saying which one didn't.
+set -eu
+
+libs=$(pkg-config --static "$@")
+
+# libjxl is C++, and a static link is order-sensitive in a way a shared one is
+# not: the linker takes each archive once, in the order given, and keeps only
+# what is unresolved so far. pkg-config puts the C++ runtime where libjxl.pc
+# asks for it, which is *before* libjxl_threads.a — so std::thread lands
+# unresolved and the build dies in libjxl's thread pool. So move it to the end
+# rather than adding one there: cgo deduplicates -l flags keeping the first
+# occurrence, which silently drops an appended duplicate and leaves the original
+# in the wrong place. Only done when libjxl is actually in the line, so a build
+# without it links exactly what pkg-config said.
+case " $libs " in
+*-ljxl*)
+	case "$(uname -s)" in
+	Darwin) cxx=-lc++ ;;
+	*) cxx=-lstdc++ ;;
+	esac
+	out=
+	for f in $libs; do
+		[ "$f" = "$cxx" ] || out="${out:+$out }$f"
+	done
+	libs="$out $cxx"
+	;;
+esac
+
+printf '%s\n' "$libs"

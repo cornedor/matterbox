@@ -157,6 +157,10 @@ func isStillImageAttachment(f *model.FileInfo) bool {
 // .jxl quietly keeping its paperclip.
 func JPEGXLDecodable() bool { return jxlDecodable() }
 
+// AVIFDecodable reports whether this binary can decode AVIF, for the same
+// reason and the same caller.
+func AVIFDecodable() bool { return avifDecodable() }
+
 // isStillImageURL reports whether a URL's path ends in a still-image extension
 // this build can decode. The query string — which a CDN like Giphy stuffs with
 // cache keys — is ignored.

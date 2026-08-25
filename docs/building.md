@@ -19,15 +19,18 @@ To unlock video, install your distribution's FFmpeg development headers
 The `video` tag also decides whether **HEIC, AVIF and JPEG XL images** render: each
 is a video codec (HEVC, AV1, JXL) in an image container, so FFmpeg is the decoder
 either way. Unlike clips they need no animation setting — a still renders as soon as
-the tag is there. PNG, JPEG, GIF, WebP, BMP and TIFF need no tag at all. Note the
-licence consequence below: a tag-free release binary shows a phone photo as a
-paperclip, which is the trade the release makes deliberately.
+the tag is there. PNG, JPEG, GIF, WebP, BMP and TIFF need no tag at all.
 
-JPEG XL has one extra condition. HEVC and AV1 are native FFmpeg decoders, present
-wherever FFmpeg is; JPEG XL goes through libjxl, an *optional* `--enable-libjxl`
-external library. So the same commit and the same tag can produce a binary that
-reads `.jxl` and one that does not, and only the linked library knows which — ask
-it:
+The release binaries are built with the tag and carry FFmpeg inside them
+(`scripts/ffmpeg-static`), so none of this applies to one of those — they decode all
+of it out of the box. It only applies to a build of your own.
+
+Two of the three formats need more than the tag, because FFmpeg alone cannot decode
+them. **JPEG XL** goes through libjxl (`--enable-libjxl`), and **AVIF** through
+libdav1d — FFmpeg's own AV1 decoder only drives hardware, so without dav1d an `.avif`
+fails outright. Both are optional external libraries, so the same commit and the same
+tag produce a binary that reads them and one that doesn't, depending on how your
+distribution built its FFmpeg. Only the linked library knows which you have — ask it:
 
 ```sh
 matterbox --version    # the "images:" line names what this binary can decode
@@ -39,26 +42,29 @@ telemetry. Worth pasting into a bug report.
 
 ## Distributing a binary you built
 
-Running a tagged build yourself is unrestricted. Giving one to someone else is where the
-tags start to matter, because two of them pull in code that matterbox's Apache-2.0
-licence can't cover:
+matterbox is GPL-3.0-or-later, so a binary you build is yours to hand out — a tagged
+one included. Both optional features link copyleft C code, and both are compatible
+with that licence:
 
-- **`-tags demoaudio`** links `github.com/gotracker/opl2` — a GPL-2.0-or-later port of
-  DOSBox's OPL synth — by way of the tracker library's core packages. A demoaudio build
-  is therefore only distributable under the GPL, never under Apache-2.0. That one is
-  unavoidable: it comes from the dependency graph.
-- **`-tags video`** links your system's FFmpeg, and what that means depends on how your
-  FFmpeg was configured. Plain LGPL FFmpeg ships fine alongside Apache-2.0; one built
-  `--enable-gpl` — which most distribution builds are, because it enables x264 and
-  friends — does not. So the same commit produces a distributable binary on one machine
-  and a non-distributable one on another. `matterbox --version` asks the linked library
-  and tells you which you have.
+- **`-tags demoaudio`** links `github.com/gotracker/opl2`, a GPL-2.0-or-later port of
+  DOSBox's OPL synth, by way of the tracker library's core packages.
+- **`-tags video`** links your system's FFmpeg. Almost every distribution builds it
+  `--enable-gpl` — Fedora, Debian and Homebrew all do — and every GPL configuration
+  FFmpeg reports is an "or later" one, so it upgrades to v3. An FFmpeg built without
+  `--enable-gpl` is LGPL, which is equally fine.
 
-Build tag-free for anything you share. That is what the release binaries are.
+One build may not be handed to anyone: an FFmpeg configured `--enable-nonfree` is not
+redistributable on any terms. `matterbox --version` asks the linked library what it is
+and prints the answer, so you never have to guess which one you have.
+
+What travels with the binary is source. The GPL wants whoever you gave it to be able
+to get the complete corresponding source of the thing you gave them — the release
+binaries are built from a tag, so the public repo covers it, but hand someone a build
+from a working tree of your own and they are entitled to that tree.
 
 ```sh
 make third-party-licenses    # write the licence bundle for a build
 ```
 
-It checks both the Go dependency graph and the linked FFmpeg, and refuses to produce a
-bundle for a build it can't vouch for.
+It reproduces the licence of every Go module in the link, asks a video build's FFmpeg
+what it is, and refuses only what cannot be conveyed at all.

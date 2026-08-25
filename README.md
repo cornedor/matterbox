@@ -41,8 +41,10 @@ Screenshots, the feature tour, and the docs live at **[matterbox.work](https://m
 ## Install
 
 Prebuilt Linux and macOS binaries (amd64 + arm64) are on the
-[releases page](https://github.com/cornedor/matterbox/releases) — pure Go, so they need
-no toolchain, though they carry no optional features. Drop one in `~/.local/bin`.
+[releases page](https://github.com/cornedor/matterbox/releases). They carry FFmpeg
+inside them, so inline video and HEIC/AVIF/JPEG XL images work with nothing installed
+alongside; the Linux ones are fully static. Only the `--demo` soundtrack needs a build
+from source. Drop one in `~/.local/bin`.
 
 From source, with Go 1.26+:
 
@@ -52,8 +54,9 @@ make install    # build, install to ~/.local/bin, set up shell completion
 
 Some optional features need C libraries; `make` detects what your machine has and
 compiles in whatever it can, so a plain `make install` is all anyone needs. `make tags`
-shows what was picked and how to unlock the rest. Handing a self-built binary to
-someone else has licensing consequences — see [docs/building.md](docs/building.md).
+shows what was picked and how to unlock the rest. Both optional features link copyleft
+C code, which matterbox's own licence covers — [docs/building.md](docs/building.md)
+explains what travels with a binary you hand to someone else.
 
 `matterbox --version` names the build, its optional features, and the platform.
 
@@ -208,10 +211,11 @@ stopped the rest. [docs/rules.md](docs/rules.md) is the full reference.
 
 ## License
 
-[Apache License 2.0](LICENSE). Much of the code was written with AI assistance under
-human review.
+[GNU GPL v3 or later](LICENSE). matterbox was Apache-2.0 up to and including v1.2.1;
+those releases stay available under those terms. Much of the code was written with AI
+assistance under human review.
 
 One piece of art in here belongs to someone else and keeps its own terms, recorded
-in [NOTICE](NOTICE): the `--demo` soundtrack is "Paradox #3" by **dubmood /
-Razor1911**. Release binaries also ship a `THIRD_PARTY_LICENSES` file covering
-every Go module linked into them.
+in [NOTICE](NOTICE), which grants the GPL exception that lets a binary carry it: the
+`--demo` soundtrack is "Paradox #3" by **dubmood / Razor1911**. Release binaries also
+ship a `THIRD_PARTY_LICENSES` file covering every Go module linked into them.
