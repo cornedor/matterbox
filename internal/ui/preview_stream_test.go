@@ -76,12 +76,19 @@ func TestAdvanceStreamPopsAndFetches(t *testing.T) {
 	if len(m.preview.streamBuf) != 2 {
 		t.Errorf("buffer = %d, want 2 (one popped)", len(m.preview.streamBuf))
 	}
-	if m.preview.img == nil {
-		t.Error("current frame image not set after advance")
+	// The cells must not move yet: the upload is only queued at this point, and
+	// naming an id whose transmission hasn't started is what strobes. advanceStream
+	// parks the frame; the sequenced promote is what displays it.
+	if m.preview.img != nil {
+		t.Error("advanceStream switched the modal onto a frame before its upload went out")
 	}
-	// The upload and the switch onto it happen in the same update: bubbletea
-	// flushes raw output before the rendered View, so the cells name the id
-	// only after its bytes have gone out.
+	if m.preview.streamUp.id != ring[0] {
+		t.Errorf("uploaded to id %d, want %d", m.preview.streamUp.id, ring[0])
+	}
+	m.promoteStreamFrame(streamPromoteMsg{gen: m.previewGen, up: m.preview.streamUp.n})
+	if m.preview.img == nil {
+		t.Error("current frame image not set after promote")
+	}
 	if m.preview.id != ring[0] {
 		t.Errorf("displayed id = %d, want %d (the frame just uploaded)", m.preview.id, ring[0])
 	}
@@ -104,11 +111,15 @@ func TestAdvanceStreamNeverUploadsOverDisplayedID(t *testing.T) {
 	}
 	for tick := 0; tick < 20; tick++ {
 		onScreen := m.preview.id
+		pending := m.preview.streamUp.id
 		displaying := m.preview.img != nil
 		m.advanceStream()
-		uploaded := m.preview.id
+		uploaded := m.preview.streamUp.id
 		if displaying && uploaded == onScreen {
 			t.Fatalf("tick %d uploaded to id %d while it was the one on screen", tick, uploaded)
+		}
+		if displaying && uploaded == pending {
+			t.Fatalf("tick %d uploaded to id %d while it was queued to go on screen", tick, uploaded)
 		}
 		// And it has to be a ring slot, not some drifted id.
 		var known bool
@@ -118,6 +129,7 @@ func TestAdvanceStreamNeverUploadsOverDisplayedID(t *testing.T) {
 		if !known {
 			t.Fatalf("tick %d: uploaded to %d, which is not a ring slot (%v)", tick, uploaded, ring)
 		}
+		m.promoteStreamFrame(streamPromoteMsg{gen: m.previewGen, up: m.preview.streamUp.n})
 	}
 }
 
@@ -134,11 +146,80 @@ func TestAdvanceStreamSkipsCollidingFrame(t *testing.T) {
 		img: image.NewRGBA(image.Rect(0, 0, 2, 2)),
 	}
 	m.advanceStream()
-	if m.preview.id == ring[0] {
+	if m.preview.streamUp.id == ring[0] {
 		t.Fatalf("uploaded to the displayed id %d instead of skipping it", ring[0])
 	}
+	if m.preview.streamUp.id != ring[1] {
+		t.Errorf("uploaded to id %d, want the next ring slot %d", m.preview.streamUp.id, ring[1])
+	}
+}
+
+// A promote is only ever the follow-up to an upload this preview made: one from
+// a preview the user has since cycled or closed must not move the cells, whose
+// id has been freed by then.
+func TestStreamPromoteIgnoresStaleGen(t *testing.T) {
+	m := &Model{previewGen: 1}
+	ring := testRing()
+	m.preview = previewState{
+		active: true, streaming: true, id: ring[0], streamRing: ring, rows: 1, cols: 1,
+		streamUp: uploadedFrame{n: 1, id: ring[1], img: image.NewRGBA(image.Rect(0, 0, 2, 2))},
+	}
+	m.promoteStreamFrame(streamPromoteMsg{gen: 0, up: 1})
+	if m.preview.id != ring[0] {
+		t.Errorf("stale promote moved the modal onto id %d", m.preview.id)
+	}
+	m.promoteStreamFrame(streamPromoteMsg{gen: 1, up: 1})
 	if m.preview.id != ring[1] {
-		t.Errorf("uploaded to id %d, want the next ring slot %d", m.preview.id, ring[1])
+		t.Errorf("promote left the modal on id %d, want %d", m.preview.id, ring[1])
+	}
+}
+
+// A resize re-fits the frame on screen under the id already displayed and drops
+// the frames encoded at the old size. One of those is the frame already uploaded
+// but not yet promoted: promoting it afterwards would put a wrong-sized image
+// back up over the re-fit.
+func TestResizeDropsUnpromotedFrame(t *testing.T) {
+	m := &Model{previewGen: 1}
+	fake := &fakeVideoStream{remaining: 100}
+	ring := testRing()
+	m.preview = previewState{
+		active: true, streaming: true, id: ring[0], streamRing: ring, rows: 1, cols: 1,
+		stream: fake, streamBuf: mkStreamFramesFrom(4, ring, 1),
+		img: image.NewRGBA(image.Rect(0, 0, 2, 2)),
+	}
+	m.advanceStream()
+	if m.preview.streamUp.id != ring[1] {
+		t.Fatalf("uploaded id = %d, want %d", m.preview.streamUp.id, ring[1])
+	}
+	m.resizePreviewStream()
+	m.promoteStreamFrame(streamPromoteMsg{gen: m.previewGen, up: m.preview.streamUp.n})
+	if m.preview.id != ring[0] {
+		t.Errorf("promote after a resize moved the modal onto id %d, want it left on %d", m.preview.id, ring[0])
+	}
+}
+
+// A promote that arrives after the next frame has already been parked — the loop
+// stalled long enough for its tick to overtake it — must not fire: the frame it
+// would display is the newer one, whose upload has not been written yet.
+func TestStreamPromoteIgnoresOvertakenFrame(t *testing.T) {
+	m := &Model{previewGen: 1}
+	fake := &fakeVideoStream{remaining: 100}
+	ring := testRing()
+	m.preview = previewState{
+		active: true, streaming: true, id: ring[0], streamRing: ring, rows: 1, cols: 1,
+		stream: fake, streamBuf: mkStreamFramesFrom(6, ring, 1),
+		img: image.NewRGBA(image.Rect(0, 0, 2, 2)),
+	}
+	m.advanceStream()
+	stale := m.preview.streamUp.n
+	m.advanceStream() // its tick beat the first promote
+	m.promoteStreamFrame(streamPromoteMsg{gen: m.previewGen, up: stale})
+	if m.preview.id != ring[0] {
+		t.Errorf("overtaken promote moved the modal onto id %d, want it left on %d", m.preview.id, ring[0])
+	}
+	m.promoteStreamFrame(streamPromoteMsg{gen: m.previewGen, up: m.preview.streamUp.n})
+	if m.preview.id != ring[2] {
+		t.Errorf("current promote left the modal on id %d, want %d", m.preview.id, ring[2])
 	}
 }
 

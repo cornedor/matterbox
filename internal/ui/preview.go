@@ -155,17 +155,35 @@ type previewState struct {
 	// streamSeq counts frames encoded for this stream so far, so the ring
 	// keeps cycling across chunk boundaries (see encodeStreamFrames).
 	streamSeq int
+	// streamUp is the frame whose upload has already been written but which the
+	// placeholder cells have not been switched onto yet — the second half of
+	// advanceStream's upload-then-promote ordering. It doubles as the record of
+	// the slot most recently uploaded to, which the frame picker has to avoid as
+	// carefully as the one on screen.
+	streamUp uploadedFrame
+}
+
+// uploadedFrame is a streaming frame whose Kitty upload has gone out to the
+// terminal but which the modal's placeholder cells do not name yet.
+//
+// n identifies it within this preview. The promote sequenced behind an upload
+// carries the n it was sequenced for and fires only while that is still the
+// parked frame, so a promote delayed past the next frame — or invalidated by a
+// resize — is dropped instead of displaying a frame whose bytes have not gone
+// out yet. Dropping one costs a skipped frame, which by then is stale anyway.
+type uploadedFrame struct {
+	n   int
+	id  uint32
+	img image.Image
 }
 
 // streamRingSlots is how many image ids streaming playback rotates through.
 //
-// One slot per frame in flight would do if every frame's upload and its cell
-// switch reached the terminal as one step, but they don't: bubbletea flushes
-// the tea.Raw buffer and the rendered View separately, both on its own ticker
-// (see startRenderer), so a slow frame can put two uploads into a single flush
-// ahead of one cell switch. Each extra slot is one more frame of grace before
-// an id is reused, and the cost is one more image resident in the terminal, so
-// this is deliberately larger than the minimum of 2.
+// Two would now do, since a slot is only ever written while the cells name a
+// different one (see advanceStream's promote note). The other two are grace: a
+// rotation shifted by frames a resize dropped, or a picker working from state a
+// promote hasn't reached yet, then costs a skipped frame rather than a strobe.
+// The price of each is one more image resident in the terminal.
 const streamRingSlots = 4
 
 // allocStreamRing reserves the streaming player's image ids. Cheap enough
@@ -711,6 +729,7 @@ func (m Model) cyclePreview(delta int) (tea.Model, tea.Cmd) {
 	m.preview.streamFetching = false
 	m.preview.streamDone = false
 	m.preview.streamSeq = 0
+	m.preview.streamUp = uploadedFrame{}
 	ring := m.allocStreamRing()
 	m.preview.streamRing = ring
 	id := ring[0]

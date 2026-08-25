@@ -81,6 +81,15 @@ type streamReencodeMsg struct {
 	err error
 }
 
+// streamPromoteMsg moves the modal onto the frame whose upload has just been
+// written out. Sequenced after that frame's tea.Raw so the cells can never name
+// an image the terminal hasn't received yet — see advanceStream. up is the
+// parked frame it was sequenced for (see uploadedFrame).
+type streamPromoteMsg struct {
+	gen int
+	up  int
+}
+
 // loadPreviewItem picks how to load a preview item: a streaming video, or the
 // shared still/GIF decode. The single branch point for openPreviewItems and
 // cyclePreview.
@@ -238,6 +247,27 @@ func (m Model) handleStreamTick(msg previewStreamTickMsg) (tea.Model, tea.Cmd) {
 	return m, m.advanceStream()
 }
 
+// promoteStreamFrame points the modal's placeholder cells at the frame whose
+// upload has already gone out (see advanceStream). Nothing is decoded or encoded
+// here; it is the second half of one frame's ordering.
+func (m *Model) promoteStreamFrame(msg streamPromoteMsg) {
+	p := &m.preview
+	if !p.active || msg.gen != m.previewGen || !p.streaming {
+		return
+	}
+	// Only the frame this promote was sequenced for: a resize has since dropped
+	// the parked frame (wrong placement — resizePreviewStream already put the
+	// current one back up), or another frame was parked while this promote was in
+	// flight and owns the cells instead.
+	if p.streamUp.img == nil || p.streamUp.n != msg.up {
+		return
+	}
+	if p.streamUp.id != 0 {
+		p.id = p.streamUp.id
+	}
+	p.img = p.streamUp.img
+}
+
 // handleStreamReencode displays the current frame re-fitted after a resize.
 func (m Model) handleStreamReencode(msg streamReencodeMsg) (tea.Model, tea.Cmd) {
 	if !m.preview.active || msg.gen != m.previewGen || !m.preview.streaming || msg.err != nil {
@@ -259,14 +289,22 @@ func (m Model) handleStreamReencode(msg streamReencodeMsg) (tea.Model, tea.Cmd) 
 // flight" is most of a frame interval: uploading over the id the placeholder
 // cells point at leaves them pointing at nothing, and the image strobes.
 //
-// The ordering that makes the rotation safe comes from bubbletea, which flushes
-// the tea.Raw buffer and then the rendered View, both from one ticker (see its
-// startRenderer). So within a flush this frame's upload is written *before* the
-// cell switch that moves the modal onto it — which is the right way round: the
-// id being uploaded is one the cells left several frames ago, and the cells only
-// name it once its bytes have already gone out. Do not "fix" this by deferring
-// the cell switch a tick; that puts the cells one frame behind the upload, which
-// is precisely the case where the upload deletes what is on screen.
+// The rotation alone is not enough, because the upload and the cell switch that
+// moves the modal onto it do not reach the terminal together. bubbletea hands
+// the View to the renderer the moment this Update returns (tea.go's event loop
+// renders right after Update), while tea.Raw's bytes only reach the output
+// buffer after a Cmd goroutine and another trip through the message loop. The
+// 60Hz flush can land in that gap, emitting cells that name an id whose
+// transmission has not started — and since a terminal may drop an image when a
+// new transmission under its id *begins*, those cells then name nothing for most
+// of an upload. That is the strobe the ring exists to prevent, leaking through
+// as an occasional flicker rather than a constant one.
+//
+// So the upload is written first and a streamPromoteMsg moves the cells after
+// it, the two ordered by tea.Sequence through the one message loop: the cells
+// only ever name an id whose bytes are already buffered, and the buffer is
+// flushed before the cell diff (see startRenderer). Do not fold the switch back
+// into this update — that is the bug, not an optimisation.
 func (m *Model) advanceStream() tea.Cmd {
 	p := &m.preview
 	if p.streamDone {
@@ -282,14 +320,16 @@ func (m *Model) advanceStream() tea.Cmd {
 		return tea.Batch(m.maybeFetchStream(), previewStreamTickCmd(m.previewGen, previewStreamUnderrunPoll))
 	}
 
-	// Take the next frame, skipping any that would upload onto the slot the
-	// modal is displaying right now. Only reachable when dropped frames (a
-	// resize) shift the rotation; costs a frame, like the resize itself.
-	onScreen := p.id
+	// Take the next frame, skipping any that would upload onto the slot the modal
+	// is displaying or the one it is about to (streamUp: uploaded, not promoted
+	// yet). Only reachable when dropped frames (a resize) shift the rotation;
+	// costs a frame, like the resize itself.
+	onScreen, pending := p.id, p.streamUp.id
+	blank := p.img == nil && pending == 0 // nothing up yet: any slot is free
 	var fr streamFrame
 	for len(p.streamBuf) > 0 {
 		fr, p.streamBuf = p.streamBuf[0], p.streamBuf[1:]
-		if fr.id == 0 || p.img == nil || fr.id != onScreen {
+		if fr.id == 0 || blank || (fr.id != onScreen && fr.id != pending) {
 			break
 		}
 		fr = streamFrame{}
@@ -298,14 +338,15 @@ func (m *Model) advanceStream() tea.Cmd {
 		return tea.Batch(m.maybeFetchStream(), previewStreamTickCmd(m.previewGen, previewStreamUnderrunPoll))
 	}
 
-	// Move the modal onto this frame in the same update that uploads it: the
-	// upload is flushed first, so by the time the cells name this id its image
-	// has landed.
-	if fr.id != 0 {
-		p.id = fr.id
+	// Park the frame, write its upload, and let the promote that follows move the
+	// cells onto it (see the ordering note above).
+	p.streamUp = uploadedFrame{n: p.streamUp.n + 1, id: fr.id, img: fr.img}
+	gen, up := m.previewGen, p.streamUp.n
+	promote := func() tea.Msg { return streamPromoteMsg{gen: gen, up: up} }
+	cmds := []tea.Cmd{
+		tea.Sequence(tea.Raw(fr.seq), promote),
+		previewStreamTickCmd(gen, fr.delay),
 	}
-	p.img = fr.img
-	cmds := []tea.Cmd{tea.Raw(fr.seq), previewStreamTickCmd(m.previewGen, fr.delay)}
 	if c := m.maybeFetchStream(); c != nil {
 		cmds = append(cmds, c)
 	}
@@ -340,6 +381,10 @@ func (m *Model) resizePreviewStream() tea.Cmd {
 	}
 	m.sizePreview()
 	m.preview.streamBuf = nil
+	// Any frame uploaded but not yet promoted was encoded for the old placement:
+	// drop it, and move the token on so a promote still in flight can neither put
+	// it back on screen behind the re-fit below nor land on a later frame.
+	m.preview.streamUp = uploadedFrame{n: m.preview.streamUp.n + 1}
 	// The re-fit below deliberately re-transmits under the id already on screen,
 	// which does blank it for the length of that one upload. A resize already
 	// costs dropped frames, and doing it here instead would need a promotion

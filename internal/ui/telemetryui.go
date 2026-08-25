@@ -902,7 +902,8 @@ func frameCause(msg tea.Msg) string {
 	case inlineImagesFetchedMsg, inlineThumbFramesMsg, emojiImagesFetchedMsg,
 		previewImageLoadedMsg, previewReencodedMsg, streamOpenedMsg, streamChunkMsg:
 		return "image"
-	case imgAnimTickMsg, effectsAnimTickMsg, previewTickMsg, previewStreamTickMsg:
+	case imgAnimTickMsg, effectsAnimTickMsg, previewTickMsg, previewStreamTickMsg,
+		streamPromoteMsg:
 		return "animation"
 	}
 	return "render"
