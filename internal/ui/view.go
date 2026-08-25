@@ -1505,11 +1505,13 @@ func (m *Model) renderAttachments(p *model.Post, maxWidth int) string {
 				icon = "🎬" // a clip we're about to draw a thumbnail for, not a plain file
 			case isSTLAttachment(f):
 				icon = "🧊" // a 3D model: rendered inline, and orbitable with space
+			case isSVGAttachment(f):
+				icon = "🖼️" // a drawing the server left untyped, but still an image
 			}
 			info = " (" + humanSize(f.Size) + ")"
 		}
 		// Only a file we can actually draw gets a chevron: a format we can't decode
-		// (an .svg, or a video in a build that can't play one) shows no thumbnail,
+		// (a .webp, or a video in a build that can't play one) shows no thumbnail,
 		// so there is nothing for the chevron to describe and z has nothing to hide.
 		if m.drawsFileThumb(f) {
 			if c := m.thumbChevron(p.Id); c != "" {

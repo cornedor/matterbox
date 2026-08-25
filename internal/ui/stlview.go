@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -279,6 +280,11 @@ func stlItems(p *model.Post) []previewItem {
 // can disagree about which files own a thumbnail.
 func (m *Model) thumbItems(p *model.Post) []previewItem {
 	items := previewImages(p, m.videoPlayable())
+	// previewImages is the preview modal's gallery, which takes a drawing of any
+	// size; a thumbnail is drawn unasked, so the expensive ones drop out here.
+	items = slices.DeleteFunc(items, func(it previewItem) bool {
+		return it.file != nil && isSVGAttachment(it.file) && !svgThumbnailable(it.file)
+	})
 	for _, it := range stlItems(p) {
 		if m.stlThumbnailable(it.file) {
 			items = append(items, it)

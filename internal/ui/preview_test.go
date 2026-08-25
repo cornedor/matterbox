@@ -41,12 +41,12 @@ func imagePost(mimes ...string) *model.Post {
 }
 
 func TestPreviewableMIME(t *testing.T) {
-	for _, mime := range []string{"image/png", "image/jpeg", "image/jpg", "image/gif"} {
+	for _, mime := range []string{"image/png", "image/jpeg", "image/jpg", "image/gif", "image/svg+xml"} {
 		if !previewableMIME(mime) {
 			t.Errorf("previewableMIME(%q) = false, want true", mime)
 		}
 	}
-	for _, mime := range []string{"image/webp", "image/svg+xml", "application/pdf", "text/plain", ""} {
+	for _, mime := range []string{"image/webp", "application/pdf", "text/plain", ""} {
 		if previewableMIME(mime) {
 			t.Errorf("previewableMIME(%q) = true, want false", mime)
 		}

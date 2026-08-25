@@ -21,6 +21,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/charmbracelet/x/ansi/kitty"
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/svgimg"
 )
 
 // Custom (server) emoji rendered as inline images via the Kitty graphics
@@ -244,6 +246,11 @@ func isGIF(b []byte) bool {
 // gate upstream already accepted the file (see filePreviewable), so the branch
 // is dead in practice for the non-video build regardless.
 func decodeImageFrames(raw []byte, animate bool) (frames []image.Image, delays []time.Duration, err error) {
+	if svgimg.Looks(raw) {
+		// A drawing, not a decode: rendered at a size the fit step can only scale
+		// down from. See svg.go.
+		return decodeSVGFrames(raw, svgThumbSide)
+	}
 	if videoBuild && looksLikeVideo(raw) {
 		return decodeVideoFrames(raw, animate, thumbVideoProfile)
 	}

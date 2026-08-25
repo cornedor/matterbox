@@ -20,6 +20,7 @@ Screenshots, the feature tour, and the docs live at **[matterbox.work](https://m
 - **Animated GIFs, in a terminal** — on one that speaks the Kitty graphics protocol
   (Ghostty, kitty, WezTerm), images and GIFs are drawn inline in the transcript and
   actually play, custom emoji included. Short clips too, on a build with video support.
+  SVGs are rendered at the size they are shown at; text inside them is not drawn.
 - **Scriptable CLI** — read, send, and search from the shell, `--json` on most
   commands, completion for zsh/bash/fish.
 - **Feed** — every unread message across channels and DMs in one list.

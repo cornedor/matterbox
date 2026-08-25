@@ -981,6 +981,11 @@ func (m *Model) inlineFileThumbLines(p *model.Post, f *model.FileInfo, paneWidth
 // The single question the transcript, the collapse chevron and the click target
 // all ask, so none of them can disagree about which files own one.
 func (m *Model) drawsFileThumb(f *model.FileInfo) bool {
+	// A drawing is previewable at any size but only worth *rendering* unasked
+	// below one — see svgThumbMaxBytes.
+	if isSVGAttachment(f) {
+		return svgThumbnailable(f)
+	}
 	return m.filePreviewable(f) || m.stlThumbnailable(f)
 }
 

@@ -20,6 +20,8 @@ require (
 	github.com/posthog/posthog-go v1.23.1
 	github.com/rivo/uniseg v0.4.7
 	github.com/spf13/cobra v1.10.2
+	github.com/srwiley/oksvg v0.0.0-20221011165216-be6e8873101c
+	github.com/srwiley/rasterx v0.0.0-20220730225603-2ab79fcdd4ef
 	golang.org/x/image v0.43.0
 	golang.org/x/sync v0.21.0
 	golang.org/x/term v0.43.0

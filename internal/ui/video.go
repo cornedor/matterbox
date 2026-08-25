@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/svgimg"
 )
 
 // Short-clip video rendering. A `video`-tagged build (cgo + libav; see
@@ -205,7 +207,7 @@ func (m *Model) filePreviewable(f *model.FileInfo) bool {
 	if f == nil {
 		return false
 	}
-	return previewableMIME(f.MimeType) || (m.videoPlayable() && isVideoAttachment(f))
+	return previewableMIME(f.MimeType) || isSVGAttachment(f) || (m.videoPlayable() && isVideoAttachment(f))
 }
 
 // decodePreviewFrames decodes bytes for the space-to-preview modal: a video at
@@ -215,6 +217,9 @@ func (m *Model) filePreviewable(f *model.FileInfo) bool {
 // tight thumbVideoProfile — the two differ only in how much of the clip, and at
 // what resolution, they pull.
 func (m *Model) decodePreviewFrames(raw []byte, animate bool) ([]image.Image, []time.Duration, error) {
+	if svgimg.Looks(raw) {
+		return decodeSVGFrames(raw, m.svgPreviewSide())
+	}
 	if videoBuild && looksLikeVideo(raw) {
 		return decodeVideoFrames(raw, animate, m.previewProfile())
 	}

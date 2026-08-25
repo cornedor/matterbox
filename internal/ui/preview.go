@@ -25,6 +25,7 @@ import (
 	"github.com/mattermost/mattermost/server/public/model"
 	xdraw "golang.org/x/image/draw"
 
+	"matterbox/internal/svgimg"
 	"matterbox/internal/telemetry"
 )
 
@@ -252,10 +253,11 @@ const previewAnimMinInterval = 50 * time.Millisecond
 
 // previewableMIME reports whether we can decode and preview a file inline. We
 // render Kitty-only and decode with the stdlib image package (+gif/jpeg/png),
-// so those qualify; anything else (webp, svg, tiff, …) is left to `o`.
+// plus SVG which we rasterise ourselves (svg.go); anything else (webp, tiff, …)
+// is left to `o`.
 func previewableMIME(mime string) bool {
 	switch mime {
-	case "image/png", "image/jpeg", "image/jpg", "image/gif":
+	case "image/png", "image/jpeg", "image/jpg", "image/gif", "image/svg+xml", "image/svg":
 		return true
 	}
 	return false
@@ -279,7 +281,7 @@ func previewImages(p *model.Post, allowVideo bool) []previewItem {
 	for _, o := range collectOpenables(p) {
 		switch {
 		case o.file != nil:
-			if previewableMIME(o.file.MimeType) || (allowVideo && isVideoAttachment(o.file)) {
+			if previewableMIME(o.file.MimeType) || isSVGAttachment(o.file) || (allowVideo && isVideoAttachment(o.file)) {
 				out = append(out, previewItem{file: o.file, name: o.file.Name})
 			}
 		case isPreviewableImageURL(o.url):
@@ -298,7 +300,7 @@ func isPreviewableImageURL(raw string) bool {
 		return false
 	}
 	switch strings.ToLower(path.Ext(u.Path)) {
-	case ".png", ".jpg", ".jpeg", ".gif":
+	case ".png", ".jpg", ".jpeg", ".gif", ".svg":
 		return true
 	}
 	return false
@@ -394,9 +396,15 @@ func (m Model) loadPreviewImage(gen int, id uint32, it previewItem) tea.Cmd {
 				size = it.file.Size
 			}
 		}
+		caption := previewCaption(it.name, w, h, size)
+		if svgimg.Looks(data) {
+			// A drawing has no pixel size of its own, and Mattermost measures none
+			// for it, so the caption has to come from the document itself.
+			caption = svgCaption(it.name, data, size)
+		}
 		return previewImageLoadedMsg{
 			gen: gen, frames: frames, delays: delays, seqs: seqs, native: native, nativeSetup: nativeSetup,
-			cols: cols, rows: rows, caption: previewCaption(it.name, w, h, size), started: started,
+			cols: cols, rows: rows, caption: caption, started: started,
 		}
 	}
 }
