@@ -64,6 +64,15 @@ type feedState struct {
 	err     string
 	seq     int // bumps on every build; stale feedLoadedMsg are dropped
 
+	// pending holds live posts that arrived while a build was fetching, so the
+	// snapshot landing on top of them doesn't swallow the messages. A build is
+	// a round trip — buildFeed snapshots the unread set, then the worker walks
+	// every channel — and applyFeedResults replaces the entries wholesale, so
+	// without this the bubble a `posted` event just added disappears and the
+	// tab badge counts a channel the pane doesn't show. Drained by
+	// applyFeedResults; see feedAppendPosted.
+	pending []*model.Post
+
 	// showMuted lets muted channels into the feed (and the tab badge), which
 	// otherwise leave them out. Seeded from config.FeedShowMuted and flipped
 	// for the session by the toggle key (M) or the "> Feed: …" command.
@@ -438,6 +447,15 @@ func (m Model) applyFeedResults(msg feedLoadedMsg) (tea.Model, tea.Cmd) {
 	if m.feed.idx < 0 {
 		m.feed.idx = 0
 	}
+	// Replay what arrived while the worker was fetching: the snapshot just
+	// installed predates those posts. loading is already false, so nothing
+	// re-parks them, and the append dedupes by post id — one the fetch did pick
+	// up itself stays single.
+	pending := m.feed.pending
+	m.feed.pending = nil
+	for _, p := range pending {
+		m.feedAppendPosted(p)
+	}
 	m.renderFeedResults()
 	// An empty build lands on the calm-water splash — start the waves.
 	return m, m.maybeStartFeedWaves()
@@ -621,17 +639,27 @@ func (m *Model) removeFeedEntry(channelID string) {
 	}
 }
 
-// feedAppendPosted folds a live `posted` WS event for a background
-// channel into the feed so it updates without a manual refresh. No-op
-// until the feed has been built at least once.
+// feedAppendPosted folds a live `posted` WS event into the feed so it
+// updates without a manual refresh. A post that lands while a build is
+// fetching is also parked in feed.pending, since the snapshot on its way
+// back knows nothing about it.
 func (m *Model) feedAppendPosted(p *model.Post) {
-	if !m.feed.built || p == nil || p.Id == "" || p.DeleteAt != 0 || p.IsSystemMessage() {
+	if p == nil || p.Id == "" || p.DeleteAt != 0 || p.IsSystemMessage() {
 		return
 	}
 	// Muted channels are excluded from the feed (see buildFeed), so a live
 	// post in one must not slip a fresh bubble in either — unless the user is
 	// showing muted channels, in which case it belongs like any other.
 	if m.feedExcludes(p.ChannelId) {
+		return
+	}
+	if m.feed.loading {
+		m.feed.pending = append(m.feed.pending, p)
+	}
+	if !m.feed.built {
+		// Nothing to append to yet. If this is the session's first build the
+		// pending replay carries the post; otherwise the feed simply isn't a
+		// surface yet and the next build will fetch it.
 		return
 	}
 	for i := range m.feed.entries {
@@ -683,9 +711,19 @@ func (m *Model) feedAppendPosted(p *model.Post) {
 }
 
 // feedRemovePost drops a deleted post from the feed, removing the whole
-// bubble if it leaves the channel with no unread left.
+// bubble if it leaves the channel with no unread left. A post still waiting
+// for a build to land is dropped too, so the replay can't resurrect it.
 func (m *Model) feedRemovePost(postID string) {
-	if !m.feed.built || postID == "" {
+	if postID == "" {
+		return
+	}
+	for i, p := range m.feed.pending {
+		if p.Id == postID {
+			m.feed.pending = append(m.feed.pending[:i], m.feed.pending[i+1:]...)
+			break
+		}
+	}
+	if !m.feed.built {
 		return
 	}
 	changed := false
