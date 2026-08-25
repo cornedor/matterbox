@@ -162,7 +162,7 @@ func rasterize(raw []byte, side int, currentColor string) (res Result, err error
 		}
 	}()
 
-	icon, err := parse(normalizePathAttrs(raw), currentColor)
+	icon, err := parse(normalizeTransformAttrs(normalizePathAttrs(raw)), currentColor)
 	if err != nil {
 		return Result{}, err
 	}

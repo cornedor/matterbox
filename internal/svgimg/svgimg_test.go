@@ -257,3 +257,27 @@ func TestFitKeepsAspectAndBounds(t *testing.T) {
 		t.Errorf("fit produced %dx%d = %d pixels, over the %d cap", w, h, w*h, maxPixels)
 	}
 }
+
+// TestDecodeUniformScale is the second rasteriser bug worked around here: it
+// reads scale(s) as scale(s, 0), flattening everything onto one line. The
+// Ghostscript tiger is drawn through translate → matrix → scale(.1), so it came
+// out as a band at the bottom of the frame.
+func TestDecodeUniformScale(t *testing.T) {
+	// A 100x100 box scaled by .5 should fill the top-left quarter and nothing else.
+	src := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><g transform="scale(.5)"><rect width="100" height="100" fill="black"/></g></svg>`
+	res, err := Decode([]byte(src), Options{MaxSide: 100})
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if got := alphaAt(t, res.Image, 25, 25); got == 0 {
+		t.Error("nothing inside the scaled box: the Y axis was flattened")
+	}
+	// Middle of the frame is outside the scaled box.
+	if got := alphaAt(t, res.Image, 75, 75); got != 0 {
+		t.Errorf("paint outside the scaled box (alpha %d): scale was not applied", got)
+	}
+	// The bottom row is where a flattened Y axis piles everything up.
+	if got := alphaAt(t, res.Image, 25, 99); got != 0 {
+		t.Errorf("paint on the bottom row (alpha %d): the Y axis collapsed", got)
+	}
+}

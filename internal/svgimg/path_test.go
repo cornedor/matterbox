@@ -99,3 +99,47 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+func TestExpandUniformScale(t *testing.T) {
+	for _, tc := range []struct {
+		name, in, want string
+	}{
+		{"one argument becomes two", "scale(.1)", "scale(.1 .1)"},
+		{"integer", "scale(2)", "scale(2 2)"},
+		{"negative", "scale(-1)", "scale(-1 -1)"},
+		{"whitespace inside", "scale( 0.5 )", "scale(0.5 0.5)"},
+		// Already two-argument, or not a lone number: left exactly as it was.
+		{"two arguments untouched", "scale(2 3)", "scale(2 3)"},
+		{"comma separated untouched", "scale(2,3)", "scale(2,3)"},
+		{"non-numeric untouched", "scale(a)", "scale(a)"},
+		{"empty untouched", "scale()", "scale()"},
+		// The tiger's chain: only the scale is rewritten.
+		{
+			"in a chain",
+			"translate(-8.819 -48.64) matrix(.3528 0 0 -.3528 8.819 249) scale(.1)",
+			"translate(-8.819 -48.64) matrix(.3528 0 0 -.3528 8.819 249) scale(.1 .1)",
+		},
+		{"other functions untouched", "rotate(45) translate(3)", "rotate(45) translate(3)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := expandUniformScale(tc.in); got != tc.want {
+				t.Errorf("expandUniformScale(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestNormalizeTransformAttrs(t *testing.T) {
+	in := []byte(`<svg><g transform="scale(.1)"><rect gradientTransform="scale(2)"/></g><g data-transform="scale(9)"/></svg>`)
+	got := string(normalizeTransformAttrs(in))
+	if !contains(got, `transform="scale(.1 .1)"`) {
+		t.Errorf("transform not expanded:\n%s", got)
+	}
+	if !contains(got, `gradientTransform="scale(2 2)"`) {
+		t.Errorf("gradientTransform not expanded:\n%s", got)
+	}
+	// A lookalike attribute name must not be rewritten.
+	if !contains(got, `data-transform="scale(9)"`) {
+		t.Errorf("data-transform was rewritten:\n%s", got)
+	}
+}

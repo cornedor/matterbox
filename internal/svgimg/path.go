@@ -1,6 +1,11 @@
 package svgimg
 
-import "strings"
+import (
+	"bytes"
+	"regexp"
+	"strconv"
+	"strings"
+)
 
 // SVG path data lets a command letter be followed by any number of parameter
 // sets — "a6 6 0 0 0-6 6 6 6 0 0 0 6 6" is two arcs sharing one `a`. Our
@@ -156,4 +161,58 @@ func looksLikePathData(s string) bool {
 		}
 	}
 	return true
+}
+
+// The same library reads `scale(s)` as `scale(s, 0)`, flattening the Y axis to
+// nothing, where SVG defines a single argument as a uniform scale — `scale(s, s)`.
+// A drawing built as "shrink everything by a tenth" therefore collapses into a
+// line. Writing the second argument out explicitly is the whole fix. (The other
+// single-argument transforms it accepts — translate, rotate, skewX, skewY — all
+// match the spec, so only scale is rewritten.)
+
+var transformAttrRe = regexp.MustCompile(`(?s)(\s(?:transform|gradientTransform|patternTransform)\s*=\s*)("[^"]*"|'[^']*')`)
+
+// normalizeTransformAttrs makes every one-argument scale() two-argument.
+func normalizeTransformAttrs(raw []byte) []byte {
+	return transformAttrRe.ReplaceAllFunc(raw, func(m []byte) []byte {
+		i := bytes.IndexAny(m, `"'`)
+		if i < 0 || len(m) < i+2 {
+			return m
+		}
+		quote, val := m[i], string(m[i+1:len(m)-1])
+		fixed := expandUniformScale(val)
+		if fixed == val {
+			return m
+		}
+		out := make([]byte, 0, len(m)+8)
+		out = append(out, m[:i+1]...)
+		out = append(out, fixed...)
+		return append(out, quote)
+	})
+}
+
+var scaleCallRe = regexp.MustCompile(`(?i)\bscale\s*\(([^)]*)\)`)
+
+// expandUniformScale rewrites scale(s) as scale(s s), leaving a scale that
+// already names both axes — and anything it cannot read as a lone number —
+// exactly as it was.
+func expandUniformScale(v string) string {
+	return scaleCallRe.ReplaceAllStringFunc(v, func(call string) string {
+		open := strings.Index(call, "(")
+		if open < 0 {
+			return call
+		}
+		args := strings.TrimSpace(call[open+1 : len(call)-1])
+		if args == "" || strings.ContainsAny(args, ",") || len(strings.FieldsFunc(args, isSep2)) != 1 {
+			return call
+		}
+		if _, err := strconv.ParseFloat(args, 64); err != nil {
+			return call
+		}
+		return call[:open] + "(" + args + " " + args + ")"
+	})
+}
+
+func isSep2(r rune) bool {
+	return r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == '\f'
 }
