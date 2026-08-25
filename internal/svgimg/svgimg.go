@@ -3,7 +3,7 @@
 // SVG is the odd one out among the formats matterbox previews: there is nothing
 // to decode, only a document to draw, and no pure-Go renderer covers all of it.
 // The drawing is done by ./oksvg — a vendored copy of a BSD-licensed renderer
-// that stopped taking changes in 2022, with four of its bugs fixed in place;
+// that stopped taking changes in 2022, with five of its bugs fixed in place;
 // that directory's README says which and why. Measured against librsvg on a
 // stroke-heavy drawing it now agrees on ink coverage within half a percentage
 // point at every size.

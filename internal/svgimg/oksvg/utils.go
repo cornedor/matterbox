@@ -19,17 +19,31 @@ import (
 // of the svg element.
 var unitSuffixes = []string{"cm", "mm", "px", "pt"}
 
+// matterbox: clamp an out-of-range rgb() component instead of letting it wrap.
+// Both forms are parsed as a plain int and then narrowed to a uint8, and neither
+// was bounded from below, so rgb(-1,0,0) came out full red; the percentage form
+// was not bounded from above either, so rgb(300%,0,0) came out 253. CSS says
+// clamp, so the return is the clamp rather than an error.
 func parseColorValue(v string) (uint8, error) {
 	if v[len(v)-1] == '%' {
 		n, err := strconv.Atoi(strings.TrimSpace(v[:len(v)-1]))
 		if err != nil {
 			return 0, err
 		}
+		if n <= 0 {
+			return 0, nil
+		}
+		if n >= 100 {
+			return 0xFF, nil
+		}
 		return uint8(n * 0xFF / 100), nil
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(v))
-	if n > 255 {
-		n = 255
+	if n <= 0 {
+		return 0, err
+	}
+	if n >= 0xFF {
+		return 0xFF, err
 	}
 	return uint8(n), err
 }

@@ -5,7 +5,7 @@ A copy of [srwiley/oksvg](https://github.com/srwiley/oksvg) at
 is Steven R Wiley's and stays with it).
 
 Vendored rather than imported because upstream stopped taking changes in 2022 and
-three of its bugs are visible on ordinary files. Every edit is marked with a
+several of its bugs are visible on ordinary files. Every edit is marked with a
 `matterbox:` comment:
 
 | file | fix |
@@ -14,12 +14,13 @@ three of its bugs are visible on ordinary files. Every edit is marked with a
 | `icon_cursor.go` | `scale(s)` was read as `scale(s, 0)`, flattening the Y axis to nothing. |
 | `svg_path.go` | Stroke widths were passed to the rasteriser unscaled while path coordinates went through the transform, so a stroke inside a scaled group came out at its unscaled width. Adds `strokeScale`. |
 | `path_cursor.go` | An arc's two flags are single digits that may be written with no separator (`a7 7 0 100 14` is flags 1, 0 then x=0); the general number scanner read `100` as one number and the arc was dropped. Adds `getArcPoints`. |
+| `utils.go` | An `rgb()` component was parsed as an `int` and narrowed to a `uint8` with no lower bound and, for the percentage form, no upper one either, so `rgb(-1,0,0)` came out full red and `rgb(300%,0,0)` came out 253. Clamps, as CSS says to. |
 
 Measured against librsvg on the Ghostscript tiger (nested `translate → matrix →
 scale`, 305 stroked paths), the three together move ink coverage from +14.3
 percentage points at 200px to +0.3, and hold within half a point at every size.
 
-Three of the four were previously worked around by rewriting path and transform
+Three of the five were previously worked around by rewriting path and transform
 attributes before parsing. Those passes are gone — about 150 lines, plus ~9ms and
 1MB of regex rewriting on every decode of a large drawing — which is the other
 reason to own this. The stroke bug could not be worked around from outside at

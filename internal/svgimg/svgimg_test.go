@@ -444,3 +444,38 @@ func TestDecodeImplicitRepetition(t *testing.T) {
 		})
 	}
 }
+
+// TestDecodeClampsOutOfRangeRGB pins the narrowing in oksvg's parseColorValue:
+// an rgb() component is parsed as an int and then cut down to a uint8, so an
+// out-of-range one used to wrap — -1 came out full red, 300% came out 253.
+func TestDecodeClampsOutOfRangeRGB(t *testing.T) {
+	cases := []struct {
+		fill  string
+		wantR uint32
+	}{
+		{"rgb(-1,0,0)", 0},
+		{"rgb(-20%,0,0)", 0},
+		{"rgb(300,0,0)", 0xFFFF},
+		{"rgb(300%,0,0)", 0xFFFF},
+		{"rgb(255,0,0)", 0xFFFF},
+		{"rgb(100%,0,0)", 0xFFFF},
+		{"rgb(50%,0,0)", 0x7F7F},
+	}
+	for _, tc := range cases {
+		src := fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="%s"/></svg>`, tc.fill)
+		res, err := Decode([]byte(src), Options{MaxW: 20, MaxH: 20})
+		if err != nil {
+			t.Errorf("Decode(%s): %v", tc.fill, err)
+			continue
+		}
+		b := res.Image.Bounds()
+		r, _, _, a := res.Image.At(b.Dx()/2, b.Dy()/2).RGBA()
+		if a == 0 {
+			t.Errorf("%s drew nothing", tc.fill)
+			continue
+		}
+		if r != tc.wantR {
+			t.Errorf("%s: red = %d, want %d", tc.fill, r, tc.wantR)
+		}
+	}
+}
