@@ -492,7 +492,7 @@ func (e *Engine) Run(ctx context.Context) error {
 			}
 			continue
 		}
-		attempt = 0
+		connectedAt := time.Now()
 		e.log.Printf("connected (%s)", e.opts.ServerURL)
 		go e.refreshMuted(ctx) // pick up mute changes made while we were away
 		e.refreshStatus(ctx)   // same goroutine as consume — myStatus is unmutexed
@@ -512,6 +512,13 @@ func (e *Engine) Run(ctx context.Context) error {
 		if err := parent.Err(); err != nil {
 			drain()
 			return err
+		}
+		// Only a connection that actually held counts as recovery. A server
+		// that accepts and immediately drops would otherwise reset the counter
+		// on every dial, giving a 1/second reconnect loop with a full catchUp
+		// sweep each time.
+		if time.Since(connectedAt) >= stableConnection {
+			attempt = 0
 		}
 		attempt++
 		d := backoff(attempt)
@@ -935,10 +942,12 @@ func (e *Engine) lookupNotif(msgID int) (notifTarget, bool) {
 }
 
 // sendTG sends a plain text message to the configured chat, logging on error.
-func (e *Engine) sendTG(ctx context.Context, text string) {
+func (e *Engine) sendTG(ctx context.Context, text string) error {
 	if _, err := e.tg.Send(ctx, e.opts.TelegramChatID, text, nil); err != nil {
 		e.log.Printf("telegram send: %v", err)
+		return err
 	}
+	return nil
 }
 
 // pollUpdates long-polls Telegram for inbound messages/buttons and dispatches
@@ -1229,6 +1238,7 @@ func (e *Engine) catchUp(ctx context.Context) {
 	var (
 		items            []item
 		chIDs, authorIDs []string
+		incomplete       bool // a channel we couldn't read; don't advance past it
 	)
 	for _, mb := range members {
 		ch := chByID[mb.ChannelId]
@@ -1247,11 +1257,22 @@ func (e *Engine) catchUp(ctx context.Context) {
 		} else if mention == 0 {
 			continue
 		}
-		var pl *model.PostList
+		var (
+			pl  *model.PostList
+			err error
+		)
 		if mb.LastViewedAt > 0 {
-			pl, _ = e.client.PostsSince(ctx, mb.ChannelId, mb.LastViewedAt)
+			pl, err = e.client.PostsSince(ctx, mb.ChannelId, mb.LastViewedAt)
 		} else {
-			pl, _ = e.client.Posts(ctx, mb.ChannelId, 50)
+			pl, err = e.client.Posts(ctx, mb.ChannelId, 50)
+		}
+		if err != nil {
+			// An empty result from a failed fetch is indistinguishable from
+			// "nothing missed", and advancing the cursor on it would bury
+			// those mentions for good. Remember it and leave the cursor.
+			e.log.Printf("catch-up: fetch %s: %v", mb.ChannelId, err)
+			incomplete = true
+			continue
 		}
 		for _, p := range unreadPosts(pl, mb.LastViewedAt) {
 			if p.UserId == e.me.Id || p.CreateAt <= cursor {
@@ -1267,7 +1288,9 @@ func (e *Engine) catchUp(ctx context.Context) {
 	}
 	now := time.Now().UnixMilli()
 	if len(items) == 0 {
-		e.advanceCursor(now)
+		if !incomplete {
+			e.advanceCursor(now)
+		}
 		return
 	}
 	sort.SliceStable(items, func(i, j int) bool { return items[i].post.CreateAt < items[j].post.CreateAt })
@@ -1285,7 +1308,9 @@ func (e *Engine) catchUp(ctx context.Context) {
 	}
 	items = kept
 	if len(items) == 0 {
-		e.advanceCursor(now)
+		if !incomplete {
+			e.advanceCursor(now)
+		}
 		return
 	}
 
@@ -1303,7 +1328,14 @@ func (e *Engine) catchUp(ctx context.Context) {
 		}
 		fmt.Fprintf(&b, "\n• %s · @%s · %s", lbl.label(it.channelID), name, snippet(it.post.Message, 140))
 	}
-	e.sendTG(ctx, b.String())
+	// The cursor moves only once the digest is actually delivered and every
+	// channel was readable — a Telegram outage otherwise marks the mentions
+	// seen and nobody ever hears about them. The cost of holding it back is a
+	// possible repeat on the next connect, which is the cheaper mistake.
+	if err := e.sendTG(ctx, b.String()); err != nil || incomplete {
+		e.log.Printf("catch-up: %d missed mention(s), cursor held back", len(items))
+		return
+	}
 	e.advanceCursor(now)
 	e.log.Printf("catch-up: %d missed mention(s)", len(items))
 }
@@ -1444,6 +1476,10 @@ func (e *Engine) alertTokenExpired(ctx context.Context) {
 			"`systemctl --user restart matterbox-listen`.")
 	}
 }
+
+// stableConnection is how long a websocket must survive before the reconnect
+// backoff treats it as a recovery and starts over from 1s.
+const stableConnection = time.Minute
 
 // backoff returns the reconnect delay for the n-th consecutive failure (1 → 1s,
 // capped at 32s). Mirrors the TUI's wsBackoff.
