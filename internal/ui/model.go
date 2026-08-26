@@ -2783,8 +2783,19 @@ func (m Model) persistPosts(posts ...*model.Post) tea.Cmd {
 		return nil
 	}
 	st := m.store
-	// Copy so the caller can safely mutate its slice after returning.
-	cp := append([]*model.Post(nil), posts...)
+	// Copy so the caller can safely mutate its slice after returning, dropping
+	// ephemerals on the way: they exist only in this session's transcript, and
+	// a cached one could never be refetched away again — it would haunt search
+	// and every warm open of the channel. See ephemeral.go.
+	cp := make([]*model.Post, 0, len(posts))
+	for _, p := range posts {
+		if !isEphemeral(p) {
+			cp = append(cp, p)
+		}
+	}
+	if len(cp) == 0 {
+		return nil
+	}
 	return func() tea.Msg {
 		_ = st.UpsertMany(cp)
 		return nil

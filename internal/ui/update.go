@@ -1489,6 +1489,22 @@ func (m *Model) handleWSEvent(ev *model.WebSocketEvent) tea.Cmd {
 		return m.applyChannelDeleted(ev)
 	case model.WebsocketEventChannelRestored:
 		return m.applyChannelRestored()
+	case model.WebsocketEventEphemeralMessage:
+		return m.applyEphemeralPost(ev)
+	case model.WebsocketEventPostUnread:
+		return m.applyPostUnread(ev)
+	case model.WebsocketEventChannelUpdated:
+		return m.applyChannelUpdated(ev)
+	case model.WebsocketEventChannelConverted:
+		return m.applyChannelConverted(ev)
+	case model.WebsocketEventChannelMemberUpdated:
+		return m.applyChannelMemberUpdated(ev)
+	case model.WebsocketEventUpdateTeam:
+		return m.applyTeamUpdated(ev)
+	case model.WebsocketEventDeleteTeam, model.WebsocketEventRestoreTeam:
+		// A team coming or going takes all of its channels with it, so this is
+		// a membership change however it is labelled.
+		return m.scheduleMembershipResync()
 	case model.WebsocketEventOpenDialog:
 		m.applyOpenDialog(ev)
 		return nil
