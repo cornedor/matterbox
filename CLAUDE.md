@@ -11,9 +11,6 @@ A from-scratch **Go TUI Mattermost client** (terminal, bubbletea). Module `matte
 ## Build & test
 - `make` build · `make test` · `make run` · `make install` (per-user, no root)
 
-## Workflow
-- **Commit straight to `main` and push directly — do not branch first.**
-
 ## Gotchas (always relevant)
 - `ui.Model` is ~133KB. `View()` runs on every keystroke — it's a hot path. Use **pointer receivers** on render helpers; don't add uncached work to the View/resize paths.
 - Message cache: SQLite + FTS5 at `~/.config/matterbox/messages.db` (serves warm-reopen render + local search).
