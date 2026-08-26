@@ -13,9 +13,10 @@ import (
 // else's help — a system admin to restore an archive, an invite to get back
 // into a private channel — which is exactly what the confirm's note says.
 //
-// Matterbox has no channel_deleted / user_removed WebSocket handler, so the
-// sidebar is reconciled here on success (dropChannel), the same way
-// applyChannelCreated splices a new channel in.
+// The sidebar is reconciled here on success (dropChannel) rather than waiting
+// for the channel_deleted / user_removed the server echoes back, the same way
+// applyChannelCreated splices a new channel in. Those events are handled too
+// (see membership.go), for the same changes made from another client.
 
 type channelConfirmKind int
 
@@ -296,11 +297,24 @@ func (m *Model) dropChannel(channelID string) tea.Cmd {
 		return nil
 	}
 
+	return m.landAfterOpenChannelGone(rest, idx)
+}
+
+// landAfterOpenChannelGone moves the user off a conversation that no longer
+// exists: they left it or archived it (dropChannel), or a membership resync
+// came back without it — removed from the channel, or from its whole team,
+// while this client was asleep. Leaving openChannelID pointing at a channel
+// that isn't in the sidebar any more means a transcript nothing can refresh and
+// a composer aimed at a channel the user isn't in.
+//
+// near is where the departed channel sat in bucket, so the landing is its
+// neighbour rather than the top of the list.
+func (m *Model) landAfterOpenChannelGone(bucket []*model.Channel, near int) tea.Cmd {
 	// A live sidebar filter indexes a different list than channelIdx does, so
 	// clear it before re-pointing the cursor (as the create/join paths do).
 	m.filterValue = ""
 	m.filter.SetValue("")
-	if len(rest) == 0 {
+	if len(bucket) == 0 {
 		m.enterChannel("", "restore")
 		m.channelIdx = 0
 		m.posts = nil
@@ -308,7 +322,7 @@ func (m *Model) dropChannel(channelID string) tea.Cmd {
 		m.renderMessages()
 		return nil
 	}
-	next := rest[min(idx, len(rest)-1)]
+	next := bucket[min(max(near, 0), len(bucket)-1)]
 	m.switchToChannelHomeTeam(next)
 	// Not a conversation the user picked — the app landing them somewhere after
 	// the one they were in went away.

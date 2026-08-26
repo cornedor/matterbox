@@ -327,3 +327,168 @@ func TestTeamResyncSkipsStartupWork(t *testing.T) {
 		t.Error("team resync issued startup commands; want none")
 	}
 }
+
+// --- losing access -----------------------------------------------------------
+
+// Removed from a channel while we were deaf: the row has to go, or the sidebar
+// keeps offering a conversation the user can no longer read or post to.
+func TestResyncDropsChannelRemovedWhileDisconnected(t *testing.T) {
+	m := resyncModel(t)
+	m.openChannelID = "c0"
+	kept := []*model.Channel{m.findChannel("c0")}
+
+	m.applyChannelsResynced(channelsLoadedMsg{channels: kept, resync: true})
+
+	if m.findChannel("c1") != nil {
+		t.Error("channel we were removed from is still in the sidebar")
+	}
+}
+
+// Losing the *open* conversation is the damaging half: openChannelID drives
+// routing, the title and every action, so it must not be left pointing at a
+// channel that is gone.
+func TestResyncLandsElsewhereWhenOpenChannelGone(t *testing.T) {
+	m := resyncModel(t) // open on c1
+	kept := []*model.Channel{m.findChannel("c0")}
+
+	m.applyChannelsResynced(channelsLoadedMsg{channels: kept, resync: true})
+
+	if m.openChannelID == "c1" {
+		t.Fatal("still open on the channel we were removed from")
+	}
+	if m.openChannelID != "" && m.findChannel(m.openChannelID) == nil {
+		t.Errorf("landed on %s, which is not in the sidebar either", m.openChannelID)
+	}
+}
+
+// Losing the last channel in the team leaves nowhere to land, which is a state
+// the app has to hold rather than a channel to open.
+func TestResyncClearsOpenChannelWhenNothingLeft(t *testing.T) {
+	m := resyncModel(t)
+
+	m.applyChannelsResynced(channelsLoadedMsg{resync: true})
+
+	if m.openChannelID != "" {
+		t.Errorf("openChannelID = %q; want empty with no channels left", m.openChannelID)
+	}
+	if m.posts != nil {
+		t.Error("stale transcript left on screen")
+	}
+}
+
+// A team we were removed from takes its tab with it.
+func TestResyncDropsTeamWeWereRemovedFrom(t *testing.T) {
+	m := resyncModel(t)
+	m.teams = append(m.teams, &model.Team{Id: "t2", DisplayName: "T2", Name: "t2"})
+
+	m.applyTeamsResynced(teamsLoadedMsg{
+		teams:  []*model.Team{{Id: "t2", DisplayName: "T2", Name: "t2"}},
+		resync: true,
+	})
+
+	for i := 0; i <= m.maxTeamIdx(); i++ {
+		if k, id, _ := m.tabAt(i); k == tabTeam && id == "t1" {
+			t.Fatal("team we were removed from still has a tab")
+		}
+	}
+	if m.teamIdx > m.maxTeamIdx() {
+		t.Errorf("teamIdx = %d past the last tab %d", m.teamIdx, m.maxTeamIdx())
+	}
+}
+
+// user_removed comes in two shapes. The copy addressed to the person removed
+// can't name a channel they are no longer in, so it carries channel_id in the
+// data and no user_id — parsing it as the other shape would drop it silently.
+func TestUserRemovedAddressedToMeSchedulesResync(t *testing.T) {
+	m := resyncModel(t)
+	ev := model.NewWebSocketEvent(model.WebsocketEventUserRemoved, "", "", "me", nil, "")
+	ev.Add("channel_id", "c1")
+	ev.Add("remover_id", "boss")
+
+	if m.handleWSEvent(ev) == nil {
+		t.Fatal("being removed from a channel scheduled no resync")
+	}
+}
+
+// The channel-wide copy names us in user_id instead.
+func TestUserRemovedNamingMeSchedulesResync(t *testing.T) {
+	m := resyncModel(t)
+	ev := model.NewWebSocketEvent(model.WebsocketEventUserRemoved, "", "c1", "", nil, "")
+	ev.Add("user_id", "me")
+
+	if m.handleWSEvent(ev) == nil {
+		t.Fatal("being removed from a channel scheduled no resync")
+	}
+}
+
+// Somebody else leaving a channel we are still in changes nothing about our
+// sidebar, and refetching for each would be a request per departure.
+func TestUserRemovedForSomeoneElseIsIgnored(t *testing.T) {
+	m := resyncModel(t)
+	ev := model.NewWebSocketEvent(model.WebsocketEventUserRemoved, "", "c1", "", nil, "")
+	ev.Add("user_id", "someone")
+
+	if m.handleWSEvent(ev) != nil {
+		t.Error("somebody else leaving triggered a resync")
+	}
+}
+
+// Archiving is a removal as far as the sidebar is concerned.
+func TestChannelDeletedForKnownChannelSchedulesResync(t *testing.T) {
+	m := resyncModel(t)
+	ev := model.NewWebSocketEvent(model.WebsocketEventChannelDeleted, "t1", "", "", nil, "")
+	ev.Add("channel_id", "c1")
+
+	if m.handleWSEvent(ev) == nil {
+		t.Fatal("an archived channel scheduled no resync")
+	}
+}
+
+// With ExperimentalViewArchivedChannels the event goes to the whole team, most
+// of whom were never in the channel. Not knowing it is what says so — and it is
+// also how our own archive's echo stays a no-op, dropChannel having already
+// removed the row.
+func TestChannelDeletedForUnknownChannelIsIgnored(t *testing.T) {
+	m := resyncModel(t)
+	ev := model.NewWebSocketEvent(model.WebsocketEventChannelDeleted, "t1", "", "", nil, "")
+	ev.Add("channel_id", "never-heard-of-it")
+
+	if m.handleWSEvent(ev) != nil {
+		t.Error("an archived channel we were never in triggered a resync")
+	}
+}
+
+// Restoring has to be handled precisely because archiving drops the row: skip
+// it and an archive-then-restore locks the user out until they restart.
+func TestChannelRestoredSchedulesResync(t *testing.T) {
+	m := resyncModel(t)
+	ev := model.NewWebSocketEvent(model.WebsocketEventChannelRestored, "t1", "", "", nil, "")
+	ev.Add("channel_id", "c1")
+
+	if m.handleWSEvent(ev) == nil {
+		t.Fatal("a restored channel scheduled no resync")
+	}
+}
+
+// leave_team, like added_to_team, names the user it concerns in both copies.
+func TestLeaveTeamForMeSchedulesResync(t *testing.T) {
+	m := resyncModel(t)
+	ev := model.NewWebSocketEvent(model.WebsocketEventLeaveTeam, "", "", "me", nil, "")
+	ev.Add("user_id", "me")
+	ev.Add("team_id", "t1")
+
+	if m.handleWSEvent(ev) == nil {
+		t.Fatal("being removed from a team scheduled no resync")
+	}
+}
+
+func TestLeaveTeamForSomeoneElseIsIgnored(t *testing.T) {
+	m := resyncModel(t)
+	ev := model.NewWebSocketEvent(model.WebsocketEventLeaveTeam, "t1", "", "", nil, "")
+	ev.Add("user_id", "someone")
+	ev.Add("team_id", "t1")
+
+	if m.handleWSEvent(ev) != nil {
+		t.Error("a colleague leaving the team triggered a resync")
+	}
+}

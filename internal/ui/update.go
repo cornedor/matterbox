@@ -1481,6 +1481,14 @@ func (m *Model) handleWSEvent(ev *model.WebSocketEvent) tea.Cmd {
 		// All three are addressed to the user they concern, so unlike
 		// user_added there is nobody else's membership to filter out.
 		return m.scheduleMembershipResync()
+	case model.WebsocketEventUserRemoved:
+		return m.applyUserRemoved(ev)
+	case model.WebsocketEventLeaveTeam:
+		return m.applyLeaveTeam(ev)
+	case model.WebsocketEventChannelDeleted:
+		return m.applyChannelDeleted(ev)
+	case model.WebsocketEventChannelRestored:
+		return m.applyChannelRestored()
 	case model.WebsocketEventOpenDialog:
 		m.applyOpenDialog(ev)
 		return nil

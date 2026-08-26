@@ -7,12 +7,18 @@ import (
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
-// Learning about a team or channel the user gained access to *while the app was
-// already running*. Until this existed the tab strip and the sidebar were built
-// once, at startup, so being added to either left it invisible — along with
-// every message in it — until the next restart. The reconnect catch-up
-// (resyncAfterReconnect) covers being added while the socket was down; these
-// handlers cover being added while it was up.
+// Membership changes the app has to hear about *while it is already running*:
+// a team or channel the user gained access to, or lost it. Until this existed
+// the tab strip and the sidebar were built once, at startup, so an add left the
+// channel invisible — along with every message in it — and a removal left a
+// phantom row, both until the next restart. The reconnect catch-up
+// (resyncAfterReconnect) covers changes made while the socket was down; these
+// handlers cover the ones made while it was up.
+//
+// Every one of them routes to the same debounced refetch of all three lists
+// rather than patching the sidebar in place. The lists are small, the events
+// are rare, and one code path that rebuilds from server truth beats an add path
+// and a remove path that can disagree.
 
 // membershipResyncDebounce coalesces a burst of membership events into a single
 // pair of refetches. A team join is the loud case: one added_to_team plus a
@@ -55,6 +61,64 @@ func (m *Model) applyMembershipResyncDue() tea.Cmd {
 // the user_id check — the rest are somebody else joining a channel we are
 // already in, and refetching for those would be a request per join.
 func (m *Model) applyUserAdded(ev *model.WebSocketEvent) tea.Cmd {
+	if m.me == nil {
+		return nil
+	}
+	if id, _ := ev.GetData()["user_id"].(string); id != m.me.Id {
+		return nil
+	}
+	return m.scheduleMembershipResync()
+}
+
+// applyUserRemoved reacts to `user_removed`, the mirror of user_added and sent
+// in the same two copies — but not the same shape. The channel-wide copy names
+// the departing user in `user_id`; the one addressed to the person removed
+// can't be broadcast to a channel they are no longer in, so it carries
+// `channel_id` in the data instead and no user_id at all. Either identifies us;
+// anything else is a colleague leaving a channel we are still in.
+func (m *Model) applyUserRemoved(ev *model.WebSocketEvent) tea.Cmd {
+	if m.me == nil {
+		return nil
+	}
+	data := ev.GetData()
+	if id, _ := data["channel_id"].(string); id != "" {
+		return m.scheduleMembershipResync() // the copy addressed to us
+	}
+	if id, _ := data["user_id"].(string); id == m.me.Id {
+		return m.scheduleMembershipResync()
+	}
+	return nil
+}
+
+// applyChannelDeleted reacts to an archived channel. matterbox treats archived
+// as gone (the local archive action drops the row on the spot), so this is the
+// same change arriving from another client or another user.
+//
+// The event goes to the channel — or, with ExperimentalViewArchivedChannels on,
+// to the whole team, most of whose members were never in it. Knowing the
+// channel is what says the change concerns us, and it also makes our own
+// archive's echo a no-op, since dropChannel has already removed the row.
+func (m *Model) applyChannelDeleted(ev *model.WebSocketEvent) tea.Cmd {
+	id, _ := ev.GetData()["channel_id"].(string)
+	if id == "" || m.findChannel(id) == nil {
+		return nil
+	}
+	return m.scheduleMembershipResync()
+}
+
+// applyChannelRestored is un-archiving, and has to be handled precisely because
+// applyChannelDeleted drops the row: without it, archiving a channel and
+// restoring it would leave the user out of a channel they are still a member of
+// until they restart. Unconditional, since by then we no longer have the
+// channel to recognise.
+func (m *Model) applyChannelRestored() tea.Cmd {
+	return m.scheduleMembershipResync()
+}
+
+// applyLeaveTeam reacts to losing a team, which takes all of its channels with
+// it. Sent in the same two copies as added_to_team, both naming the user in
+// `user_id`, so one check covers ours and ignores everyone else's.
+func (m *Model) applyLeaveTeam(ev *model.WebSocketEvent) tea.Cmd {
 	if m.me == nil {
 		return nil
 	}
@@ -124,9 +188,16 @@ func (m *Model) applyChannelsResynced(msg channelsLoadedMsg) tea.Cmd {
 	// A channel that arrived with unread messages needs its badge derived from
 	// the member row rather than from the `posted` events we never heard.
 	m.applyUnreadFromMembers()
+	var cmds []tea.Cmd
+	// The resync can also take the open conversation away — removed from it, or
+	// from its whole team — and openChannelID is what routing, the title and
+	// every action read, so it can't be left pointing at a channel that is gone.
+	if m.openChannelID != "" && m.findChannel(m.openChannelID) == nil {
+		cmds = append(cmds, m.landAfterOpenChannelGone(m.channels[m.currentTeamID()], m.channelIdx))
+	}
 	// An already-built feed would otherwise keep showing the pre-resync set.
 	if m.feed.built {
-		return m.buildFeed()
+		cmds = append(cmds, m.buildFeed())
 	}
-	return nil
+	return tea.Batch(cmds...)
 }
