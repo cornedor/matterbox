@@ -1961,7 +1961,9 @@ func (m Model) openOpenable(o openable) tea.Cmd {
 
 // cachedFilePath returns the on-disk location for a downloaded
 // attachment, creating the cache directory if needed. Files are keyed
-// by ID so the same upload doesn't get re-downloaded.
+// by ID so the same upload doesn't get re-downloaded. The name is run
+// through downloadName because callers write to this path: a hostile
+// upload named "../../../.zshenv" would otherwise land outside the cache.
 func (m Model) cachedFilePath(f *model.FileInfo) (string, error) {
 	cache, err := os.UserCacheDir()
 	if err != nil {
@@ -1971,11 +1973,7 @@ func (m Model) cachedFilePath(f *model.FileInfo) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	name := f.Name
-	if name == "" {
-		name = "file"
-	}
-	return filepath.Join(dir, fmt.Sprintf("%s_%s", f.Id, name)), nil
+	return filepath.Join(dir, fmt.Sprintf("%s_%s", f.Id, downloadName(f))), nil
 }
 
 func (m Model) copyPostMarkdown(p *model.Post) tea.Cmd {

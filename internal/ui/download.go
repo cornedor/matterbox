@@ -99,8 +99,10 @@ func (m Model) downloadFiles(files []*model.FileInfo) tea.Cmd {
 // a generic "file") when the server reports no name, and stripping any path
 // separators a hostile name might carry so the write stays inside dir.
 func downloadName(f *model.FileInfo) string {
+	// ".." survives filepath.Base, and Join(dir, "..") is dir's parent — so it
+	// has to be rejected alongside the other degenerate bases, not just cleaned.
 	name := filepath.Base(f.Name)
-	if name == "" || name == "." || name == string(filepath.Separator) {
+	if name == "" || name == "." || name == ".." || name == string(filepath.Separator) {
 		if f.Id != "" {
 			return f.Id
 		}
