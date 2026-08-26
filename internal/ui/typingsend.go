@@ -4,6 +4,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+
+	"matterbox/internal/mm"
 )
 
 // typingSendInterval throttles how often we announce our own typing to the
@@ -45,9 +47,12 @@ func (m *Model) maybeSendTyping(now time.Time) tea.Cmd {
 
 	// UserTyping only enqueues onto the socket's write channel, but keep it
 	// off the Update goroutine so a stalled writer can never block the UI.
+	// Which is also why it goes through mm.SendTyping: off that goroutine the
+	// socket can close between this capture and the send, and the driver
+	// panics rather than refusing one on a dead socket.
 	ws := m.ws
 	return func() tea.Msg {
-		ws.UserTyping(channelID, parentID)
+		mm.SendTyping(ws, channelID, parentID)
 		return nil
 	}
 }

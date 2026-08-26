@@ -59,7 +59,52 @@ func (c *Client) DialWS() (*model.WebSocketClient, error) {
 		return nil, fmt.Errorf("ws dial: %w", err)
 	}
 	wsc.Listen()
+	go drainResponses(wsc.ResponseChannel)
 	return wsc, nil
+}
+
+// SendTyping announces typing on ws, and survives ws dying underneath it.
+//
+// The driver closes its write channel when the socket goes (both Close and the
+// reader's cleanup do), and SendMessage sends on that channel without checking
+// — so a send racing a close panics on a closed channel and takes the whole
+// program with it. The window is exactly the one that matters: the caller runs
+// off the UI goroutine (a blocked writer must never freeze the UI), so the
+// socket it captured can be closed by a ping timeout, a dropped link or our own
+// reconnect between the capture and the send. A laptop waking up hits all
+// three.
+//
+// The driver exposes nothing to ask whether the socket is still open, so the
+// race is caught rather than avoided. A typing cue lost to a socket that just
+// died is not worth a crash.
+func SendTyping(ws *model.WebSocketClient, channelID, rootID string) {
+	if ws == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	ws.UserTyping(channelID, rootID)
+}
+
+// drainResponses throws away the server's replies to the actions we send.
+//
+// Nothing here wants those replies, but a client that never reads them stops
+// receiving *anything*. The driver's reader goroutine does a blocking send on
+// ResponseChannel, and the server answers every action with a response — the
+// TUI sends a `user_typing` every few seconds while a message is being
+// composed. Once the 100-slot buffer fills, the reader parks on that send for
+// good: no more posts, no more reactions, nothing, and not even a close to
+// notice, since the ping handler runs on the same blocked goroutine. It takes
+// the ping watchdog ~65s to call it a dead socket and the reconnect to swap in
+// a fresh one, and the parked goroutine and its connection are never reclaimed.
+//
+// WebSocketClient states the contract in as many words: "A client must read
+// from PingTimeoutChannel, EventChannel and ResponseChannel to prevent
+// deadlocks from occurring in the program."
+//
+// Ends when Listen closes the channel on disconnect.
+func drainResponses(ch <-chan *model.WebSocketResponse) {
+	for range ch { //nolint:revive // discarding is the point
+	}
 }
 
 func (c *Client) Me(ctx context.Context) (*model.User, error) {

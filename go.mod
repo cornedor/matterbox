@@ -14,6 +14,7 @@ require (
 	github.com/charmbracelet/ultraviolet v0.0.0-20260416155717-489999b90468
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/ebitengine/oto/v3 v3.4.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/gotracker/playback v1.5.0
 	github.com/kyokomi/emoji/v2 v2.2.13
 	github.com/mattermost/mattermost/server/public v0.4.0
@@ -56,7 +57,6 @@ require (
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/css v1.0.1 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/gotracker/goaudiofile v1.0.16 // indirect
 	github.com/gotracker/opl2 v1.0.2 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
