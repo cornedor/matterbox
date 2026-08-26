@@ -118,17 +118,18 @@ func TestWSCloseClearsSocketAndRetries(t *testing.T) {
 	}
 }
 
-// The catch-up covers every half of what went stale: the sidebar (the channel
-// list), the badges (channel members) and the open transcript (the recent page).
-func TestResyncFetchesChannelsMembersAndOpenChannel(t *testing.T) {
+// The catch-up covers every part of what went stale: the tab strip (teams), the
+// sidebar (channels), the badges (channel members) and the open transcript (the
+// recent page).
+func TestResyncFetchesListsMembersAndOpenChannel(t *testing.T) {
 	m := wsModel(t)
 
 	// No store on this model, so the deletion sweep — which reconciles the
-	// cache — is correctly absent; channels + members + fetchRecent remain.
+	// cache — is correctly absent; the four fetches remain.
 	cmds := m.resyncAfterReconnect()
 
-	if len(cmds) != 3 {
-		t.Fatalf("expected channels + members + fetchRecent, got %d cmds", len(cmds))
+	if len(cmds) != 4 {
+		t.Fatalf("expected teams + channels + members + fetchRecent, got %d cmds", len(cmds))
 	}
 	for i, c := range cmds {
 		if c == nil {
@@ -145,8 +146,8 @@ func TestResyncSweepsDeletionsWhenCached(t *testing.T) {
 		Id: "p1", ChannelId: "c0", UserId: "u", Message: "hi", CreateAt: 100, UpdateAt: 100,
 	})
 
-	if n := len(m.resyncAfterReconnect()); n != 4 {
-		t.Fatalf("expected channels + members + fetchRecent + deletion sweep, got %d cmds", n)
+	if n := len(m.resyncAfterReconnect()); n != 5 {
+		t.Fatalf("expected the four fetches + deletion sweep, got %d cmds", n)
 	}
 }
 
@@ -156,19 +157,19 @@ func TestResyncSkipsDeletionSweepWithEmptyCache(t *testing.T) {
 	m := wsModel(t)
 	m.store = openSeededStore(t)
 
-	if n := len(m.resyncAfterReconnect()); n != 3 {
+	if n := len(m.resyncAfterReconnect()); n != 4 {
 		t.Fatalf("expected no deletion sweep against an empty cache, got %d cmds", n)
 	}
 }
 
 // Reconnecting while sitting on a non-channel tab (feed, search) leaves no
-// transcript to reconcile — only the sidebar and the badges need refreshing.
+// transcript to reconcile — only the lists and the badges need refreshing.
 func TestResyncWithoutOpenChannel(t *testing.T) {
 	m := wsModel(t)
 	m.openChannelID = ""
 
-	if n := len(m.resyncAfterReconnect()); n != 2 {
-		t.Fatalf("expected the channels + members refetch, got %d cmds", n)
+	if n := len(m.resyncAfterReconnect()); n != 3 {
+		t.Fatalf("expected the teams + channels + members refetch, got %d cmds", n)
 	}
 }
 

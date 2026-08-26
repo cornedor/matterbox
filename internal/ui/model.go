@@ -511,10 +511,10 @@ type Model struct {
 
 	ws      *model.WebSocketClient
 	wsRetry int
-	// channelResyncQueued guards the debounce in scheduleChannelResync: one
-	// pending refetch covers however many membership events arrive in its
+	// membershipResyncQueued guards the debounce in scheduleMembershipResync:
+	// one pending refetch covers however many membership events arrive in its
 	// window (being added to a team lands several at once).
-	channelResyncQueued bool
+	membershipResyncQueued bool
 
 	unread   map[string]int
 	mentions map[string]int
@@ -1667,13 +1667,15 @@ func (m Model) connectWS() tea.Cmd {
 // up. Nothing replays the events that fired while we were deaf, so everything
 // driven purely by live events has silently missed whatever landed in the gap:
 // the unread/mention badges (bumped per `posted` event) undercount, the open
-// transcript is short of posts, and the sidebar is missing any channel we were
-// added to meanwhile.
+// transcript is short of posts, and the tab strip and sidebar are missing any
+// team or channel we were added to meanwhile.
 //
-// Refetching the channel list is what closes that last one. It is the only
-// path that learns of a membership change other than startup and the live
-// `user_added` handler, and a laptop asleep through the add hears neither: the
-// channel — and every message in it — stayed invisible until a restart.
+// Refetching the team and channel lists is what closes that last one. They are
+// the only paths that learn of a membership change other than startup and the
+// live user_added / added_to_team handlers, and a laptop asleep through the add
+// hears neither: the channel — and every message in it — stayed invisible until
+// a restart. Teams come along because a channel in a team with no tab is as
+// invisible as no channel at all.
 //
 // Refetching the channel members rebuilds unread/mentions/muted and the
 // LastViewedAt read boundary from server truth, so counts that went *down*
@@ -1685,7 +1687,11 @@ func (m Model) connectWS() tea.Cmd {
 func (m *Model) resyncAfterReconnect() []tea.Cmd {
 	var cmds []tea.Cmd
 	if m.me != nil {
-		cmds = append(cmds, m.fetchAllChannels(m.me.Id, true), m.fetchChannelMembers(m.me.Id))
+		cmds = append(cmds,
+			m.fetchTeams(m.me.Id, true),
+			m.fetchAllChannels(m.me.Id, true),
+			m.fetchChannelMembers(m.me.Id),
+		)
 	}
 	if id := m.openChannelID; id != "" {
 		cmds = append(cmds, m.fetchRecent(id))
@@ -2214,7 +2220,10 @@ func (m Model) fetchMe() tea.Cmd {
 	}
 }
 
-func (m Model) fetchTeams(userID string) tea.Cmd {
+// fetchTeams gets every team the user is a member of. resync flags the result
+// as a mid-session refresh (see teamsLoadedMsg.resync); the startup load passes
+// false.
+func (m Model) fetchTeams(userID string, resync bool) tea.Cmd {
 	return func() tea.Msg {
 		t, err := m.client.Teams(m.ctx, userID)
 		if err != nil {
@@ -2223,7 +2232,7 @@ func (m Model) fetchTeams(userID string) tea.Cmd {
 		sort.SliceStable(t, func(i, j int) bool {
 			return displayTeam(t[i]) < displayTeam(t[j])
 		})
-		return teamsLoadedMsg{t}
+		return teamsLoadedMsg{teams: t, resync: resync}
 	}
 }
 
