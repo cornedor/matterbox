@@ -986,6 +986,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case wsEventMsg:
+		// Before handling it: this is what the next reconnect resumes from, and
+		// it has to be recorded for every event, in order, however we handle it.
+		m.client.NoteWSEvent(msg.ev)
 		cmd := m.handleWSEvent(msg.ev)
 		return m, tea.Batch(cmd, waitWSEvent(m.ws))
 
@@ -993,7 +996,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Silent disconnects are this client's worst failure: the UI looks fine
 		// and messages stop arriving. Reported before wsRetry moves, so the
 		// event describes the connection that just died.
-		m.noteWSDropped(msg.err)
+		m.noteWSDropped(msg.err, msg.pingTimeout)
 		if msg.err != nil {
 			// ws_disconnected counts the drop; this files it under the
 			// subsystem, which is what makes "our reconnect logic" separable

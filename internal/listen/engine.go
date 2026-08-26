@@ -558,6 +558,9 @@ func (e *Engine) consume(ctx context.Context, wsc *model.WebSocketClient) error 
 			if !ok {
 				return nil
 			}
+			// What the next reconnect resumes from — recorded for every event,
+			// in order, before anything decides to ignore this one.
+			e.client.NoteWSEvent(ev)
 			e.handle(ctx, ev)
 		}
 	}

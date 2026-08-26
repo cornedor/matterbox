@@ -104,7 +104,16 @@ type errMsg struct{ err error }
 
 type wsConnectedMsg struct{ ws *model.WebSocketClient }
 type wsEventMsg struct{ ev *model.WebSocketEvent }
-type wsClosedMsg struct{ err error }
+type wsClosedMsg struct {
+	err error
+	// pingTimeout distinguishes the watchdog giving up on a socket that stopped
+	// producing from an ordinary read error. Both look like "network" once the
+	// error is classified, but they mean different things: a ping timeout is
+	// either a half-open link the OS never told us about, or our own reader
+	// stalled — a bug on this side. Carried as a field because deciding it from
+	// the error text is how that distinction gets lost.
+	pingTimeout bool
+}
 type wsReconnectMsg struct{}
 
 type postSentMsg struct {

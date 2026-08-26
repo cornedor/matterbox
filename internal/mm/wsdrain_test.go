@@ -138,3 +138,60 @@ func TestSendTypingSurvivesAClosedSocket(t *testing.T) {
 func TestSendTypingOnNilSocket(t *testing.T) {
 	SendTyping(nil, "c1", "")
 }
+
+// --- reliable reconnect ------------------------------------------------------
+
+// helloEvent is what the server opens every connection with; connection_id is
+// the half of the resume handshake we can only learn from it.
+func helloEvent(connID string, seq int64) *model.WebSocketEvent {
+	ev := model.NewWebSocketEvent(model.WebsocketEventHello, "", "", "me", nil, "")
+	ev.Add("connection_id", connID)
+	return ev.SetSequence(seq)
+}
+
+// Without a connection id there is nothing to resume, and the dial must not
+// invent one — an id the server rejects fails the upgrade outright.
+func TestDialWSIsPlainBeforeAnyHello(t *testing.T) {
+	c := New("https://example.invalid", "tok")
+
+	if id, seq := c.resumeParams(); id != "" || seq != 0 {
+		t.Errorf("resume params = (%q, %d) before any hello; want none", id, seq)
+	}
+}
+
+// The sequence we send is the *next* one we expect: the server replays from the
+// event whose sequence equals it. Sending the last one we saw would replay it
+// again; sending one too far would skip an event for good.
+func TestResumeAsksForTheNextSequence(t *testing.T) {
+	c := New("https://example.invalid", "tok")
+	c.NoteWSEvent(helloEvent("conn1", 0))
+	c.NoteWSEvent(model.NewWebSocketEvent(model.WebsocketEventPosted, "", "c1", "", nil, "").SetSequence(7))
+
+	id, seq := c.resumeParams()
+	if id != "conn1" || seq != 8 {
+		t.Errorf("resume params = (%q, %d); want (conn1, 8) — one past the last seen", id, seq)
+	}
+}
+
+// A refused resume restarts the server's numbering from zero. Tracking the
+// maximum instead of the latest would pin us to a sequence the new connection
+// never reaches, and every later resume would ask for the wrong thing.
+func TestResumeFollowsARestartedSequence(t *testing.T) {
+	c := New("https://example.invalid", "tok")
+	c.NoteWSEvent(helloEvent("conn1", 0))
+	c.NoteWSEvent(model.NewWebSocketEvent(model.WebsocketEventPosted, "", "c1", "", nil, "").SetSequence(40))
+
+	// The server couldn't resume: new connection, numbering back to zero.
+	c.NoteWSEvent(helloEvent("conn2", 0))
+
+	id, seq := c.resumeParams()
+	if id != "conn2" || seq != 1 {
+		t.Errorf("resume params = (%q, %d); want (conn2, 1) — following the restart", id, seq)
+	}
+}
+
+// The TUI's event path runs in tests against models with no client at all.
+func TestNoteWSEventOnNilClient(t *testing.T) {
+	var c *Client
+	c.NoteWSEvent(helloEvent("conn1", 1))
+}

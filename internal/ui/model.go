@@ -2205,7 +2205,7 @@ func waitWSEvent(ws *model.WebSocketClient) tea.Cmd {
 			return wsEventMsg{ev: ev}
 		case <-ws.PingTimeoutChannel:
 			ws.Close()
-			return wsClosedMsg{err: fmt.Errorf("ping timeout")}
+			return wsClosedMsg{err: fmt.Errorf("ping timeout"), pingTimeout: true}
 		}
 	}
 }

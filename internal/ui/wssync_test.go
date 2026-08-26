@@ -2,6 +2,7 @@ package ui
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/mattermost/mattermost/server/public/model"
@@ -238,4 +239,38 @@ func TestPostUnreadStoresLastViewedAt(t *testing.T) {
 		}
 	}
 	t.Error("no member row stored for c1")
+}
+
+// A ping timeout and a dropped link both classify as "network", so without a
+// cause of its own the one failure that can be ours — a reader that stalled and
+// stopped producing — is indistinguishable from the user's wifi.
+func TestWSDropCauseSeparatesPingTimeout(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		err         error
+		pingTimeout bool
+		want        string
+	}{
+		{"ping timeout", errors.New("ping timeout"), true, "ping_timeout"},
+		{"read error", errors.New("connection reset by peer"), false, "read_error"},
+		{"clean close", nil, false, "closed"},
+	} {
+		if got := wsDropCause(tc.err, tc.pingTimeout); got != tc.want {
+			t.Errorf("%s: cause = %q; want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The flag has to survive the trip from the watchdog to the telemetry, which is
+// the whole point of carrying it rather than re-reading the error text.
+func TestWSClosedCarriesPingTimeoutToTheDropCause(t *testing.T) {
+	m := resyncModel(t)
+
+	out, _ := m.update(wsClosedMsg{err: errors.New("ping timeout"), pingTimeout: true})
+	if got := out.(Model).wsRetry; got != 1 {
+		t.Fatalf("wsRetry = %d; want the drop to have been handled", got)
+	}
+	if got := wsDropCause(errors.New("ping timeout"), true); got != "ping_timeout" {
+		t.Errorf("cause = %q; want ping_timeout", got)
+	}
 }

@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 
+	"github.com/gorilla/websocket"
 	"github.com/mattermost/mattermost/server/public/model"
 	"golang.org/x/sync/singleflight"
 )
@@ -30,6 +32,16 @@ type Client struct {
 	// fetch), so the same id can be requested from several event loops before
 	// the first download lands; singleflight makes that cost one GET.
 	emojiSF singleflight.Group
+
+	// wsMu guards the WebSocket resume state below. DialWS runs on whichever
+	// goroutine wants a socket; NoteWSEvent runs on whichever drains one.
+	wsMu sync.Mutex
+	// wsConnID is the server's id for our connection, learned from the `hello`
+	// event, and wsSeq the sequence of the last event we were handed. Together
+	// they let the next dial ask the server to replay what it sent while we
+	// were away, instead of starting deaf. See DialWS and NoteWSEvent.
+	wsConnID string
+	wsSeq    int64
 }
 
 // New builds a Client4 wrapper pointed at the given Mattermost server.
@@ -46,6 +58,19 @@ func New(serverURL, token string) *Client {
 
 // DialWS opens a WebSocket connection to the server and starts the
 // listener goroutine. Consume events from wsc.EventChannel.
+//
+// Once NoteWSEvent has seen a `hello`, reconnects are *reliable*: the dial
+// carries the connection id and the sequence we got up to, and the server
+// replays the events it queued for us in between rather than dropping them.
+// Without it a reconnect starts deaf to everything that happened in the gap,
+// which no amount of refetching fully recovers — the badges and the open
+// conversation can be re-read from the server, but a reaction or an edit in a
+// background channel is simply gone.
+//
+// The server keeps a bounded queue per connection and reaps it, so a resume
+// only spans a blip, not a night's sleep. A refused resume is not an error: the
+// server hands back a fresh connection and says so with a new `hello`, which is
+// why callers must resync after every reconnect regardless.
 func (c *Client) DialWS() (*model.WebSocketClient, error) {
 	wsURL := c.serverURL
 	switch {
@@ -54,13 +79,73 @@ func (c *Client) DialWS() (*model.WebSocketClient, error) {
 	case strings.HasPrefix(wsURL, "http://"):
 		wsURL = "ws://" + wsURL[len("http://"):]
 	}
-	wsc, err := model.NewWebSocketClient4(wsURL, c.token)
+
+	connID, nextSeq := c.resumeParams()
+
+	var (
+		wsc *model.WebSocketClient
+		err error
+	)
+	if connID != "" {
+		wsc, err = model.NewReliableWebSocketClientWithDialer(
+			websocket.DefaultDialer, wsURL, c.token, connID, nextSeq, false)
+		if err != nil {
+			// Don't let a connection id the server won't take wedge every
+			// retry; the next attempt starts clean.
+			c.wsMu.Lock()
+			c.wsConnID, c.wsSeq = "", 0
+			c.wsMu.Unlock()
+		}
+	} else {
+		wsc, err = model.NewWebSocketClient4(wsURL, c.token)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("ws dial: %w", err)
 	}
 	wsc.Listen()
 	go drainResponses(wsc.ResponseChannel)
 	return wsc, nil
+}
+
+// resumeParams is what the next dial should ask the server to resume from: the
+// connection id it gave us, and the sequence to replay from — which is the
+// *next* one we expect, not the last one we saw. The server replays from the
+// event whose sequence equals what we send (its isInDeadQueue check), so the
+// last one we saw would arrive twice and one further would be skipped for good.
+//
+// An empty connection id means there is nothing to resume; the caller dials
+// plainly rather than inventing an id the server would reject.
+func (c *Client) resumeParams() (connID string, nextSeq int) {
+	c.wsMu.Lock()
+	defer c.wsMu.Unlock()
+	if c.wsConnID == "" {
+		return "", 0
+	}
+	return c.wsConnID, int(c.wsSeq + 1)
+}
+
+// NoteWSEvent records what the next reconnect needs to resume from. A consumer
+// that reconnects must call it for every event it takes off EventChannel, in
+// order; one that dials once and exits (the short-lived CLI verbs) has nothing
+// to resume and can skip it.
+//
+// The sequence is assigned, not maxed: a refused resume restarts the server's
+// numbering from zero, and treating that as out-of-order would pin us to a
+// sequence the new connection will never reach.
+func (c *Client) NoteWSEvent(ev *model.WebSocketEvent) {
+	// Nil receiver tolerated: the TUI's event path runs in tests against models
+	// built without a client, and resume state is exactly what they don't need.
+	if c == nil || ev == nil {
+		return
+	}
+	c.wsMu.Lock()
+	defer c.wsMu.Unlock()
+	if ev.EventType() == model.WebsocketEventHello {
+		if id, ok := ev.GetData()["connection_id"].(string); ok && id != "" {
+			c.wsConnID = id
+		}
+	}
+	c.wsSeq = ev.GetSequence()
 }
 
 // SendTyping announces typing on ws, and survives ws dying underneath it.
