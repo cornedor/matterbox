@@ -84,13 +84,19 @@ type previewState struct {
 	img     image.Image
 	caption string
 
-	// frames/delays hold the decoded image: a still image is a single frame with
-	// a nil delays slice; an animated GIF (when animations.image_preview is on)
-	// has every composited frame and its per-frame display time. frameIdx is the
-	// frame currently transmitted under id; frameStart is when it began showing.
-	// All frames share one image id, so animating is a re-transmit, not a
-	// re-render (mirrors the custom-emoji loop in emojiimg.go).
-	frames     []image.Image
+	// frameCount/delays describe the decoded image: a still is one frame with a
+	// nil delays slice; an animated GIF (when animations.image_preview is on) has
+	// every composited frame's display time. frameIdx is the frame currently
+	// transmitted under id; frameStart is when it began showing. All frames share
+	// one image id, so animating is a re-transmit, not a re-render (mirrors the
+	// custom-emoji loop in emojiimg.go).
+	//
+	// The frames themselves are deliberately NOT kept. They are full-resolution
+	// composited RGBA — a 0.4 MB GIF decodes to 90 MB of them — and once seqs
+	// below is built there is nothing left to read them for except a resize,
+	// which re-decodes from the bytes already sitting in the on-disk cache. Only
+	// img (frame 0) survives, for the placement aspect and the caption.
+	frameCount int
 	delays     []time.Duration
 	frameIdx   int
 	frameStart time.Time
@@ -205,10 +211,13 @@ func (m *Model) allocStreamRing() [streamRingSlots]uint32 {
 // frames has one entry for a still image and many for an animated GIF; delays is
 // parallel to frames (nil for a still image).
 type previewImageLoadedMsg struct {
-	gen    int
-	frames []image.Image
+	gen int
+	// first is frame 0 and the only decoded frame that outlives the load — see
+	// previewState.frameCount; count is how many there were.
+	first  image.Image
+	count  int
 	delays []time.Duration
-	seqs   []string // pre-built Kitty transmit sequence per frame (parallel to frames)
+	seqs   []string // pre-built Kitty transmit sequence per frame (one per frame)
 	native bool     // seqs[0] is a native-animation *root* alone, not one seq per frame
 	// nativeSetup is the native-animation follow-up (every remaining frame + the
 	// terminal-driven loop) for a native, multi-frame result — set only when
@@ -361,11 +370,88 @@ func (m Model) openPreviewItems(items []previewItem, start int) (tea.Model, tea.
 	return m, m.loadPreviewItem(m.previewGen, id, items[start])
 }
 
-// loadPreviewImage fetches (reusing the on-disk cache), decodes, sizes, and
-// encodes the image entirely in the background, returning a
-// previewImageLoadedMsg tagged with gen. id is the (already-allocated) Kitty
-// image id the sequences are built for. Encoding here — not in the Update
-// handler — is what keeps a slow PNG encode off the UI goroutine.
+// builtPreview is one decoded-and-encoded preview image: everything the modal
+// keeps, and nothing it doesn't.
+//
+// first is frame 0 alone. The rest of the frames exist only as the encoded
+// sequences in seqs (or, natively, folded into setup), which is what stops a long
+// GIF from costing hundreds of megabytes for as long as the modal is open.
+type builtPreview struct {
+	first      image.Image
+	count      int
+	delays     []time.Duration
+	seqs       []string
+	native     bool
+	setup      string
+	cols, rows int
+}
+
+// buildPreviewFrames decodes raw and builds the modal's transmit sequences a
+// frame at a time, so at no point is more than one full-resolution frame
+// resident. See eachFrame for why only GIFs need that and why it matters.
+//
+// The scheme is decided per frame from m.nativeAnim: the manual path encodes
+// every frame under id (the tick re-transmits whichever is due), the native path
+// makes frame 0 the root and appends the rest as a=f for the terminal to run
+// itself. Which one a given image actually ends up on is only settled at the end
+// — a "native" image that turned out to have one frame is a still, and a still
+// is exactly one root transmit either way.
+//
+// keepFirst is false on the resize path, which already has frame 0's aspect in
+// preview.img and only wants the sequences rebuilt at the new size.
+func (m Model) buildPreviewFrames(raw []byte, id uint32, keepFirst bool) (builtPreview, error) {
+	var (
+		out        builtPreview
+		setup      []string // joined once at the end; see buildThumbFrames
+		firstDelay time.Duration
+		fitter     frameFitter
+	)
+	err := eachFrame(raw, m.animatePreview, m.decodePreviewFrames, func(fr image.Image, d time.Duration, shared bool) error {
+		if out.count == 0 {
+			out.cols, out.rows = m.computePreviewCells(fr.Bounds())
+			firstDelay = d
+			if keepFirst {
+				// The only frame that outlives this call, so the only one worth a
+				// copy — and only when the decoder is handing us its own buffer.
+				out.first = fr
+				if shared {
+					out.first = cloneFrame(fr)
+				}
+			}
+		}
+		out.count++
+		out.delays = append(out.delays, d)
+		fitted := fitter.fit(fr, out.cols, out.rows, m.cellPxW, m.cellPxH)
+		if m.nativeAnim && out.count > 1 {
+			seq, err := kittyTransmitFrame(&kittyPNG, id, fitted, d)
+			if err != nil {
+				return err
+			}
+			setup = append(setup, seq)
+			return nil
+		}
+		seq, err := kittyTransmitWith(&kittyPNG, id, fitted, out.rows, out.cols)
+		if err != nil {
+			return err
+		}
+		out.seqs = append(out.seqs, seq)
+		return nil
+	})
+	if err != nil {
+		return builtPreview{}, err
+	}
+	if out.count == 0 {
+		return builtPreview{}, fmt.Errorf("preview produced no frames")
+	}
+	if m.nativeAnim && out.count > 1 {
+		setup = append(setup, kittySetRootGap(id, firstDelay), kittyAnimateStart(id))
+		out.native, out.setup = true, strings.Join(setup, "")
+	}
+	return out, nil
+}
+
+// loadPreviewImage downloads (or reads from the disk cache), decodes and encodes
+// the image for the modal, all on a background goroutine — see buildPreviewFrames.
 func (m Model) loadPreviewImage(gen int, id uint32, it previewItem) tea.Cmd {
 	started := featureStart()
 	return func() tea.Msg {
@@ -373,29 +459,14 @@ func (m Model) loadPreviewImage(gen int, id uint32, it previewItem) tea.Cmd {
 		if err != nil {
 			return previewImageLoadedMsg{gen: gen, err: err, started: started}
 		}
-		frames, delays, derr := m.decodePreviewFrames(data, m.animatePreview)
-		if derr != nil {
-			return previewImageLoadedMsg{gen: gen, err: fmt.Errorf("decode image: %w", derr), started: started}
-		}
-		cols, rows := m.computePreviewCells(frames[0].Bounds())
-		native := m.nativeAnim && len(frames) > 1
-		var seqs []string
-		var nativeSetup string
-		var eerr error
-		if native {
-			var root string
-			root, nativeSetup, eerr = m.encodePreviewNative(frames, delays, cols, rows, id)
-			seqs = []string{root}
-		} else {
-			seqs, eerr = encodePreviewFrames(frames, cols, rows, id, m.cellPxW, m.cellPxH)
-		}
-		if eerr != nil {
-			return previewImageLoadedMsg{gen: gen, err: eerr, started: started}
+		built, berr := m.buildPreviewFrames(data, id, true)
+		if berr != nil {
+			return previewImageLoadedMsg{gen: gen, err: fmt.Errorf("decode image: %w", berr), started: started}
 		}
 		// Report the original's dimensions/size in the caption even when we
-		// rendered the smaller preview rendition (frames[0] would be the
+		// rendered the smaller preview rendition (frame 0 would be the
 		// downscaled bounds), so the caption describes the actual attachment.
-		b := frames[0].Bounds()
+		b := built.first.Bounds()
 		w, h, size := b.Dx(), b.Dy(), int64(len(data))
 		if it.file != nil {
 			if it.file.Width > 0 && it.file.Height > 0 {
@@ -412,32 +483,11 @@ func (m Model) loadPreviewImage(gen int, id uint32, it previewItem) tea.Cmd {
 			caption = svgCaption(it.name, data, size)
 		}
 		return previewImageLoadedMsg{
-			gen: gen, frames: frames, delays: delays, seqs: seqs, native: native, nativeSetup: nativeSetup,
-			cols: cols, rows: rows, caption: caption, started: started,
+			gen: gen, first: built.first, count: built.count, delays: built.delays,
+			seqs: built.seqs, native: built.native, nativeSetup: built.setup,
+			cols: built.cols, rows: built.rows, caption: caption, started: started,
 		}
 	}
-}
-
-// encodePreviewNative fits every frame to the rows×cols placement and builds the
-// Kitty native-animation root transmit and its follow-up (every remaining frame
-// plus the terminal-driven loop) *separately* — see previewImageLoadedMsg.nativeSetup
-// for why the two must not be sent in the same install. Mirrors encodePreviewFrames'
-// per-frame fit (fitFrameToCells) so the two paths place an image identically; only
-// how the animation itself is delivered differs.
-func (m Model) encodePreviewNative(frames []image.Image, delays []time.Duration, cols, rows int, id uint32) (root, setup string, err error) {
-	fitted := make([]image.Image, len(frames))
-	for i, f := range frames {
-		fitted[i] = fitFrameToCells(f, cols, rows, m.cellPxW, m.cellPxH)
-	}
-	root, err = kittyTransmitWith(&kittyPNG, id, fitted[0], rows, cols)
-	if err != nil {
-		return "", "", err
-	}
-	setup, err = buildNativeAnimSetup(&kittyPNG, id, fitted, delays)
-	if err != nil {
-		return "", "", err
-	}
-	return root, setup, nil
 }
 
 // readPreviewBytes returns the item's raw bytes: an attachment via the
@@ -599,21 +649,21 @@ func (m Model) handlePreviewLoaded(msg previewImageLoadedMsg) (tea.Model, tea.Cm
 		m.recordMedia("image_preview", "error", telemetry.ClassifyError(msg.err), decodeMillis(msg.started))
 		return m, nil
 	}
-	if len(msg.seqs) == 0 || len(msg.frames) == 0 {
+	if len(msg.seqs) == 0 || msg.count == 0 {
 		m.preview.err = fmt.Errorf("preview produced no frames")
 		m.recordMedia("image_preview", "empty", "", decodeMillis(msg.started))
 		return m, nil
 	}
 	m.recordMedia("image_preview", "ok", "", decodeMillis(msg.started))
 	telemetry.Feature("image_preview")
-	m.preview.frames = msg.frames
+	m.preview.frameCount = msg.count
 	m.preview.delays = msg.delays
 	m.preview.seqs = msg.seqs
 	m.preview.native = msg.native
 	m.preview.cols, m.preview.rows = msg.cols, msg.rows
 	m.preview.frameIdx = 0
 	m.preview.frameStart = time.Time{}
-	m.preview.img = msg.frames[0]
+	m.preview.img = msg.first
 	m.preview.caption = msg.caption
 	// A native setup animates itself once sent — see kittyAnimateStart — so only
 	// the manual path needs a tick to advance it. The setup itself is sent
@@ -626,7 +676,7 @@ func (m Model) handlePreviewLoaded(msg previewImageLoadedMsg) (tea.Model, tea.Cm
 		}
 		return m, tea.Batch(cmds...)
 	}
-	if len(m.preview.frames) > 1 {
+	if m.preview.frameCount > 1 {
 		m.preview.frameStart = time.Now()
 		return m, tea.Batch(tea.Raw(msg.seqs[0]), previewTickCmd(m.previewGen, m.preview.delays[0]))
 	}
@@ -667,8 +717,8 @@ func (m Model) handlePreviewNativeSetup(msg previewNativeSetupMsg) (tea.Model, t
 // reschedules from the next frame's delay. A tick from a cycled/closed preview,
 // or for a still image, is dropped.
 func (m Model) handlePreviewTick(msg previewTickMsg) (tea.Model, tea.Cmd) {
-	if !m.preview.active || msg.gen != m.previewGen || m.preview.native || len(m.preview.frames) <= 1 ||
-		m.preview.id == 0 || len(m.preview.seqs) != len(m.preview.frames) {
+	if !m.preview.active || msg.gen != m.previewGen || m.preview.native || m.preview.frameCount <= 1 ||
+		m.preview.id == 0 || len(m.preview.seqs) != m.preview.frameCount {
 		return m, nil
 	}
 	now := time.Now()
@@ -676,7 +726,7 @@ func (m Model) handlePreviewTick(msg previewTickMsg) (tea.Model, tea.Cmd) {
 	// doesn't play in slow motion.
 	for now.Sub(m.preview.frameStart) >= m.preview.delays[m.preview.frameIdx] {
 		m.preview.frameStart = m.preview.frameStart.Add(m.preview.delays[m.preview.frameIdx])
-		m.preview.frameIdx = (m.preview.frameIdx + 1) % len(m.preview.frames)
+		m.preview.frameIdx = (m.preview.frameIdx + 1) % m.preview.frameCount
 	}
 	rem := m.preview.delays[m.preview.frameIdx] - now.Sub(m.preview.frameStart)
 	if rem < 0 {
@@ -710,7 +760,7 @@ func (m Model) handlePreviewReencoded(msg previewReencodedMsg) (tea.Model, tea.C
 		}
 		return m, tea.Batch(cmds...)
 	}
-	if len(msg.seqs) != len(m.preview.frames) {
+	if len(msg.seqs) != m.preview.frameCount {
 		return m, nil
 	}
 	m.preview.seqs = msg.seqs
@@ -742,7 +792,7 @@ func (m Model) cyclePreview(delta int) (tea.Model, tea.Cmd) {
 	m.preview.loading = true
 	m.preview.err = nil
 	m.preview.img = nil
-	m.preview.frames = nil
+	m.preview.frameCount = 0
 	m.preview.delays = nil
 	m.preview.seqs = nil
 	m.preview.frameIdx = 0
@@ -832,7 +882,7 @@ func (m *Model) resizePreview() tea.Cmd {
 	if m.preview.streaming {
 		return m.resizePreviewStream()
 	}
-	if len(m.preview.frames) == 0 {
+	if m.preview.frameCount == 0 {
 		return nil
 	}
 	m.sizePreview()
@@ -843,6 +893,14 @@ func (m *Model) resizePreview() tea.Cmd {
 // sequence(s) at the current placement size (capturing everything now so a later
 // cycle/close can't race the encode). Used by resizePreview.
 //
+// It re-decodes the image rather than re-fitting frames it kept, because it
+// doesn't keep any: the full-resolution frames are the single largest thing an
+// open preview could hold (see previewState.frameCount), and the bytes they came
+// from are already in the on-disk cache the first load populated — so a resize
+// costs one more read and decode, off the UI goroutine, instead of every preview
+// costing its whole decode for as long as it is open. Resizes are debounced; an
+// open GIF is not.
+//
 // A native animation (m.preview.native) can't simply re-encode in place: its root
 // frame already carries other frames appended to it at the old size, and
 // re-transmitting a root under an id that already has animation frames is an
@@ -851,29 +909,29 @@ func (m *Model) resizePreview() tea.Cmd {
 // do — and builds the whole setup under it; handlePreviewReencoded swaps
 // m.preview.id to it and frees the old one.
 func (m *Model) reencodePreview(gen int) tea.Cmd {
-	frames := m.preview.frames
-	delays := m.preview.delays
-	cols, rows := m.preview.cols, m.preview.rows
-	cw, ch := m.cellPxW, m.cellPxH
-	if m.preview.native {
-		oldID := m.preview.id
-		newID := m.emojiImg.allocID()
-		mm := *m
-		return func() tea.Msg {
-			root, setup, err := mm.encodePreviewNative(frames, delays, cols, rows, newID)
-			if err != nil {
-				return previewReencodedMsg{gen: gen, err: err}
-			}
-			return previewReencodedMsg{gen: gen, seqs: []string{root}, nativeSetup: setup, id: newID, oldID: oldID}
-		}
+	if m.preview.idx >= len(m.preview.items) {
+		return nil
 	}
-	id := m.preview.id
+	it := m.preview.items[m.preview.idx]
+	native := m.preview.native
+	oldID, id := m.preview.id, m.preview.id
+	if native {
+		id = m.emojiImg.allocID()
+	}
+	snap := *m
 	return func() tea.Msg {
-		seqs, err := encodePreviewFrames(frames, cols, rows, id, cw, ch)
+		data, err := snap.readPreviewBytes(it)
 		if err != nil {
 			return previewReencodedMsg{gen: gen, err: err}
 		}
-		return previewReencodedMsg{gen: gen, seqs: seqs}
+		built, err := snap.buildPreviewFrames(data, id, false)
+		if err != nil {
+			return previewReencodedMsg{gen: gen, err: err}
+		}
+		if native {
+			return previewReencodedMsg{gen: gen, seqs: built.seqs, nativeSetup: built.setup, id: id, oldID: oldID}
+		}
+		return previewReencodedMsg{gen: gen, seqs: built.seqs}
 	}
 }
 
@@ -987,22 +1045,6 @@ func padImageForCells(img image.Image, cols, rows, cellPxW, cellPxH int) image.I
 	return out
 }
 
-// encodePreviewFrames right-sizes each frame to the rows×cols placement and
-// builds its Kitty transmit sequence under id. Run off the main thread (the
-// load/reencode commands) so a slow PNG encode never blocks the UI goroutine.
-func encodePreviewFrames(frames []image.Image, cols, rows int, id uint32, cellPxW, cellPxH int) ([]string, error) {
-	seqs := make([]string, len(frames))
-	for i, f := range frames {
-		fitted := fitFrameToCells(f, cols, rows, cellPxW, cellPxH)
-		seq, err := kittyTransmitImage(id, fitted, rows, cols)
-		if err != nil {
-			return nil, fmt.Errorf("encode preview frame %d: %w", i, err)
-		}
-		seqs[i] = seq
-	}
-	return seqs, nil
-}
-
 // fitFrameToCells right-sizes a frame for a rows×cols Kitty placement so we
 // neither PNG-encode nor transmit more pixels than the cells can display. The
 // placement covers cols·cellPxW × rows·cellPxH physical pixels, so a larger
@@ -1031,9 +1073,67 @@ func fitFrameToCells(frame image.Image, cols, rows, cellPxW, cellPxH int) image.
 	if dstH < 1 {
 		dstH = 1
 	}
-	dst := image.NewRGBA(image.Rect(0, 0, dstW, dstH))
-	xdraw.BiLinear.Scale(dst, dst.Bounds(), frame, b, xdraw.Src, nil)
-	return dst
+	return (&frameFitter{}).scaleInto(frame, b, dstW, dstH)
+}
+
+// frameFitter is fitFrameToCells for a run of same-sized frames, reusing across
+// all of them both the destination image and the scaler that writes into it.
+//
+// The scaler is the larger half. x/image/draw's Kernel.Scale builds a
+// kernelScaler per call and throws it away — the two weight tables and, worse, a
+// dw×sh [4]float64 scratch buffer, megabytes for a real image. It was the single
+// biggest allocation in a live profile of scrolling an image-heavy channel:
+// 355 MB in six minutes. NewScaler is the same object kept, pooling that scratch
+// and building the tables once. It falls back to a fresh scale when the sizes it
+// was built for don't match the call, so a stale cached scaler costs the
+// optimisation, never a wrong picture.
+//
+// The image fit returns is therefore only valid until the next call. That is the
+// same contract the frames themselves arrive under (see frameFunc), so the
+// callers already honour it.
+type frameFitter struct {
+	dst    *image.RGBA
+	scaler xdraw.Scaler
+	// the (destination, source) size pair scaler was built for
+	dw, dh, sw, sh int
+}
+
+func (f *frameFitter) fit(frame image.Image, cols, rows, cellPxW, cellPxH int) image.Image {
+	cw, ch := cellPxW, cellPxH
+	if cw <= 0 || ch <= 0 {
+		cw, ch = 8, 16
+	}
+	boxW, boxH := cols*cw, rows*ch
+	b := frame.Bounds()
+	if boxW <= 0 || boxH <= 0 || (b.Dx() <= boxW && b.Dy() <= boxH) {
+		return padImageForCells(frame, cols, rows, cellPxW, cellPxH)
+	}
+	scale := math.Min(float64(boxW)/float64(b.Dx()), float64(boxH)/float64(b.Dy()))
+	dstW := int(math.Round(float64(b.Dx()) * scale))
+	dstH := int(math.Round(float64(b.Dy()) * scale))
+	if dstW < 1 {
+		dstW = 1
+	}
+	if dstH < 1 {
+		dstH = 1
+	}
+	return f.scaleInto(frame, b, dstW, dstH)
+}
+
+// scaleInto downscales frame into the reusable destination, rebuilding it and the
+// scaler only when the sizes actually change (never, within one GIF or one video
+// chunk). Scale with draw.Src writes every pixel of the destination, so a reused
+// buffer can hold no trace of the previous frame.
+func (f *frameFitter) scaleInto(frame image.Image, b image.Rectangle, dstW, dstH int) image.Image {
+	if f.dst == nil || f.dst.Rect.Dx() != dstW || f.dst.Rect.Dy() != dstH {
+		f.dst = image.NewRGBA(image.Rect(0, 0, dstW, dstH))
+	}
+	if f.scaler == nil || f.dw != dstW || f.dh != dstH || f.sw != b.Dx() || f.sh != b.Dy() {
+		f.scaler = xdraw.BiLinear.NewScaler(dstW, dstH, b.Dx(), b.Dy())
+		f.dw, f.dh, f.sw, f.sh = dstW, dstH, b.Dx(), b.Dy()
+	}
+	f.scaler.Scale(f.dst, f.dst.Bounds(), frame, b, xdraw.Src, nil)
+	return f.dst
 }
 
 // previewImageBlock builds the placeholder grid (rows×cols cells pointing at the

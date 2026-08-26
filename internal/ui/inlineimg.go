@@ -50,18 +50,32 @@ const (
 	// filename line.
 	inlineThumbMinCols = 8
 
-	// maxInlineImages caps how many thumbnails are resident in *terminal* memory
-	// at once. Each is a PNG the terminal holds until told otherwise, so a long
-	// scroll through an image-heavy channel would otherwise accumulate them for the
-	// rest of the session. Past the cap the least-recently-sighted ones are freed
-	// with kittyDelete — never one that is on screen (see evictResidentLocked).
+	// maxInlineTerminalBytes caps what the *terminal* holds for us: the decoded
+	// pixels behind every resident thumbnail. Past the budget the
+	// least-recently-sighted images are freed with kittyDelete — never one that is
+	// on screen (see evictResidentLocked).
 	//
-	// Freeing an image does NOT discard the built thumbnail: the decoded,
-	// downscaled, PNG-encoded frames stay in inlineImgEntry, so scrolling back to it
-	// costs one re-transmit of a string we already have, not another decode +
-	// re-encode. Conflating the two was what turned an image-heavy channel into a
-	// permanent rebuild loop (TestThumbFetchConverges).
-	maxInlineImages = 64
+	// This used to be a count (64 images), on the premise its comment stated: "each
+	// is a PNG the terminal holds". Native animation broke that premise. An animated
+	// thumbnail uploads the root *plus every a=f frame*, so one "image" can be 90
+	// stored frames — at a 10-row placement, ~25 MB rather than ~288 KB. Sixty-four
+	// of those is 1.6 GB against Ghostty's 320 MB default image-storage-limit, so
+	// the terminal evicted them behind our back; ent.resident stayed true, sight()
+	// therefore never queued a re-transmit, and the placeholder cells sat on an id
+	// the terminal had dropped. Images went blank at random and stayed blank — a
+	// resize couldn't fix them, only a rebuild under a fresh id.
+	//
+	// Counting bytes keeps us inside the terminal's own limit, which is what makes
+	// ent.resident true again. 128 MiB leaves Ghostty's default plenty of room while
+	// holding a full screenful of worst-case animated thumbnails — and roughly seven
+	// times as many stills as the old count cap allowed.
+	maxInlineTerminalBytes = 128 << 20
+
+	// nominalCellPxW/H stand in for the terminal's cell size when it never answered
+	// the startup query. Only the residency budget uses them, and only to size
+	// images it is about to evict in LRU order anyway, so an estimate is enough.
+	nominalCellPxW = 8
+	nominalCellPxH = 16
 
 	// maxInlineBuiltBytes bounds the built frames we keep in *our* memory, which is
 	// the resource maxInlineImages is not. A still thumbnail's PNG is tens of KB; a
@@ -160,6 +174,15 @@ type inlineImgEntry struct {
 	// costs nothing per event.
 	onScreen bool
 
+	// termFrames is how many frames the terminal is holding for this image while
+	// it is resident: 1 for a still, one per animation frame for a GIF the native
+	// path uploaded. It is the multiplier the residency budget turns on, and the
+	// reason that budget cannot be a count — see maxInlineTerminalBytes.
+	//
+	// The manual animation path never stores more than the one frame it last
+	// transmitted, however many it has encoded, so only the native path raises it.
+	termFrames int
+
 	// seen is the sighting stamp used for LRU eviction, bumped by sight(). Note
 	// it is NOT bumped on every render: renderPostLines serves an unchanged
 	// visible post straight from postLineCache and never reaches sight(), so a
@@ -213,6 +236,14 @@ type inlineImages struct {
 	release map[string]struct{}
 	// builtBytes tracks the frameSeqs we are holding, against maxInlineBuiltBytes.
 	builtBytes int
+	// residentBytes tracks what the terminal is holding for us, against
+	// maxInlineTerminalBytes. Maintained by setResidentLocked, which is the only
+	// place ent.resident is allowed to change.
+	residentBytes int
+	// cellPxW/cellPxH is the terminal's reported cell size, needed to turn a
+	// placement in cells into the pixels the terminal actually stores. Zero until
+	// the startup query answers; see nominalCellPxW.
+	cellPxW, cellPxH int
 	// lastScan memoizes the last (viewport offsets, content versions, pending count)
 	// the fetch scan ran against. In an image-heavy channel `pending` is never empty
 	// — the images beyond the fetch margin sit there indefinitely — so without this
@@ -410,6 +441,7 @@ func (ii *inlineImages) markReady(fileID string, r readyInlineImg) (replaced []u
 		if prev.id != 0 && prev.id != r.id && prev.resident {
 			replaced = append(replaced, prev.id)
 		}
+		ii.setResidentLocked(prev, false)
 		ii.builtBytes -= prev.builtSize()
 	}
 	ent := &inlineImgEntry{
@@ -421,10 +453,15 @@ func (ii *inlineImages) markReady(fileID string, r readyInlineImg) (replaced []u
 		placeholder: r.placeholder,
 		frameSeqs:   r.frameSeqs,
 		delays:      r.delays,
-		resident:    true,
-		seen:        ii.tick,
+		// One frame in terminal memory, whatever we have encoded: a still is one
+		// image, and the manual animation path re-transmits the frame that is due
+		// over the same id rather than uploading them all. Only the native path
+		// raises this — see markFramesBuilt.
+		termFrames: 1,
+		seen:       ii.tick,
 	}
 	ii.entries[fileID] = ent
+	ii.setResidentLocked(ent, true)
 	ii.builtBytes += ent.builtSize()
 	// A GIF arrives as its first frame only; the rest are encoded if and when it is
 	// displayed. Until then it is an ordinary still, and this is the note to come back.
@@ -471,7 +508,7 @@ func (ii *inlineImages) takeDeferredFrames() []thumbFramesJob {
 //
 // With b.native set (animations.native_animation), there is no tick to wait for:
 // b.native is the Kitty native-animation setup for every frame but the still already
-// on screen (see encodeInlineThumbNative), and it is folded onto the end of the
+// on screen (see buildThumbFrames), and it is folded onto the end of the
 // still's own transmit so a later re-transmit-after-eviction (see sight/takeTransmits)
 // resends the whole thing, not just the still. The caller (handleInlineThumbFrames)
 // is the one that actually sends b.native out of band — this only installs it.
@@ -497,6 +534,12 @@ func (ii *inlineImages) markFramesBuilt(b builtThumbFrames) bool {
 		ent.frameSeqs = []string{ent.frameSeqs[0] + b.native}
 		ent.delays = nil
 		ii.builtBytes += ent.builtSize()
+		// Every frame is now uploaded under this id, not just the one on screen.
+		// That is the whole reason the residency budget counts bytes.
+		wasResident := ent.resident
+		ii.setResidentLocked(ent, false)
+		ent.termFrames = b.frames
+		ii.setResidentLocked(ent, wasResident)
 		return true
 	}
 	if len(b.seqs) <= 1 {
@@ -511,6 +554,60 @@ func (ii *inlineImages) markFramesBuilt(b builtThumbFrames) bool {
 	return true
 }
 
+// setCellSize records the terminal's cell size so the residency budget can size a
+// placement in real pixels. Called when the startup query answers.
+func (ii *inlineImages) setCellSize(w, h int) {
+	if ii == nil || w <= 0 || h <= 0 {
+		return
+	}
+	ii.mu.Lock()
+	defer ii.mu.Unlock()
+	if ii.cellPxW == w && ii.cellPxH == h {
+		return
+	}
+	ii.cellPxW, ii.cellPxH = w, h
+	// Every resident image is now worth a different number of bytes; recount
+	// rather than try to adjust each one.
+	ii.residentBytes = 0
+	for _, ent := range ii.entries {
+		if ent.resident {
+			ii.residentBytes += ii.termBytesLocked(ent)
+		}
+	}
+}
+
+// termBytesLocked is the decoded pixel data the terminal holds for this entry
+// while it is resident: its placement in real pixels, times four bytes, times
+// however many frames were uploaded under its id. Callers hold mu.
+func (ii *inlineImages) termBytesLocked(ent *inlineImgEntry) int {
+	cw, ch := ii.cellPxW, ii.cellPxH
+	if cw <= 0 || ch <= 0 {
+		cw, ch = nominalCellPxW, nominalCellPxH
+	}
+	frames := ent.termFrames
+	if frames < 1 {
+		frames = 1
+	}
+	return ent.cols * cw * ent.rows * ch * 4 * frames
+}
+
+// setResidentLocked is the only place ent.resident changes, so residentBytes can
+// never drift from it. Callers hold mu.
+func (ii *inlineImages) setResidentLocked(ent *inlineImgEntry, resident bool) {
+	if ent.resident == resident {
+		return
+	}
+	ent.resident = resident
+	if resident {
+		ii.residentBytes += ii.termBytesLocked(ent)
+		return
+	}
+	ii.residentBytes -= ii.termBytesLocked(ent)
+	if ii.residentBytes < 0 {
+		ii.residentBytes = 0
+	}
+}
+
 // builtSize is the memory this entry's built frames occupy, for the
 // maxInlineBuiltBytes budget.
 func (e *inlineImgEntry) builtSize() int {
@@ -522,52 +619,46 @@ func (e *inlineImgEntry) builtSize() int {
 }
 
 // evictResidentLocked frees the least-recently-sighted images from *terminal*
-// memory until at most maxInlineImages remain resident, returning their ids for
-// kittyDelete. The built frames stay in ii.entries, so a later sighting re-transmits
-// a string we already have instead of decoding and re-encoding the image again —
-// which is what turned an image-heavy channel into a permanent rebuild loop.
+// memory until what the terminal holds for us is back under maxInlineTerminalBytes,
+// returning their ids for kittyDelete. The built frames stay in ii.entries, so a
+// later sighting re-transmits a string we already have instead of decoding and
+// re-encoding the image again — which is what turned an image-heavy channel into a
+// permanent rebuild loop.
 //
 // An image that is on screen is never a candidate, however old its stamp. Freeing
 // one would kittyDelete it out from under the placeholder cells still displaying
 // it, and those cells live in the post's cached lines, so nothing would re-sight it
 // and it would stay blank. Stamps alone can't prevent that: a visible post renders
 // from postLineCache without being re-sighted, so its stamp is stale precisely when
-// it matters (see inlineImgEntry.seen). Sparing them can leave us a little over the
-// cap when a screenful of images exceeds it; a few extra PNGs in terminal memory
-// beats a blank hole in the transcript. Callers hold mu.
+// it matters (see inlineImgEntry.seen). Sparing them can leave us over budget when a
+// screenful of images exceeds it on its own; a little extra in terminal memory beats
+// a blank hole in the transcript, and the budget has room for that. Callers hold mu.
 func (ii *inlineImages) evictResidentLocked() (freed []uint32) {
+	if ii.residentBytes <= maxInlineTerminalBytes {
+		return nil
+	}
 	type aged struct {
 		key  string
 		seen uint64
 	}
 	var cand []aged
-	resident, pinned := 0, 0
 	for key, ent := range ii.entries {
-		if ent.state != inlineImgReady || !ent.resident {
-			continue
-		}
-		resident++
-		if ent.onScreen {
-			pinned++
+		if ent.state != inlineImgReady || !ent.resident || ent.onScreen {
 			continue
 		}
 		cand = append(cand, aged{key, ent.seen})
 	}
-	over := resident - maxInlineImages
-	if over <= 0 {
-		return nil
-	}
-	if over > len(cand) {
-		over = len(cand) // the rest are displayed; keep them resident
-	}
 	sort.Slice(cand, func(i, j int) bool { return cand[i].seen < cand[j].seen })
-	for _, a := range cand[:over] {
+	for _, a := range cand {
+		if ii.residentBytes <= maxInlineTerminalBytes {
+			break
+		}
 		ent := ii.entries[a.key]
 		if ent == nil {
 			continue
 		}
 		freed = append(freed, ent.id)
-		ent.resident = false // the frames stay; only the terminal copy goes
+		ii.setResidentLocked(ent, false) // the frames stay; only the terminal copy goes
 		delete(ii.needTransmit, a.key)
 	}
 	return freed
@@ -603,6 +694,7 @@ func (ii *inlineImages) evictBuiltLocked() (freed []uint32) {
 		if ent.resident {
 			freed = append(freed, ent.id)
 		}
+		ii.setResidentLocked(ent, false)
 		ii.builtBytes -= ent.builtSize()
 		delete(ii.entries, a.key)
 		delete(ii.needTransmit, a.key)
@@ -655,7 +747,7 @@ func (ii *inlineImages) releaseCollapsedLocked() (freed []uint32) {
 		if ent.state != inlineImgReady || !ent.resident {
 			continue
 		}
-		ent.resident = false
+		ii.setResidentLocked(ent, false)
 		freed = append(freed, ent.id)
 	}
 	return freed
@@ -679,7 +771,7 @@ func (ii *inlineImages) takeTransmits() string {
 			continue
 		}
 		sb.WriteString(ent.frameSeqs[ent.frameIdx])
-		ent.resident = true
+		ii.setResidentLocked(ent, true)
 	}
 	for _, id := range ii.releaseCollapsedLocked() {
 		sb.WriteString(kittyDelete(id))
@@ -1143,7 +1235,7 @@ type readyInlineImg struct {
 // everything the background build needs to slot them into the still that is already
 // on screen: the same terminal id, and the same box it was fitted to. rows/cols is
 // that box in cells — the still's already-committed placement — which the native
-// path (encodeInlineThumbNative) fits every later frame to directly, with no need
+// path (buildThumbFrames) fits every later frame to directly, with no need
 // to recompute it from box the way the legacy path does.
 type thumbFramesJob struct {
 	key        string
@@ -1157,7 +1249,7 @@ type thumbFramesJob struct {
 // markFramesBuilt can refuse anything that would land on a different cell box than
 // the still it is completing. Exactly one of native or (seqs, delays) is set: native
 // is the Kitty native-animation setup for frames[1:] (animations.native_animation
-// — see encodeInlineThumbNative); seqs/delays is the legacy manual-path per-frame
+// — see buildThumbFrames); seqs/delays is the legacy manual-path per-frame
 // transmit sequences, one for every frame including the still.
 type builtThumbFrames struct {
 	key        string
@@ -1166,6 +1258,10 @@ type builtThumbFrames struct {
 	seqs       []string
 	delays     []time.Duration
 	native     string
+	// frames is how many frames the native setup uploaded under id — what the
+	// terminal now stores for this image, and what the residency budget charges
+	// it. Meaningless for the manual path, which uploads one frame at a time.
+	frames int
 }
 
 // inlineThumbFramesMsg carries finished GIF frames back to the main goroutine.
@@ -1345,8 +1441,9 @@ func (m Model) encodeInlineThumb(id uint32, frames []image.Image, box int) (read
 		id = m.emojiImg.allocID() // one shared 24-bit id space with emoji + preview
 	}
 	seqs := make([]string, len(frames))
+	var fitter frameFitter
 	for i, fr := range frames {
-		fitted := fitFrameToCells(fr, cols, rows, m.cellPxW, m.cellPxH)
+		fitted := fitter.fit(fr, cols, rows, m.cellPxW, m.cellPxH)
 		seq, err := kittyTransmitImage(id, fitted, rows, cols)
 		if err != nil {
 			return readyInlineImg{}, decodeFailure{err}
@@ -1385,24 +1482,89 @@ func (m *Model) buildVisibleThumbFrames() tea.Cmd {
 	}
 }
 
-// encodeInlineThumbNative builds the Kitty native-animation setup for a GIF
-// thumbnail whose still (frame 0) is already transmitted and on screen: fit every
-// remaining frame to the still's own rows×cols box — matching it exactly is what a
-// native a=f frame needs, since it paints over the canvas the root already
-// established — then append them and start the terminal-driven loop
-// (buildNativeAnimSetup). Unlike encodeInlineThumb, this never re-sends frame 0:
-// it is already resident, so the only bytes transmitted are the ones the terminal
-// doesn't have yet.
-func (m Model) encodeInlineThumbNative(id uint32, frames []image.Image, delays []time.Duration, rows, cols int) (string, error) {
-	fitted := make([]image.Image, len(frames))
-	for i, fr := range frames {
-		fitted[i] = fitFrameToCells(fr, cols, rows, m.cellPxW, m.cellPxH)
+// buildThumbFrames builds the animation frames of a GIF whose still (frame 0) is
+// already transmitted and on screen, fitting and encoding each frame as it is
+// composited rather than decoding the whole GIF first.
+//
+// That ordering is the entire point. A GIF has no size or frame-count ceiling,
+// and its composited frames are full-resolution: decoding one before downscaling
+// it to a 10-row thumbnail cost ~180 MB of live images for a 3 MB GIF, to keep
+// ~4 MB of encoded output. Streaming holds one frame at a time, so the peak is
+// the fitted-and-encoded result plus a single canvas. See eachFrame.
+//
+// The frame handed to the callback is a shared buffer, but fitFrameToCells and
+// the encode both consume it before returning — the only thing kept past the
+// callback is the encoded string — so nothing needs a copy here.
+//
+// Both animation schemes are built the same way, differing only in what happens
+// to each frame: the manual path encodes every frame under the still's id (the
+// tick re-transmits whichever is due), while the native path appends frames 1..n
+// as a=f and lets the terminal run the loop — never re-sending frame 0, which is
+// already resident. Which one this is is settled by m.nativeAnim, and by whether
+// the GIF turned out to have more than one frame at all.
+func (m Model) buildThumbFrames(j thumbFramesJob, raw []byte) (builtThumbFrames, error) {
+	out := builtThumbFrames{key: j.key, id: j.id}
+	var (
+		// setup collects the per-frame sequences and is joined once at the end.
+		// A strings.Builder here allocated five times the finished setup — Go's
+		// append grows a large slice by ~1.25×, so the copies compound — which a
+		// live profile of scrolling an image-heavy channel put at 216 MB. Join
+		// sums the parts and allocates exactly once.
+		setup      []string
+		firstDelay time.Duration
+		n          int
+		fitter     frameFitter
+	)
+	err := eachFrame(raw, true, decodeImageFrames, func(fr image.Image, d time.Duration, _ bool) error {
+		if n == 0 {
+			// The placement is sized from frame 0, exactly as encodeInlineThumb
+			// sizes the still — and decodeFirstGIFFrame is bit-identical to it, so
+			// this lands on the box the still already occupies. markFramesBuilt
+			// rejects the build if it somehow doesn't.
+			b := fr.Bounds()
+			out.cols, out.rows = inlineThumbCells(b.Dx(), b.Dy(), j.box, m.cellPxW, m.cellPxH)
+			firstDelay = d
+		}
+		n++
+		if m.nativeAnim {
+			if n == 1 {
+				return nil // the root is already on screen; a=f starts at frame 2
+			}
+			fitted := fitter.fit(fr, out.cols, out.rows, m.cellPxW, m.cellPxH)
+			seq, err := kittyTransmitFrame(&kittyPNG, j.id, fitted, d)
+			if err != nil {
+				return err
+			}
+			setup = append(setup, seq)
+			return nil
+		}
+		fitted := fitter.fit(fr, out.cols, out.rows, m.cellPxW, m.cellPxH)
+		seq, err := kittyTransmitImage(j.id, fitted, out.rows, out.cols)
+		if err != nil {
+			return err
+		}
+		out.seqs = append(out.seqs, seq)
+		out.delays = append(out.delays, d)
+		return nil
+	})
+	if err != nil {
+		return builtThumbFrames{}, err
 	}
-	return buildNativeAnimSetup(&kittyPNG, id, fitted, delays)
+	if n <= 1 {
+		// A single-frame GIF: the still we built is the whole image.
+		return builtThumbFrames{}, nil
+	}
+	if m.nativeAnim {
+		setup = append(setup, kittySetRootGap(j.id, firstDelay), kittyAnimateStart(j.id))
+		out.native = strings.Join(setup, "")
+		out.seqs, out.delays = nil, nil
+		out.frames = n // every one of them is now uploaded under j.id
+	}
+	return out, nil
 }
 
-// loadInlineThumbFrames re-reads and fully decodes each job's GIF, encoding every
-// frame under the id of the still already on screen. Runs on a background goroutine.
+// loadInlineThumbFrames re-reads and decodes each job's GIF, encoding every frame
+// under the id of the still already on screen. Runs on a background goroutine.
 //
 // A failure here is silent by design: the thumbnail keeps the still it already has,
 // which is exactly what it looks like now, and the job is gone from ii.deferred so
@@ -1415,26 +1577,11 @@ func (m Model) loadInlineThumbFrames(jobs []thumbFramesJob) tea.Msg {
 		if err != nil {
 			continue
 		}
-		frames, delays, err := decodeImageFrames(raw, true)
-		if err != nil || len(frames) <= 1 {
-			continue // a single-frame GIF: the still we built is the whole image
-		}
-		if m.nativeAnim {
-			setup, err := m.encodeInlineThumbNative(j.id, frames, delays, j.rows, j.cols)
-			if err != nil {
-				continue
-			}
-			built = append(built, builtThumbFrames{key: j.key, id: j.id, rows: j.rows, cols: j.cols, native: setup})
+		b, err := m.buildThumbFrames(j, raw)
+		if err != nil || (len(b.seqs) == 0 && b.native == "") {
 			continue
 		}
-		r, err := m.encodeInlineThumb(j.id, frames, j.box)
-		if err != nil {
-			continue
-		}
-		built = append(built, builtThumbFrames{
-			key: j.key, id: j.id, rows: r.rows, cols: r.cols,
-			seqs: r.frameSeqs, delays: delays,
-		})
+		built = append(built, b)
 	}
 	if len(built) == 0 {
 		return nil
@@ -1453,7 +1600,15 @@ func (m Model) loadInlineThumbFrames(jobs []thumbFramesJob) tea.Msg {
 // markFramesBuilt actually installed is written out of band right here, once; the
 // terminal takes it from there.
 func (m Model) handleInlineThumbFrames(msg inlineThumbFramesMsg) (Model, tea.Cmd) {
+	// Every piece is already in hand, so size the buffer once rather than let it
+	// grow into a multi-megabyte native setup a quarter at a time. The bound is
+	// the whole batch; installing less than that only leaves spare capacity.
+	total := 0
+	for _, b := range msg.built {
+		total += len(b.native)
+	}
 	var raw strings.Builder
+	raw.Grow(total)
 	for _, b := range msg.built {
 		if m.inlineImg.markFramesBuilt(b) && b.native != "" {
 			raw.WriteString(b.native)

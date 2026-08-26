@@ -31,7 +31,7 @@ func TestAnimTickPreservesFrame(t *testing.T) {
 }
 
 // TestVisibleThumbNeverEvicted is the invariant the terminal-memory cap rests on:
-// whatever else is freed to stay under maxInlineImages, an image that is on screen
+// whatever else is freed to stay under maxInlineTerminalBytes, an image that is on screen
 // is not. Evicting one kittyDeletes it out from under the placeholder cells still
 // displaying it, and since those cells live in the post's cached lines nothing
 // re-sights it — so it stays blank for the rest of the session.
@@ -75,26 +75,38 @@ func TestVisibleThumbNeverEvicted(t *testing.T) {
 			"the stale-stamp hazard this guards may have been fixed another way", stamp, got)
 	}
 
-	// Scrolling through an image-heavy channel: a screenful of further thumbnails
-	// arrives, each install a chance to evict.
-	for i := 0; i < maxInlineImages; i++ {
+	// Scrolling through an image-heavy channel: enough further thumbnails arrive to
+	// blow the terminal-residency budget twice over. None of them belongs to a post
+	// in view, so every one is a legitimate eviction candidate — and the displayed
+	// one, with its frozen stamp, is the oldest thing in the map.
+	perImage := 36 * m.cellPxW * 10 * m.cellPxH * 4
+	n := 2 * maxInlineTerminalBytes / perImage
+	ready := make(map[string]readyInlineImg, n)
+	for i := 0; i < n; i++ {
 		id := uint32(0x300000 + i)
-		m, _ = m.handleInlineImagesFetched(inlineImagesFetchedMsg{
-			ready: map[string]readyInlineImg{
-				"other" + strconv.Itoa(i): {
-					id: id, rows: 10, cols: 36, box: 88,
-					placeholder: kittyPlaceholder(id, 10, 36),
-					frameSeqs:   []string{"<transmit>"},
-				},
-			},
-		})
+		ready["other"+strconv.Itoa(i)] = readyInlineImg{
+			id: id, rows: 10, cols: 36, box: 88,
+			placeholder: kittyPlaceholder(id, 10, 36),
+			frameSeqs:   []string{"<transmit>"},
+		}
 	}
+	m, _ = m.handleInlineImagesFetched(inlineImagesFetchedMsg{ready: ready})
+	m.renderMessages()
+	m.flushInlineTransmits() // where the budget is actually enforced
 
-	if m.inlineImg.entries[onScreen] == nil {
+	ent := m.inlineImg.entries[onScreen]
+	if ent == nil {
 		t.Fatalf("the on-screen thumbnail was evicted after %d further images arrived: "+
 			"its placeholder cells are still displayed but the terminal no longer has the image, "+
-			"and its cached post lines mean it is never re-sighted, so it goes permanently blank",
-			maxInlineImages)
+			"and its cached post lines mean it is never re-sighted, so it goes permanently blank", n)
+	}
+	if !ent.resident {
+		t.Fatal("the on-screen thumbnail was freed from terminal memory: its placeholder cells " +
+			"still name an image the terminal no longer holds, so it renders blank")
+	}
+	if m.inlineImg.residentBytes > maxInlineTerminalBytes {
+		t.Errorf("residency budget not enforced: %d bytes resident, budget %d",
+			m.inlineImg.residentBytes, maxInlineTerminalBytes)
 	}
 }
 

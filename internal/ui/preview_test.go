@@ -266,7 +266,7 @@ func TestHandlePreviewLoadedTransmits(t *testing.T) {
 
 	img := image.NewRGBA(image.Rect(0, 0, 64, 48))
 	mm, cmd := m.handlePreviewLoaded(previewImageLoadedMsg{
-		gen: 1, frames: []image.Image{img}, seqs: []string{"\x1b_Gseq\x1b\\"},
+		gen: 1, first: img, count: 1, seqs: []string{"\x1b_Gseq\x1b\\"},
 		cols: 20, rows: 8, caption: "pic.png",
 	})
 	got := mm.(Model)
@@ -296,7 +296,7 @@ func TestHandlePreviewLoadedStaleDropped(t *testing.T) {
 	m.previewGen = 5 // live generation
 
 	img := image.NewRGBA(image.Rect(0, 0, 10, 10))
-	mm, cmd := m.handlePreviewLoaded(previewImageLoadedMsg{gen: 2, frames: []image.Image{img}}) // stale
+	mm, cmd := m.handlePreviewLoaded(previewImageLoadedMsg{gen: 2, first: img, count: 1}) // stale
 	got := mm.(Model)
 	if got.preview.img != nil || cmd != nil {
 		t.Error("a stale (gen-mismatched) load result must be ignored")
@@ -322,12 +322,12 @@ func TestHandlePreviewLoadedAnimatedArmsTick(t *testing.T) {
 
 	frames, delays := twoFrames()
 	mm, cmd := m.handlePreviewLoaded(previewImageLoadedMsg{
-		gen: 1, frames: frames, delays: delays,
+		gen: 1, first: frames[0], count: len(frames), delays: delays,
 		seqs: []string{"a", "b", "c"}, cols: 8, rows: 4, caption: "a.gif",
 	})
 	got := mm.(Model)
-	if len(got.preview.frames) != 3 {
-		t.Fatalf("frames stored = %d, want 3", len(got.preview.frames))
+	if got.preview.frameCount != 3 {
+		t.Fatalf("frames stored = %d, want 3", got.preview.frameCount)
 	}
 	if len(got.preview.seqs) != 3 {
 		t.Fatalf("seqs stored = %d, want 3", len(got.preview.seqs))
@@ -344,7 +344,7 @@ func TestHandlePreviewLoadedAnimatedArmsTick(t *testing.T) {
 	still.preview = previewState{active: true, items: previewImages(imagePost("image/png"), false), loading: true, id: 3}
 	still.previewGen = 1
 	smm, _ := still.handlePreviewLoaded(previewImageLoadedMsg{
-		gen: 1, frames: []image.Image{frames[0]}, seqs: []string{"a"}, cols: 8, rows: 4,
+		gen: 1, first: frames[0], count: 1, seqs: []string{"a"}, cols: 8, rows: 4,
 	})
 	if !smm.(Model).preview.frameStart.IsZero() {
 		t.Error("a still preview should not anchor an animation clock")
@@ -358,7 +358,7 @@ func TestHandlePreviewTick(t *testing.T) {
 	m := Model{width: 100, height: 40, emojiImg: activeEmojiImages(), animatePreview: true}
 	m.preview = previewState{
 		active: true, id: 9, rows: 4, cols: 8,
-		frames: frames, delays: delays, seqs: []string{"a", "b", "c"},
+		frameCount: len(frames), delays: delays, seqs: []string{"a", "b", "c"},
 		frameStart: time.Now().Add(-2 * delays[0]), // ~2 frames overdue
 	}
 	m.previewGen = 1
@@ -379,7 +379,7 @@ func TestHandlePreviewTick(t *testing.T) {
 
 	// A still image (one frame) never ticks.
 	still := Model{emojiImg: activeEmojiImages()}
-	still.preview = previewState{active: true, id: 1, frames: frames[:1], frameStart: time.Now()}
+	still.preview = previewState{active: true, id: 1, frameCount: 1, frameStart: time.Now()}
 	still.previewGen = 1
 	if _, c := still.handlePreviewTick(previewTickMsg{gen: 1}); c != nil {
 		t.Error("a still-image preview should not schedule animation ticks")
@@ -420,7 +420,7 @@ func TestHandlePreviewReencoded(t *testing.T) {
 	frames, delays := twoFrames()
 	m := Model{emojiImg: activeEmojiImages()}
 	m.preview = previewState{
-		active: true, id: 9, frames: frames, delays: delays,
+		active: true, id: 9, frameCount: len(frames), delays: delays,
 		seqs: []string{"old", "old", "old"}, frameIdx: 1,
 	}
 	m.previewGen = 4
