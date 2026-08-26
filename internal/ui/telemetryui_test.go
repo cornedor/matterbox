@@ -414,7 +414,9 @@ func TestNewEventsPassTheCatalogueStrictly(t *testing.T) {
 	m.tel.frameCause = "resize"
 	m.tel.lastSlowFrame = time.Time{}
 	m.recordFrame(slowFrameFloor + time.Millisecond)
-	m.noteWSDropped(errors.New("dial tcp: connection refused"))
+	m.noteWSDropped(errors.New("dial tcp: connection refused"), false)
+	m.noteWSDropped(errors.New("ping timeout"), true)
+	m.noteWSDropped(nil, false)
 	m.noteWSConnected(3, m.resyncReach())
 
 	// The friction signals with an address.

@@ -615,13 +615,17 @@ The Mattermost websocket dropped.
 **Why:** Silent disconnects are the worst failure this client has: the UI looks fine
 and messages stop arriving. Knowing how often it happens in the field, and
 after how long a healthy connection, is the only way to tell a flaky network
-from a bug in our reconnect logic.
+from a bug in our reconnect logic. `cause` is what draws that line: a ping
+timeout means the socket stopped producing without erroring, which is a
+half-open link or a reader of ours that stalled — the latter is ours to fix,
+and classifies identically to a plain network drop without this.
 
 | Property | Type | Meaning |
 |---|---|---|
 | `class` | enum | Why it dropped. |
 | `connected` | enum | How long it had been connected, bucketed. |
 | `clean` | bool | Whether it was a clean close. |
+| `cause` | enum | How the socket ended, which the class can't tell apart. One of `ping_timeout`, `read_error`, `closed`. |
 
 ### `ws_reconnected`
 

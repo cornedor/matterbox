@@ -405,11 +405,12 @@ func SlowFrame(context string, ms int64, posts, cols int, cause string) {
 }
 
 // WSDisconnected reports the websocket dropping.
-func WSDisconnected(class string, connected time.Duration, clean bool) {
+func WSDisconnected(class string, connected time.Duration, clean bool, cause string) {
 	Capture("ws_disconnected", map[string]any{
 		"class":     class,
 		"connected": Seconds(int64(connected.Seconds())),
 		"clean":     clean,
+		"cause":     cause,
 	})
 }
 

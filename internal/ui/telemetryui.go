@@ -389,7 +389,7 @@ func (m *Model) noteWSConnected(attempts int, resync string) {
 }
 
 // noteWSDropped reports ws_disconnected and starts the downtime clock.
-func (m *Model) noteWSDropped(err error) {
+func (m *Model) noteWSDropped(err error, pingTimeout bool) {
 	if m.tel == nil {
 		return
 	}
@@ -409,7 +409,21 @@ func (m *Model) noteWSDropped(err error) {
 	if err != nil {
 		class = telemetry.ClassifyError(err)
 	}
-	telemetry.WSDisconnected(class, connected, err == nil)
+	telemetry.WSDisconnected(class, connected, err == nil, wsDropCause(err, pingTimeout))
+}
+
+// wsDropCause names how the socket ended, which the error class cannot: a ping
+// timeout and a dropped link both classify as "network", but only one of them
+// can be our own reader having stalled — the shape of failure worth separating,
+// because it is the one we can fix.
+func wsDropCause(err error, pingTimeout bool) string {
+	switch {
+	case pingTimeout:
+		return "ping_timeout"
+	case err != nil:
+		return "read_error"
+	}
+	return "closed"
 }
 
 // --- media ----------------------------------------------------------------

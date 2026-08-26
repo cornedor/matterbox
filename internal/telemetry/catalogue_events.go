@@ -615,11 +615,15 @@ var Events = []EventSpec{
 		Why: "Silent disconnects are the worst failure this client has: the UI looks " +
 			"fine and messages stop arriving. Knowing how often it happens in the field, " +
 			"and after how long a healthy connection, is the only way to tell a flaky " +
-			"network from a bug in our reconnect logic.",
+			"network from a bug in our reconnect logic. `cause` is what draws that line: " +
+			"a ping timeout means the socket stopped producing without erroring, which is " +
+			"a half-open link or a reader of ours that stalled — the latter is ours to fix, " +
+			"and classifies identically to a plain network drop without this.",
 		Props: []PropSpec{
 			{Name: "class", Kind: KindEnum, Values: ErrorClasses, Desc: "Why it dropped."},
 			{Name: "connected", Kind: KindEnum, Values: SecondsBuckets, Desc: "How long it had been connected, bucketed."},
 			{Name: "clean", Kind: KindBool, Desc: "Whether it was a clean close."},
+			{Name: "cause", Kind: KindEnum, Values: []string{"ping_timeout", "read_error", "closed"}, Desc: "How the socket ended, which the class can't tell apart."},
 		},
 	},
 	{
