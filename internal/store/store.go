@@ -81,7 +81,24 @@ func Open(path string, opts ...Option) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	tightenPerms(path)
 	return s, nil
+}
+
+// tightenPerms makes the database owner-only. It holds every cached message,
+// DMs included, in plaintext — SQLite creates it under the process umask (0644
+// by default), which is the wrong default for that content. The -wal and -shm
+// siblings inherit the main file's mode when SQLite creates them, but existing
+// ones from an earlier run need the same treatment. Best-effort: a database we
+// can't chmod still works.
+func tightenPerms(path string) {
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		fi, err := os.Stat(p)
+		if err != nil || fi.Mode().Perm()&0o077 == 0 {
+			continue
+		}
+		_ = os.Chmod(p, fi.Mode().Perm()&^0o077)
+	}
 }
 
 // Close releases the database handle (and the lazily-opened read-only handle).
