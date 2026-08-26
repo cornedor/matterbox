@@ -490,7 +490,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.splash.finish(splashAccount)
 		return m, tea.Batch(
 			m.fetchTeams(m.me.Id),
-			m.fetchAllChannels(m.me.Id),
+			m.fetchAllChannels(m.me.Id, false),
 			m.fetchChannelMembers(m.me.Id),
 			m.fetchSavedPostIDs(m.me.Id),
 		)
@@ -515,6 +515,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		for id, cs := range msg.customStatuses {
 			m.customStatuses[id] = cs
+		}
+		if msg.resync {
+			return m, m.applyChannelsResynced(msg)
 		}
 		m.bucketChannels(msg.channels)
 		m.channelsLoaded = true
@@ -601,6 +604,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.fetchStatuses(),
 			tea.Tick(statusPollInterval, func(time.Time) tea.Msg { return statusPollMsg{} }),
 		)
+
+	case channelResyncMsg:
+		return m, m.applyChannelResyncDue()
 
 	case membersLoadedMsg:
 		m.setMembers(msg.members)
@@ -1465,6 +1471,12 @@ func (m *Model) handleWSEvent(ev *model.WebSocketEvent) tea.Cmd {
 		return m.applyStatusChange(ev)
 	case model.WebsocketEventUserUpdated:
 		return m.applyUserUpdated(ev)
+	case model.WebsocketEventUserAdded:
+		return m.applyUserAdded(ev)
+	case model.WebsocketEventDirectAdded, model.WebsocketEventGroupAdded:
+		// Only ever broadcast to the participants of the new DM, so unlike
+		// user_added there is nobody else's membership to filter out.
+		return m.scheduleChannelResync()
 	case model.WebsocketEventOpenDialog:
 		m.applyOpenDialog(ev)
 		return nil

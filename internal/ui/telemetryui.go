@@ -914,14 +914,15 @@ func frameCause(msg tea.Msg) string {
 // ws_reconnected. It is what resyncAfterReconnect will actually attempt, which
 // is the honest answer available at reconnect time:
 //
-//   - "full": the read state is refetched from server truth *and* the open
-//     conversation is reconciled, so both the badges and the transcript recover.
+//   - "full": the channel list and read state are refetched from server truth
+//     *and* the open conversation is reconciled, so the sidebar, the badges and
+//     the transcript all recover.
 //   - "partial": one of the two — usually no conversation open to reconcile.
-//   - "failed": a conversation is open but the account isn't loaded, so the
-//     unread state cannot be rebuilt at all and the badges stay wrong.
+//   - "failed": a conversation is open but the account isn't loaded, so neither
+//     the sidebar nor the unread state can be rebuilt and the badges stay wrong.
 //   - "none": nothing to catch up on; no session state established yet.
 func (m *Model) resyncReach() string {
-	members := m.me != nil              // fetchChannelMembers will run
+	members := m.me != nil              // the channel + member refetches will run
 	transcript := m.openChannelID != "" // fetchRecent will run
 	switch {
 	case members && transcript:

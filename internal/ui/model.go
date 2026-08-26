@@ -511,6 +511,10 @@ type Model struct {
 
 	ws      *model.WebSocketClient
 	wsRetry int
+	// channelResyncQueued guards the debounce in scheduleChannelResync: one
+	// pending refetch covers however many membership events arrive in its
+	// window (being added to a team lands several at once).
+	channelResyncQueued bool
 
 	unread   map[string]int
 	mentions map[string]int
@@ -1662,8 +1666,14 @@ func (m Model) connectWS() tea.Cmd {
 // resyncAfterReconnect re-checks server state after the WebSocket comes back
 // up. Nothing replays the events that fired while we were deaf, so everything
 // driven purely by live events has silently missed whatever landed in the gap:
-// the unread/mention badges (bumped per `posted` event) undercount, and the
-// open transcript is short of posts.
+// the unread/mention badges (bumped per `posted` event) undercount, the open
+// transcript is short of posts, and the sidebar is missing any channel we were
+// added to meanwhile.
+//
+// Refetching the channel list is what closes that last one. It is the only
+// path that learns of a membership change other than startup and the live
+// `user_added` handler, and a laptop asleep through the add hears neither: the
+// channel — and every message in it — stayed invisible until a restart.
 //
 // Refetching the channel members rebuilds unread/mentions/muted and the
 // LastViewedAt read boundary from server truth, so counts that went *down*
@@ -1675,7 +1685,7 @@ func (m Model) connectWS() tea.Cmd {
 func (m *Model) resyncAfterReconnect() []tea.Cmd {
 	var cmds []tea.Cmd
 	if m.me != nil {
-		cmds = append(cmds, m.fetchChannelMembers(m.me.Id))
+		cmds = append(cmds, m.fetchAllChannels(m.me.Id, true), m.fetchChannelMembers(m.me.Id))
 	}
 	if id := m.openChannelID; id != "" {
 		cmds = append(cmds, m.fetchRecent(id))
@@ -2218,8 +2228,10 @@ func (m Model) fetchTeams(userID string) tea.Cmd {
 }
 
 // fetchAllChannels gets every channel for the user (across teams + DMs) and
-// pre-resolves the usernames needed for DM display names.
-func (m Model) fetchAllChannels(userID string) tea.Cmd {
+// pre-resolves the usernames needed for DM display names. resync flags the
+// result as a mid-session refresh (see channelsLoadedMsg.resync); the startup
+// load passes false.
+func (m Model) fetchAllChannels(userID string, resync bool) tea.Cmd {
 	return func() tea.Msg {
 		chs, err := m.client.AllChannels(m.ctx, userID)
 		if err != nil {
@@ -2258,7 +2270,7 @@ func (m Model) fetchAllChannels(userID string) tea.Cmd {
 				}
 			}
 		}
-		return channelsLoadedMsg{channels: chs, userNames: names, customStatuses: custom}
+		return channelsLoadedMsg{channels: chs, userNames: names, customStatuses: custom, resync: resync}
 	}
 }
 

@@ -15,7 +15,15 @@ type channelsLoadedMsg struct {
 	channels       []*model.Channel
 	userNames      map[string]string             // pre-resolved usernames for DM partners
 	customStatuses map[string]model.CustomStatus // DM partners' custom statuses (captured with the name fetch)
+	// resync marks a mid-session refetch (a reconnect catch-up, or being added
+	// to a channel) rather than the startup load, so its handler only re-buckets
+	// the sidebar instead of re-running the once-per-launch work.
+	resync bool
 }
+
+// channelResyncMsg fires at the end of the debounce window opened by
+// scheduleChannelResync — see channelsync.go.
+type channelResyncMsg struct{}
 
 // statusesLoadedMsg carries a batch of DM partner presence (userID → status:
 // online/away/dnd; offline/unknown absent) from fetchStatuses. A nil/empty
