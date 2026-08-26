@@ -11,7 +11,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
+
+// readTimeout bounds how long a connection to the login socket may take to
+// deliver its URL. A var so tests don't have to wait it out.
+var readTimeout = 5 * time.Second
 
 // Capture is an in-progress auto-capture. URL receives the captured mmauth://
 // link exactly once and is then closed; reading it again yields ("", false).
@@ -53,6 +58,16 @@ func StartCapture(ctx context.Context) (c Capture, enabled bool) {
 		fmt.Fprintf(os.Stderr, "matterbox: couldn't open login socket (%v); falling back to copy-paste\n", err)
 		return Capture{Close: func() {}}, false
 	}
+	// Whatever lands on this socket is stored as a session token, so only we
+	// may connect to it. XDG_RUNTIME_DIR is already private, but the TempDir
+	// fallback is not: without this any local user could hand us an
+	// mmauth://callback of their choosing. Linux enforces the mode on connect.
+	if err := os.Chmod(path, 0o600); err != nil {
+		ln.Close()
+		os.Remove(path)
+		fmt.Fprintf(os.Stderr, "matterbox: couldn't secure the login socket (%v); falling back to copy-paste\n", err)
+		return Capture{Close: func() {}}, false
+	}
 
 	ch := make(chan string, 1)
 	go func() {
@@ -64,6 +79,9 @@ func StartCapture(ctx context.Context) (c Capture, enabled bool) {
 			if err != nil {
 				return // listener closed by Close
 			}
+			// A peer that connects and then says nothing would otherwise hold
+			// the accept loop forever, so the real handler never gets through.
+			_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
 			data, _ := io.ReadAll(io.LimitReader(conn, 8192))
 			conn.Close()
 			if s := strings.TrimSpace(string(data)); s != "" {
