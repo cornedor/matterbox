@@ -50,3 +50,40 @@ func FuzzWidth(f *testing.F) {
 		}
 	})
 }
+
+// TestPad: padding a line is exactly "make it w cells wide", and refuses the
+// two inputs a renderer must handle itself.
+func TestPad(t *testing.T) {
+	for _, tc := range []struct {
+		s  string
+		w  int
+		n  int
+		ok bool
+	}{
+		{"abc", 5, 2, true},
+		{"abc", 3, 0, true},
+		{"abcd", 3, 0, false},
+		{"a\tb", 8, 0, false},
+		{"", 4, 4, true},
+		{"\x1b[38;5;4mred\x1b[m", 6, 3, true},
+		{"日本語", 8, 2, true},
+	} {
+		n, ok := Pad(tc.s, tc.w)
+		if n != tc.n || ok != tc.ok {
+			t.Errorf("Pad(%q, %d) = %d, %v; want %d, %v", tc.s, tc.w, n, ok, tc.n, tc.ok)
+		}
+		if ok && Width(tc.s+Spaces(n)) != tc.w {
+			t.Errorf("Pad(%q, %d): padded line is not %d cells", tc.s, tc.w, tc.w)
+		}
+	}
+}
+
+// TestSpaces covers the slab boundary — a run longer than the canned blanks
+// still comes back the right length.
+func TestSpaces(t *testing.T) {
+	for _, n := range []int{-1, 0, 1, 63, 256, 257, 1000} {
+		if got := len(Spaces(n)); got != max(n, 0) {
+			t.Errorf("Spaces(%d) is %d bytes", n, got)
+		}
+	}
+}

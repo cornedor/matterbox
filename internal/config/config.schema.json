@@ -146,7 +146,7 @@
     },
     "image_click": {
       "type": "string",
-      "description": "What a mouse click on a rendered inline thumbnail does (needs image_thumbnails: auto). \"preview\" (default) opens the in-app full-size preview (same as space); \"open\" hands it to the OS/browser (same as o); \"download\" saves it to download_dir (same as s for attachments); \"off\" leaves the click as a plain message select. Only the thumbnail cells are clickable — not the filename chip or the rest of the message.",
+      "description": "What a mouse click on a rendered inline thumbnail does (needs image_thumbnails: auto). \"preview\" (default) opens the in-app full-size preview (same as space); \"open\" hands it to the OS/browser (same as o); \"download\" saves it to download_dir (same as s for attachments); \"off\" leaves the click as a plain message select. Only the thumbnail cells are clickable \u2014 not the filename chip or the rest of the message.",
       "enum": [
         "preview",
         "open",
@@ -580,7 +580,7 @@
     },
     "telemetry": {
       "type": "object",
-      "description": "Anonymous usage telemetry and error reporting. Strictly opt-in: off unless enabled is true, and only the first-run setup wizard asks — an existing install is never prompted. See https://matterbox.work/docs/telemetry",
+      "description": "Anonymous usage telemetry and error reporting. Strictly opt-in: off unless enabled is true, and only the first-run setup wizard asks \u2014 an existing install is never prompted. See https://matterbox.work/docs/telemetry",
       "additionalProperties": false,
       "properties": {
         "enabled": {

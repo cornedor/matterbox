@@ -2,19 +2,26 @@ package ui
 
 import (
 	"image/color"
+	"math"
 	"regexp"
 	"strings"
 	"testing"
+
+	tea "charm.land/bubbletea/v2"
+	"github.com/mattermost/mattermost/server/public/model"
 )
 
 var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
 
 func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
 
-// frame renders one animation frame with its styling removed — the ramp
-// glyphs alone, which is what every assertion below is about.
+// frame renders animation frame number phase with its styling removed — the
+// ramp glyphs alone, which is what every assertion below is about. Frames, not
+// seconds: the field's pace is a per-frame property, and these tests animate at
+// the default frame rate.
 func frame(w, h, phase int) []string {
-	return strings.Split(stripANSI(renderFeedBlobs(w, h, phase)), "\n")
+	t := float64(phase) * feedBlobIdleInterval.Seconds()
+	return strings.Split(stripANSI(renderFeedBlobs(w, h, t, blobNudges{})), "\n")
 }
 
 // TestFeedBlobsGeometry guards the canvas the feed viewport renders: exactly h
@@ -59,7 +66,7 @@ func TestFeedBlobsOnlyRampGlyphs(t *testing.T) {
 // unchanged.
 func TestFeedBlobsDrift(t *testing.T) {
 	const w, h = 80, 24
-	const window = 10 // frames — two seconds at feedBlobInterval
+	const window = 10 // frames
 
 	frames := make([]string, 200)
 	for phase := range frames {
@@ -145,7 +152,7 @@ func TestFeedBlobLoopGuard(t *testing.T) {
 	}
 	// A refresh in flight hides the field → the next tick must stop the loop.
 	m.feed.loading = true
-	if cmd := m.applyFeedBlobTick(); cmd != nil || m.feed.blobActive {
+	if cmd := m.applyFeedBlobTick(m.feed.blobGen); cmd != nil || m.feed.blobActive {
 		t.Fatal("blob loop kept ticking while the feed was loading")
 	}
 }
@@ -192,6 +199,524 @@ func TestFeedBlobPaletteStaysSoft(t *testing.T) {
 					tc.name, i, blobRamp[i], l, prev)
 			}
 			prev = l
+		}
+	}
+}
+
+// pokeModel is an empty Feed tab with a w×h field on it, ready to be clicked.
+func pokeModel(w, h int) *Model {
+	m := &Model{}
+	m.feed = newFeedState(false)
+	m.feed.view.SetWidth(w)
+	m.feed.view.SetHeight(h)
+	return m
+}
+
+// step advances the field one animation frame at the rate the loop would
+// currently be running at, exactly as applyFeedBlobTick does, and returns the
+// rendered frame.
+func step(m *Model) string { return stepAt(m, m.feedBlobInterval().Seconds()) }
+
+// stepAt is step with the frame gap named, for the tests that replay the same
+// motion at several frame rates.
+func stepAt(m *Model, dt float64) string {
+	m.feed.blobPhase += dt
+	m.feed.blobNudge.advance(dt)
+	return stripANSI(renderFeedBlobs(m.feed.view.Width(), m.feed.view.Height(), m.feed.blobPhase, m.feed.blobNudge))
+}
+
+// rimCell is a cell one radius out to the side of a blob's centre — near the
+// peak of blobPushWeight, which is where a poke does the most.
+func rimCell(b blobFrame) (col, row int) {
+	r := math.Sqrt(b.r2)
+	return int(b.cx), int(b.cy + r)
+}
+
+// dist is the distance from cell (col,row) to a blob's centre, in row units —
+// the space the push is isotropic in.
+func dist(b blobFrame, col, row int) float64 {
+	return math.Hypot((b.cx-(float64(col)+0.5))*cellAspect, b.cy-(float64(row)+0.5))
+}
+
+// TestFeedBlobPokePushesAway is the toy: a click inside a blob moves that blob
+// away from the clicked cell, by a distance you can actually see, and never
+// pulls it closer.
+func TestFeedBlobPokePushesAway(t *testing.T) {
+	const w, h = 80, 24
+	m := pokeModel(w, h)
+	b0 := feedBlobFrame(w, h, 0, blobNudges{})[0]
+	col, row := rimCell(b0)
+	before := dist(b0, col, row)
+
+	m.pokeFeedBlobs(col, row)
+	var peak float64
+	for f := 0; f < 60; f++ {
+		step(m)
+		b := feedBlobFrame(w, h, m.feed.blobPhase, m.feed.blobNudge)[0]
+		drifted := feedBlobFrame(w, h, m.feed.blobPhase, blobNudges{})[0]
+		// Measured against the same phase's undisturbed position, so the drift
+		// itself can't be mistaken for the push.
+		if d := dist(b, col, row) - dist(drifted, col, row); d < -0.01 {
+			t.Fatalf("frame %d: the blob moved %.2f rows *towards* the click", f, -d)
+		} else if d > peak {
+			peak = d
+		}
+	}
+	if peak < 1 {
+		t.Errorf("peak push %.2f rows from %.2f rows out — too small to notice", peak, before)
+	}
+	if peak > 4 {
+		t.Errorf("peak push %.2f rows — that's a throw, not a nudge", peak)
+	}
+}
+
+// TestFeedBlobPokeSettles: the push is a critically damped spring, so the blob
+// returns to its drift path without ever crossing it (a bounce would read as
+// elastic, which is the opposite of soothing), stays inside the cap, and ends
+// up exactly back on the path.
+func TestFeedBlobPokeSettles(t *testing.T) {
+	const w, h = 80, 24
+	m := pokeModel(w, h)
+	b0 := feedBlobFrame(w, h, 0, blobNudges{})[0]
+	m.pokeFeedBlobs(rimCell(b0))
+
+	sign := func(v float64) float64 {
+		if v < 0 {
+			return -1
+		}
+		return 1
+	}
+	sx, sy := sign(m.feed.blobNudge[0].vx), sign(m.feed.blobNudge[0].vy)
+	// Frames at a fixed rate, so this measures the spring rather than whatever
+	// rate the loop happens to be running at (see feedBlobInterval); the push
+	// spring's period is measured in tens of seconds, hence a whole minute of
+	// them.
+	dt := feedBlobIdleInterval.Seconds()
+	settled := -1
+	for f := 1; f <= 60*feedBlobIdleFPS; f++ {
+		stepAt(m, dt)
+		for i, p := range m.feed.blobNudge {
+			if math.Abs(p.ox) > blobPushCap+1e-9 || math.Abs(p.oy) > blobPushCap+1e-9 {
+				t.Fatalf("frame %d: blob %d offset (%.3f,%.3f) escaped the cap %.2f", f, i, p.ox, p.oy, blobPushCap)
+			}
+		}
+		p := m.feed.blobNudge[0]
+		if p.ox*sx < -1e-6 || p.oy*sy < -1e-6 {
+			t.Fatalf("frame %d: offset (%.4f,%.4f) overshot past the drift path — the spring bounces", f, p.ox, p.oy)
+		}
+		if settled < 0 && m.feed.blobNudge.idle() {
+			settled = f
+		}
+	}
+	if settled < 0 {
+		t.Fatal("the push never settled — the field is left permanently displaced")
+	}
+	// Long enough to be a slow return, not so long that the field never
+	// recovers its composed state.
+	if secs, lo, hi := float64(settled)*dt, 8.0, 40.0; secs < lo || secs > hi {
+		t.Errorf("settled after %.1fs, want %.0f..%.0f", secs, lo, hi)
+	}
+}
+
+// TestFeedBlobPokeStaysCalm holds the two properties a poke must not break,
+// whatever the swell is dialled to: the field never fills the pane solid, and
+// the liveliness *ends* — a few seconds after the last click the per-frame
+// repaint is back under the ambient drift ceiling that TestFeedBlobsDrift pins.
+// A percentage-of-cells ceiling during the burst is not the guard it looks
+// like: a big blob crossing the pane changes most cells by one shading step,
+// which reads as calm however many cells it touches.
+func TestFeedBlobPokeStaysCalm(t *testing.T) {
+	const w, h = 80, 24
+	const fps = 60
+	const clicks = 10
+
+	m := pokeModel(w, h)
+	prev := stripANSI(renderFeedBlobs(w, h, 0, blobNudges{}))
+	diff := func(a, b string) int {
+		n := 0
+		for i := range a {
+			if a[i] != b[i] {
+				n++
+			}
+		}
+		return n
+	}
+	var lastClick float64
+	var quiet float64 // when the churn first drops back to drift level
+	for f := 0; m.feed.blobPhase < float64(clicks)+8; f++ {
+		if f%fps == 0 && f < clicks*fps { // a click a second, on a different blob each time
+			b := feedBlobFrame(w, h, m.feed.blobPhase, m.feed.blobNudge)[(f/fps)%len(feedBlobs)]
+			m.pokeFeedBlobs(rimCell(b))
+			lastClick, quiet = m.feed.blobPhase, 0
+		}
+		cur := step(m)
+		// Every row is still exactly w wide: pushed and swollen blobs must not
+		// reflow the canvas any more than drifting ones do.
+		for i, line := range strings.Split(cur, "\n") {
+			if got := len([]rune(line)); got != w {
+				t.Fatalf("%.2fs: row %d is %d columns wide, want %d", m.feed.blobPhase, i, got, w)
+			}
+		}
+		if ink := len(cur) - strings.Count(cur, " ") - strings.Count(cur, "\n"); ink > w*h*9/10 {
+			t.Fatalf("%.2fs: %d of %d cells inked — the swell swallowed the pane", m.feed.blobPhase, ink, w*h)
+		}
+		if d := diff(prev, cur); quiet == 0 && d <= w*h/50 {
+			quiet = m.feed.blobPhase
+		}
+		prev = cur
+	}
+	if quiet == 0 {
+		t.Fatal("the field never came back down to drift-level churn after the last click")
+	}
+	if settle := quiet - lastClick; settle > 4 {
+		t.Errorf("still repainting above the drift ceiling %.1fs after the last click — a poke has to run out", settle)
+	}
+}
+
+// TestFeedBlobPokeShape is the feel: pressing a blob square in the middle does
+// (near enough) nothing, pressing just off its side does the most, and a click
+// well clear of it does nothing again — two goopy blobs you can only shove
+// sideways. The margins are wide on purpose, so "well clear" is measured in
+// blob radii, not cells.
+func TestFeedBlobPokeShape(t *testing.T) {
+	const w, h = 80, 24
+	b := feedBlobFrame(w, h, 0, blobNudges{})[0]
+	r := math.Sqrt(b.r2)
+
+	// Push, in cells travelled, from a click r rows off the blob's centre.
+	push := func(mult float64) float64 {
+		m := pokeModel(w, h)
+		m.pokeFeedBlobs(int(b.cx), int(b.cy+mult*r))
+		p := m.feed.blobNudge[0]
+		return math.Hypot(p.vx*float64(w), p.vy*float64(h))
+	}
+
+	centre, rim, far := push(0), push(1), push(blobPushReach+0.2)
+	if rim <= 0 {
+		t.Fatal("a click just off the blob's side moved nothing")
+	}
+	if centre > rim/10 {
+		t.Errorf("a click on the centre pushes %.4f, %.0f%% of the %.4f a side click does — pressing the middle should do nothing",
+			centre, 100*centre/rim, rim)
+	}
+	if far != 0 {
+		t.Errorf("a click %.1f radii out still pushes %.4f — the reach has no end", blobPushReach+0.2, far)
+	}
+	// The kernel peaks near the rim, and the peak is broad — no cliff a user
+	// could feel the field switch on or off at.
+	for _, u := range []float64{0.6, 1.0, 1.6} {
+		if got := push(u); got < rim/2 {
+			t.Errorf("a click %.1f radii out pushes %.4f, under half the rim's %.4f — the sweet spot is too narrow",
+				u, got, rim)
+		}
+	}
+	// Wide margins: a click a full radius outside the visible rim still leans on
+	// the blob, which is what makes the field feel soft rather than clickable.
+	if push(2.0) <= 0 {
+		t.Error("a click two radii out does nothing — the margins are not wide")
+	}
+
+	// The swell runs the other way round: it marks the blob you pressed, so it
+	// peaks on the centre and dies before the reach.
+	swell := func(mult float64) float64 {
+		m := pokeModel(w, h)
+		m.pokeFeedBlobs(int(b.cx), int(b.cy+mult*r))
+		return m.feed.blobNudge[0].vs
+	}
+	if swell(0) <= swell(1) {
+		t.Errorf("a side click swells the blob %.4f, at least as much as the %.4f a centre press does — the swell has to name the blob under the pointer",
+			swell(1), swell(0))
+	}
+	if got := swell(blobSizeReach + 0.1); got != 0 {
+		t.Errorf("a click %.1f radii out still swells the blob %.4f", blobSizeReach+0.1, got)
+	}
+}
+
+// TestFeedBlobSwellPicksTheClickedBlob: press one blob's middle and it is that
+// blob that spreads, not a neighbour whose rim the click happened to reach.
+// The blobs overlap by design, so this is the assertion that keeps the swell
+// legible as "you pressed this one".
+func TestFeedBlobSwellPicksTheClickedBlob(t *testing.T) {
+	const w, h = 80, 24
+	blobs := feedBlobFrame(w, h, 0, blobNudges{})
+	for i, b := range blobs {
+		m := pokeModel(w, h)
+		m.pokeFeedBlobs(int(b.cx), int(b.cy))
+		for j := range blobs {
+			if j != i && m.feed.blobNudge[j].vs > m.feed.blobNudge[i].vs {
+				t.Errorf("pressing blob %d's middle swelled blob %d harder (%.4f vs %.4f)",
+					i, j, m.feed.blobNudge[j].vs, m.feed.blobNudge[i].vs)
+			}
+		}
+	}
+}
+
+// TestFeedBlobPokeSwells is the second half of the toy: a poke swells the blob
+// it lands in, then lets the size settle back through one soft overshoot —
+// elastic, not a bounce. Pins blobSizeSpan as the swell that actually reaches
+// the screen (the gain constant that makes it so is measured, not derived).
+func TestFeedBlobPokeSwells(t *testing.T) {
+	const w, h = 80, 24
+	m := pokeModel(w, h)
+	b0 := feedBlobFrame(w, h, 0, blobNudges{})[0]
+	// The middle of the blob: where a press spreads it most.
+	m.pokeFeedBlobs(int(b0.cx), int(b0.cy))
+
+	var peak, dip float64
+	var trace []float64
+	// At the live rate, which is the one a poke gets: the swell peaks about
+	// 0.3s in, and sampling it every calm frame would miss the top of it.
+	dt := feedBlobLiveInterval.Seconds()
+	for f := 1; f <= 12*feedBlobLiveFPS; f++ {
+		stepAt(m, dt)
+		os := m.feed.blobNudge[0].os
+		peak = math.Max(peak, os)
+		dip = math.Min(dip, os)
+		trace = append(trace, os)
+	}
+	// Crossings of the resting radius, counted against a band scaled to the
+	// swell — an absolute threshold would read the numerical tail as ringing
+	// once blobSizeSpan is turned up.
+	band := peak / 100
+	crossings, prev := 0, trace[0]
+	for _, os := range trace[1:] {
+		if (prev > band && os < -band) || (prev < -band && os > band) {
+			crossings++
+		}
+		if math.Abs(os) > band {
+			prev = os
+		}
+	}
+	// The swell has to be several times the ambient radius pulse to read as a
+	// response at all, and stay well inside its cap.
+	if lo := 3 * blobPulse; peak < lo || peak > blobSizeCap {
+		t.Errorf("peak swell %.3f, want %.3f..%.2f", peak, lo, blobSizeCap)
+	}
+	if peak < blobSizeSpan*0.8 || peak > blobSizeSpan*1.2 {
+		t.Errorf("peak swell %.3f is not the %.2f blobSizeSpan promises — retune blobSizeSwellGain",
+			peak, blobSizeSpan)
+	}
+	// Elastic: it must dip below the resting radius on the way back (that's the
+	// overshoot), but only the once — more is ringing.
+	if dip > -0.005 {
+		t.Errorf("the swell never sank past the resting radius (min %.4f) — no elastic return", dip)
+	}
+	if dip < -peak/2 {
+		t.Errorf("undershoot %.3f is half the %.3f swell — that's a bounce, not a settle", dip, peak)
+	}
+	if crossings > 2 {
+		t.Errorf("the size crossed its resting radius %d times — the blob rings", crossings)
+	}
+	// The swell specifically — the push springs of the blobs around this one
+	// run for far longer, and are TestFeedBlobPokeSettles' business.
+	if p := m.feed.blobNudge[0]; math.Abs(p.os) > 1e-4 || math.Abs(p.vs) > 1e-5 {
+		t.Errorf("the swell never settled: os %.5f, vs %.6f", p.os, p.vs)
+	}
+}
+
+// TestFeedBlobClickRoute walks the real mouse path: a click in the empty feed
+// hit-tests to the field, lands on the field's own cell coordinates, pokes it
+// and keeps the animation armed. With bubbles in the pane there is no field, so
+// the same click must go back to being a bubble click.
+func TestFeedBlobClickRoute(t *testing.T) {
+	m := feedButtonModel(t)
+	m.feed.entries = nil
+	m.renderFeedResults()
+
+	if !m.feedBlobFieldDrawn() {
+		t.Fatalf("no field on a %dx%d empty feed", m.feed.view.Width(), m.feed.view.Height())
+	}
+	top, _, _ := m.feedGeom()
+	col, row := m.feed.view.Width()/2, m.feed.view.Height()/2
+	x, y := col+1, row+top // the pane's left border owns column 0
+
+	h := m.hitTest(x, y)
+	if h.zone != hitFeedBlobs || h.col != col || h.line != row {
+		t.Fatalf("hitTest(%d,%d) = %v col=%d line=%d, want hitFeedBlobs col=%d line=%d",
+			x, y, h.zone, h.col, h.line, col, row)
+	}
+	next, cmd := m.handleMouseClick(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+	got := next.(Model)
+	if got.feed.blobNudge.idle() {
+		t.Error("a click in the middle of the field pushed nothing")
+	}
+	if cmd == nil || !got.feed.blobActive {
+		t.Error("the click left the animation loop unarmed — the push would never move")
+	}
+
+	// Bubbles back in the pane: the field is gone and so is its hit zone.
+	m2 := feedButtonModel(t)
+	if h := m2.hitTest(x, y); h.zone == hitFeedBlobs {
+		t.Error("the field claimed a click over a feed bubble")
+	}
+}
+
+// TestFeedBlobFrameRateIndependent is what lets the loop change frame rate
+// mid-poke: the same poke, replayed at 1, 12 and 60 frames a second, reaches
+// the same displacement and the same swell at the same wall-clock second. The
+// springs are stepped in closed form for exactly this reason — with an Euler
+// stepper the swell would land differently depending on where in the settle the
+// rate dropped from live back to idle.
+func TestFeedBlobFrameRateIndependent(t *testing.T) {
+	const w, h = 80, 24
+
+	// State exactly `secs` seconds after a rim poke, animated at fps frames a
+	// second (a whole number of frames, so every rate samples the same instant).
+	at := func(fps int, secs float64) blobNudge {
+		m := pokeModel(w, h)
+		dt := 1 / float64(fps)
+		b := feedBlobFrame(w, h, 0, blobNudges{})[0]
+		m.pokeFeedBlobs(rimCell(b))
+		for f := 0; f < int(secs*float64(fps)); f++ {
+			stepAt(m, dt)
+		}
+		return m.feed.blobNudge[0]
+	}
+
+	// Both near the peak and out on the settling tail.
+	for _, secs := range []float64{1, 6} {
+		ref := at(feedBlobIdleFPS, secs)
+		for _, fps := range []int{1, 2, 30, feedBlobLiveFPS} {
+			got := at(fps, secs)
+			for _, f := range []struct {
+				name          string
+				got, ref, amp float64
+			}{
+				// Tolerances are against each spring's own amplitude, not against
+				// the reference value: on the tail the values are near zero, where
+				// a relative comparison means nothing.
+				{"offset x", got.ox, ref.ox, blobPushSpan},
+				{"offset y", got.oy, ref.oy, blobPushSpan},
+				{"swell", got.os, ref.os, blobSizeSpan},
+			} {
+				if d := math.Abs(f.got - f.ref); d > 0.02*f.amp {
+					t.Errorf("%d fps: %s at %.0fs = %.4f, want %.4f (the %d fps value) — the frame rate changed the motion",
+						fps, f.name, secs, f.got, f.ref, feedBlobIdleFPS)
+				}
+			}
+		}
+	}
+}
+
+// TestFeedBlobRateFollowsTheSprings: the frame rate is spent where it is
+// visible. Drifting, the field asks for the calm rate; a poke puts it on the
+// live one until the springs have settled, and then it goes back.
+func TestFeedBlobRateFollowsTheSprings(t *testing.T) {
+	const w, h = 80, 24
+	m := pokeModel(w, h)
+	if got := m.feedBlobInterval(); got != feedBlobIdleInterval {
+		t.Errorf("a drifting field asks for %v, want the calm %v", got, feedBlobIdleInterval)
+	}
+
+	b := feedBlobFrame(w, h, 0, blobNudges{})[0]
+	m.pokeFeedBlobs(rimCell(b))
+	if got := m.feedBlobInterval(); got != feedBlobLiveInterval {
+		t.Errorf("a poked field asks for %v, want the live %v", got, feedBlobLiveInterval)
+	}
+
+	// The poke has to run out: an animation that never drops back is a 60 fps
+	// screensaver.
+	for f := 0; f < 60*feedBlobLiveFPS; f++ {
+		if step(m); m.feedBlobInterval() == feedBlobIdleInterval {
+			return
+		}
+	}
+	t.Error("the field never went back to the calm rate after a poke")
+}
+
+// TestFeedBlobPeakMatchesSpan pins the two span knobs as the amplitudes they
+// claim to be: a best-placed click travels blobPushSpan of the pane's short
+// side, and a centre press swells the blob by blobSizeSpan of its radius. Both
+// come out of the gain constants, so a wrong gain shows up here rather than as
+// a field that feels off.
+func TestFeedBlobPeakMatchesSpan(t *testing.T) {
+	const w, h = 80, 24
+	scale := math.Min(float64(h), float64(w)*cellAspect)
+
+	// Travel, in row units, of a rim poke.
+	m := pokeModel(w, h)
+	b := feedBlobFrame(w, h, 0, blobNudges{})[0]
+	m.pokeFeedBlobs(rimCell(b))
+	var travel, swell float64
+	for f := 0; f < 300; f++ {
+		step(m)
+		p := m.feed.blobNudge[0]
+		travel = math.Max(travel, math.Hypot(p.ox*float64(w)*cellAspect, p.oy*float64(h)))
+	}
+	if want := blobPushSpan * scale; math.Abs(travel-want) > 0.15*want {
+		t.Errorf("peak travel %.2f rows, want blobPushSpan's %.2f", travel, want)
+	}
+
+	m = pokeModel(w, h)
+	m.pokeFeedBlobs(int(b.cx), int(b.cy))
+	for f := 0; f < 300; f++ {
+		step(m)
+		swell = math.Max(swell, m.feed.blobNudge[0].os)
+	}
+	if math.Abs(swell-blobSizeSpan) > 0.15*blobSizeSpan {
+		t.Errorf("peak swell %.2f, want blobSizeSpan's %.2f", swell, blobSizeSpan)
+	}
+}
+
+// TestFeedBlobTickKeepsFrameWhenStill: at a high frame rate most ticks redraw
+// the field exactly as it already is. Those must leave the memoized screen (and
+// the viewport) alone — repainting the same bytes 60 times a second is the
+// whole cost this animation could have had.
+func TestFeedBlobTickKeepsFrameWhenStill(t *testing.T) {
+	m := benchBlobModel(160, 48)
+
+	// What the next tick is about to draw, worked out on a copy: pretend it is
+	// already the frame on screen, which is what a still frame amounts to.
+	ahead := m
+	dt := m.feedBlobInterval().Seconds()
+	ahead.feed.blobPhase += dt
+	ahead.feed.blobNudge.advance(dt)
+	m.feed.blobPainted = ahead.feedEmptyContent()
+
+	m.vcache.viewValid = true
+	if cmd := m.applyFeedBlobTick(m.feed.blobGen); cmd == nil {
+		t.Fatal("the tick must reschedule itself")
+	}
+	if !m.vcache.viewValid {
+		t.Error("an unchanged frame dropped the memoized screen")
+	}
+
+	// And the next one, which does move something, must drop it.
+	m.applyFeedBlobTick(m.feed.blobGen)
+	if m.vcache.viewValid {
+		t.Error("a frame that moved kept the memoized screen — the drift would freeze")
+	}
+}
+
+// TestFeedBlobPaintedClearedOffEmptyState: the "already on screen" memo speaks
+// only for the empty-state art. As soon as the feed has something to list, it
+// has to be cleared, or a later empty frame that happens to match it would be
+// skipped over content that is no longer the blob field.
+func TestFeedBlobPaintedClearedOffEmptyState(t *testing.T) {
+	m := benchBlobModel(160, 48)
+	m.renderFeedResults()
+	if m.feed.blobPainted == "" {
+		t.Fatal("the empty state should have recorded what it painted")
+	}
+	m.feed.entries = []feedEntry{{channelID: "c1", unread: []*model.Post{{Id: "p1", Message: "hi"}}}}
+	m.renderFeedResults()
+	if m.feed.blobPainted != "" {
+		t.Error("a listed feed left the blob-field memo armed")
+	}
+}
+
+// TestBlobTickSkipsContentScans: the empty feed's frame must not drag the
+// per-event "what's new?" scans along at 60 fps — and every other message
+// must still get them, or new senders and attachments would sit unresolved.
+func TestBlobTickSkipsContentScans(t *testing.T) {
+	if !introducesNothing(feedBlobTickMsg{}) {
+		t.Error("the blob tick should be exempt from the content scans")
+	}
+	for _, msg := range []tea.Msg{
+		tea.KeyPressMsg{}, imgAnimTickMsg{}, wheelFlushMsg{}, tea.WindowSizeMsg{},
+	} {
+		if introducesNothing(msg) {
+			t.Errorf("%T must not be exempt from the content scans", msg)
 		}
 	}
 }

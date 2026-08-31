@@ -261,6 +261,72 @@ ever. One `continue` there (`m.thumbsHidden(p)`) answers all three at once:
   settled what is on screen — the same image may be drawn by another, uncollapsed
   post (`TestReleaseSparesImageShownElsewhere`).
 
+## Animated pane repaint (the feed's blob field) — ✅ DONE
+The empty-feed blob field animates (60 fps while a poke settles, 12 while it is
+only drifting), which turned the whole-screen repaint into a steady-state cost
+for the first time. Measured with `BenchmarkFeedBlobFrame` (one `Update(tick)` + one full
+`View()`): **3.0 / 3.9 / 7.7 ms** per frame at 96×36 / 160×48 / 240×64 —
+18–46% of a core at 60 fps. Nearly none of it was blob math: **39% of the frame
+was `ansi.StringWidth`**, i.e. lipgloss grapheme-segmenting content the renderer
+had just built to width.
+
+Now **0.40 / 0.46 / 0.70 ms** (7–11× faster, allocs 22.8k → 0.17k per frame),
+via four changes, each byte-for-byte identical to what it replaced (differential
+tests: `TestPaneBoxMatchesLipgloss`, `TestJoinVerticalLeftMatchesLipgloss`,
+`TestPadBlockMatchesLipgloss`):
+- `renderPaneBox` (`panebox.go`) draws the side/bottom-bordered pane box from
+  lines that are already pane-width, measuring with `textwidth.Width`, instead
+  of a lipgloss `Border+Width+Height` Style. Falls back to lipgloss for any line
+  it can't pad (too wide, or a tab).
+- `joinVerticalLeft` does the final tabs/body/footer stack the same way
+  (lipgloss measures every visible line twice).
+- `viewport.padBlock` replaces the viewport's inner `Width().Height().Render()`
+  pad, which re-measured every visible row on every frame.
+- `styleBlobRow` pastes cached per-ramp-step escapes (taken from lipgloss once
+  per background change) rather than calling `Style.Render` per colour run, and
+  `renderFeedBlobs` walks each blob's own span per row instead of testing every
+  cell against every blob — the kernel has finite support, so the skipped cells
+  contributed exactly 0.
+
+Side effect: the footer help line is now memoized (`helpCache`, keyed on the
+bindings it lists + width), which halved the *idle* frame too — 49µs → 24µs on
+every keystroke, not just on the feed.
+
+**Remaining, and not blob-specific:** ~650KB and ~35% of the frame is the
+per-event `Model` copy + the GC it feeds (see #1 and the boxing note above).
+The search / SQL / messages panes still build their boxes through lipgloss;
+`renderPaneBox` would fit them unchanged.
+
+## What a 60 fps pane actually costs (live profile, 2026-08-31)
+Measured on the real client (`matterbox --pprof localhost:6060`, 161×38, empty
+feed), not a benchmark — and the benchmarks turned out to be measuring the
+wrong half. Sampling `/proc/<pid>/stat` is the honest total: **15% of one core**
+before the render work above, **~13%** after it. (btop shows this as ~1.3%: it
+divides by all 12 cores.)
+
+Where a frame goes once the panes stop re-measuring themselves:
+- **bubbletea's renderer: 44%** — `uv.StyledString.Draw` re-parses the whole
+  13KB screen string into a 6118-cell buffer (28%), then diffs and writes it
+  (15%). It does this for every frame we hand it; the API has no way to say
+  "only these rows moved". Not reachable from here.
+- **GC: 23%** — fed by the ~615KB of `Model` copies *every event* churns, not
+  by a large heap (live in-use heap is ~16MB; RSS is not the heap).
+- **our `View`: 11%**, our `Update`: 15%.
+
+Two things that only a live profile could have shown:
+- `renderTeamTabs` was **17% of the whole process** — the tab strip, restyled
+  and re-joined every frame, costing more than the animated pane under it. Now
+  memoized (`tabsCache`).
+- `resolveUnknownSenders` + the `fetchPending*` scans were **3.4%**, walking the
+  transcript after every event to look for content a blob frame cannot have
+  introduced. Now skipped for that one message (`introducesNothing`).
+
+**The conclusion, for the next animation:** past a certain point the frame rate
+is the only lever left, because two thirds of a frame is spent outside our code.
+The blob field now runs 60 fps only while a poke's springs are moving and 12 fps
+while it drifts (`feedBlobInterval`) — the drift moves less than a cell per frame
+either way, so the screen looks the same for a fifth of the CPU.
+
 ## Not a problem (measured, don't re-chase)
 - **Inline-thumbnail animation byte volume.** Re-transmitting a whole PNG per GIF
   frame *looks* alarming at a 10-row placement, but realistic cartoon/video GIF

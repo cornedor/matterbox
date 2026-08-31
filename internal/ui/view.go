@@ -1,12 +1,16 @@
 package ui
 
 import (
+	"encoding/binary"
 	"fmt"
+	"hash/fnv"
 	"image/color"
+	"io"
 	"strconv"
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -1746,6 +1750,9 @@ func (m *Model) renderViewContent() string {
 
 	tabs := m.renderTeamTabs(joins)
 
+	if screen, ok := joinVerticalLeft(tabs, body, footer); ok {
+		return screen
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, tabs, body, footer)
 }
 
@@ -2440,14 +2447,64 @@ func replyWord(n int) string {
 // border starts on the row directly below it; the strip's bottom rule grows a
 // down arm at each so the tabs and the body read as one frame (see ruleLine).
 func (m *Model) renderTeamTabs(joins []int) string {
+	// Pre-compute distinct counts for the Feed tab badge; the memo is keyed on
+	// them, so they are needed either way.
+	unreadCh, mentionCh := m.feedBadgeCounts()
+	if m.vcache == nil {
+		return m.buildTeamTabs(joins, unreadCh, mentionCh)
+	}
+	c := &m.vcache.tabs
+	fp := m.tabsFingerprint(joins, unreadCh, mentionCh)
+	if c.valid && c.fp == fp {
+		// The strip was not re-laid-out, so its click zones weren't either.
+		m.vcache.tabZones = c.zones
+		return c.out
+	}
+	out := m.buildTeamTabs(joins, unreadCh, mentionCh)
+	*c = tabsCache{fp: fp, out: out, zones: m.vcache.tabZones, valid: true}
+	return out
+}
+
+// tabsFingerprint hashes what the tab strip is made of. Two frames with the
+// same fingerprint draw the same strip, down to the bytes.
+func (m *Model) tabsFingerprint(joins []int, unreadCh, mentionCh int) uint64 {
+	h := fnv.New64a()
+	var buf [8]byte
+	put := func(n int) {
+		binary.LittleEndian.PutUint64(buf[:], uint64(n))
+		h.Write(buf[:])
+	}
+	put(m.width)
+	put(m.teamIdx)
+	put(unreadCh)
+	put(mentionCh)
+	hovered := -1
+	if m.hover.zone == hitTab {
+		hovered = m.hover.idx
+	}
+	put(hovered)
+	for _, c := range joins {
+		put(c)
+	}
+	maxIdx := m.maxTeamIdx()
+	put(maxIdx)
+	for i := 0; i <= maxIdx; i++ {
+		kind, id, name := m.tabAt(i)
+		put(int(kind))
+		io.WriteString(h, id)
+		io.WriteString(h, "\x1f")
+		io.WriteString(h, name)
+		io.WriteString(h, "\x1f")
+	}
+	return h.Sum64()
+}
+
+func (m *Model) buildTeamTabs(joins []int, unreadCh, mentionCh int) string {
 	if len(m.teams) == 0 && !m.hasDMs {
 		// Reserve the same vertical space so body math stays consistent.
 		blank := strings.Repeat("\n", tabsHeight-1)
 		return footerStyle.Render(" (no teams) ") + blank
 	}
-	// Pre-compute distinct counts for the Feed tab badge.
-	unreadCh, mentionCh := m.feedBadgeCounts()
-
 	maxIdx := m.maxTeamIdx()
 
 	// The tab strip is always navigable (ctrl-←/→ from any focus), so the
@@ -2868,7 +2925,7 @@ func (m *Model) renderFooter() string {
 		prefix = "type to send  "
 	}
 
-	left := footerStyle.Render(prefix) + m.help.View(m)
+	left := footerStyle.Render(prefix) + m.helpView()
 	if m.help.ShowAll {
 		// The expanded help lists every layer that is live right now, but a
 		// narrow terminal still ellipsizes the rightmost columns — so point at
@@ -2923,4 +2980,49 @@ func truncate(s string, n int) string {
 		w += rw
 	}
 	return b.String() + "…"
+}
+
+// helpView renders the footer's help line, memoized on the bindings it lists.
+// help.View styles and measures every binding on the line, which is a real
+// cost on a frame that changed nothing about the footer — and the empty feed's
+// blob field renders such frames at up to 60 fps.
+//
+// The expanded help (`?`) is not cached: it lists every layer at once, it is
+// not what an idle animation redraws, and fingerprinting it would cost more
+// than rendering it.
+func (m *Model) helpView() string {
+	if m.vcache == nil || m.help.ShowAll {
+		return m.help.View(m)
+	}
+	fp := helpFingerprint(m.ShortHelp())
+	w := m.help.Width()
+	c := &m.vcache.help
+	if c.valid && c.fp == fp && c.width == w {
+		return c.out
+	}
+	out := m.help.View(m)
+	*c = helpCache{fp: fp, width: w, out: out, valid: true}
+	return out
+}
+
+// helpFingerprint hashes the bindings a help line is about to show: the label
+// pair it renders for each, and whether it renders it at all. Two lines with
+// the same fingerprint render the same bytes.
+func helpFingerprint(bindings []key.Binding) uint64 {
+	h := fnv.New64a()
+	var one [1]byte
+	for _, b := range bindings {
+		one[0] = 0
+		if b.Enabled() {
+			one[0] = 1
+		}
+		h.Write(one[:])
+		hb := b.Help()
+		io.WriteString(h, hb.Key)
+		one[0] = 0x1f
+		h.Write(one[:])
+		io.WriteString(h, hb.Desc)
+		h.Write(one[:])
+	}
+	return h.Sum64()
 }

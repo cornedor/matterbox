@@ -38,6 +38,7 @@ const (
 	hitComposer
 	hitJumpBottom
 	hitFeedMarkAll
+	hitFeedBlobs
 	hitToast
 )
 
@@ -241,6 +242,8 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case hitFeed:
 		return m.clickFeedEntry(h.idx)
+	case hitFeedBlobs:
+		return m, m.clickFeedBlobs(h.col, h.line)
 	case hitSearch:
 		return m.clickSearchHit(h.idx)
 	case hitSQL:
@@ -752,6 +755,9 @@ func (m *Model) hitTest(x, y int) hit {
 		if m.vcache != nil && m.vcache.feedBtnZone.contains(x, y) {
 			return hit{zone: hitFeedMarkAll}
 		}
+		if h := m.hitFeedBlobCell(x, y); h.zone != hitNone {
+			return h
+		}
 		return m.hitFeedBubble(y)
 	}
 	if m.onSearchTab() {
@@ -880,6 +886,24 @@ func (m *Model) feedGeom() (top, height, yoff int) {
 
 func (m *Model) searchGeom() (top, height, yoff int) {
 	return tabsHeight + 4, m.search.view.Height(), m.search.view.YOffset()
+}
+
+// hitFeedBlobCell maps a click on the empty feed's blob field to the cell of
+// the field under it, in the canvas's own coordinates (line = row, col =
+// column). hitNone when the field isn't what the pane is showing.
+func (m *Model) hitFeedBlobCell(x, y int) hit {
+	if !m.feedBlobFieldDrawn() {
+		return hit{zone: hitNone}
+	}
+	top, height, yoff := m.feedGeom()
+	// The pane's left border owns column 0, so the canvas starts one in. The
+	// field is exactly the viewport's size, so yoff is 0 — added anyway rather
+	// than assumed.
+	row, col := yoff+y-top, x-1
+	if row < 0 || row >= height || col < 0 || col >= m.feed.view.Width() {
+		return hit{zone: hitNone}
+	}
+	return hit{zone: hitFeedBlobs, line: row, col: col}
 }
 
 // hitFeedBubble maps a screen row on the Feed tab to the feed entry under it,

@@ -78,11 +78,26 @@ type feedState struct {
 	// for the session by the toggle key (M) or the "> Feed: …" command.
 	showMuted bool
 
-	// Empty-state animation. blobPhase advances each frame to drift the blob
-	// field; blobActive guards against running more than one tick loop. Both
-	// only matter while the feed has no entries (see feedblobs.go).
-	blobPhase  int
+	// Empty-state animation. blobPhase is how far the blob field is into its
+	// drift, in seconds — a wall clock rather than a frame count, so the frame
+	// rate can change (it does: see feedBlobInterval) without changing the
+	// motion. blobActive guards against running more than one tick loop, and
+	// blobGen says which loop is the live one when a poke has started a faster
+	// one. All three only matter while the feed has no entries (see
+	// feedblobs.go).
+	blobPhase  float64
 	blobActive bool
+	blobGen    uint64
+	// blobPainted is the empty-state body currently in the viewport — the blob
+	// field as it was last drawn. At 60 fps the drift moves less than a cell
+	// between frames, so a good share of them come out identical; comparing
+	// against this is what lets those frames leave the screen (and the frame
+	// memo) alone instead of repainting it with itself. Empty whenever the
+	// viewport holds anything else.
+	blobPainted string
+	// blobNudge is the click-push state: per blob, an offset from its drift
+	// path on a damped spring. Zero when nothing has been poked.
+	blobNudge blobNudges
 
 	// zones maps viewport visual rows to feed-entry indices for mouse
 	// hit-testing; zonesTotal is the rendered list's full height. Both are
@@ -772,6 +787,8 @@ func (m *Model) renderFeedResults() {
 	// Non-list states (error / splash / loading) carry no clickable bubbles;
 	// the bubble loop below repopulates these when there are entries.
 	m.feed.zones, m.feed.zonesTotal = nil, 0
+	painted := m.feed.blobPainted
+	m.feed.blobPainted = ""
 	if m.feed.err != "" {
 		m.feed.view.SetContent(
 			lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("  feed error: " + m.feed.err),
@@ -785,8 +802,14 @@ func (m *Model) renderFeedResults() {
 			return
 		}
 		// Nothing unread: the calm drifting blob field (animation armed
-		// by maybeStartFeedBlobs).
-		m.feed.view.SetContent(m.feedEmptyContent())
+		// by maybeStartFeedBlobs). An animation frame that came out the same as
+		// the one on screen is not put there again — SetContent re-splits and
+		// re-measures the whole canvas.
+		content := m.feedEmptyContent()
+		m.feed.blobPainted = content
+		if content != painted {
+			m.feed.view.SetContent(content)
+		}
 		return
 	}
 
@@ -1011,15 +1034,20 @@ func (m Model) renderFeedPane(height, width int) string {
 	// the side borders as ├ ┤ rather than floating between them.
 	titleRule := contentRows(rows[:1])
 
-	style := lipgloss.NewStyle().
-		Border(border).
-		UnsetBorderTop().
-		Width(width).
-		Height(innerH)
+	borderColor := dimColor
 	if m.focus == focusFeed {
-		style = style.BorderForeground(focusedColor)
-	} else {
-		style = style.BorderForeground(dimColor)
+		borderColor = focusedColor
 	}
-	return joinRuleRows(style.Render(strings.Join(rows, "\n")), titleRule)
+	content := strings.Join(rows, "\n")
+	box, ok := renderPaneBox(content, width, innerH, borderColor)
+	if !ok {
+		box = lipgloss.NewStyle().
+			Border(border).
+			UnsetBorderTop().
+			Width(width).
+			Height(innerH).
+			BorderForeground(borderColor).
+			Render(content)
+	}
+	return joinRuleRows(box, titleRule)
 }
