@@ -751,10 +751,14 @@ func (m Model) View() string {
 
 	contentWidth := w - m.Style.GetHorizontalFrameSize()
 	contentHeight := h - m.Style.GetVerticalFrameSize()
-	contents := lipgloss.NewStyle().
-		Width(contentWidth).   // pad to width.
-		Height(contentHeight). // pad to height.
-		Render(strings.Join(m.visibleLines(), "\n"))
+	lines := m.visibleLines()
+	contents, ok := padBlock(lines, contentWidth, contentHeight)
+	if !ok {
+		contents = lipgloss.NewStyle().
+			Width(contentWidth).   // pad to width.
+			Height(contentHeight). // pad to height.
+			Render(strings.Join(lines, "\n"))
+	}
 	return m.Style.
 		UnsetWidth().UnsetHeight(). // Style size already applied in contents.
 		Render(contents)
@@ -773,4 +777,52 @@ func maxLineWidth(lines []string) int {
 		result = max(result, textwidth.Width(line))
 	}
 	return result
+}
+
+// padBlock pads lines out to a contentWidth × contentHeight block, producing
+// exactly what lipgloss's Width(w).Height(h).Render would — spaces appended to
+// every line, blank lines added under the last one — without its per-line
+// grapheme segmentation. Every line of a rendered pane gets measured here on
+// every frame, and an animated pane re-measures the whole viewport 60 times a
+// second; textwidth.Width does the same job on the styled ASCII that makes up
+// nearly all of it for a fraction of the cost.
+//
+// It reports false for anything it cannot pad by appending blanks — a line
+// wider than the block (lipgloss wraps it) or one carrying a tab (lipgloss
+// expands it) — leaving those to the full renderer, so the two paths never
+// disagree.
+func padBlock(lines []string, w, h int) (string, bool) {
+	if w <= 0 || h <= 0 {
+		return "", false
+	}
+	if len(lines) == 0 {
+		lines = []string{""}
+	}
+	pads := make([]int, len(lines))
+	total := 0
+	for i, line := range lines {
+		n, ok := textwidth.Pad(line, w)
+		if !ok {
+			return "", false
+		}
+		pads[i] = n
+		total += len(line) + n + 1
+	}
+	if blank := h - len(lines); blank > 0 {
+		total += blank * (w + 1)
+	}
+	var b strings.Builder
+	b.Grow(total)
+	for i, line := range lines {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(line)
+		b.WriteString(textwidth.Spaces(pads[i]))
+	}
+	for i := len(lines); i < h; i++ {
+		b.WriteByte('\n')
+		b.WriteString(textwidth.Spaces(w))
+	}
+	return b.String(), true
 }

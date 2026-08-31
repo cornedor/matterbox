@@ -16,6 +16,7 @@
 package textwidth
 
 import (
+	"strings"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/x/ansi"
@@ -135,4 +136,41 @@ func boundaryAfter(s string, j int) bool {
 		return true
 	}
 	return isBoxAt(s, j)
+}
+
+// spaces is a slab of blanks Pad hands out sub-slices of, so padding a line to
+// width costs no allocation of its own. Wider than any terminal anybody is
+// padding a pane to; Pad falls back to strings.Repeat past it.
+const spaces = "                                                                " +
+	"                                                                " +
+	"                                                                " +
+	"                                                                "
+
+// Spaces returns a string of exactly n blanks (empty for n <= 0), without
+// allocating for the terminal-sized runs a render pass actually asks for.
+func Spaces(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	if n <= len(spaces) {
+		return spaces[:n]
+	}
+	return strings.Repeat(" ", n)
+}
+
+// Pad reports the number of blanks s needs to reach exactly w cells, and
+// whether padding is all it needs. It is false when s is already wider than w
+// (the caller has to wrap, which is not this package's job) or contains a tab
+// (whose width depends on the renderer's tab stops). Both cases mean "hand
+// this line to the full renderer"; everything else is a plain append of
+// Spaces(n), which is what a render hot path does with lines it built to width
+// in the first place.
+func Pad(s string, w int) (n int, ok bool) {
+	if strings.IndexByte(s, '\t') >= 0 {
+		return 0, false
+	}
+	if d := w - Width(s); d >= 0 {
+		return d, true
+	}
+	return 0, false
 }

@@ -3,6 +3,7 @@ package ui
 import (
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -28,9 +29,10 @@ const blobRamp = " .:-=+*#"
 // (animations.feed_blob_fps). The drift runs in minutes, so a frame only ever
 // moves a handful of cells one ramp step — five a second is enough that those
 // steps don't arrive in visible batches. A poke is livelier, which is the
-// reason the knob exists: a fast terminal can spend more frames on it. A frame
-// is O(cells × blobs) float ops (a few hundred microseconds on a full pane) and
-// only runs while the empty feed is actually on screen.
+// reason the knob exists: a fast terminal can spend more frames on it, and 60
+// is affordable — a full-pane frame is around a hundred microseconds of float
+// sampling plus half a millisecond of repaint, and only runs while the empty
+// feed is actually on screen.
 const defaultFeedBlobFPS = 5
 
 // feedBlobFPSMin / feedBlobFPSMax bound the configured rate. Below the minimum
@@ -366,18 +368,36 @@ func feedBlobFrame(w, h int, t float64, nudge blobNudges) []blobFrame {
 // viewport soft-wraps, and an overflowing row would reflow the whole scene.
 func renderFeedBlobs(w, h int, t float64, nudge blobNudges) string {
 	blobs := feedBlobFrame(w, h, t, nudge)
+	field := make([]float64, w)
 	level := make([]int, w)
 	lines := make([]string, h)
 	top := len(blobRamp) - 1
 	for y := 0; y < h; y++ {
 		fy := float64(y) + 0.5
-		for x := 0; x < w; x++ {
-			fx := float64(x) + 0.5
-			var f float64
-			for _, b := range blobs {
-				dx := (fx - b.cx) * cellAspect
-				dy := fy - b.cy
-				f += blobFalloff((dx*dx + dy*dy) / b.r2)
+		clear(field)
+		// The kernel has finite support, so most cells are outside most blobs.
+		// Walking each blob's own span instead of testing every cell against
+		// every blob is what keeps a full-pane frame affordable at 60 fps; the
+		// cells it skips are the ones the kernel returns 0 for, so the field —
+		// summed in the same blob order — comes out bit-identical.
+		for _, b := range blobs {
+			dy := fy - b.cy
+			rem := b.r2 - dy*dy // how much of the radius is left for this row
+			if rem <= 0 {
+				continue
+			}
+			span := math.Sqrt(rem) / cellAspect // in columns
+			x0 := max(int(math.Ceil(b.cx-span-0.5)), 0)
+			x1 := min(int(math.Floor(b.cx+span-0.5)), w-1)
+			for x := x0; x <= x1; x++ {
+				dx := (float64(x) + 0.5 - b.cx) * cellAspect
+				field[x] += blobFalloff((dx*dx + dy*dy) / b.r2)
+			}
+		}
+		for x, f := range field {
+			if f == 0 { // untouched by every blob: the blank step, no exp needed
+				level[x] = 0
+				continue
 			}
 			level[x] = min(max(int(blobShade(f)*float64(top)+0.5), 0), top)
 		}
@@ -393,21 +413,67 @@ func renderFeedBlobs(w, h int, t float64, nudge blobNudges) string {
 // carries a gradient and only a genuine pile-up reaches the top of the ramp.
 func blobShade(f float64) float64 { return 1 - math.Exp(-f) }
 
+// blobSGR is one ramp step's escape sequences: what lipgloss wraps a span in
+// for that step's style, taken apart once so a run can be written as
+// prefix + glyphs + suffix.
+type blobSGR struct{ prefix, suffix string }
+
+// blobSGRCache holds those sequences for the whole ramp, together with the
+// background they were resolved against — the palette is adaptive, so a
+// terminal that reports its background late invalidates them.
+var blobSGRCache struct {
+	sync.Mutex
+	light bool
+	ok    bool
+	steps [len(blobRamp)]blobSGR
+}
+
+// blobSGRSteps returns the per-step escapes, building them on first use (and
+// again after the terminal background changes). They come out of lipgloss
+// itself rather than being written by hand: the exact bytes a Style emits
+// depend on the colour profile, and a row that guessed them would render
+// differently from every other styled span on the screen.
+func blobSGRSteps() *[len(blobRamp)]blobSGR {
+	light := lightBackground.Load()
+	blobSGRCache.Lock()
+	defer blobSGRCache.Unlock()
+	if !blobSGRCache.ok || blobSGRCache.light != light {
+		for i, st := range feedBlobStyles {
+			// A one-cell span, split around its glyph: whatever precedes it opens
+			// the style and whatever follows closes it.
+			const cell = "\x00"
+			pre, suf, _ := strings.Cut(st.Render(cell), cell)
+			blobSGRCache.steps[i] = blobSGR{prefix: pre, suffix: suf}
+		}
+		blobSGRCache.light, blobSGRCache.ok = light, true
+	}
+	return &blobSGRCache.steps
+}
+
 // styleBlobRow renders one row of ramp steps, coalescing equal-step runs into
 // a single styled span so the output stays compact. Blank runs are written
 // raw — an empty cell needs no colour.
+//
+// The spans are pasted from cached escapes rather than rendered: at 60 fps a
+// full pane is thousands of runs a second, and lipgloss re-measures the span
+// it is styling every time.
 func styleBlobRow(level []int) string {
+	steps := blobSGRSteps()
 	var b strings.Builder
+	b.Grow(len(level) + 16)
 	for i := 0; i < len(level); {
 		j := i
 		for j < len(level) && level[j] == level[i] {
 			j++
 		}
-		run := strings.Repeat(blobRamp[level[i]:level[i]+1], j-i)
-		if level[i] == 0 {
-			b.WriteString(run)
-		} else {
-			b.WriteString(feedBlobStyles[level[i]].Render(run))
+		if level[i] != 0 {
+			b.WriteString(steps[level[i]].prefix)
+		}
+		for k := i; k < j; k++ {
+			b.WriteByte(blobRamp[level[i]])
+		}
+		if level[i] != 0 {
+			b.WriteString(steps[level[i]].suffix)
 		}
 		i = j
 	}

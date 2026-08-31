@@ -62,6 +62,11 @@ type viewCache struct {
 	// by renderFeedPane and read back by the mouse layer. Cleared each render
 	// alongside jumpZone, so another tab can't inherit the target.
 	feedBtnZone rectZone
+	// help memoizes the rendered footer help line. It is rebuilt from the
+	// bindings on every frame, and an animated pane (the empty feed's blob
+	// field) redraws the whole screen up to 60 times a second for a line that
+	// only changes when the focus does.
+	help helpCache
 	// toastZone is the overlay notice's screen rect, written by renderViewContent
 	// while a toast is drawn and disarmed on every frame without one. A click on
 	// it dismisses the box instead of reaching the content underneath.
@@ -251,4 +256,15 @@ func (m *Model) channelsFingerprint(vis []*model.Channel, off, listH, innerH int
 		b.WriteByte('\x1e')
 	}
 	return b.String()
+}
+
+// helpCache holds the last rendered short-help line, keyed by what it is made
+// of: the bindings it lists (their labels and whether they are enabled, hashed)
+// and the width the help bubble was given. Anything that changes the footer —
+// a focus change, a modal claiming the keys, a resize — changes one of those.
+type helpCache struct {
+	fp    uint64
+	width int
+	out   string
+	valid bool
 }

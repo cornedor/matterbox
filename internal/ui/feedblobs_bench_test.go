@@ -1,0 +1,79 @@
+package ui
+
+import (
+	"fmt"
+	"testing"
+
+	tea "charm.land/bubbletea/v2"
+)
+
+// benchBlobModel is an empty Feed tab at a terminal size, i.e. exactly the
+// state the drifting blob field animates in.
+func benchBlobModel(w, h int) Model {
+	m := newTestModel()
+	m.vcache = &viewCache{}
+	m.width, m.height = w, h
+	fs := newFeedState(false, 0)
+	fs.built = true
+	m.feed = fs
+	gotoTab(&m, tabFeed)
+	m.focus = focusFeed
+	m.layoutPanes()
+	m.renderFeedResults()
+	m.viewContent()
+	return m
+}
+
+func BenchmarkFeedBlobField(b *testing.B) {
+	for _, sz := range [][2]int{{96, 36}, {160, 48}, {240, 64}} {
+		m := benchBlobModel(sz[0], sz[1])
+		w, h := m.feed.view.Width(), m.feed.view.Height()
+		b.Run(fmt.Sprintf("%dx%d", w, h), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; b.Loop(); i++ {
+				sink = renderFeedBlobs(w, h, float64(i)*0.2, blobNudges{})
+			}
+		})
+	}
+}
+
+// BenchmarkFeedBlobTick: one animation frame's model-side work (advance the
+// springs, repaint the field into the viewport).
+func BenchmarkFeedBlobTick(b *testing.B) {
+	m := benchBlobModel(160, 48)
+	b.ReportAllocs()
+	for b.Loop() {
+		m.applyFeedBlobTick()
+	}
+}
+
+// BenchmarkFeedBlobFrame: the whole per-frame cost bubbletea pays — Update on
+// the tick message plus the full View() re-render that follows it.
+func BenchmarkFeedBlobFrame(b *testing.B) {
+	for _, sz := range [][2]int{{96, 36}, {160, 48}, {240, 64}} {
+		b.Run(fmt.Sprintf("%dx%d", sz[0], sz[1]), func(b *testing.B) {
+			m := benchBlobModel(sz[0], sz[1])
+			b.ReportAllocs()
+			for b.Loop() {
+				nm, _ := m.Update(feedBlobTickMsg{})
+				mm := nm.(Model)
+				sinkV = mm.View()
+				m = mm
+			}
+		})
+	}
+}
+
+// BenchmarkFeedIdleFrame: the same View() without the blob repaint — the
+// baseline any other event (a keystroke) costs on this screen.
+func BenchmarkFeedIdleFrame(b *testing.B) {
+	m := benchBlobModel(160, 48)
+	b.ReportAllocs()
+	for b.Loop() {
+		sinkV = m.View()
+	}
+}
+
+var sink string
+
+var sinkV tea.View

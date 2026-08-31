@@ -261,6 +261,42 @@ ever. One `continue` there (`m.thumbsHidden(p)`) answers all three at once:
   settled what is on screen — the same image may be drawn by another, uncollapsed
   post (`TestReleaseSparesImageShownElsewhere`).
 
+## Animated pane repaint (the feed's blob field) — ✅ DONE
+The empty-feed blob field animates at up to 60 fps (`animations.feed_blob_fps`),
+which turned the whole-screen repaint into a steady-state cost for the first
+time. Measured with `BenchmarkFeedBlobFrame` (one `Update(tick)` + one full
+`View()`): **3.0 / 3.9 / 7.7 ms** per frame at 96×36 / 160×48 / 240×64 —
+18–46% of a core at 60 fps. Nearly none of it was blob math: **39% of the frame
+was `ansi.StringWidth`**, i.e. lipgloss grapheme-segmenting content the renderer
+had just built to width.
+
+Now **0.40 / 0.46 / 0.70 ms** (7–11× faster, allocs 22.8k → 0.17k per frame),
+via four changes, each byte-for-byte identical to what it replaced (differential
+tests: `TestPaneBoxMatchesLipgloss`, `TestJoinVerticalLeftMatchesLipgloss`,
+`TestPadBlockMatchesLipgloss`):
+- `renderPaneBox` (`panebox.go`) draws the side/bottom-bordered pane box from
+  lines that are already pane-width, measuring with `textwidth.Width`, instead
+  of a lipgloss `Border+Width+Height` Style. Falls back to lipgloss for any line
+  it can't pad (too wide, or a tab).
+- `joinVerticalLeft` does the final tabs/body/footer stack the same way
+  (lipgloss measures every visible line twice).
+- `viewport.padBlock` replaces the viewport's inner `Width().Height().Render()`
+  pad, which re-measured every visible row on every frame.
+- `styleBlobRow` pastes cached per-ramp-step escapes (taken from lipgloss once
+  per background change) rather than calling `Style.Render` per colour run, and
+  `renderFeedBlobs` walks each blob's own span per row instead of testing every
+  cell against every blob — the kernel has finite support, so the skipped cells
+  contributed exactly 0.
+
+Side effect: the footer help line is now memoized (`helpCache`, keyed on the
+bindings it lists + width), which halved the *idle* frame too — 49µs → 24µs on
+every keystroke, not just on the feed.
+
+**Remaining, and not blob-specific:** ~650KB and ~35% of the frame is the
+per-event `Model` copy + the GC it feeds (see #1 and the boxing note above).
+The search / SQL / messages panes still build their boxes through lipgloss;
+`renderPaneBox` would fit them unchanged.
+
 ## Not a problem (measured, don't re-chase)
 - **Inline-thumbnail animation byte volume.** Re-transmitting a whole PNG per GIF
   frame *looks* alarming at a 10-row placement, but realistic cartoon/video GIF

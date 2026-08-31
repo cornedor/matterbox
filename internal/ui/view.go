@@ -2,11 +2,14 @@ package ui
 
 import (
 	"fmt"
+	"hash/fnv"
 	"image/color"
+	"io"
 	"strconv"
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -1746,6 +1749,9 @@ func (m *Model) renderViewContent() string {
 
 	tabs := m.renderTeamTabs(joins)
 
+	if screen, ok := joinVerticalLeft(tabs, body, footer); ok {
+		return screen
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, tabs, body, footer)
 }
 
@@ -2868,7 +2874,7 @@ func (m *Model) renderFooter() string {
 		prefix = "type to send  "
 	}
 
-	left := footerStyle.Render(prefix) + m.help.View(m)
+	left := footerStyle.Render(prefix) + m.helpView()
 	if m.help.ShowAll {
 		// The expanded help lists every layer that is live right now, but a
 		// narrow terminal still ellipsizes the rightmost columns — so point at
@@ -2923,4 +2929,49 @@ func truncate(s string, n int) string {
 		w += rw
 	}
 	return b.String() + "…"
+}
+
+// helpView renders the footer's help line, memoized on the bindings it lists.
+// help.View styles and measures every binding on the line, which is a real
+// cost on a frame that changed nothing about the footer — and the empty feed's
+// blob field renders such frames at up to 60 fps.
+//
+// The expanded help (`?`) is not cached: it lists every layer at once, it is
+// not what an idle animation redraws, and fingerprinting it would cost more
+// than rendering it.
+func (m *Model) helpView() string {
+	if m.vcache == nil || m.help.ShowAll {
+		return m.help.View(m)
+	}
+	fp := helpFingerprint(m.ShortHelp())
+	w := m.help.Width()
+	c := &m.vcache.help
+	if c.valid && c.fp == fp && c.width == w {
+		return c.out
+	}
+	out := m.help.View(m)
+	*c = helpCache{fp: fp, width: w, out: out, valid: true}
+	return out
+}
+
+// helpFingerprint hashes the bindings a help line is about to show: the label
+// pair it renders for each, and whether it renders it at all. Two lines with
+// the same fingerprint render the same bytes.
+func helpFingerprint(bindings []key.Binding) uint64 {
+	h := fnv.New64a()
+	var one [1]byte
+	for _, b := range bindings {
+		one[0] = 0
+		if b.Enabled() {
+			one[0] = 1
+		}
+		h.Write(one[:])
+		hb := b.Help()
+		io.WriteString(h, hb.Key)
+		one[0] = 0x1f
+		h.Write(one[:])
+		io.WriteString(h, hb.Desc)
+		h.Write(one[:])
+	}
+	return h.Sum64()
 }

@@ -1020,15 +1020,20 @@ func (m Model) renderFeedPane(height, width int) string {
 	// the side borders as ├ ┤ rather than floating between them.
 	titleRule := contentRows(rows[:1])
 
-	style := lipgloss.NewStyle().
-		Border(border).
-		UnsetBorderTop().
-		Width(width).
-		Height(innerH)
+	borderColor := dimColor
 	if m.focus == focusFeed {
-		style = style.BorderForeground(focusedColor)
-	} else {
-		style = style.BorderForeground(dimColor)
+		borderColor = focusedColor
 	}
-	return joinRuleRows(style.Render(strings.Join(rows, "\n")), titleRule)
+	content := strings.Join(rows, "\n")
+	box, ok := renderPaneBox(content, width, innerH, borderColor)
+	if !ok {
+		box = lipgloss.NewStyle().
+			Border(border).
+			UnsetBorderTop().
+			Width(width).
+			Height(innerH).
+			BorderForeground(borderColor).
+			Render(content)
+	}
+	return joinRuleRows(box, titleRule)
 }
