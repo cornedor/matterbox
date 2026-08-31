@@ -155,21 +155,21 @@ func TestFailedThumbReleasesItsReservedRows(t *testing.T) {
 // depends on: an unchanging channel must reach a fixed point where nothing more
 // is sighted, so no image is ever rebuilt.
 //
-// It doesn't, once a channel holds more images than maxInlineImages. renderMessages
-// renders *every* post in the render window (up to maxLoadedPosts, currently 400) —
-// not just the handful inside the viewport — so sight() is called for every image
-// in the window. The terminal-memory cap is 64. The moment the window holds more
-// than 64 images the two disagree, and this cycle spins forever:
+// It doesn't, once a channel holds more images than terminal memory will keep.
+// renderMessages renders *every* post in the render window (up to maxLoadedPosts,
+// currently 400) — not just the handful inside the viewport — so sight() is called
+// for every image in the window. The moment the window holds more than the
+// residency budget the two disagree, and this cycle spins forever:
 //
-//	render sights all N ─→ fetch builds them ─→ markReady evicts N−64 to stay
-//	under the cap, *deleting their entries* ─→ invalidatePostsForThumbs drops
-//	those posts' cached lines ─→ re-render sights the evicted ones afresh ─→ …
+//	render sights all N ─→ fetch builds them ─→ markReady evicts the overflow to
+//	stay under the budget, *deleting their entries* ─→ invalidatePostsForThumbs
+//	drops those posts' cached lines ─→ re-render sights them afresh ─→ …
 //
 // Each turn re-runs a full decode + downscale + PNG-encode per frame, on bytes
 // already sitting in the disk cache. It is what a live pprof of channel-switching
 // shows as ~70% of all CPU in buildInlineThumb, with readThumbBytes at ~0.
 func TestThumbFetchConverges(t *testing.T) {
-	for _, n := range []int{maxInlineImages / 2, maxInlineImages + 16} {
+	for _, n := range []int{32, 80} {
 		t.Run("images="+strconv.Itoa(n), func(t *testing.T) {
 			m := benchViewModel(4)
 			m.cellPxW, m.cellPxH = 10, 20
@@ -186,8 +186,8 @@ func TestThumbFetchConverges(t *testing.T) {
 				t.Errorf("after 12 render/fetch rounds the channel still wants %d more images built: "+
 					"it never settles. %d thumbnails were built for %d images — each rebuild is a full "+
 					"decode + downscale + PNG-encode of bytes already on disk. The render window sights "+
-					"every image it holds, but only %d fit in terminal memory, so the overflow was evicted "+
-					"and immediately re-sighted, forever.", pending, builds, n, maxInlineImages)
+					"every image it holds, but only so many fit in terminal memory, so the overflow was "+
+					"evicted and immediately re-sighted, forever.", pending, builds, n)
 			}
 			if builds > n {
 				t.Errorf("built %d thumbnails for %d images: %d were rebuilt", builds, n, builds-n)

@@ -261,6 +261,96 @@ ever. One `continue` there (`m.thumbsHidden(p)`) answers all three at once:
   settled what is on screen — the same image may be drawn by another, uncollapsed
   post (`TestReleaseSparesImageShownElsewhere`).
 
+## 12. A GIF was decoded whole before being made small — ✅ DONE
+
+§7–§11 are all about *time*: how often a GIF is rebuilt, encoded, animated. This
+one is about *memory*, and it was the larger number. `compositeGIF` painted one
+fully-resolved RGBA frame **per GIF frame at the source's own resolution**, and
+both consumers took the whole slice before downscaling any of it. A GIF has no
+size or frame-count ceiling anywhere in the pipeline (SVG has `svgThumbMaxBytes`,
+STL has `stlThumbMaxBytes`, video has its `videoProfile`), so the cost was
+frames × width × height × 4, with the compressed file size no guide at all.
+
+Measured against the real attachment cache:
+
+- **Inline thumbnail** (`loadInlineThumbFrames`, a GIF scrolling on screen):
+  `creepy-hamster.gif`, 3.0 MB on disk, peaked at **178 MB** to keep 4 MB of
+  encoded output. A 0.8 MB GIF peaked at 110 MB.
+- **Preview modal** (space on a GIF): held **128 MB** for as long as the modal was
+  open — for a **0.4 MB** file. 91.5 MB of that was `previewState.frames`, kept
+  only so a resize could re-fit. Median GIF in a real cache: ~10 MB.
+- End to end, RSS went 40 MB → 249 MB opening one preview, and stayed at 240 MB
+  after closing it (Go's scavenger returns the arena slowly; there are no GC
+  knobs set anywhere in the tree).
+
+**Fix, in three parts:**
+
+- `eachCompositeGIFFrame` hands each composited frame to a callback off a single
+  shared canvas instead of collecting clones (`frameFunc`'s `shared` flag is the
+  contract: consume it before returning, copy it if you keep it). `compositeGIF`
+  is now that function with every frame cloned, which is all the emoji path
+  wants. `eachFrame` picks the streaming path only for animated GIFs and falls
+  back to the batch decoder for everything already bounded at its source.
+- Both big consumers fit-and-encode inside the callback — `buildThumbFrames`
+  (replacing the decode-then-`encodeInlineThumbNative` pair) and
+  `buildPreviewFrames`. `frameFitter` reuses one downscale destination across a
+  run of same-sized frames, which for a 90-frame GIF at a full-screen placement
+  is ~300 MB of churn removed.
+- `previewState` no longer keeps the frames at all — only `frameCount`, the
+  delays, and frame 0 (for the placement aspect and the caption). `reencodePreview`
+  re-reads the bytes from the disk cache the first load populated and re-decodes,
+  because a resize is debounced and an open GIF is not.
+
+**Result:** thumbnail build peak **178 → 63 MB**; preview retained **128 → 35 MB**
+(decoded frames held: 91.5 → 1.0 MB); RSS through one open/close **249 → 168 MB**.
+What is left in both is proportional to the *compressed* GIF — `gif.DecodeAll`
+still materialises every paletted sub-frame, and stdlib offers no streaming
+decoder — plus the pre-encoded per-frame sequences the animation actually needs.
+
+## 13. Two allocation sites a live heap profile named — ✅ DONE
+
+§12 fixed what was *held*. Profiling the running TUI while scrolling an
+image-heavy DM (`matterbox --pprof localhost:6060`) showed what was *churned*:
+`TotalAlloc` 3.57 GB in six minutes, against a live heap of only **82 MB**. RSS
+read 327 MB, but `HeapIdle` was 325 MB with `HeapReleased` 230 MB — Go had
+already handed those pages back and Linux simply had not reclaimed them. Not a
+leak; an arena sized for the allocation peaks between GCs.
+
+Two sites were worth fixing on their own merits:
+
+- **`x/image/draw` rebuilt its scaler on every frame — 355 MB, the largest single
+  site.** `Kernel.Scale` calls `newScaler(..., usePool=false)`: fresh weight
+  tables and a fresh `dw×sh [4]float64` scratch buffer per call, megabytes at
+  real sizes. `NewScaler` is the same object kept, pooling the scratch. Caching
+  one on `frameFitter` (and using a fitter in `encodeInlineThumb` and
+  `encodeStreamFrames`, the other per-frame scale loops) took a 89-frame fit run
+  from **523.6 MB / 714 allocs to 3.6 MB / 13 allocs — 145×**, and 4.1× faster.
+- **`strings.Builder` cost 5× the finished string — 216 MB.** Go's `append` grows
+  a large slice by ~1.25×, so the copies compound; a Builder fed N frame
+  sequences allocates roughly five times the result. Collecting into a `[]string`
+  and `strings.Join`-ing once sums the parts and allocates exactly once:
+  **23.3 MB → 4.4 MB, 5.8× faster** for an 89-frame setup. Applied in
+  `buildThumbFrames` and `buildPreviewFrames`; `handleInlineThumbFrames` already
+  has every piece in hand, so it just sizes its Builder up front.
+
+`TestFrameFitterReusesItsScaler` pins the first with `AllocsPerRun`.
+
+**Still on the table, in order of RSS won per unit of work:**
+
+1. **No GC knobs are set anywhere in the tree.** With 82 MB live and the default
+   GOGC=100, `NextGC` sits at 165 MB and the arena sizes for the peaks.
+   `debug.SetMemoryLimit` in `runTUI` would cap it directly — the single biggest
+   RSS lever left, and one line.
+2. **`maxInlineBuiltBytes` is 64 MiB.** 44 MB of one DM's GIF native-animation
+   setups was over half the live heap. 16 MiB still holds hundreds of stills.
+3. **The `Model` dispatch chain is 1.25 GB of the 3.5 GB** — `Update` → `update`
+   → `dispatchNav`/`handleKey`/`View` each heap-box another ~102 KB copy, ~330 KB
+   per event, and scrolling floods events. This is §6, and scrolling is the
+   workload that maximises it.
+4. A 20 MB `bytes.Buffer` sits retained inside bubbletea's `cursedRenderer.flush`,
+   grown to fit one multi-megabyte `tea.Raw` write and never shrunk. Chunking the
+   native setup across events would keep it small.
+
 ## Not a problem (measured, don't re-chase)
 - **Inline-thumbnail animation byte volume.** Re-transmitting a whole PNG per GIF
   frame *looks* alarming at a 10-row placement, but realistic cartoon/video GIF

@@ -435,9 +435,12 @@ func (m *Model) closePreviewStream() {
 // streamFrame.id (see advanceStream).
 func encodeStreamFrames(frames []image.Image, delays []time.Duration, cols, rows int, ring [streamRingSlots]uint32, startSeq int, cellPxW, cellPxH int) ([]streamFrame, error) {
 	out := make([]streamFrame, len(frames))
+	// Every frame of a chunk is the same size, so one fitter serves the whole
+	// chunk — the scaler and its scratch are built once, not per frame.
+	var fitter frameFitter
 	for i, f := range frames {
 		id := ring[(startSeq+i)%streamRingSlots]
-		fitted := fitFrameToCells(f, cols, rows, cellPxW, cellPxH)
+		fitted := fitter.fit(f, cols, rows, cellPxW, cellPxH)
 		seq, err := kittyTransmitImage(id, fitted, rows, cols)
 		if err != nil {
 			return nil, err

@@ -374,15 +374,21 @@ func sightAt(ii *inlineImages, key string, box int) sightResult {
 // it as brand new, and it was decoded and re-encoded from scratch.
 func TestInlineImagesEvictLRU(t *testing.T) {
 	ii := newInlineImages("auto")
-	for i := 0; i < maxInlineImages; i++ {
-		ii.markReady(fileIDf(i), readyInlineImg{id: uint32(i + 1), rows: 4, cols: 4, box: 78})
+	ii.setCellSize(10, 20)
+	// A placement big enough that a handful of them fills the residency budget,
+	// so the test says what it means without installing thousands of thumbnails.
+	const rows, cols = 40, 200
+	perImage := cols * 10 * rows * 20 * 4
+	n := maxInlineTerminalBytes/perImage + 1
+	for i := 0; i < n; i++ {
+		ii.markReady(fileIDf(i), readyInlineImg{id: uint32(i + 1), rows: rows, cols: cols, box: 78})
 	}
 	// Re-sight the first one so it is no longer the oldest.
 	sightAt(ii, fileIDf(0), 78)
 
-	ii.markReady("overflow", readyInlineImg{id: 9999, rows: 4, cols: 4, box: 78})
+	ii.markReady("overflow", readyInlineImg{id: 9999, rows: rows, cols: cols, box: 78})
 	if seq := ii.takeTransmits(); seq == "" { // enforces the caps
-		t.Fatal("going over the cap should have freed an image from terminal memory")
+		t.Fatal("going over the budget should have freed an image from terminal memory")
 	}
 
 	// file 1 is the oldest (file 0 was just re-sighted), so it is the one freed.
@@ -568,4 +574,63 @@ func TestInlineBodyImageAnimatesWhenVisible(t *testing.T) {
 	if v := m.viewportVisibleInlineImages(); len(v) != 0 {
 		t.Errorf("an off-screen GIF should not animate, got %v", v)
 	}
+}
+
+// TestAnimatedThumbCostsEveryFrame is the bug the residency budget exists for.
+//
+// A native-animation thumbnail uploads the root *plus every a=f frame* under one
+// id, so one animated image costs the terminal as much as ~90 stills. The cap used
+// to count images: 64 of these is ~1.6 GB against Ghostty's 320 MB default
+// image-storage-limit, so the terminal evicted them behind our back. ent.resident
+// stayed true, sight() therefore never queued a re-transmit, and the placeholder
+// cells sat on an id the terminal had dropped — images blank at random, and a
+// resize could not bring them back, only a rebuild under a fresh id.
+func TestAnimatedThumbCostsEveryFrame(t *testing.T) {
+	const rows, cols, frames = 10, 36, 90
+
+	ii := newInlineImages("auto")
+	ii.setCellSize(10, 20)
+	ready := func(i int) {
+		ii.markReady(fileIDf(i), readyInlineImg{
+			id: uint32(i + 1), rows: rows, cols: cols, box: 88, frameSeqs: []string{"still"},
+		})
+	}
+
+	ready(0)
+	still := ii.residentBytes
+	if still != cols*10*rows*20*4 {
+		t.Fatalf("a still's footprint = %d, want its placement in real pixels", still)
+	}
+
+	// The same image, once its animation frames are uploaded.
+	if !ii.markFramesBuilt(builtThumbFrames{
+		key: fileIDf(0), id: 1, rows: rows, cols: cols, native: "<setup>", frames: frames,
+	}) {
+		t.Fatal("precondition: the frames should have installed")
+	}
+	if got := ii.residentBytes; got != still*frames {
+		t.Fatalf("animated footprint = %d, want %d (%d× the still)", got, still*frames, frames)
+	}
+
+	// However many that is, it must trip the budget at a count a 64-image cap
+	// would have waved through — that gap is exactly what went blank.
+	n := 1
+	for ii.residentBytes <= maxInlineTerminalBytes {
+		ready(n)
+		ii.markFramesBuilt(builtThumbFrames{
+			key: fileIDf(n), id: uint32(n + 1), rows: rows, cols: cols, native: "<setup>", frames: frames,
+		})
+		n++
+		if n > 64 {
+			t.Fatalf("%d animated thumbnails still fit the budget; the old 64-image cap "+
+				"would never have evicted them and the terminal would have, silently", n)
+		}
+	}
+	if seq := ii.takeTransmits(); seq == "" {
+		t.Fatal("going over the residency budget should have freed images from terminal memory")
+	}
+	if ii.residentBytes > maxInlineTerminalBytes {
+		t.Errorf("still %d bytes resident after eviction, budget %d", ii.residentBytes, maxInlineTerminalBytes)
+	}
+	t.Logf("%d animated thumbnails filled a budget the old cap would not have evicted until 64", n)
 }

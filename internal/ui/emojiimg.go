@@ -319,19 +319,69 @@ func firstAnimatedFrame(raw []byte) (image.Image, error) {
 	return decodeFirstGIFFrame(raw)
 }
 
-// compositeGIF flattens an animated GIF into one fully-painted RGBA frame per
-// step, honouring the disposal methods (gif.DecodeAll hands back only the
-// changed sub-rectangle of each step, layered on whatever the disposal left
-// behind). Delays come from gif.GIF.Delay (hundredths of a second), clamped so
-// a 0/absurd delay can't busy-loop the render.
-func compositeGIF(g *gif.GIF) (frames []image.Image, delays []time.Duration, err error) {
+// frameFunc receives one decoded frame and its display duration.
+//
+// shared reports that frame is a buffer the decoder overwrites for the next
+// call: consume it — encode it, downscale it — before returning, and copy it if
+// you mean to keep it. It is false when the frame is the caller's to hold.
+type frameFunc func(frame image.Image, delay time.Duration, shared bool) error
+
+// eachFrame is the streaming form of a frame decode: instead of materialising
+// every frame and handing back a slice, it passes each one to fn as it is
+// produced.
+//
+// Only the animated-GIF path actually streams, because it is the only one that
+// is unbounded: a GIF carries no size or frame-count limit, and compositing it
+// costs one fully-painted RGBA canvas *per frame* at the source's own
+// resolution — 480×480×89 frames is 81 MB of live images to keep a 10-row
+// thumbnail. Everything else is already bounded where it is decoded (a still is
+// one frame, an SVG is rasterised to the destination box, a video is capped by
+// its videoProfile), so it falls back to `decode` and replays the result, with
+// shared=false since those frames are nobody else's buffer.
+//
+// decode is the batch decoder to fall back to — decodeImageFrames for a
+// thumbnail or an emoji, Model.decodePreviewFrames for the modal, which differ
+// only in how much of a video they pull.
+func eachFrame(raw []byte, animate bool, decode func([]byte, bool) ([]image.Image, []time.Duration, error), fn frameFunc) error {
+	// Mirrors decodeImageFrames' routing exactly, so the streaming and batch
+	// forms always take the same branch for the same bytes.
+	if animate && !svgimg.Looks(raw) && !routesToLibav(raw) && isGIF(raw) {
+		if g, derr := gif.DecodeAll(bytes.NewReader(raw)); derr == nil && len(g.Image) > 1 {
+			return eachCompositeGIFFrame(g, fn)
+		}
+		// Single-frame GIF or a decode error: fall through, exactly as
+		// decodeImageFrames does, so the still path yields the first frame.
+	}
+	frames, delays, err := decode(raw, animate)
+	if err != nil {
+		return err
+	}
+	for i, fr := range frames {
+		var d time.Duration
+		if i < len(delays) {
+			d = delays[i]
+		}
+		if err := fn(fr, d, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// eachCompositeGIFFrame is compositeGIF's streaming form: the same frames, in
+// the same order, painted the same way — but handed to fn one at a time off a
+// single canvas rather than collected into a slice of clones. That is the whole
+// difference between a GIF costing one frame of memory and costing all of them.
+//
+// The image fn receives is that shared canvas (shared=true): it is overwritten
+// by the next frame, so fn must consume it before returning. compositeGIF below
+// is precisely the case that needs to keep them, and clones.
+func eachCompositeGIFFrame(g *gif.GIF, fn frameFunc) error {
 	bounds := image.Rect(0, 0, g.Config.Width, g.Config.Height)
 	if bounds.Empty() {
 		bounds = g.Image[0].Bounds()
 	}
 	canvas := image.NewRGBA(bounds)
-	frames = make([]image.Image, 0, len(g.Image))
-	delays = make([]time.Duration, 0, len(g.Image))
 	var restore *image.RGBA // canvas snapshot for a DisposalPrevious rollback
 	for i, src := range g.Image {
 		disposal := byte(0)
@@ -339,18 +389,24 @@ func compositeGIF(g *gif.GIF) (frames []image.Image, delays []time.Duration, err
 			disposal = g.Disposal[i]
 		}
 		// DisposalPrevious means "after this frame, roll back to what was here
-		// before it" — so snapshot the canvas before painting.
+		// before it" — so snapshot the canvas before painting. The snapshot is
+		// only ever read at the end of this same step, so one buffer serves every
+		// frame that asks for it.
 		if disposal == gif.DisposalPrevious {
-			restore = cloneRGBA(canvas)
+			if restore == nil {
+				restore = image.NewRGBA(bounds)
+			}
+			copy(restore.Pix, canvas.Pix)
 		}
 		draw.Draw(canvas, src.Bounds(), src, src.Bounds().Min, draw.Over)
-		frames = append(frames, cloneRGBA(canvas))
 
 		d := 100 * time.Millisecond
 		if i < len(g.Delay) {
 			d = clampGIFDelay(g.Delay[i])
 		}
-		delays = append(delays, d)
+		if err := fn(canvas, d, true); err != nil {
+			return err
+		}
 
 		switch disposal {
 		case gif.DisposalBackground:
@@ -363,7 +419,43 @@ func compositeGIF(g *gif.GIF) (frames []image.Image, delays []time.Duration, err
 			}
 		}
 	}
+	return nil
+}
+
+// compositeGIF flattens an animated GIF into one fully-painted RGBA frame per
+// step, honouring the disposal methods (gif.DecodeAll hands back only the
+// changed sub-rectangle of each step, layered on whatever the disposal left
+// behind). Delays come from gif.GIF.Delay (hundredths of a second), clamped so
+// a 0/absurd delay can't busy-loop the render.
+//
+// This is eachCompositeGIFFrame with every frame kept, which is what the emoji
+// path wants (an emoji is a few thousand pixels, and its frames are held for the
+// session anyway). The paths that decode a full-size GIF — inline thumbnails and
+// the preview modal — stream instead.
+func compositeGIF(g *gif.GIF) (frames []image.Image, delays []time.Duration, err error) {
+	frames = make([]image.Image, 0, len(g.Image))
+	delays = make([]time.Duration, 0, len(g.Image))
+	err = eachCompositeGIFFrame(g, func(frame image.Image, d time.Duration, _ bool) error {
+		frames = append(frames, cloneFrame(frame))
+		delays = append(delays, d)
+		return nil
+	})
+	if err != nil {
+		return nil, nil, err
+	}
 	return frames, delays, nil
+}
+
+// cloneFrame returns an independent copy of a frame handed out with shared set,
+// for the callers that mean to keep it past the callback.
+func cloneFrame(src image.Image) image.Image {
+	if r, ok := src.(*image.RGBA); ok {
+		return cloneRGBA(r)
+	}
+	b := src.Bounds()
+	dst := image.NewRGBA(b)
+	draw.Draw(dst, b, src, b.Min, draw.Src)
+	return dst
 }
 
 // cloneRGBA returns an independent copy of src, used to snapshot each

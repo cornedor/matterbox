@@ -396,6 +396,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// no-op unless one is up — e.g. after a mid-session font-size change).
 		if msg.Width > 0 && msg.Height > 0 {
 			m.cellPxW, m.cellPxH = msg.Width, msg.Height
+			// The inline-thumbnail residency budget sizes a placement in real
+			// pixels, so it needs this too (see maxInlineTerminalBytes).
+			m.inlineImg.setCellSize(msg.Width, msg.Height)
 		}
 		return m, m.resizePreview()
 
