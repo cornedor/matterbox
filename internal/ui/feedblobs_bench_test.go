@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strconv"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -78,3 +79,28 @@ func BenchmarkFeedIdleFrame(b *testing.B) {
 var sink string
 
 var sinkV tea.View
+
+// BenchmarkFeedBlobFrameLoaded is the same frame with a realistic heap behind
+// it — a live client holds thousands of cached posts, so every GC cycle the
+// frame's garbage triggers has far more to scan than an empty test model does.
+func BenchmarkFeedBlobFrameLoaded(b *testing.B) {
+	for _, n := range []int{0, 2000, 10000} {
+		b.Run(strconv.Itoa(n), func(b *testing.B) {
+			m := benchBlobModel(160, 40)
+			if n > 0 {
+				posts, names := benchPosts(n)
+				m.posts = posts
+				for k, v := range names {
+					m.userNames[k] = v
+				}
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				nm, _ := m.Update(feedBlobTickMsg{})
+				mm := nm.(Model)
+				sinkV = mm.View()
+				m = mm
+			}
+		})
+	}
+}
