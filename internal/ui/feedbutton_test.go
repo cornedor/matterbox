@@ -24,7 +24,7 @@ func feedButtonModel(t *testing.T) Model {
 	m.unread = map[string]int{"c2": 2, "c3": 1, "c4": 5}
 	m.mentions = map[string]int{"c3": 1}
 
-	fs := newFeedState(false, 0)
+	fs := newFeedState(false)
 	fs.built = true
 	fs.entries = []feedEntry{
 		{channelID: "c2", unread: []*model.Post{{Id: "p1", ChannelId: "c2", Message: "hey"}}},

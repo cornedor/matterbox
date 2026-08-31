@@ -15,7 +15,7 @@ func benchBlobModel(w, h int) Model {
 	m := newTestModel()
 	m.vcache = &viewCache{}
 	m.width, m.height = w, h
-	fs := newFeedState(false, feedBlobFPSMax)
+	fs := newFeedState(false)
 	fs.built = true
 	m.feed = fs
 	gotoTab(&m, tabFeed)
@@ -45,7 +45,7 @@ func BenchmarkFeedBlobTick(b *testing.B) {
 	m := benchBlobModel(160, 48)
 	b.ReportAllocs()
 	for b.Loop() {
-		m.applyFeedBlobTick()
+		m.applyFeedBlobTick(m.feed.blobGen)
 	}
 }
 
@@ -57,7 +57,7 @@ func BenchmarkFeedBlobFrame(b *testing.B) {
 			m := benchBlobModel(sz[0], sz[1])
 			b.ReportAllocs()
 			for b.Loop() {
-				nm, _ := m.Update(feedBlobTickMsg{})
+				nm, _ := m.Update(feedBlobTickMsg{gen: m.feed.blobGen})
 				mm := nm.(Model)
 				sinkV = mm.View()
 				m = mm
@@ -96,7 +96,7 @@ func BenchmarkFeedBlobFrameLoaded(b *testing.B) {
 			}
 			b.ReportAllocs()
 			for b.Loop() {
-				nm, _ := m.Update(feedBlobTickMsg{})
+				nm, _ := m.Update(feedBlobTickMsg{gen: m.feed.blobGen})
 				mm := nm.(Model)
 				sinkV = mm.View()
 				m = mm

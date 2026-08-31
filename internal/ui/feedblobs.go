@@ -25,36 +25,41 @@ import (
 // them reads as a hard edge — which is the opposite of what this is for.
 const blobRamp = " .:-=+*#"
 
-// defaultFeedBlobFPS is the animation's frame rate when the config doesn't say
-// (animations.feed_blob_fps). The drift runs in minutes, so a frame only ever
-// moves a handful of cells one ramp step — five a second is enough that those
-// steps don't arrive in visible batches. A poke is livelier, which is the
-// reason the knob exists: a fast terminal can spend more frames on it, and 60
-// is affordable — a full-pane frame is around a hundred microseconds of float
-// sampling plus half a millisecond of repaint, and only runs while the empty
-// feed is actually on screen.
-const defaultFeedBlobFPS = 5
-
-// feedBlobFPSMin / feedBlobFPSMax bound the configured rate. Below the minimum
-// the field stutters instead of drifting; above the maximum a full pane of
-// float sampling is being redrawn more often than anyone can see, for a screen
-// that exists to be ignored.
+// The field runs at two frame rates, and which one is live is decided by the
+// field itself rather than by a setting.
+//
+// Drifting, it moves less than a cell per frame at any rate worth having: the
+// periods are minutes long, so at 60 fps a third of the frames come out
+// byte-identical to the one before. Spending a repaint on them buys nothing —
+// a live profile put a 60 fps idle field at 14% of a core, two thirds of it in
+// bubbletea re-parsing a screen that had barely changed.
+//
+// A poke is the opposite: the swell spring peaks about 0.3s in, and that arc is
+// the one thing here anybody looks at directly. It gets every frame the
+// terminal can take.
+//
+// So: 60 fps while a spring is still moving, a twelfth of that when the field
+// is only drifting — visually the same screen, at a fifth of the cost.
 const (
-	feedBlobFPSMin = 1
-	feedBlobFPSMax = 60
+	feedBlobIdleFPS = 12
+	feedBlobLiveFPS = 60
 )
 
-// feedBlobInterval is the default frame gap, and the one the tests animate at.
-const feedBlobInterval = time.Second / defaultFeedBlobFPS
+const (
+	// feedBlobIdleInterval is the drifting frame gap, and the one the tests
+	// animate at.
+	feedBlobIdleInterval = time.Second / feedBlobIdleFPS
+	// feedBlobLiveInterval is the gap while a poke settles.
+	feedBlobLiveInterval = time.Second / feedBlobLiveFPS
+)
 
-// feedBlobIntervalFor turns a configured frame rate into the tick gap, clamped
-// to the supported range. 0 (or anything absurd) means "use the default".
-func feedBlobIntervalFor(fps int) time.Duration {
-	if fps <= 0 {
-		fps = defaultFeedBlobFPS
+// feedBlobInterval is the gap until the next frame: fast while any spring is
+// still carrying a poke, calm once they have all come to rest.
+func (m *Model) feedBlobInterval() time.Duration {
+	if m.feed.blobNudge.idle() {
+		return feedBlobIdleInterval
 	}
-	fps = min(max(fps, feedBlobFPSMin), feedBlobFPSMax)
-	return time.Second / time.Duration(fps)
+	return feedBlobLiveInterval
 }
 
 // cellAspect converts a column offset into row units: a terminal cell is about
@@ -221,11 +226,11 @@ func (n *blobNudges) advance(dt float64) {
 }
 
 // springStep advances a damped spring's (offset, velocity) by dt seconds using
-// the closed-form solution, not an Euler step. The frame rate is configurable
-// (animations.feed_blob_fps), and a stepper whose amplitude and settling time
-// depend on dt would quietly change how a poke feels when you asked for a
-// smoother one. This way 5 fps and 60 fps run the same motion, sampled coarsely
-// or finely.
+// the closed-form solution, not an Euler step. The frame rate changes while a
+// poke is settling (see feedBlobInterval), and a stepper whose amplitude and
+// settling time depend on dt would put a kink in the motion at the moment it
+// dropped back to the calm rate. This way both rates run the same motion,
+// sampled finely or coarsely.
 func springStep(x, v, omega, zeta, dt float64) (float64, float64) {
 	decay := math.Exp(-zeta * omega * dt)
 	if zeta >= 1 { // critically damped: x(t) = (x₀ + (v₀ + ωx₀)t)·e^(−ωt)
@@ -481,15 +486,18 @@ func styleBlobRow(level []int) string {
 }
 
 // feedBlobTickMsg drives the empty-feed animation. At most one is in flight,
-// guarded by feedState.blobActive.
-type feedBlobTickMsg struct{}
+// guarded by feedState.blobActive. gen is the loop it belongs to: a poke
+// starts a new, faster loop at once rather than waiting out the calm frame gap
+// already in flight, and the tick left over from the old loop is dropped by its
+// stale gen.
+type feedBlobTickMsg struct{ gen uint64 }
 
-// feedBlobTickCmd schedules the next frame, at the configured frame rate.
-func feedBlobTickCmd(interval time.Duration) tea.Cmd {
+// feedBlobTickCmd schedules the next frame of loop gen.
+func feedBlobTickCmd(interval time.Duration, gen uint64) tea.Cmd {
 	if interval <= 0 {
-		interval = feedBlobInterval
+		interval = feedBlobIdleInterval
 	}
-	return tea.Tick(interval, func(time.Time) tea.Msg { return feedBlobTickMsg{} })
+	return tea.Tick(interval, func(time.Time) tea.Msg { return feedBlobTickMsg{gen: gen} })
 }
 
 // feedEmptyArtVisible reports whether the Feed tab is currently showing the
@@ -506,20 +514,36 @@ func (m *Model) maybeStartFeedBlobs() tea.Cmd {
 		return nil
 	}
 	m.feed.blobActive = true
-	return feedBlobTickCmd(m.feed.blobInterval)
+	return feedBlobTickCmd(m.feedBlobInterval(), m.feed.blobGen)
+}
+
+// restartFeedBlobs arms the loop again from this instant, superseding whatever
+// tick is in flight. A poke lands while the field is drifting at the calm rate,
+// with up to a whole idle frame gap still to run: waiting it out would put a
+// visible hitch between the press and the swell, which is the one moment here
+// that has to feel immediate.
+func (m *Model) restartFeedBlobs() tea.Cmd {
+	if !m.feedEmptyArtVisible() {
+		return nil
+	}
+	m.feed.blobGen++
+	m.feed.blobActive = true
+	return feedBlobTickCmd(m.feedBlobInterval(), m.feed.blobGen)
 }
 
 // applyFeedBlobTick advances one frame, redraws the field, and reschedules —
 // stopping (and clearing the guard) the moment the art is no longer shown.
-func (m *Model) applyFeedBlobTick() tea.Cmd {
+func (m *Model) applyFeedBlobTick(gen uint64) tea.Cmd {
+	// A tick from a loop a poke has already superseded: dropping it is what
+	// keeps exactly one loop running (see restartFeedBlobs).
+	if gen != m.feed.blobGen {
+		return nil
+	}
 	if !m.feedEmptyArtVisible() {
 		m.feed.blobActive = false
 		return nil
 	}
-	dt := m.feed.blobInterval
-	if dt <= 0 {
-		dt = feedBlobInterval
-	}
+	dt := m.feedBlobInterval()
 	m.feed.blobPhase += dt.Seconds()
 	m.feed.blobNudge.advance(dt.Seconds())
 	painted := m.feed.blobPainted
@@ -530,7 +554,9 @@ func (m *Model) applyFeedBlobTick() tea.Cmd {
 	if m.vcache != nil && m.feed.blobPainted != painted {
 		m.vcache.viewValid = false
 	}
-	return feedBlobTickCmd(dt)
+	// The rate is re-read rather than reused: the spring this frame advanced may
+	// have been the last one still moving.
+	return feedBlobTickCmd(m.feedBlobInterval(), gen)
 }
 
 // feedBlobMinW / feedBlobMinH are the smallest pane the field is worth drawing
@@ -594,7 +620,9 @@ func (m *Model) pokeFeedBlobs(col, row int) {
 func (m *Model) clickFeedBlobs(col, row int) tea.Cmd {
 	m.pokeFeedBlobs(col, row)
 	m.renderFeedResults()
-	return m.maybeStartFeedBlobs()
+	// restart, not maybeStart: the loop is normally already running, at the calm
+	// drifting rate, and the poke needs it at the live one now.
+	return m.restartFeedBlobs()
 }
 
 // feedEmptyContent is the body shown when the feed has no entries: the

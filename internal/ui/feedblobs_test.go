@@ -6,7 +6,6 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/mattermost/mattermost/server/public/model"
@@ -21,7 +20,7 @@ func stripANSI(s string) string { return ansiRe.ReplaceAllString(s, "") }
 // seconds: the field's pace is a per-frame property, and these tests animate at
 // the default frame rate.
 func frame(w, h, phase int) []string {
-	t := float64(phase) * feedBlobInterval.Seconds()
+	t := float64(phase) * feedBlobIdleInterval.Seconds()
 	return strings.Split(stripANSI(renderFeedBlobs(w, h, t, blobNudges{})), "\n")
 }
 
@@ -67,7 +66,7 @@ func TestFeedBlobsOnlyRampGlyphs(t *testing.T) {
 // unchanged.
 func TestFeedBlobsDrift(t *testing.T) {
 	const w, h = 80, 24
-	const window = 10 // frames — two seconds at feedBlobInterval
+	const window = 10 // frames
 
 	frames := make([]string, 200)
 	for phase := range frames {
@@ -142,7 +141,7 @@ func TestFeedBlobsBreathe(t *testing.T) {
 // replaced (here, by a refresh going in flight).
 func TestFeedBlobLoopGuard(t *testing.T) {
 	m := &Model{}
-	m.feed = newFeedState(false, 0)
+	m.feed = newFeedState(false)
 	// teamIdx 0 with no DMs is the Feed tab (see tabAt); empty + not loading
 	// means the field is on screen, so the loop arms exactly once.
 	if cmd := m.maybeStartFeedBlobs(); cmd == nil || !m.feed.blobActive {
@@ -153,7 +152,7 @@ func TestFeedBlobLoopGuard(t *testing.T) {
 	}
 	// A refresh in flight hides the field → the next tick must stop the loop.
 	m.feed.loading = true
-	if cmd := m.applyFeedBlobTick(); cmd != nil || m.feed.blobActive {
+	if cmd := m.applyFeedBlobTick(m.feed.blobGen); cmd != nil || m.feed.blobActive {
 		t.Fatal("blob loop kept ticking while the feed was loading")
 	}
 }
@@ -207,16 +206,20 @@ func TestFeedBlobPaletteStaysSoft(t *testing.T) {
 // pokeModel is an empty Feed tab with a w×h field on it, ready to be clicked.
 func pokeModel(w, h int) *Model {
 	m := &Model{}
-	m.feed = newFeedState(false, 0)
+	m.feed = newFeedState(false)
 	m.feed.view.SetWidth(w)
 	m.feed.view.SetHeight(h)
 	return m
 }
 
-// step advances the field one animation frame, exactly as applyFeedBlobTick
-// does, and returns the rendered frame.
-func step(m *Model) string {
-	dt := m.feed.blobInterval.Seconds()
+// step advances the field one animation frame at the rate the loop would
+// currently be running at, exactly as applyFeedBlobTick does, and returns the
+// rendered frame.
+func step(m *Model) string { return stepAt(m, m.feedBlobInterval().Seconds()) }
+
+// stepAt is step with the frame gap named, for the tests that replay the same
+// motion at several frame rates.
+func stepAt(m *Model, dt float64) string {
 	m.feed.blobPhase += dt
 	m.feed.blobNudge.advance(dt)
 	return stripANSI(renderFeedBlobs(m.feed.view.Width(), m.feed.view.Height(), m.feed.blobPhase, m.feed.blobNudge))
@@ -284,9 +287,14 @@ func TestFeedBlobPokeSettles(t *testing.T) {
 		return 1
 	}
 	sx, sy := sign(m.feed.blobNudge[0].vx), sign(m.feed.blobNudge[0].vy)
+	// Frames at a fixed rate, so this measures the spring rather than whatever
+	// rate the loop happens to be running at (see feedBlobInterval); the push
+	// spring's period is measured in tens of seconds, hence a whole minute of
+	// them.
+	dt := feedBlobIdleInterval.Seconds()
 	settled := -1
-	for f := 1; f <= 300; f++ {
-		step(m)
+	for f := 1; f <= 60*feedBlobIdleFPS; f++ {
+		stepAt(m, dt)
 		for i, p := range m.feed.blobNudge {
 			if math.Abs(p.ox) > blobPushCap+1e-9 || math.Abs(p.oy) > blobPushCap+1e-9 {
 				t.Fatalf("frame %d: blob %d offset (%.3f,%.3f) escaped the cap %.2f", f, i, p.ox, p.oy, blobPushCap)
@@ -305,9 +313,8 @@ func TestFeedBlobPokeSettles(t *testing.T) {
 	}
 	// Long enough to be a slow return, not so long that the field never
 	// recovers its composed state.
-	if lo, hi := 40, 200; settled < lo || settled > hi {
-		t.Errorf("settled after %d frames (%.1fs), want %d..%d", settled,
-			float64(settled)*feedBlobInterval.Seconds(), lo, hi)
+	if secs, lo, hi := float64(settled)*dt, 8.0, 40.0; secs < lo || secs > hi {
+		t.Errorf("settled after %.1fs, want %.0f..%.0f", secs, lo, hi)
 	}
 }
 
@@ -324,7 +331,6 @@ func TestFeedBlobPokeStaysCalm(t *testing.T) {
 	const clicks = 10
 
 	m := pokeModel(w, h)
-	m.feed.blobInterval = feedBlobIntervalFor(fps)
 	prev := stripANSI(renderFeedBlobs(w, h, 0, blobNudges{}))
 	diff := func(a, b string) int {
 		n := 0
@@ -458,8 +464,11 @@ func TestFeedBlobPokeSwells(t *testing.T) {
 
 	var peak, dip float64
 	var trace []float64
-	for f := 1; f <= 300; f++ {
-		step(m)
+	// At the live rate, which is the one a poke gets: the swell peaks about
+	// 0.3s in, and sampling it every calm frame would miss the top of it.
+	dt := feedBlobLiveInterval.Seconds()
+	for f := 1; f <= 12*feedBlobLiveFPS; f++ {
+		stepAt(m, dt)
 		os := m.feed.blobNudge[0].os
 		peak = math.Max(peak, os)
 		dip = math.Min(dip, os)
@@ -498,8 +507,10 @@ func TestFeedBlobPokeSwells(t *testing.T) {
 	if crossings > 2 {
 		t.Errorf("the size crossed its resting radius %d times — the blob rings", crossings)
 	}
-	if !m.feed.blobNudge.idle() {
-		t.Error("the swell never settled")
+	// The swell specifically — the push springs of the blobs around this one
+	// run for far longer, and are TestFeedBlobPokeSettles' business.
+	if p := m.feed.blobNudge[0]; math.Abs(p.os) > 1e-4 || math.Abs(p.vs) > 1e-5 {
+		t.Errorf("the swell never settled: os %.5f, vs %.6f", p.os, p.vs)
 	}
 }
 
@@ -540,31 +551,32 @@ func TestFeedBlobClickRoute(t *testing.T) {
 	}
 }
 
-// TestFeedBlobFPSIndependent is what makes animations.feed_blob_fps a
-// smoothness knob and nothing else: the same poke, replayed at 1, 5 and 60 fps,
-// reaches the same displacement and the same swell at the same wall-clock
-// second. The springs are stepped in closed form for exactly this reason — an
-// Euler stepper would quietly change the feel along with the frame rate.
-func TestFeedBlobFPSIndependent(t *testing.T) {
+// TestFeedBlobFrameRateIndependent is what lets the loop change frame rate
+// mid-poke: the same poke, replayed at 1, 12 and 60 frames a second, reaches
+// the same displacement and the same swell at the same wall-clock second. The
+// springs are stepped in closed form for exactly this reason — with an Euler
+// stepper the swell would land differently depending on where in the settle the
+// rate dropped from live back to idle.
+func TestFeedBlobFrameRateIndependent(t *testing.T) {
 	const w, h = 80, 24
 
 	// State exactly `secs` seconds after a rim poke, animated at fps frames a
 	// second (a whole number of frames, so every rate samples the same instant).
 	at := func(fps int, secs float64) blobNudge {
 		m := pokeModel(w, h)
-		m.feed.blobInterval = feedBlobIntervalFor(fps)
+		dt := 1 / float64(fps)
 		b := feedBlobFrame(w, h, 0, blobNudges{})[0]
 		m.pokeFeedBlobs(rimCell(b))
 		for f := 0; f < int(secs*float64(fps)); f++ {
-			step(m)
+			stepAt(m, dt)
 		}
 		return m.feed.blobNudge[0]
 	}
 
 	// Both near the peak and out on the settling tail.
 	for _, secs := range []float64{1, 6} {
-		ref := at(defaultFeedBlobFPS, secs)
-		for _, fps := range []int{1, 2, 12, 30, 60} {
+		ref := at(feedBlobIdleFPS, secs)
+		for _, fps := range []int{1, 2, 30, feedBlobLiveFPS} {
 			got := at(fps, secs)
 			for _, f := range []struct {
 				name          string
@@ -579,29 +591,37 @@ func TestFeedBlobFPSIndependent(t *testing.T) {
 			} {
 				if d := math.Abs(f.got - f.ref); d > 0.02*f.amp {
 					t.Errorf("%d fps: %s at %.0fs = %.4f, want %.4f (the %d fps value) — the frame rate changed the motion",
-						fps, f.name, secs, f.got, f.ref, defaultFeedBlobFPS)
+						fps, f.name, secs, f.got, f.ref, feedBlobIdleFPS)
 				}
 			}
 		}
 	}
 }
 
-// TestFeedBlobIntervalFor: the config value is clamped, and 0 means default.
-func TestFeedBlobIntervalFor(t *testing.T) {
-	for _, tc := range []struct {
-		fps  int
-		want time.Duration
-	}{
-		{0, feedBlobInterval},
-		{-4, feedBlobInterval},
-		{defaultFeedBlobFPS, feedBlobInterval},
-		{20, 50 * time.Millisecond},
-		{600, time.Second / feedBlobFPSMax},
-	} {
-		if got := feedBlobIntervalFor(tc.fps); got != tc.want {
-			t.Errorf("feedBlobIntervalFor(%d) = %v, want %v", tc.fps, got, tc.want)
+// TestFeedBlobRateFollowsTheSprings: the frame rate is spent where it is
+// visible. Drifting, the field asks for the calm rate; a poke puts it on the
+// live one until the springs have settled, and then it goes back.
+func TestFeedBlobRateFollowsTheSprings(t *testing.T) {
+	const w, h = 80, 24
+	m := pokeModel(w, h)
+	if got := m.feedBlobInterval(); got != feedBlobIdleInterval {
+		t.Errorf("a drifting field asks for %v, want the calm %v", got, feedBlobIdleInterval)
+	}
+
+	b := feedBlobFrame(w, h, 0, blobNudges{})[0]
+	m.pokeFeedBlobs(rimCell(b))
+	if got := m.feedBlobInterval(); got != feedBlobLiveInterval {
+		t.Errorf("a poked field asks for %v, want the live %v", got, feedBlobLiveInterval)
+	}
+
+	// The poke has to run out: an animation that never drops back is a 60 fps
+	// screensaver.
+	for f := 0; f < 60*feedBlobLiveFPS; f++ {
+		if step(m); m.feedBlobInterval() == feedBlobIdleInterval {
+			return
 		}
 	}
+	t.Error("the field never went back to the calm rate after a poke")
 }
 
 // TestFeedBlobPeakMatchesSpan pins the two span knobs as the amplitudes they
@@ -644,18 +664,25 @@ func TestFeedBlobPeakMatchesSpan(t *testing.T) {
 // whole cost this animation could have had.
 func TestFeedBlobTickKeepsFrameWhenStill(t *testing.T) {
 	m := benchBlobModel(160, 48)
-	m.vcache.viewValid = true
 
-	m.feed.blobInterval = time.Microsecond // a frame gap nothing moves in
-	if cmd := m.applyFeedBlobTick(); cmd == nil {
+	// What the next tick is about to draw, worked out on a copy: pretend it is
+	// already the frame on screen, which is what a still frame amounts to.
+	ahead := m
+	dt := m.feedBlobInterval().Seconds()
+	ahead.feed.blobPhase += dt
+	ahead.feed.blobNudge.advance(dt)
+	m.feed.blobPainted = ahead.feedEmptyContent()
+
+	m.vcache.viewValid = true
+	if cmd := m.applyFeedBlobTick(m.feed.blobGen); cmd == nil {
 		t.Fatal("the tick must reschedule itself")
 	}
 	if !m.vcache.viewValid {
 		t.Error("an unchanged frame dropped the memoized screen")
 	}
 
-	m.feed.blobInterval = 2 * time.Second // long enough that the drift shows
-	m.applyFeedBlobTick()
+	// And the next one, which does move something, must drop it.
+	m.applyFeedBlobTick(m.feed.blobGen)
 	if m.vcache.viewValid {
 		t.Error("a frame that moved kept the memoized screen — the drift would freeze")
 	}

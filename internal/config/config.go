@@ -712,15 +712,6 @@ type AnimationsConfig struct {
 	// true; an explicit false shows the first frame only.
 	InlineImages *bool `yaml:"inline_images"`
 
-	// FeedBlobFPS is the frame rate of the empty unread feed's drifting blob
-	// field (internal/ui/feedblobs.go). 0 (or an absent key) means the default,
-	// 5 — the drift runs in minutes, so it needs no more than that. Raise it for
-	// a smoother poke: clicking a blob shoves and swells it, and that motion has
-	// frames to spare. Clamped to 1..60 in internal/ui; the animation only runs
-	// while the empty feed is on screen, and the motion itself is on a wall
-	// clock, so the rate changes the smoothness and nothing else.
-	FeedBlobFPS int `yaml:"feed_blob_fps"`
-
 	// NativeAnimation switches every animated surface above — custom emoji,
 	// inline thumbnails, and the image-preview modal — from client-side
 	// re-transmission on a timer to the Kitty graphics protocol's native

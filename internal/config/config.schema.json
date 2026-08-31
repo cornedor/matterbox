@@ -396,13 +396,6 @@
           "description": "Animate GIF attachments drawn as inline thumbnails (default true), and only while they are on screen. No effect unless image_thumbnails is auto. false shows the first frame only.",
           "default": true
         },
-        "feed_blob_fps": {
-          "type": "integer",
-          "description": "Frame rate of the empty unread feed's drifting blob field (default 5, clamped to 1..60). The drift runs in minutes, so it needs no more; raise it for a smoother poke \u2014 clicking a blob shoves and swells it. The motion is on a wall clock, so the rate changes only the smoothness.",
-          "default": 5,
-          "minimum": 1,
-          "maximum": 60
-        },
         "native_animation": {
           "type": "boolean",
           "description": "Experimental (default false): play custom emoji, inline thumbnails, and the preview modal via the Kitty graphics protocol's native animation frames (a=f/a=a) instead of client-side re-transmission on a timer, so the terminal itself times and loops the frames. In a binary built with the `video` tag it also plays mp4/webm/mov/webp video \u2014 inline thumbnails as short looping previews, and the space-to-preview modal streams the whole clip. Needs animation-frame support beyond the base graphics protocol most Kitty-class terminals implement.",

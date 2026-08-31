@@ -53,7 +53,7 @@ func navModel() Model {
 		input:         ta,
 		filter:        fi,
 		search:        newSearchState(false),
-		feed:          newFeedState(false, 0),
+		feed:          newFeedState(false),
 		showSQL:       true,
 		sql:           newSQLState(false),
 		openChannelID: "c1",

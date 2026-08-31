@@ -4,7 +4,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -81,13 +80,14 @@ type feedState struct {
 
 	// Empty-state animation. blobPhase is how far the blob field is into its
 	// drift, in seconds — a wall clock rather than a frame count, so the frame
-	// rate can change without changing the motion. blobActive guards against
-	// running more than one tick loop, and blobInterval is the frame gap from
-	// animations.feed_blob_fps. All three only matter while the feed has no
-	// entries (see feedblobs.go).
-	blobPhase    float64
-	blobActive   bool
-	blobInterval time.Duration
+	// rate can change (it does: see feedBlobInterval) without changing the
+	// motion. blobActive guards against running more than one tick loop, and
+	// blobGen says which loop is the live one when a poke has started a faster
+	// one. All three only matter while the feed has no entries (see
+	// feedblobs.go).
+	blobPhase  float64
+	blobActive bool
+	blobGen    uint64
 	// blobPainted is the empty-state body currently in the viewport — the blob
 	// field as it was last drawn. At 60 fps the drift moves less than a cell
 	// between frames, so a good share of them come out identical; comparing
@@ -109,12 +109,11 @@ type feedState struct {
 
 // newFeedState constructs the viewport used by the Feed tab. Called once
 // at startup from New(). showMuted is the config's starting answer to "do
-// muted channels belong in the feed?"; M flips it for the session. blobFPS is
-// animations.feed_blob_fps (0 for the default) — the empty state's frame rate.
-func newFeedState(showMuted bool, blobFPS int) feedState {
+// muted channels belong in the feed?"; M flips it for the session.
+func newFeedState(showMuted bool) feedState {
 	vp := viewport.New()
 	vp.SoftWrap = true
-	return feedState{view: vp, showMuted: showMuted, blobInterval: feedBlobIntervalFor(blobFPS)}
+	return feedState{view: vp, showMuted: showMuted}
 }
 
 // feedTarget is a snapshot of one unread channel taken on the UI

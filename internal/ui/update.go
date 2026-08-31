@@ -1457,7 +1457,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyFeedResults(msg)
 
 	case feedBlobTickMsg:
-		return m, m.applyFeedBlobTick()
+		return m, m.applyFeedBlobTick(msg.gen)
 
 	case reactionErrMsg:
 		m.status = "reaction: " + msg.err.Error()

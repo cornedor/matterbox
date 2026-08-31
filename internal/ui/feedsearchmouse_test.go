@@ -26,7 +26,7 @@ const (
 // per-bubble click zones are populated. A messages viewport is wired up so an
 // open (which hops to the channel) doesn't trip over a nil pane.
 func feedMouseModel(n int) Model {
-	fp := newFeedState(false, 0)
+	fp := newFeedState(false)
 	fp.view.SetWidth(76)
 	fp.view.SetHeight(30)
 	mvp := viewport.New()
