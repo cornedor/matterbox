@@ -126,7 +126,7 @@ var ActionIDs = []string{
 // clicks may not need to be clickable.
 var MouseTargets = []string{
 	"tab", "channel", "message", "thread", "feed", "search", "reference",
-	"info", "sql", "composer", "jump_bottom", "feed_mark_all", "toast",
+	"info", "sql", "composer", "jump_bottom", "feed_mark_all", "feed_blobs", "toast",
 	"nothing",
 }
 

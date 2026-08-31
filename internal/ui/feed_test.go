@@ -301,7 +301,7 @@ func mutedFeedModel(showMuted bool) Model {
 		},
 		unread:   map[string]int{"c-muted": 3, "c-loud": 1},
 		mentions: map[string]int{},
-		feed:     newFeedState(showMuted),
+		feed:     newFeedState(showMuted, 0),
 	}
 	m.rebuildMutedChannels()
 	return m

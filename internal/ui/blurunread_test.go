@@ -25,7 +25,7 @@ func blurredDMModel() Model {
 	mvp.SoftWrap = true
 	mvp.SetWidth(80)
 	mvp.SetHeight(40)
-	fp := newFeedState(false)
+	fp := newFeedState(false, 0)
 	fp.view.SetWidth(76)
 	fp.view.SetHeight(30)
 	return Model{

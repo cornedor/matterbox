@@ -1119,6 +1119,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	showDateSeparators := true
 	showSQL := false
 	feedShowMuted := false
+	feedBlobFPS := 0 // 0 = the default frame rate (see feedBlobIntervalFor)
 	mouseEnabled := true
 	attachOnDrop := true
 	imageClick := "preview"
@@ -1186,6 +1187,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		if cfg.FeedShowMuted != nil {
 			feedShowMuted = *cfg.FeedShowMuted
 		}
+		feedBlobFPS = cfg.Animations.FeedBlobFPS
 		if cfg.Mouse != nil {
 			mouseEnabled = *cfg.Mouse
 		}
@@ -1392,7 +1394,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		vimNav:              vimNav,
 		help:                h,
 		search:              newSearchState(st != nil),
-		feed:                newFeedState(feedShowMuted),
+		feed:                newFeedState(feedShowMuted, feedBlobFPS),
 		showSQL:             showSQL,
 		sql:                 newSQLState(st != nil),
 		ltClient:            ltClient,

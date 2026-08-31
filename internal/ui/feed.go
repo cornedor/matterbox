@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -78,11 +79,18 @@ type feedState struct {
 	// for the session by the toggle key (M) or the "> Feed: …" command.
 	showMuted bool
 
-	// Empty-state animation. blobPhase advances each frame to drift the blob
-	// field; blobActive guards against running more than one tick loop. Both
-	// only matter while the feed has no entries (see feedblobs.go).
-	blobPhase  int
-	blobActive bool
+	// Empty-state animation. blobPhase is how far the blob field is into its
+	// drift, in seconds — a wall clock rather than a frame count, so the frame
+	// rate can change without changing the motion. blobActive guards against
+	// running more than one tick loop, and blobInterval is the frame gap from
+	// animations.feed_blob_fps. All three only matter while the feed has no
+	// entries (see feedblobs.go).
+	blobPhase    float64
+	blobActive   bool
+	blobInterval time.Duration
+	// blobNudge is the click-push state: per blob, an offset from its drift
+	// path on a damped spring. Zero when nothing has been poked.
+	blobNudge blobNudges
 
 	// zones maps viewport visual rows to feed-entry indices for mouse
 	// hit-testing; zonesTotal is the rendered list's full height. Both are
@@ -94,11 +102,12 @@ type feedState struct {
 
 // newFeedState constructs the viewport used by the Feed tab. Called once
 // at startup from New(). showMuted is the config's starting answer to "do
-// muted channels belong in the feed?"; M flips it for the session.
-func newFeedState(showMuted bool) feedState {
+// muted channels belong in the feed?"; M flips it for the session. blobFPS is
+// animations.feed_blob_fps (0 for the default) — the empty state's frame rate.
+func newFeedState(showMuted bool, blobFPS int) feedState {
 	vp := viewport.New()
 	vp.SoftWrap = true
-	return feedState{view: vp, showMuted: showMuted}
+	return feedState{view: vp, showMuted: showMuted, blobInterval: feedBlobIntervalFor(blobFPS)}
 }
 
 // feedTarget is a snapshot of one unread channel taken on the UI

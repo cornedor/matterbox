@@ -146,7 +146,7 @@
     },
     "image_click": {
       "type": "string",
-      "description": "What a mouse click on a rendered inline thumbnail does (needs image_thumbnails: auto). \"preview\" (default) opens the in-app full-size preview (same as space); \"open\" hands it to the OS/browser (same as o); \"download\" saves it to download_dir (same as s for attachments); \"off\" leaves the click as a plain message select. Only the thumbnail cells are clickable — not the filename chip or the rest of the message.",
+      "description": "What a mouse click on a rendered inline thumbnail does (needs image_thumbnails: auto). \"preview\" (default) opens the in-app full-size preview (same as space); \"open\" hands it to the OS/browser (same as o); \"download\" saves it to download_dir (same as s for attachments); \"off\" leaves the click as a plain message select. Only the thumbnail cells are clickable \u2014 not the filename chip or the rest of the message.",
       "enum": [
         "preview",
         "open",
@@ -396,6 +396,13 @@
           "description": "Animate GIF attachments drawn as inline thumbnails (default true), and only while they are on screen. No effect unless image_thumbnails is auto. false shows the first frame only.",
           "default": true
         },
+        "feed_blob_fps": {
+          "type": "integer",
+          "description": "Frame rate of the empty unread feed's drifting blob field (default 5, clamped to 1..60). The drift runs in minutes, so it needs no more; raise it for a smoother poke \u2014 clicking a blob shoves and swells it. The motion is on a wall clock, so the rate changes only the smoothness.",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 60
+        },
         "native_animation": {
           "type": "boolean",
           "description": "Experimental (default false): play custom emoji, inline thumbnails, and the preview modal via the Kitty graphics protocol's native animation frames (a=f/a=a) instead of client-side re-transmission on a timer, so the terminal itself times and loops the frames. In a binary built with the `video` tag it also plays mp4/webm/mov/webp video \u2014 inline thumbnails as short looping previews, and the space-to-preview modal streams the whole clip. Needs animation-frame support beyond the base graphics protocol most Kitty-class terminals implement.",
@@ -580,7 +587,7 @@
     },
     "telemetry": {
       "type": "object",
-      "description": "Anonymous usage telemetry and error reporting. Strictly opt-in: off unless enabled is true, and only the first-run setup wizard asks — an existing install is never prompted. See https://matterbox.work/docs/telemetry",
+      "description": "Anonymous usage telemetry and error reporting. Strictly opt-in: off unless enabled is true, and only the first-run setup wizard asks \u2014 an existing install is never prompted. See https://matterbox.work/docs/telemetry",
       "additionalProperties": false,
       "properties": {
         "enabled": {
