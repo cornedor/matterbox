@@ -185,6 +185,10 @@ func (m *Model) preservesFrame(msg tea.Msg) bool {
 	switch msg := msg.(type) {
 	case tea.MouseWheelMsg, imgAnimTickMsg, inlineThumbFramesMsg, previewStreamTickMsg, tea.RawMsg:
 		return true
+	case feedBlobTickMsg:
+		// The blob field's own tick: applyFeedBlobTick drops the memo itself, and
+		// only when the frame it just drew differs from the one on screen.
+		return true
 	case stlFrameMsg:
 		// An error is the one thing a frame can carry that the modal draws.
 		return msg.err == nil

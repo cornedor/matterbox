@@ -522,7 +522,14 @@ func (m *Model) applyFeedBlobTick() tea.Cmd {
 	}
 	m.feed.blobPhase += dt.Seconds()
 	m.feed.blobNudge.advance(dt.Seconds())
+	painted := m.feed.blobPainted
 	m.renderFeedResults()
+	// preservesFrame keeps the memoized screen for this tick by default, since
+	// most frames at a high frame rate redraw the field as it already is. A
+	// frame that did move something drops the memo here.
+	if m.vcache != nil && m.feed.blobPainted != painted {
+		m.vcache.viewValid = false
+	}
 	return feedBlobTickCmd(dt)
 }
 

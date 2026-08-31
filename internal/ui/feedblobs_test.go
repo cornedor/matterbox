@@ -9,6 +9,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/mattermost/mattermost/server/public/model"
 )
 
 var ansiRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
@@ -634,5 +635,45 @@ func TestFeedBlobPeakMatchesSpan(t *testing.T) {
 	}
 	if math.Abs(swell-blobSizeSpan) > 0.15*blobSizeSpan {
 		t.Errorf("peak swell %.2f, want blobSizeSpan's %.2f", swell, blobSizeSpan)
+	}
+}
+
+// TestFeedBlobTickKeepsFrameWhenStill: at a high frame rate most ticks redraw
+// the field exactly as it already is. Those must leave the memoized screen (and
+// the viewport) alone — repainting the same bytes 60 times a second is the
+// whole cost this animation could have had.
+func TestFeedBlobTickKeepsFrameWhenStill(t *testing.T) {
+	m := benchBlobModel(160, 48)
+	m.vcache.viewValid = true
+
+	m.feed.blobInterval = time.Microsecond // a frame gap nothing moves in
+	if cmd := m.applyFeedBlobTick(); cmd == nil {
+		t.Fatal("the tick must reschedule itself")
+	}
+	if !m.vcache.viewValid {
+		t.Error("an unchanged frame dropped the memoized screen")
+	}
+
+	m.feed.blobInterval = 2 * time.Second // long enough that the drift shows
+	m.applyFeedBlobTick()
+	if m.vcache.viewValid {
+		t.Error("a frame that moved kept the memoized screen — the drift would freeze")
+	}
+}
+
+// TestFeedBlobPaintedClearedOffEmptyState: the "already on screen" memo speaks
+// only for the empty-state art. As soon as the feed has something to list, it
+// has to be cleared, or a later empty frame that happens to match it would be
+// skipped over content that is no longer the blob field.
+func TestFeedBlobPaintedClearedOffEmptyState(t *testing.T) {
+	m := benchBlobModel(160, 48)
+	m.renderFeedResults()
+	if m.feed.blobPainted == "" {
+		t.Fatal("the empty state should have recorded what it painted")
+	}
+	m.feed.entries = []feedEntry{{channelID: "c1", unread: []*model.Post{{Id: "p1", Message: "hi"}}}}
+	m.renderFeedResults()
+	if m.feed.blobPainted != "" {
+		t.Error("a listed feed left the blob-field memo armed")
 	}
 }

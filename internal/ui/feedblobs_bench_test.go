@@ -7,13 +7,14 @@ import (
 	tea "charm.land/bubbletea/v2"
 )
 
-// benchBlobModel is an empty Feed tab at a terminal size, i.e. exactly the
-// state the drifting blob field animates in.
+// benchBlobModel is an empty Feed tab at a terminal size, animating at the top
+// configurable frame rate — the state the drifting blob field is in when it
+// costs the most.
 func benchBlobModel(w, h int) Model {
 	m := newTestModel()
 	m.vcache = &viewCache{}
 	m.width, m.height = w, h
-	fs := newFeedState(false, 0)
+	fs := newFeedState(false, feedBlobFPSMax)
 	fs.built = true
 	m.feed = fs
 	gotoTab(&m, tabFeed)

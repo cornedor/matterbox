@@ -88,6 +88,13 @@ type feedState struct {
 	blobPhase    float64
 	blobActive   bool
 	blobInterval time.Duration
+	// blobPainted is the empty-state body currently in the viewport — the blob
+	// field as it was last drawn. At 60 fps the drift moves less than a cell
+	// between frames, so a good share of them come out identical; comparing
+	// against this is what lets those frames leave the screen (and the frame
+	// memo) alone instead of repainting it with itself. Empty whenever the
+	// viewport holds anything else.
+	blobPainted string
 	// blobNudge is the click-push state: per blob, an offset from its drift
 	// path on a damped spring. Zero when nothing has been poked.
 	blobNudge blobNudges
@@ -781,6 +788,8 @@ func (m *Model) renderFeedResults() {
 	// Non-list states (error / splash / loading) carry no clickable bubbles;
 	// the bubble loop below repopulates these when there are entries.
 	m.feed.zones, m.feed.zonesTotal = nil, 0
+	painted := m.feed.blobPainted
+	m.feed.blobPainted = ""
 	if m.feed.err != "" {
 		m.feed.view.SetContent(
 			lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render("  feed error: " + m.feed.err),
@@ -794,8 +803,14 @@ func (m *Model) renderFeedResults() {
 			return
 		}
 		// Nothing unread: the calm drifting blob field (animation armed
-		// by maybeStartFeedBlobs).
-		m.feed.view.SetContent(m.feedEmptyContent())
+		// by maybeStartFeedBlobs). An animation frame that came out the same as
+		// the one on screen is not put there again — SetContent re-splits and
+		// re-measures the whole canvas.
+		content := m.feedEmptyContent()
+		m.feed.blobPainted = content
+		if content != painted {
+			m.feed.view.SetContent(content)
+		}
 		return
 	}
 
