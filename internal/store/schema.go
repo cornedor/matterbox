@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS posts (
 
 CREATE INDEX IF NOT EXISTS idx_posts_channel_createat ON posts(channel_id, create_at);
 CREATE INDEX IF NOT EXISTS idx_posts_root              ON posts(root_id);
+CREATE INDEX IF NOT EXISTS idx_posts_user_createat     ON posts(user_id, create_at);
 `
 
 // triggersSQL keeps posts_fts in sync with posts and archives prior versions of
@@ -190,14 +191,27 @@ func (s *Store) ensureFTSTokenizer() error {
 	// 'rebuild' repopulates the index from the content table (posts.message)
 	// using the new tokenizer; the sync triggers reference posts_fts by name
 	// and keep working across the drop/recreate.
+	//
+	// All three run in one transaction: a crash between the drop and the
+	// rebuild would otherwise leave an empty index whose DDL already matches
+	// ftsTokenizer, so every later Open skips the rebuild and search stays
+	// silently dead. SQLite's DDL is transactional, so the rollback is real.
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("rebuild posts_fts: begin tx: %w", err)
+	}
 	for _, q := range []string{
 		`DROP TABLE posts_fts;`,
 		ftsCreateSQL,
 		`INSERT INTO posts_fts(posts_fts) VALUES('rebuild');`,
 	} {
-		if _, err := s.db.Exec(q); err != nil {
+		if _, err := tx.Exec(q); err != nil {
+			_ = tx.Rollback()
 			return fmt.Errorf("rebuild posts_fts: %w", err)
 		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("rebuild posts_fts: commit: %w", err)
 	}
 	return nil
 }

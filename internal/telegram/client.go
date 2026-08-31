@@ -38,6 +38,12 @@ func New(token string) *Client {
 	return &Client{token: token, base: apiBase, http: &http.Client{}}
 }
 
+// NewWithBase is New against a different API root, so a caller can point the
+// client at a test server (or a Bot API proxy) instead of api.telegram.org.
+func NewWithBase(token, base string) *Client {
+	return &Client{token: token, base: strings.TrimSuffix(base, "/"), http: &http.Client{}}
+}
+
 // Button is one inline-keyboard button: a label and the callback_data the bot
 // receives when it is tapped (Telegram caps callback_data at 64 bytes).
 type Button struct {
