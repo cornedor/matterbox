@@ -677,3 +677,19 @@ func TestFeedBlobPaintedClearedOffEmptyState(t *testing.T) {
 		t.Error("a listed feed left the blob-field memo armed")
 	}
 }
+
+// TestBlobTickSkipsContentScans: the empty feed's frame must not drag the
+// per-event "what's new?" scans along at 60 fps — and every other message
+// must still get them, or new senders and attachments would sit unresolved.
+func TestBlobTickSkipsContentScans(t *testing.T) {
+	if !introducesNothing(feedBlobTickMsg{}) {
+		t.Error("the blob tick should be exempt from the content scans")
+	}
+	for _, msg := range []tea.Msg{
+		tea.KeyPressMsg{}, imgAnimTickMsg{}, wheelFlushMsg{}, tea.WindowSizeMsg{},
+	} {
+		if introducesNothing(msg) {
+			t.Errorf("%T must not be exempt from the content scans", msg)
+		}
+	}
+}
