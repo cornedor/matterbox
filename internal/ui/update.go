@@ -342,6 +342,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.vcache != nil {
 				m.vcache.sidebar = sidebarCache{}
 				m.vcache.msgsUpper = scrollbackCache{}
+				m.vcache.tabs = tabsCache{}
+				m.vcache.help = helpCache{}
 				m.vcache.viewValid = false
 			}
 			m.renderAllPanes()

@@ -62,6 +62,11 @@ type viewCache struct {
 	// by renderFeedPane and read back by the mouse layer. Cleared each render
 	// alongside jumpZone, so another tab can't inherit the target.
 	feedBtnZone rectZone
+	// tabs memoizes the rendered tab strip, which is invariant between most
+	// frames and was the single most expensive part of a blob-animation frame
+	// once the panes stopped re-measuring themselves (17% of the process's CPU
+	// in a live profile at 60 fps).
+	tabs tabsCache
 	// help memoizes the rendered footer help line. It is rebuilt from the
 	// bindings on every frame, and an animated pane (the empty feed's blob
 	// field) redraws the whole screen up to 60 times a second for a line that
@@ -266,5 +271,16 @@ type helpCache struct {
 	fp    uint64
 	width int
 	out   string
+	valid bool
+}
+
+// tabsCache holds the last rendered tab strip and the click zones that came
+// with it, keyed by everything the strip is drawn from: the tabs themselves,
+// which one is active, the Feed badge counts, the hovered tab, the width, and
+// the border columns the bottom rule has to join.
+type tabsCache struct {
+	fp    uint64
+	out   string
+	zones []tabZone
 	valid bool
 }

@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/binary"
 	"fmt"
 	"hash/fnv"
 	"image/color"
@@ -2446,14 +2447,64 @@ func replyWord(n int) string {
 // border starts on the row directly below it; the strip's bottom rule grows a
 // down arm at each so the tabs and the body read as one frame (see ruleLine).
 func (m *Model) renderTeamTabs(joins []int) string {
+	// Pre-compute distinct counts for the Feed tab badge; the memo is keyed on
+	// them, so they are needed either way.
+	unreadCh, mentionCh := m.feedBadgeCounts()
+	if m.vcache == nil {
+		return m.buildTeamTabs(joins, unreadCh, mentionCh)
+	}
+	c := &m.vcache.tabs
+	fp := m.tabsFingerprint(joins, unreadCh, mentionCh)
+	if c.valid && c.fp == fp {
+		// The strip was not re-laid-out, so its click zones weren't either.
+		m.vcache.tabZones = c.zones
+		return c.out
+	}
+	out := m.buildTeamTabs(joins, unreadCh, mentionCh)
+	*c = tabsCache{fp: fp, out: out, zones: m.vcache.tabZones, valid: true}
+	return out
+}
+
+// tabsFingerprint hashes what the tab strip is made of. Two frames with the
+// same fingerprint draw the same strip, down to the bytes.
+func (m *Model) tabsFingerprint(joins []int, unreadCh, mentionCh int) uint64 {
+	h := fnv.New64a()
+	var buf [8]byte
+	put := func(n int) {
+		binary.LittleEndian.PutUint64(buf[:], uint64(n))
+		h.Write(buf[:])
+	}
+	put(m.width)
+	put(m.teamIdx)
+	put(unreadCh)
+	put(mentionCh)
+	hovered := -1
+	if m.hover.zone == hitTab {
+		hovered = m.hover.idx
+	}
+	put(hovered)
+	for _, c := range joins {
+		put(c)
+	}
+	maxIdx := m.maxTeamIdx()
+	put(maxIdx)
+	for i := 0; i <= maxIdx; i++ {
+		kind, id, name := m.tabAt(i)
+		put(int(kind))
+		io.WriteString(h, id)
+		io.WriteString(h, "\x1f")
+		io.WriteString(h, name)
+		io.WriteString(h, "\x1f")
+	}
+	return h.Sum64()
+}
+
+func (m *Model) buildTeamTabs(joins []int, unreadCh, mentionCh int) string {
 	if len(m.teams) == 0 && !m.hasDMs {
 		// Reserve the same vertical space so body math stays consistent.
 		blank := strings.Repeat("\n", tabsHeight-1)
 		return footerStyle.Render(" (no teams) ") + blank
 	}
-	// Pre-compute distinct counts for the Feed tab badge.
-	unreadCh, mentionCh := m.feedBadgeCounts()
-
 	maxIdx := m.maxTeamIdx()
 
 	// The tab strip is always navigable (ctrl-←/→ from any focus), so the
