@@ -291,6 +291,11 @@ type Model struct {
 	// been marked read. While false, live posts arriving in the channel do not
 	// mark it read early — the pending dwell tick covers them.
 	viewSettled bool
+	// markUnreadHold is the channel the user marked unread by hand, held so the
+	// dwell (and the next live post, and a refocus) can't immediately mark it
+	// read again while it's still open. Cleared on the next channel enter. See
+	// markunread.go.
+	markUnreadHold string
 
 	// unreadBoundary is the LastViewedAt timestamp captured when the open
 	// channel was entered with unread messages (0 when opened already-read).
@@ -1777,7 +1782,7 @@ func (m *Model) markChannelsViewed(ids []string) tea.Cmd {
 // the other clients and the listen daemon's read-check otherwise. Focus
 // returning catches up (see applyTerminalFocus).
 func (m *Model) liveMarkRead(channelID string) tea.Cmd {
-	if !m.viewSettled || !m.terminalFocused() {
+	if !m.viewSettled || !m.terminalFocused() || m.markReadHeld(channelID) {
 		return nil
 	}
 	return m.markChannelViewed(channelID)
@@ -1805,7 +1810,7 @@ func (m *Model) clearUnread(channelID string) {
 // daemon's read-check) you'd read a message you never saw. Focus returning
 // re-arms this — see applyTerminalFocus.
 func (m *Model) scheduleMarkViewed(channelID string) tea.Cmd {
-	if !m.terminalFocused() {
+	if !m.terminalFocused() || m.markReadHeld(channelID) {
 		return nil
 	}
 	if m.markReadDelay <= 0 {
@@ -2878,6 +2883,8 @@ func (m *Model) enterChannel(channelID, via string) tea.Cmd {
 	m.unreadBoundary = 0
 	m.unreadDividerID = ""
 	m.unreadDividerResolved = false
+	// A hand-made unread only holds while its channel stays open.
+	m.markUnreadHold = ""
 	// A fresh channel view starts pinned to its newest message — never inheriting
 	// the previous channel's mouse free-scroll offset. handleKey already clears
 	// this before keyboard nav, but the mouse open paths (tab/sidebar clicks,

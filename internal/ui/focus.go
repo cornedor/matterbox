@@ -68,6 +68,9 @@ func (m *Model) applyTerminalFocus(focused bool) tea.Cmd {
 	if !m.isCurrentChannel(id) {
 		return nil
 	}
+	if m.markReadHeld(id) {
+		return nil // marked unread by hand; refocusing must not undo it
+	}
 	if !m.viewSettled {
 		return m.scheduleMarkViewed(id)
 	}

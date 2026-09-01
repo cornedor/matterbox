@@ -909,10 +909,10 @@ channel name, which is never sent.
 `debug_key_inspector`, `feed_hide_muted`, `feed_mark_all_read`,
 `feed_show_muted`, `gorillas`, `gorillas_hotseat`, `image_click`,
 `index_channel`, `join_channel`, `keys`, `kurve`, `kurve_hotseat`,
-`message_stats`, `rejoin_game`, `saved_messages`, `sidebar_all_channels`,
-`sidebar_unread_channels`, `start_group_dm`, `status_away`,
-`status_custom_clear`, `status_custom_set`, `status_dnd`, `status_offline`,
-`status_online`, `summarize`, `typing_animation`
+`mark_unread_post`, `message_stats`, `rejoin_game`, `saved_messages`,
+`sidebar_all_channels`, `sidebar_unread_channels`, `start_group_dm`,
+`status_away`, `status_custom_clear`, `status_custom_set`, `status_dnd`,
+`status_offline`, `status_online`, `summarize`, `typing_animation`
 
 ### Slash commands
 

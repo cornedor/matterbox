@@ -404,6 +404,23 @@ func (c *Client) ViewChannel(ctx context.Context, userID, channelID string) erro
 	return nil
 }
 
+// SetPostUnread rewinds the channel's read marker to just before postID, so
+// that post and everything after it count as unread again (POST
+// /users/{id}/posts/{id}/set_unread). There is no channel-level endpoint: the
+// web client marks a whole channel unread by pointing this at its newest post,
+// and so do we.
+//
+// collapsed_threads_supported is false on purpose. matterbox draws thread
+// replies inline in the transcript and counts them in its badges, so the
+// channel-wide rewind is the semantics that match what's on screen; asking for
+// the CRT behaviour would rewind a thread instead.
+func (c *Client) SetPostUnread(ctx context.Context, userID, postID string) error {
+	if _, err := c.c.SetPostUnread(ctx, userID, postID, false); err != nil {
+		return fmt.Errorf("set post unread: %w", err)
+	}
+	return nil
+}
+
 // SetChannelMuted mutes or unmutes a channel for the given user by
 // patching its member notify props (mark_unread = mention when muted,
 // all when not). The server broadcasts a `channel_member_updated` WS
