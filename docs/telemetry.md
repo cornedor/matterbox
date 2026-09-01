@@ -876,19 +876,20 @@ which is how a binding nobody uses becomes visible.
 `apply_open`, `attachment_remove`, `bottom`, `cancel_edit`, `channel_info`,
 `channel_next`, `channel_prev`, `clear_filter`, `clear_input`, `close_thread`,
 `collapse_message`, `command_picker`, `compose`, `confirm_no`, `confirm_yes`,
-`copy_code_block`, `copy_markdown`, `delete_post`, `down`,
-`download_attachment`, `edit_history`, `edit_post`, `feed_mark_all_read`,
-`feed_reply`, `feed_toggle_muted`, `filter`, `focus_next`, `focus_prev`,
-`goto_dm`, `goto_feed`, `goto_parent`, `goto_team`, `help`, `input_down`,
-`input_up`, `jira_assignee`, `jira_comment`, `jira_points`, `jira_priority`,
-`jira_reply`, `jira_status`, `leave_input`, `left`, `load_team`, `mark_read`,
-`move_team_left`, `move_team_right`, `newline`, `next_match`,
-`open_attachment`, `open_channel`, `open_reference`, `open_thread`,
-`page_down`, `page_up`, `paste`, `prev_match`, `prev_own_message`,
-`preview_image`, `quit`, `react`, `redo`, `ref_approve`, `ref_jobs`,
-`ref_merge`, `refresh`, `reply_in_thread`, `right`, `search_all`,
-`search_here`, `send`, `sheet_remove`, `switcher`, `team_next`, `team_prev`,
-`top`, `undo`, `up`
+`copy_code_block`, `copy_markdown`, `copy_selection`, `cut_selection`,
+`delete_post`, `down`, `download_attachment`, `edit_history`, `edit_post`,
+`feed_mark_all_read`, `feed_reply`, `feed_toggle_muted`, `filter`,
+`focus_next`, `focus_prev`, `goto_dm`, `goto_feed`, `goto_parent`, `goto_team`,
+`help`, `input_down`, `input_up`, `jira_assignee`, `jira_comment`,
+`jira_points`, `jira_priority`, `jira_reply`, `jira_status`, `leave_input`,
+`left`, `load_team`, `mark_read`, `move_team_left`, `move_team_right`,
+`newline`, `next_match`, `open_attachment`, `open_channel`, `open_reference`,
+`open_thread`, `page_down`, `page_up`, `paste`, `prev_match`,
+`prev_own_message`, `preview_image`, `quit`, `react`, `redo`, `ref_approve`,
+`ref_jobs`, `ref_merge`, `refresh`, `reply_in_thread`, `right`, `search_all`,
+`search_here`, `select_down`, `select_left`, `select_right`, `select_up`,
+`send`, `sheet_remove`, `switcher`, `team_next`, `team_prev`, `top`, `undo`,
+`up`
 
 ### Mouse targets
 

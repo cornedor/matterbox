@@ -132,6 +132,16 @@ type keyMap struct {
 	Undo       key.Binding
 	Redo       key.Binding
 
+	// Composer selection: shift+arrows grow it, ctrl+c / ctrl+x take it. The
+	// Select* bindings are handed to the editor's own keymap (see New), the
+	// copy/cut pair is dispatched in handleInputKey.
+	SelectLeft    key.Binding
+	SelectRight   key.Binding
+	SelectUp      key.Binding
+	SelectDown    key.Binding
+	CopySelection key.Binding
+	CutSelection  key.Binding
+
 	// Global
 	Switcher      key.Binding
 	CommandPicker key.Binding
@@ -287,6 +297,12 @@ var actionDefs = []actionDef{
 	{id: "leave_input", field: func(k *keyMap) *key.Binding { return &k.LeaveInput }, keys: []string{"esc"}, desc: "leave"},
 	{id: "clear_input", field: func(k *keyMap) *key.Binding { return &k.ClearInput }, keys: []string{"ctrl+g"}, desc: "clear composer"},
 	{id: "undo", field: func(k *keyMap) *key.Binding { return &k.Undo }, keys: []string{"ctrl+z"}, desc: "undo"},
+	{id: "select_left", field: func(k *keyMap) *key.Binding { return &k.SelectLeft }, keys: []string{"shift+left"}, desc: "select left"},
+	{id: "select_right", field: func(k *keyMap) *key.Binding { return &k.SelectRight }, keys: []string{"shift+right"}, desc: "select right"},
+	{id: "select_up", field: func(k *keyMap) *key.Binding { return &k.SelectUp }, keys: []string{"shift+up"}, desc: "select up"},
+	{id: "select_down", field: func(k *keyMap) *key.Binding { return &k.SelectDown }, keys: []string{"shift+down"}, desc: "select down"},
+	{id: "copy_selection", field: func(k *keyMap) *key.Binding { return &k.CopySelection }, keys: []string{"ctrl+c"}, desc: "copy selection"},
+	{id: "cut_selection", field: func(k *keyMap) *key.Binding { return &k.CutSelection }, keys: []string{"ctrl+x"}, desc: "cut selection"},
 	{id: "redo", field: func(k *keyMap) *key.Binding { return &k.Redo }, keys: []string{"ctrl+y", "ctrl+shift+z"}, desc: "redo"},
 	{id: "apply_open", field: func(k *keyMap) *key.Binding { return &k.ApplyOpen }, keys: []string{"enter"}, desc: "apply + open"},
 	{id: "cancel_edit", field: func(k *keyMap) *key.Binding { return &k.CancelEdit }, keys: []string{"esc"}, desc: "cancel"},

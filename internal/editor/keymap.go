@@ -28,6 +28,13 @@ type KeyMap struct {
 	// composer, tab still cycles focus — see ui.handleInputKey).
 	NextTableCell key.Binding
 	PrevTableCell key.Binding
+	// Select* extend (or start) a selection instead of moving the caret alone:
+	// the anchor stays where it was and the caret moves, so shift+←/→/↑/↓
+	// grows the selection the mouse would otherwise have to draw.
+	SelectLeft  key.Binding
+	SelectRight key.Binding
+	SelectUp    key.Binding
+	SelectDown  key.Binding
 }
 
 // DefaultKeyMap mirrors textarea's default bindings for the actions matterbox
@@ -54,5 +61,9 @@ func DefaultKeyMap() KeyMap {
 		InsertNewline:           key.NewBinding(key.WithKeys("enter", "ctrl+m")),
 		NextTableCell:           key.NewBinding(key.WithKeys("tab")),
 		PrevTableCell:           key.NewBinding(key.WithKeys("shift+tab")),
+		SelectLeft:              key.NewBinding(key.WithKeys("shift+left")),
+		SelectRight:             key.NewBinding(key.WithKeys("shift+right")),
+		SelectUp:                key.NewBinding(key.WithKeys("shift+up")),
+		SelectDown:              key.NewBinding(key.WithKeys("shift+down")),
 	}
 }

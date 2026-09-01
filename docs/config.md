@@ -217,7 +217,9 @@ scrollable cheatsheet. The action ids, by layer:
 - **Search** — `search_here`, `search_all`, `next_match`, `prev_match`
 - **Feed** — `feed_mark_all_read`, `feed_toggle_muted`, `feed_reply`, `refresh`
 - **Composer** — `compose`, `send`, `newline`, `leave_input`, `clear_input`,
-  `undo`, `redo`, `paste`, `attachment_remove`, `apply_open`, `cancel_edit`
+  `undo`, `redo`, `paste`, `attachment_remove`, `apply_open`, `cancel_edit`,
+  `select_left`, `select_right`, `select_up`, `select_down`, `copy_selection`,
+  `cut_selection`
 - **Reference panel** — `jira_status`, `jira_priority`, `jira_points`,
   `jira_assignee`, `jira_comment`, `jira_reply`, `gitlab_approve`,
   `gitlab_merge`, `gitlab_jobs`

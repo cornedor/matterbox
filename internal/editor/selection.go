@@ -105,7 +105,7 @@ func (m *Model) MoveCursorToVisual(vrow, vcol int) {
 
 // BeginSelection places the caret at the visual position and drops the anchor
 // there, arming a character-granular drag. The selection stays empty until
-// ExtendSelectionToVisual moves the caret off the anchor.
+// the caret moves off the anchor.
 func (m *Model) BeginSelection(vrow, vcol int) {
 	m.caretToVisual(vrow, vcol)
 	m.refreshDesired()
@@ -140,6 +140,21 @@ func (m *Model) setUnitSelection(g selGran, lo, hi int) {
 	m.SetCursorOffset(hi)
 	m.selActive = hi > lo
 	m.refreshDesired()
+}
+
+// selectMove runs a caret movement as a selection extend: with no selection
+// live it first drops the anchor at the caret, so the first shift+arrow starts
+// one. Keyboard extension is always character-granular — a word/line selection
+// from a double/triple-click keeps its ends but stops snapping once the
+// keyboard takes over.
+func (m *Model) selectMove(move func()) {
+	if !m.selActive {
+		m.selAnchor = m.CursorOffset()
+	}
+	m.selGran = granChar
+	m.selAnchorLo, m.selAnchorHi = m.selAnchor, m.selAnchor
+	move()
+	m.selActive = m.CursorOffset() != m.selAnchor
 }
 
 // ExtendSelectionToVisual moves the selection's moving end to the visual

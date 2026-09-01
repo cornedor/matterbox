@@ -20,6 +20,23 @@ func (m Model) Update(msg tea.Msg) (Model, tea.Cmd) {
 
 func (m *Model) handleKey(msg tea.KeyPressMsg) {
 	k := m.KeyMap
+	// Shift-arrows extend a selection rather than moving the caret alone, so
+	// they're checked before the collapse/replace block below — which would
+	// otherwise drop the selection this keystroke is trying to grow.
+	switch {
+	case key.Matches(msg, k.SelectLeft):
+		m.selectMove(m.characterLeft)
+		return
+	case key.Matches(msg, k.SelectRight):
+		m.selectMove(m.characterRight)
+		return
+	case key.Matches(msg, k.SelectUp):
+		m.selectMove(m.cursorUp)
+		return
+	case key.Matches(msg, k.SelectDown):
+		m.selectMove(m.cursorDown)
+		return
+	}
 	// A live selection turns the next key into a selection action: a delete key
 	// removes it; left/right collapse to the matching edge; any other navigation
 	// drops it and proceeds. Self-inserting keys (and newline) fall through to

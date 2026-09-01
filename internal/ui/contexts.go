@@ -438,6 +438,8 @@ var keyContexts = []keyContext{
 				m.keys.Send, m.keys.NewLine, m.keys.Paste, m.keys.LeaveInput,
 				m.keys.ClearInput, m.keys.Undo, m.keys.Redo, m.keys.Tab, m.keys.ShiftTab,
 				m.keys.InputUp, m.keys.InputDown,
+				m.keys.SelectLeft, m.keys.SelectRight, m.keys.SelectUp, m.keys.SelectDown,
+				m.keys.CopySelection, m.keys.CutSelection,
 			}
 			// The grammar popup's key only exists when the checker is on.
 			if m.grammarEnabled() {

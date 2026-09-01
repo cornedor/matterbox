@@ -3187,6 +3187,16 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch {
+	// Copy / cut act on a live composer selection (drawn with the mouse or with
+	// shift+arrows) and only then: with nothing selected ctrl+c still quits,
+	// which is what a terminal app is expected to do.
+	case key.Matches(msg, m.keys.CopySelection) && m.input.HasSelection():
+		return m, m.copyText(m.input.SelectedText(), "selection")
+	case key.Matches(msg, m.keys.CutSelection) && m.input.HasSelection():
+		text := m.input.SelectedText()
+		before := m.input.Value()
+		m.input.DeleteSelection()
+		return m, tea.Batch(m.copyText(text, "selection"), m.afterComposerEdit(before))
 	case msg.String() == "ctrl+c":
 		return m, tea.Quit
 	case key.Matches(msg, m.keys.Paste):
@@ -3405,6 +3415,15 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	before := m.input.Value()
 	m.input, cmd = m.input.Update(msg)
+	return m, tea.Batch(cmd, m.afterComposerEdit(before))
+}
+
+// afterComposerEdit is the bookkeeping every composer edit needs once the
+// buffer may have changed: undo snapshot, typing ping, grammar re-check, draft
+// save, the autocomplete popups and the input height. `before` is the draft as
+// it stood before the edit — an unchanged value skips the typing/undo/draft
+// work.
+func (m *Model) afterComposerEdit(before string) tea.Cmd {
 	// Announce typing only when the keystroke actually changed the draft,
 	// so pure navigation (arrows, ctrl+a/e) doesn't ping the channel and an
 	// empty composer never claims someone's typing. The send is throttled.
@@ -3433,7 +3452,7 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	m.syncComposerDecorations()
 	cmdHlCmd := m.updateCommandHighlight()
 	m.syncInputHeight()
-	return m, tea.Batch(cmd, mentionCmd, slashCmd, cmdHlCmd, typingCmd, grammarCmd, draftCmd)
+	return tea.Batch(mentionCmd, slashCmd, cmdHlCmd, typingCmd, grammarCmd, draftCmd)
 }
 
 // handleFilterKey owns keystrokes while the channel filter is open (f). The

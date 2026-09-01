@@ -105,7 +105,7 @@ var ActionIDs = []string{
 	"channel_next", "channel_prev", "clear_filter", "clear_input",
 	"close_thread", "collapse_message", "command_picker", "compose",
 	"confirm_no", "confirm_yes", "copy_code_block", "copy_markdown",
-	"delete_post", "down", "download_attachment", "edit_history", "edit_post",
+	"copy_selection", "cut_selection", "delete_post", "down", "download_attachment", "edit_history", "edit_post",
 	"feed_mark_all_read", "feed_reply", "feed_toggle_muted", "filter",
 	"focus_next", "focus_prev", "goto_dm", "goto_feed", "goto_parent",
 	"goto_team", "help", "input_down", "input_up", "jira_assignee",
@@ -115,7 +115,8 @@ var ActionIDs = []string{
 	"open_channel", "open_reference", "open_thread", "page_down", "page_up",
 	"paste", "preview_image", "prev_match", "prev_own_message", "quit", "react",
 	"redo", "ref_approve", "ref_jobs", "ref_merge", "refresh",
-	"reply_in_thread", "right", "search_all", "search_here", "send",
+	"reply_in_thread", "right", "search_all", "search_here",
+	"select_down", "select_left", "select_right", "select_up", "send",
 	"sheet_remove", "switcher", "team_next", "team_prev", "top", "undo", "up",
 }
 

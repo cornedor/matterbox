@@ -1313,6 +1313,23 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		km = newKeyMap(navModifier)
 	}
 
+	// Shift-arrow selection in the composer, from the (rebindable) actions —
+	// the editor does the extending, the keymap decides on which keys. Skipped
+	// when the sidebar nav is itself on shift+arrows: those never reach the
+	// composer, so binding them here would only advertise a key that does
+	// nothing.
+	if prefix, enabled := navMod(navModifier); !enabled || prefix != "shift+" {
+		ta.KeyMap.SelectLeft = km.SelectLeft
+		ta.KeyMap.SelectRight = km.SelectRight
+		ta.KeyMap.SelectUp = km.SelectUp
+		ta.KeyMap.SelectDown = km.SelectDown
+	} else {
+		ta.KeyMap.SelectLeft = key.Binding{}
+		ta.KeyMap.SelectRight = key.Binding{}
+		ta.KeyMap.SelectUp = key.Binding{}
+		ta.KeyMap.SelectDown = key.Binding{}
+	}
+
 	// A folded message shows roughly two-thirds of its threshold height by
 	// default, so the preview is generous enough to recognise the message while
 	// still saving most of the screen; collapse_preview_lines overrides that.
