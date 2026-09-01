@@ -30,11 +30,15 @@ import (
 // infoMode selects the panel's content. The media view is a drill-down inside
 // the same viewport, not a second pane: it reuses the whole target machinery
 // below, so selection, scrolling, hover and click resolution work unchanged.
+// Profile mode is a sibling view in the same pane — a user's profile instead
+// of the channel facts, raised by the "> View profile" palette entry (see
+// userprofile.go).
 type infoMode int
 
 const (
 	infoModeMain infoMode = iota
 	infoModeMedia
+	infoModeProfile
 )
 
 // infoTargetKind distinguishes the activatable things in the panel: a link
@@ -107,7 +111,9 @@ func (m *Model) raiseChannelInfo() tea.Cmd {
 		m.status = "no channel open"
 		return nil
 	}
-	if m.infoOpen && m.infoChannelID == c.Id {
+	// A second press closes the panel — unless it's showing a profile, in
+	// which case the channel-info key means "show me the channel instead".
+	if m.infoOpen && m.infoChannelID == c.Id && m.infoMode != infoModeProfile {
 		m.closeInfo()
 		return nil
 	}
@@ -134,6 +140,7 @@ func (m *Model) raiseChannelInfo() tea.Cmd {
 	m.infoMediaLoaded = false
 	m.infoMediaTruncated = false
 	m.infoMediaErr = nil
+	m.resetInfoProfile()
 	m.infoTargets = nil
 	m.infoIdx = -1
 	m.infoHoverIdx = -1
@@ -159,6 +166,7 @@ func (m *Model) closeInfo() {
 	m.infoMembers = nil
 	m.infoPinned = nil
 	m.infoMedia = nil
+	m.resetInfoProfile()
 	m.infoTargets = nil
 	m.infoIdx = -1
 	m.infoHoverIdx = -1
@@ -333,9 +341,12 @@ func (m *Model) renderInfo() {
 
 	var lines []string
 	var targets []infoTarget
-	if m.infoMode == infoModeMedia {
+	switch m.infoMode {
+	case infoModeMedia:
 		lines, targets = m.infoMediaContent()
-	} else {
+	case infoModeProfile:
+		lines, targets = m.infoProfileContent()
+	default:
 		lines, targets = m.infoMainContent(c, width)
 	}
 
@@ -1076,14 +1087,24 @@ func (m *Model) renderInfoPane(height, width int) string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, box, rightBorder)
 }
 
-// infoPaneTitle is the pane heading: the channel's label, truncated to width.
+// infoPaneTitle is the pane heading: the channel's label (or the profile's
+// @username), truncated to width.
 func (m *Model) infoPaneTitle(width int) string {
 	head := "Info"
-	if m.infoMode == infoModeMedia {
+	switch m.infoMode {
+	case infoModeMedia:
 		head = "Media"
+	case infoModeProfile:
+		head = "Profile"
 	}
 	title := head
-	if c := m.findChannel(m.infoChannelID); c != nil {
+	if m.infoMode == infoModeProfile {
+		if m.infoProfile != nil {
+			title = head + " · @" + m.infoProfile.Username
+		} else if name := m.userNames[m.infoProfileUserID]; name != "" {
+			title = head + " · @" + name
+		}
+	} else if c := m.findChannel(m.infoChannelID); c != nil {
 		title = head + " · " + m.channelLabel(c)
 	}
 	if width > 2 {

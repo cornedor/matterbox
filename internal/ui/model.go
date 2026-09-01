@@ -664,6 +664,13 @@ type Model struct {
 	infoMediaTruncated bool
 	infoMediaErr       error
 
+	// Profile mode (infoModeProfile): the user the panel describes, fetched
+	// fresh when the "> View profile" palette entry raises it. See userprofile.go.
+	infoProfileUserID string
+	infoProfile       *model.User
+	infoProfileLoaded bool
+	infoProfileErr    error
+
 	// editingPostID is non-empty while the user is editing an existing
 	// post: the textarea is preloaded with that post's message and Send
 	// patches it on the server instead of creating a new post. Cleared

@@ -966,6 +966,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		nm, cmd := m.handleChangeStatusLoaded(msg)
 		return nm, cmd
 
+	case userProfileMsg:
+		m.applyUserProfile(msg)
+		return m, nil
+
 	case errMsg:
 		m.loading = false
 		m.loadingOlder = false // a failed fetch must not wedge the wheel guards
