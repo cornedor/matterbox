@@ -12,13 +12,28 @@ import (
 	"matterbox/internal/telemetry"
 )
 
-// profileModel is a renderable channel "c" with one post by "other", ready for
-// the view-profile path.
-func profileModel() Model {
-	m := pagingModel([]*model.Post{pPost("a", 1000, "other")}, 0)
-	m.channels = map[string][]*model.Channel{
-		"t1": {{Id: "c", Name: "general", DisplayName: "General"}},
+// profileTestUser is a fully-populated author for the panel-content tests.
+func profileTestUser() *model.User {
+	cs, _ := json.Marshal(model.CustomStatus{Emoji: "palm_tree", Text: "on vacation"})
+	return &model.User{
+		Id:        "other",
+		Username:  "jdoe",
+		FirstName: "Jane",
+		LastName:  "Doe",
+		Position:  "Backend engineer",
+		CreateAt:  time.Date(2019, 3, 12, 0, 0, 0, 0, time.UTC).UnixMilli(),
+		Props:     model.StringMap{model.UserPropsKeyCustomStatus: string(cs)},
 	}
+}
+
+// profileModel is infoTestModel with a selectable post by "other" and the maps
+// the profile path writes into.
+func profileModel() Model {
+	m := infoTestModel()
+	m.infoOpen = false
+	m.focus = focusMessages
+	m.posts = []*model.Post{pPost("a", 1000, "other")}
+	m.postIdx = 0
 	m.statuses = map[string]string{}
 	m.customStatuses = map[string]model.CustomStatus{}
 	return m
@@ -60,48 +75,90 @@ func TestRunViewProfileWithoutSelection(t *testing.T) {
 	}
 }
 
-// A fetched profile opens the popup with the profile's rows and refreshes the
-// name/presence caches on the way.
-func TestApplyUserProfileOpensPopup(t *testing.T) {
+// The command raises the info panel in profile mode aimed at the author,
+// takes focus, and starts the fetch. A second run for the same user closes it.
+func TestRunViewProfileRaisesPanel(t *testing.T) {
 	m := profileModel()
-	cs, _ := json.Marshal(model.CustomStatus{Emoji: "palm_tree", Text: "on vacation"})
-	u := &model.User{
-		Id:        "other",
-		Username:  "jdoe",
-		FirstName: "Jane",
-		LastName:  "Doe",
-		Position:  "Backend engineer",
-		CreateAt:  time.Date(2019, 3, 12, 0, 0, 0, 0, time.UTC).UnixMilli(),
-		Props:     model.StringMap{model.UserPropsKeyCustomStatus: string(cs)},
+	if cmd := runViewProfile(&m, ""); cmd == nil {
+		t.Fatal("expected the fetch command")
 	}
-	m.applyUserProfile(userProfileMsg{user: u, status: model.StatusOnline})
+	if !m.infoOpen || m.infoMode != infoModeProfile || m.infoProfileUserID != "other" {
+		t.Fatalf("panel not raised in profile mode for the author: open=%v mode=%v user=%q",
+			m.infoOpen, m.infoMode, m.infoProfileUserID)
+	}
+	if m.focus != focusInfo {
+		t.Errorf("focus = %v, want focusInfo", m.focus)
+	}
+	runViewProfile(&m, "")
+	if m.infoOpen {
+		t.Error("running the command again for the same user must close the panel")
+	}
+}
 
-	if !m.textPopup.active {
-		t.Fatal("expected the text popup to open")
+// The fetched profile lands in the panel and refreshes the name/presence
+// caches; a stale result (panel closed meanwhile) still refreshes the caches
+// but touches no panel state.
+func TestApplyUserProfile(t *testing.T) {
+	m := profileModel()
+	runViewProfile(&m, "")
+	m.applyUserProfile(userProfileMsg{userID: "other", user: profileTestUser(), status: model.StatusOnline})
+
+	if !m.infoProfileLoaded || m.infoProfile == nil {
+		t.Fatal("profile not applied to the open panel")
 	}
 	if m.userNames["other"] != "jdoe" || m.statuses["other"] != model.StatusOnline {
 		t.Error("the fetch must refresh the name and presence caches")
 	}
-	body := m.renderUserProfile(u, model.StatusOnline)
-	for _, want := range []string{"Jane Doe", "@jdoe", "online", "on vacation", "Backend engineer", "12 Mar 2019"} {
+
+	m2 := profileModel()
+	m2.applyUserProfile(userProfileMsg{userID: "other", user: profileTestUser(), status: model.StatusAway})
+	if m2.infoProfileLoaded || m2.infoProfile != nil {
+		t.Error("a stale result must not touch panel state")
+	}
+	if m2.userNames["other"] != "jdoe" {
+		t.Error("a stale result must still refresh the name cache")
+	}
+}
+
+// The panel content carries the profile's rows, drops empty ones, and ends on
+// the DM action row; viewing yourself has no DM row.
+func TestInfoProfileContent(t *testing.T) {
+	m := profileModel()
+	runViewProfile(&m, "")
+	m.applyUserProfile(userProfileMsg{userID: "other", user: profileTestUser(), status: model.StatusOnline})
+
+	lines, targets := m.infoProfileContent()
+	body := strings.Join(lines, "\n")
+	for _, want := range []string{"Jane Doe", "@jdoe", "online", "on vacation", "Backend engineer", "12 Mar 2019", "direct message"} {
 		if !strings.Contains(body, want) {
-			t.Errorf("profile body misses %q:\n%s", want, body)
+			t.Errorf("profile content misses %q:\n%s", want, body)
 		}
 	}
 	if strings.Contains(body, "Email") {
 		t.Error("an empty email must not render a row")
 	}
+	if len(targets) != 1 || targets[0].kind != infoTargetMember || targets[0].userID != "other" {
+		t.Fatalf("targets = %+v, want one member target for the author", targets)
+	}
+
+	me := profileTestUser()
+	me.Id = "me"
+	m.infoProfileUserID = "me"
+	m.applyUserProfile(userProfileMsg{userID: "me", user: me})
+	_, targets = m.infoProfileContent()
+	if len(targets) != 0 {
+		t.Error("no DM row expected on your own profile")
+	}
 }
 
-// A failed fetch lands on the status line; no popup.
+// A failed fetch renders in the panel, not the status line.
 func TestApplyUserProfileError(t *testing.T) {
 	m := profileModel()
-	m.applyUserProfile(userProfileMsg{err: errors.New("boom")})
-	if m.textPopup.active {
-		t.Error("no popup expected on a failed fetch")
-	}
-	if !strings.Contains(m.status, "profile:") {
-		t.Errorf("status = %q, want a profile error", m.status)
+	runViewProfile(&m, "")
+	m.applyUserProfile(userProfileMsg{userID: "other", err: errors.New("boom")})
+	lines, _ := m.infoProfileContent()
+	if !strings.Contains(strings.Join(lines, "\n"), "boom") {
+		t.Errorf("error not rendered in the panel: %q", lines)
 	}
 }
 

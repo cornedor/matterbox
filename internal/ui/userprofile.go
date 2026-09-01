@@ -10,14 +10,18 @@ import (
 	"github.com/mattermost/mattermost/server/public/model"
 )
 
-// "View profile" from the > palette: who wrote the selected message. The model
-// only caches usernames (m.userNames), so the full profile is fetched fresh,
-// together with live presence, and shown in the shared text-popup sheet.
+// "View profile" from the > palette: who wrote the selected message, shown in
+// the same right-side pane the channel-info key raises — profile mode is an
+// infoMode sibling of the channel facts, so selection, hover, click and scroll
+// all come from the panel's target machinery. The model only caches usernames
+// (m.userNames), so the full profile is fetched fresh, together with live
+// presence.
 
 // userProfileMsg carries the fetched profile back to Update. status may be
-// empty when the presence call failed — the popup then falls back to the
+// empty when the presence call failed — the panel then falls back to the
 // cached presence rather than dropping the whole profile.
 type userProfileMsg struct {
+	userID string
 	user   *model.User
 	status string
 	err    error
@@ -39,84 +43,160 @@ func (m *Model) viewProfileCommand() (switcherCommand, bool) {
 	}, true
 }
 
-// runViewProfile fetches the selected post's author. The author is the post's
-// UserId — for a webhook post that is the bot behind it, not the
-// override_username costume, and the popup says so via the bot rows.
+// runViewProfile raises the profile panel for the selected post's author. The
+// author is the post's UserId — for a webhook post that is the bot behind it,
+// not the override_username costume, and the panel says so via the bot rows.
 func runViewProfile(m *Model, _ string) tea.Cmd {
 	p := m.selectedPost()
 	if p == nil || p.UserId == "" {
+		// Running the command again while the panel holds focus lands here
+		// (the selection bar follows focus), so it reads as the close gesture.
+		if m.infoOpen && m.infoMode == infoModeProfile {
+			m.closeInfo()
+			return nil
+		}
 		m.status = "no message selected"
 		return nil
 	}
-	m.status = "loading profile…"
-	client, ctx, id := m.client, m.ctx, p.UserId
+	return m.raiseUserProfile(p.UserId)
+}
+
+// raiseUserProfile opens the info panel in profile mode for the given user and
+// starts the fetch. It mirrors raiseChannelInfo: the panel shares the single
+// right slot with the thread sidebar / reference panel, and running the command
+// again for the same user closes it (a toggle).
+func (m *Model) raiseUserProfile(userID string) tea.Cmd {
+	c := m.findChannel(m.openChannelID)
+	if c == nil {
+		m.status = "no channel open"
+		return nil
+	}
+	if m.infoOpen && m.infoMode == infoModeProfile && m.infoProfileUserID == userID {
+		m.closeInfo()
+		return nil
+	}
+	var threadCmd tea.Cmd
+	if m.threadOpen {
+		threadCmd = m.closeThread()
+	}
+	if m.refOpen {
+		m.closeRef()
+	}
+	m.infoOpen = true
+	m.infoChannelID = c.Id
+	m.infoMode = infoModeProfile
+	m.infoMainIdx = -1
+	m.resetInfoProfile()
+	m.infoProfileUserID = userID
+	m.infoTargets = nil
+	m.infoIdx = -1
+	m.infoHoverIdx = -1
+	m.infoScrollFree = false
+	m.focus = focusInfo
+	m.input.Blur()
+	m.infoView.GotoTop()
+	m.status = "profile · ↵ send a DM · esc closes"
+	m.resizeMessagesViewport()
+	m.renderMessages()
+	m.renderInfo()
+	return tea.Batch(threadCmd, m.fetchUserProfile(userID))
+}
+
+// resetInfoProfile clears profile mode's state; part of every panel teardown
+// and re-raise.
+func (m *Model) resetInfoProfile() {
+	m.infoProfileUserID = ""
+	m.infoProfile = nil
+	m.infoProfileLoaded = false
+	m.infoProfileErr = nil
+}
+
+// fetchUserProfile loads the profile + live presence. A failure is carried
+// back on the message (shown in the panel) rather than the global status line,
+// like the panel's other fetches.
+func (m *Model) fetchUserProfile(userID string) tea.Cmd {
+	client, ctx := m.client, m.ctx
 	return func() tea.Msg {
-		us, err := client.UsersByIDs(ctx, []string{id})
+		us, err := client.UsersByIDs(ctx, []string{userID})
 		if err != nil {
-			return userProfileMsg{err: err}
+			return userProfileMsg{userID: userID, err: err}
 		}
 		if len(us) == 0 {
-			return userProfileMsg{err: fmt.Errorf("user %s not found", id)}
+			return userProfileMsg{userID: userID, err: fmt.Errorf("user %s not found", userID)}
 		}
 		status := ""
-		if ss, err := client.UsersStatuses(ctx, []string{id}); err == nil {
-			status = ss[id]
+		if ss, err := client.UsersStatuses(ctx, []string{userID}); err == nil {
+			status = ss[userID]
 		}
-		return userProfileMsg{user: us[0], status: status}
+		return userProfileMsg{userID: userID, user: us[0], status: status}
 	}
 }
 
-// applyUserProfile opens the popup (or reports the failure on the status
-// line). The fetch is also a fresher answer than our caches, so the name and
-// presence maps are updated on the way — the sidebar dot and any rendered
-// @mention benefit for free.
+// applyUserProfile lands the fetch in the panel (unless it was closed or
+// re-aimed meanwhile). The fetch is also a fresher answer than our caches, so
+// the name and presence maps are updated on the way — the sidebar dot and any
+// rendered @mention benefit for free.
 func (m *Model) applyUserProfile(msg userProfileMsg) {
-	if msg.err != nil {
-		m.status = "profile: " + oneLine(msg.err.Error())
-		return
+	if u := msg.user; u != nil {
+		m.userNames[u.Id] = u.Username
+		if msg.status != "" {
+			m.statuses[u.Id] = msg.status
+		}
+		if cs := u.GetCustomStatus(); cs != nil {
+			m.customStatuses[u.Id] = *cs
+		}
 	}
-	u := msg.user
-	m.userNames[u.Id] = u.Username
-	if msg.status != "" {
-		m.statuses[u.Id] = msg.status
+	if !m.infoOpen || m.infoMode != infoModeProfile || msg.userID != m.infoProfileUserID {
+		return // stale (closed or switched)
 	}
-	if cs := u.GetCustomStatus(); cs != nil {
-		m.customStatuses[u.Id] = *cs
-	}
-	m.status = ""
-	m.openTextPopup("User profile", m.renderUserProfile(u, m.statuses[u.Id]))
+	m.infoProfileLoaded = true
+	m.infoProfileErr = msg.err
+	m.infoProfile = msg.user
+	m.renderInfo()
 }
 
-// renderUserProfile lays out the popup body: a name headline, the presence +
-// custom-status line, then aligned label rows. Rows with nothing to say are
-// dropped — most servers hide the email, and few people set a timezone.
-func (m *Model) renderUserProfile(u *model.User, status string) string {
-	nameStyle := lipgloss.NewStyle().Bold(true)
-	dim := lipgloss.NewStyle().Foreground(dimColor)
+// infoProfileContent builds profile mode's (lines, targets): a name headline,
+// the presence + custom-status line, the aligned fact rows, and a DM action
+// row that reuses the member target the channel view's rows activate with.
+// Rows with nothing to say are dropped — most servers hide the email, and few
+// people set a timezone.
+func (m *Model) infoProfileContent() ([]string, []infoTarget) {
+	var lines []string
+	var targets []infoTarget
 
-	var b strings.Builder
+	switch {
+	case m.infoProfileErr != nil:
+		lines = append(lines, infoLabelStyle.Render("Profile"))
+		lines = append(lines, "  "+infoErrStyle.Render(m.infoProfileErr.Error()))
+		return lines, targets
+	case !m.infoProfileLoaded:
+		lines = append(lines, infoLabelStyle.Render("Profile"))
+		lines = append(lines, "  "+infoDimStyle.Render("loading…"))
+		return lines, targets
+	}
+	u := m.infoProfile
+
 	head := "@" + u.Username
 	if full := u.GetFullName(); full != "" {
-		head = full + " " + dim.Render("· @"+u.Username)
+		head = full + " " + infoDimStyle.Render("· @"+u.Username)
 	}
-	b.WriteString(nameStyle.Render(head) + "\n")
+	lines = append(lines, lipgloss.NewStyle().Bold(true).Render(head))
 
+	status := m.statuses[u.Id]
 	glyph, st := statusGlyph(status, statusDot, statusHollowDot)
-	presence := status
-	if presence == "" {
-		presence = "offline"
+	if status == "" {
+		status = "offline"
 	}
-	line := st.Render(glyph) + " " + presence
+	presence := st.Render(glyph) + " " + status
 	if cs, ok := m.profileCustomStatus(u); ok {
-		line += dim.Render(" — ") + strings.TrimSpace(m.renderEmojiGlyph(cs.Emoji)+" "+cs.Text)
+		presence += infoDimStyle.Render(" — ") + strings.TrimSpace(m.renderEmojiGlyph(cs.Emoji)+" "+cs.Text)
 	}
-	b.WriteString(line + "\n")
+	lines = append(lines, presence)
 
-	type row struct{ label, value string }
-	var rows []row
-	add := func(label, value string) {
+	lines = append(lines, "", infoLabelStyle.Render("Profile"))
+	add := func(key, value string) {
 		if value != "" {
-			rows = append(rows, row{label, value})
+			lines = append(lines, infoMetaLine(key, value))
 		}
 	}
 	add("Nickname", u.Nickname)
@@ -139,15 +219,13 @@ func (m *Model) renderUserProfile(u *model.User, status string) string {
 		add("Account", "deactivated")
 	}
 
-	labelW := 0
-	for _, r := range rows {
-		labelW = max(labelW, lipgloss.Width(r.label))
+	if m.me == nil || u.Id != m.me.Id {
+		lines = append(lines, "")
+		start := len(lines)
+		lines = append(lines, "  "+infoActionStyle.Render("✉ Send a direct message…"))
+		targets = append(targets, infoTarget{kind: infoTargetMember, userID: u.Id, startRow: start, endRow: start})
 	}
-	for _, r := range rows {
-		pad := strings.Repeat(" ", labelW-lipgloss.Width(r.label))
-		b.WriteString("\n" + dim.Render(r.label) + pad + "  " + r.value)
-	}
-	return b.String()
+	return lines, targets
 }
 
 // profileCustomStatus is the fetched user's custom status, dropped once past
