@@ -623,6 +623,9 @@ func (m Model) allCommands() []switcherCommand {
 	if kao, ok := m.kaomojiCommand(); ok {
 		contextual = append(contextual, kao)
 	}
+	if unread, ok := m.markUnreadCommand(); ok {
+		contextual = append(contextual, unread)
+	}
 	if sidebar, ok := m.sidebarUnreadCommand(); ok {
 		contextual = append(contextual, sidebar)
 	}

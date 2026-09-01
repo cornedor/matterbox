@@ -944,7 +944,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the latter so a dwell armed for a now-backgrounded conversation can't
 		// complete. A dwell that ran out after the terminal lost focus is
 		// likewise dropped, leaving viewSettled false so refocusing re-arms it.
-		if msg.gen != m.viewGen || !m.isCurrentChannel(msg.channelID) || !m.terminalFocused() {
+		if msg.gen != m.viewGen || !m.isCurrentChannel(msg.channelID) || !m.terminalFocused() ||
+			m.markReadHeld(msg.channelID) {
 			return m, nil
 		}
 		m.clearUnread(msg.channelID)

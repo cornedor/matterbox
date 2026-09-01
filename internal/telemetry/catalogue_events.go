@@ -144,6 +144,7 @@ var PaletteIDs = []string{
 	"debug_copy_message_id", "debug_copy_channel_id", "channel_mute",
 	"channel_unmute", "feed_hide_muted", "feed_show_muted", "feed_mark_all_read",
 	"sidebar_all_channels", "sidebar_unread_channels",
+	"mark_unread_post",
 }
 
 // SlashIDs are the built-in "/" commands, ours and therefore safe to name.
