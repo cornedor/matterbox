@@ -3,6 +3,7 @@ package ui
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -526,6 +527,9 @@ func TestReplyFromFeedEntry(t *testing.T) {
 	if got.pendingJumpPostID != "p1" {
 		t.Fatalf("pendingJumpPostID = %q, want the first unread post", got.pendingJumpPostID)
 	}
+	if !got.pendingJumpContext {
+		t.Fatal("a feed open must land with the unread block laid out under its context")
+	}
 	if cmd == nil {
 		t.Fatal("expected the load + thread-fetch commands")
 	}
@@ -560,5 +564,86 @@ func TestFeedReplyKey(t *testing.T) {
 	}
 	if !strings.Contains(m.feedHints(), "R reply") {
 		t.Fatalf("feed footer should advertise the reply key, got %q", m.feedHints())
+	}
+}
+
+// contextAnchorOffset lays the unread block out under unreadContextPosts read
+// messages, gives it at least half the pane when the context is tall, and
+// pins to the bottom rather than leaving blank rows under the newest message.
+func TestContextAnchorOffset(t *testing.T) {
+	// Twenty posts of 5 rows each; rowStarts[i] = 5*i, total 100.
+	rows := make([]int, 21)
+	for i := range rows {
+		rows[i] = 5 * i
+	}
+	h := 40
+	cases := []struct {
+		name string
+		sel  int
+		want int
+	}{
+		{"overflow: four context posts above the selection", 12, rows[8]},
+		{"fits: pin to the bottom instead of blank rows", 19, 100 - h},
+		{"near the top: whatever context exists", 2, 0},
+	}
+	for _, c := range cases {
+		if got := contextAnchorOffset(rows, c.sel, h); got != c.want {
+			t.Errorf("%s: off = %d, want %d", c.name, got, c.want)
+		}
+	}
+	// Tall context: 4 × 30-row posts above the selection would push it off
+	// screen; the unread block keeps the lower half of the pane.
+	tall := []int{0, 30, 60, 90, 120, 130, 140, 150}
+	if got, want := contextAnchorOffset(tall, 4, h), 120-h/2; got != want {
+		t.Errorf("tall context: off = %d, want %d", got, want)
+	}
+	// Short transcript: never a negative offset.
+	if got := contextAnchorOffset([]int{0, 5, 10, 15}, 3, h); got != 0 {
+		t.Errorf("short transcript: off = %d, want 0", got)
+	}
+}
+
+// A feed open whose unread block overflows the pane lands the first unread
+// under four read messages, with the rest of the block below the fold —
+// not the first unread alone at the top edge.
+func TestFeedJumpLandsUnreadBlockUnderContext(t *testing.T) {
+	var posts []*model.Post
+	for i := 0; i < 10; i++ {
+		posts = append(posts, tallPost(fmt.Sprintf("r%d", i), int64(100+i), 3))
+	}
+	for i := 0; i < 6; i++ {
+		posts = append(posts, tallPost(fmt.Sprintf("u%d", i), int64(200+i), 8))
+	}
+	m := pagingModel(posts, len(posts)-1)
+	m.pendingJumpPostID = "u0"
+	m.pendingJumpContext = true
+	m.jumpToPendingPost()
+	if m.postIdx != 10 {
+		t.Fatalf("postIdx = %d, want the first unread (10)", m.postIdx)
+	}
+	if m.pendingJumpPostID != "" || m.pendingJumpContext || m.anchorMsgSelContext {
+		t.Fatal("the pending jump and its anchor must be consumed by the landing render")
+	}
+	h := m.msgsView.Height()
+	if ctx := m.msgRowStarts[10] - m.msgRowStarts[6]; ctx > h/2 {
+		t.Fatalf("test posts too tall: four of them span %d rows, over half the %d-row pane", ctx, h)
+	}
+	if got, want := m.msgsView.YOffset(), m.msgRowStarts[6]; got != want {
+		t.Fatalf("YOffset = %d, want %d (four read posts above the first unread)", got, want)
+	}
+	if total := m.msgRowStarts[len(m.msgRowStarts)-1]; m.msgsView.YOffset()+h >= total {
+		t.Fatal("the overflowing unread block should extend below the fold")
+	}
+	// Two short unread messages fit with room to spare: the view pins to the
+	// bottom, so the whole block and more than four read posts are on screen.
+	posts = posts[:10]
+	posts = append(posts, p("u0", 200), p("u1", 201))
+	m = pagingModel(posts, len(posts)-1)
+	m.pendingJumpPostID = "u0"
+	m.pendingJumpContext = true
+	m.jumpToPendingPost()
+	total := m.msgRowStarts[len(m.msgRowStarts)-1]
+	if got, want := m.msgsView.YOffset(), total-h; got != want {
+		t.Fatalf("YOffset = %d, want %d (pinned to the bottom)", got, want)
 	}
 }

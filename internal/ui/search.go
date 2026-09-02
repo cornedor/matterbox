@@ -1314,6 +1314,10 @@ func (m *Model) jumpToPendingPost() {
 		if p.Id == m.pendingJumpPostID {
 			m.postIdx = i
 			m.pendingJumpPostID = ""
+			if m.pendingJumpContext {
+				m.pendingJumpContext = false
+				m.anchorMsgSelContext = true
+			}
 			m.renderMessages()
 			return
 		}

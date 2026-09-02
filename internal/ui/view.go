@@ -660,6 +660,8 @@ func (m *Model) renderMessages() {
 			off = visStart
 		case m.anchorMsgSelBottom:
 			off = visEnd - h
+		case m.anchorMsgSelContext:
+			off = contextAnchorOffset(rowStarts, m.postIdx, h)
 		case visStart < off:
 			off = visStart
 		case visEnd > off+h:
@@ -671,9 +673,22 @@ func (m *Model) renderMessages() {
 		// under a reader who never scrolled, and without this the newest line
 		// slides under the fold and summons the jump pill. The one-shot anchors
 		// and the intra-message scroll asked for a specific offset, so they win.
-		pinBottom := stayAtBottom && !m.anchorMsgSelTop && !m.anchorMsgSelBottom && !m.keepMsgOffset
+		pinBottom := stayAtBottom && !m.anchorMsgSelTop && !m.anchorMsgSelBottom && !m.anchorMsgSelContext && !m.keepMsgOffset
 		if pinBottom {
 			off = visAcc - h
+		}
+		// A message just landed under a reader who could see the bottom: keep
+		// the bottom on screen so it shows without a scroll. The selection may
+		// sit a few posts up (it stays there and slides up with the rest); only
+		// its top row is defended, so a burst of arrivals parks it at the top
+		// edge and the rest wait under the fold for the pill. A wheel offset
+		// parked at the bottom follows too — the free-scroll case above only
+		// meant to protect a reader who had scrolled *up*.
+		if m.msgsFollowTail {
+			off = visAcc - h
+			if !m.msgScrollFree && off > visStart {
+				off = visStart
+			}
 		}
 		if off < 0 {
 			off = 0
@@ -681,7 +696,7 @@ func (m *Model) renderMessages() {
 		m.msgsView.SetYOffset(off)
 		// Free-scroll reads its offset back on the next render; leave it on the
 		// bottom we just pinned rather than the pre-growth row.
-		if pinBottom && m.msgScrollFree {
+		if (pinBottom || m.msgsFollowTail) && m.msgScrollFree {
 			m.msgFreeOffset = off
 		}
 	}
@@ -689,9 +704,44 @@ func (m *Model) renderMessages() {
 	m.msgsRenderSel = m.posts[m.postIdx].Id
 	m.anchorMsgSelTop = false
 	m.anchorMsgSelBottom = false
+	m.anchorMsgSelContext = false
+	m.msgsFollowTail = false
 	m.keepMsgOffset = false
 	// YOffset is final; refresh which animated emoji are actually in view.
 	m.refreshAnimVisibility()
+}
+
+// unreadContextPosts is how many read messages stay visible above the first
+// unread one when a channel is opened from the feed: enough to show where the
+// reader left off, and that the divider under them is the start of the unread
+// block rather than the top of the transcript.
+const unreadContextPosts = 4
+
+// contextAnchorOffset is the viewport offset for anchorMsgSelContext. The
+// selected post — the first unread, its divider included — starts right under
+// its unreadContextPosts predecessors, so every unread message that fits shares
+// the pane with them and the ones that don't wait under the fold, where the
+// scrollbar announces them. Tall context is cut to half the pane so the unread
+// block always gets the other half; content that would leave blank rows under
+// the newest message pins to the bottom instead: the same unread messages,
+// more context. rowStarts is renderMessages' per-post visual-row table (one
+// extra entry holding the total), sel the selected index, h the pane height.
+func contextAnchorOffset(rowStarts []int, sel, h int) int {
+	ctx := sel - unreadContextPosts
+	if ctx < 0 {
+		ctx = 0
+	}
+	off := rowStarts[ctx]
+	if lo := rowStarts[sel] - h/2; off < lo {
+		off = lo
+	}
+	if hi := rowStarts[len(rowStarts)-1] - h; off > hi {
+		off = hi
+	}
+	if off < 0 {
+		off = 0
+	}
+	return off
 }
 
 // renderThread populates the thread viewport with the loaded thread

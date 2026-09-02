@@ -332,6 +332,21 @@ type Model struct {
 	// trimPostWindowHead drop shifted the content up. Cleared on each render.
 	anchorMsgSelBottom bool
 
+	// anchorMsgSelContext is the feed-open anchor: the next renderMessages
+	// places the selected post (the first unread) unreadContextPosts below
+	// the pane's top edge, so the messages above it show where the reader
+	// left off and every unread message that fits is on screen. See
+	// contextAnchorOffset. Cleared on each render.
+	anchorMsgSelContext bool
+
+	// msgsFollowTail is a one-shot flag set by the live new-post path when the
+	// transcript's bottom was on screen as the post arrived: the next
+	// renderMessages keeps the bottom on screen so the new message shows without
+	// a scroll, wherever the selection sits (it only defends the selection's
+	// own top row) and even under a wheel offset parked at the bottom. A
+	// reader who had scrolled up is left alone. Cleared on each render.
+	msgsFollowTail bool
+
 	// keepMsgOffset is a one-shot flag: when set, the next renderMessages
 	// keeps pendingMsgOffset as the viewport offset instead of re-deriving it
 	// from the selection. Set by intra-message scrolling — when the selected
@@ -741,6 +756,11 @@ type Model struct {
 	// should center on after the next postsLoadedMsg lands — used by the
 	// search-result → channel jump flow.
 	pendingJumpPostID string
+	// pendingJumpContext asks the pending jump to land with
+	// anchorMsgSelContext rather than the default keep-visible rules. Set by
+	// the feed, whose target is the first unread message: the block below it
+	// is what the user came to read. Consumed with pendingJumpPostID.
+	pendingJumpContext bool
 
 	// pollDialog owns the modal-input flow used to fill in matterpoll's
 	// "Add Option" interactive dialog (and any other plugin-emitted
