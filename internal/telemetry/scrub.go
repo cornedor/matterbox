@@ -41,6 +41,26 @@ var (
 	reURL = regexp.MustCompile(`\b[a-zA-Z][a-zA-Z0-9+.-]*://[^\s"'` + "`" + `]*[^\s"'` + "`" + `.,:;)\]]`)
 	// Emails before mentions, since both contain @.
 	reEmail = regexp.MustCompile(`\b[\w.+-]+@[\w-]+\.[\w.-]+\b`)
+	// Bare network addresses, which reURL never sees because they carry no
+	// scheme. Go's net errors name the peer as a plain address —
+	// `dial tcp 1.2.3.4:443`, `read tcp 192.168.1.7:49704->1.2.3.4:443`,
+	// `lookup chat.example.com: no such host` — and those are the two things
+	// this package least wants to send: the Mattermost server (which names the
+	// company running it) and the user's own LAN address.
+	reIPv4 = regexp.MustCompile(`\b\d{1,3}(?:\.\d{1,3}){3}(?::\d{1,5})?\b`)
+	// Bracketed IPv6, with or without a port: `[::1]:443`.
+	reIPv6 = regexp.MustCompile(`\[[0-9A-Fa-f:]{2,}(?:%\w+)?\](?::\d{1,5})?`)
+	// A DNS failure names the host it could not resolve. Matched before the
+	// keyword pattern below because a single-label host has no dot for it.
+	reLookup = regexp.MustCompile(`\blookup\s+[A-Za-z0-9_.-]+`)
+	// A dotted name with a port is unambiguously a host:port.
+	reHostPort = regexp.MustCompile(`\b(?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,}:\d{1,5}\b`)
+	// A dotted name introduced by a word that only ever introduces a host —
+	// `certificate is valid for chat.example.com`. Gated on the keyword rather
+	// than matching every dotted token, because Mattermost's own error ids are
+	// dotted too (`model.websocket_client.connect_fail.app_error`) and they are
+	// the descriptive part worth keeping.
+	reHostKeyword = regexp.MustCompile(`(?i)\b(lookup|host|hostname|server|for|not|on|at|to|from|via)\s+((?:[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\.)+[A-Za-z]{2,})\b`)
 	// Absolute paths, ~-relative paths, and Windows drive paths. Requires at
 	// least one separator so a bare word isn't mistaken for a path.
 	reUnixPath = regexp.MustCompile(`(?:~|\.\.?)?/[^\s"'` + "`" + `:,)]*`)
@@ -78,6 +98,12 @@ func Scrub(s string) string {
 	}
 	s = reURL.ReplaceAllString(s, "<url>")
 	s = reEmail.ReplaceAllString(s, "<email>")
+	// After the email pattern, which owns the dotted name after an @.
+	s = reIPv6.ReplaceAllString(s, "<addr>")
+	s = reIPv4.ReplaceAllString(s, "<addr>")
+	s = reLookup.ReplaceAllString(s, "lookup <host>")
+	s = reHostPort.ReplaceAllString(s, "<addr>")
+	s = reHostKeyword.ReplaceAllString(s, "${1} <host>")
 	s = reWinPath.ReplaceAllString(s, "<path>")
 	s = reUnixPath.ReplaceAllString(s, "<path>")
 	s = reMMID.ReplaceAllString(s, "<id>")
@@ -103,7 +129,7 @@ func Scrub(s string) string {
 // inserts plus punctuation — i.e. whether anything descriptive survived.
 func onlyPlaceholders(s string) bool {
 	rest := s
-	for _, p := range []string{"<url>", "<email>", "<path>", "<id>", "<mention>", "<quoted>", "<num>", "<token>"} {
+	for _, p := range []string{"<url>", "<email>", "<addr>", "<host>", "<path>", "<id>", "<mention>", "<quoted>", "<num>", "<token>"} {
 		rest = strings.ReplaceAll(rest, p, "")
 	}
 	return strings.TrimFunc(rest, func(r rune) bool {
