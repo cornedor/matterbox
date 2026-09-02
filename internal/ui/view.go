@@ -660,6 +660,8 @@ func (m *Model) renderMessages() {
 			off = visStart
 		case m.anchorMsgSelBottom:
 			off = visEnd - h
+		case m.anchorMsgSelContext:
+			off = contextAnchorOffset(rowStarts, m.postIdx, h)
 		case visStart < off:
 			off = visStart
 		case visEnd > off+h:
@@ -671,7 +673,7 @@ func (m *Model) renderMessages() {
 		// under a reader who never scrolled, and without this the newest line
 		// slides under the fold and summons the jump pill. The one-shot anchors
 		// and the intra-message scroll asked for a specific offset, so they win.
-		pinBottom := stayAtBottom && !m.anchorMsgSelTop && !m.anchorMsgSelBottom && !m.keepMsgOffset
+		pinBottom := stayAtBottom && !m.anchorMsgSelTop && !m.anchorMsgSelBottom && !m.anchorMsgSelContext && !m.keepMsgOffset
 		if pinBottom {
 			off = visAcc - h
 		}
@@ -689,9 +691,43 @@ func (m *Model) renderMessages() {
 	m.msgsRenderSel = m.posts[m.postIdx].Id
 	m.anchorMsgSelTop = false
 	m.anchorMsgSelBottom = false
+	m.anchorMsgSelContext = false
 	m.keepMsgOffset = false
 	// YOffset is final; refresh which animated emoji are actually in view.
 	m.refreshAnimVisibility()
+}
+
+// unreadContextPosts is how many read messages stay visible above the first
+// unread one when a channel is opened from the feed: enough to show where the
+// reader left off, and that the divider under them is the start of the unread
+// block rather than the top of the transcript.
+const unreadContextPosts = 4
+
+// contextAnchorOffset is the viewport offset for anchorMsgSelContext. The
+// selected post — the first unread, its divider included — starts right under
+// its unreadContextPosts predecessors, so every unread message that fits shares
+// the pane with them and the ones that don't wait under the fold, where the
+// scrollbar announces them. Tall context is cut to half the pane so the unread
+// block always gets the other half; content that would leave blank rows under
+// the newest message pins to the bottom instead: the same unread messages,
+// more context. rowStarts is renderMessages' per-post visual-row table (one
+// extra entry holding the total), sel the selected index, h the pane height.
+func contextAnchorOffset(rowStarts []int, sel, h int) int {
+	ctx := sel - unreadContextPosts
+	if ctx < 0 {
+		ctx = 0
+	}
+	off := rowStarts[ctx]
+	if lo := rowStarts[sel] - h/2; off < lo {
+		off = lo
+	}
+	if hi := rowStarts[len(rowStarts)-1] - h; off > hi {
+		off = hi
+	}
+	if off < 0 {
+		off = 0
+	}
+	return off
 }
 
 // renderThread populates the thread viewport with the loaded thread

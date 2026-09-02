@@ -534,9 +534,10 @@ func (m Model) handleFeedKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // enterFeedEntry opens the selected bubble's channel exactly as a sidebar
 // open does (enterChannel via openChannelLoadCmd — so openChannelID, the
 // composer target, the title and live routing all move), jumping to its first
-// unread message. The bubble is dropped from the feed since the open marks
-// the channel read. Shared by open (enter) and reply (R). Returns the entry
-// and the load command; ok=false when nothing usable is selected.
+// unread message with the unread block laid out below a few read ones (see
+// contextAnchorOffset). The bubble is dropped from the feed since the open
+// marks the channel read. Shared by open (enter) and reply (R). Returns the
+// entry and the load command; ok=false when nothing usable is selected.
 func (m *Model) enterFeedEntry() (e feedEntry, cmd tea.Cmd, ok bool) {
 	if m.feed.idx < 0 || m.feed.idx >= len(m.feed.entries) {
 		return feedEntry{}, nil, false
@@ -554,6 +555,7 @@ func (m *Model) enterFeedEntry() (e feedEntry, cmd tea.Cmd, ok bool) {
 	m.focus = focusMessages
 	if len(e.unread) > 0 {
 		m.pendingJumpPostID = e.unread[0].Id
+		m.pendingJumpContext = true
 	}
 	return e, tea.Batch(m.openChannelLoadCmd(ch.Id, "feed"), m.bumpChannelStat(ch.Id)), true
 }
