@@ -448,6 +448,40 @@ func TestMashDetectionFiresOnce(t *testing.T) {
 	}
 }
 
+// TestMovementIsNotMashing: scrolling is repetitive by nature, so the movement
+// actions must never raise the signal however fast they are pressed.
+func TestMovementIsNotMashing(t *testing.T) {
+	t.Cleanup(func() { active.Store(false); tally = &counters{} })
+	active.Store(true)
+
+	for id := range mashExempt {
+		tally = &counters{}
+		for i := 0; i < 10; i++ {
+			if mashed, _ := Action(id, "focus:messages"); mashed {
+				t.Errorf("%q reported mashing", id)
+				break
+			}
+		}
+	}
+	if n := tally.friction["action_repeated"]; n != 0 {
+		t.Errorf("friction counted %d repeats of an exempt action, want 0", n)
+	}
+}
+
+// TestMashExemptionsAreRealActions keeps the exemption list from rotting into a
+// set of ids the keymap no longer has, which would silently restore the noise.
+func TestMashExemptionsAreRealActions(t *testing.T) {
+	known := make(map[string]bool, len(ActionIDs))
+	for _, id := range ActionIDs {
+		known[id] = true
+	}
+	for id := range mashExempt {
+		if !known[id] {
+			t.Errorf("mashExempt has %q, which is not in ActionIDs", id)
+		}
+	}
+}
+
 // TestCountersAreNoopWhenDisabled: the opted-out path must not even allocate,
 // since these sit on the keystroke path.
 func TestCountersAreNoopWhenDisabled(t *testing.T) {
