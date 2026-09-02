@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -21,6 +22,15 @@ const switcherWidth = 60
 // the popup short, generous enough for "go to <project>" muscle memory.
 const switcherLimit = 12
 
+// switcherUserRows caps the directory ("start a DM with…") rows appended
+// below the channel matches, so a long channel list can never crowd them
+// out entirely and they can never take over the popup.
+const switcherUserRows = 4
+
+// switcherUserDebounce delays the directory search after a query change so
+// rapid typing coalesces into one request (mirrors mentionDebounce).
+const switcherUserDebounce = 150 * time.Millisecond
+
 // openSwitcher activates the global ctrl+p channel switcher. The
 // textinput is reset (no stale query), focused so the cursor blinks,
 // and selection lands on the first match.
@@ -33,6 +43,8 @@ func (m Model) openSwitcher() (tea.Model, tea.Cmd) {
 	m.switcher.Focus()
 	m.switcherIdx = 0
 	m.switcherCmdPending = nil
+	m.switcherUsers = nil
+	m.switcherUserSeq++
 	return m, nil
 }
 
@@ -48,6 +60,8 @@ func (m Model) openCommandPicker() (tea.Model, tea.Cmd) {
 	m.switcher.Focus()
 	m.switcherIdx = 0
 	m.switcherCmdPending = nil
+	m.switcherUsers = nil
+	m.switcherUserSeq++
 	m.syncSwitcherPrompt() // value starts with ">", so drop the "> " prompt
 	return m, nil
 }
@@ -60,6 +74,8 @@ func (m *Model) closeSwitcher() {
 	m.switcher.Blur()
 	m.switcherIdx = 0
 	m.switcherCmdPending = nil
+	m.switcherUsers = nil
+	m.switcherUserSeq++
 }
 
 // handleSwitcherKey owns every keystroke while the switcher is open.
@@ -101,7 +117,7 @@ func (m Model) handleSwitcherKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.inCommandMode() {
 			max = len(m.commandResults())
 		} else {
-			max = len(m.switcherResults())
+			max = len(m.switcherRows())
 		}
 		if m.switcherIdx < max-1 {
 			m.switcherIdx++
@@ -129,11 +145,21 @@ func (m Model) handleSwitcherKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.enterCommandArgMode(sel)
 			return m, nil
 		}
-		results := m.switcherResults()
-		if len(results) == 0 || m.switcherIdx >= len(results) {
+		rows := m.switcherRows()
+		if len(rows) == 0 || m.switcherIdx >= len(rows) {
 			return m, nil
 		}
-		ch := results[m.switcherIdx]
+		if u := rows[m.switcherIdx].user; u != nil {
+			// A directory match: no DM channel exists yet, so create (or
+			// resolve) it and let applyGroupDMResolved insert it into the
+			// sidebar and jump there.
+			if m.userNames != nil {
+				m.userNames[u.Id] = u.Username
+			}
+			m.closeSwitcher()
+			return m.openDMWithMember(u.Id)
+		}
+		ch := rows[m.switcherIdx].ch
 		m.closeSwitcher()
 		// The channel-info panel describes the channel it was opened for; close
 		// it when jumping elsewhere so it can't show stale info.
@@ -161,14 +187,107 @@ func (m Model) handleSwitcherKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	old := m.switcher.Value()
 	var cmd tea.Cmd
 	*m.switcher, cmd = m.switcher.Update(msg)
+	var search tea.Cmd
 	if m.switcher.Value() != old {
 		m.switcherIdx = 0
+		search = m.switcherUserSearchTick()
 	}
 	// Keep the textinput's prompt in sync with the current mode so the
 	// visible characters are exactly what the user typed (no double
 	// "> " when in command mode).
 	m.syncSwitcherPrompt()
-	return m, cmd
+	return m, tea.Batch(cmd, search)
+}
+
+// switcherUserSearchTick invalidates any in-flight directory search and, for
+// a non-empty channel-mode query, schedules a debounced new one. The stale
+// matches are dropped immediately so the popup never offers a DM row that
+// doesn't match what's typed.
+func (m *Model) switcherUserSearchTick() tea.Cmd {
+	m.switcherUsers = nil
+	m.switcherUserSeq++
+	if m.inCommandMode() || strings.TrimSpace(m.switcher.Value()) == "" {
+		return nil
+	}
+	seq := m.switcherUserSeq
+	return tea.Tick(switcherUserDebounce, func(_ time.Time) tea.Msg {
+		return switcherUserDebounceMsg{seq: seq}
+	})
+}
+
+// fetchSwitcherUsers searches the whole directory (not just channels we
+// share) so people who joined after startup are still reachable.
+func (m Model) fetchSwitcherUsers(query string, seq int) tea.Cmd {
+	client, ctx := m.client, m.ctx
+	return func() tea.Msg {
+		us, err := client.SearchUsers(ctx, query, switcherLimit)
+		return switcherUsersMsg{seq: seq, users: us, err: err}
+	}
+}
+
+// switcherUserMatches narrows the fetched directory results to the ones worth
+// a row: not yourself, and no existing DM channel (that channel already shows
+// up among the channel matches).
+func (m *Model) switcherUserMatches() []*model.User {
+	if len(m.switcherUsers) == 0 {
+		return nil
+	}
+	known := map[string]bool{}
+	for _, c := range m.channels[dmTeamID] {
+		if id := m.dmPartnerID(c); id != "" {
+			known[id] = true
+		}
+	}
+	if m.me != nil {
+		known[m.me.Id] = true
+	}
+	out := make([]*model.User, 0, switcherUserRows)
+	for _, u := range m.switcherUsers {
+		if u == nil || u.Username == "" || known[u.Id] {
+			continue
+		}
+		out = append(out, u)
+		if len(out) == switcherUserRows {
+			break
+		}
+	}
+	return out
+}
+
+// switcherUserDebounceMsg fires after switcherUserDebounce; if seq still
+// matches the switcher's counter, the directory search is issued.
+type switcherUserDebounceMsg struct{ seq int }
+
+// switcherUsersMsg carries a directory search result back to the switcher.
+type switcherUsersMsg struct {
+	seq   int
+	users []*model.User
+	err   error
+}
+
+// switcherRow is one popup row: either an existing channel or a directory
+// user we'd open a fresh DM with. Exactly one field is set.
+type switcherRow struct {
+	ch   *model.Channel
+	user *model.User
+}
+
+// switcherRows is the rendered result list: channel matches first, then the
+// directory matches, capped together at switcherLimit.
+func (m *Model) switcherRows() []switcherRow {
+	users := m.switcherUserMatches()
+	chans := m.switcherResults()
+	if room := switcherLimit - len(users); len(chans) > room {
+		chans = chans[:room]
+	}
+	rows := make([]switcherRow, 0, len(chans)+len(users))
+	for _, c := range chans {
+		rows = append(rows, switcherRow{ch: c})
+	}
+	for _, u := range users {
+		rows = append(rows, switcherRow{user: u})
+	}
+	return rows
 }
 
 // switcherResults returns up to switcherLimit channels matching the
@@ -345,7 +464,7 @@ func (m *Model) renderSwitcher(maxH int) string {
 	}
 
 	dim := lipgloss.NewStyle().Foreground(dimColor)
-	results := m.switcherResults()
+	results := m.switcherRows()
 
 	rows := []string{
 		titleStyle.Render("Switch channel"),
@@ -356,12 +475,19 @@ func (m *Model) renderSwitcher(maxH int) string {
 	if len(results) == 0 {
 		rows = append(rows, dim.Render("  no matches  (type > for commands)"))
 	} else {
-		for i, ch := range results {
-			label := m.channelLabel(ch)
-			team := m.teamHintForChannel(ch)
-
-			mentionN := m.mentions[ch.Id]
-			unreadN := m.unread[ch.Id]
+		for i, row := range results {
+			var label, team string
+			var mentionN, unreadN int
+			if u := row.user; u != nil {
+				label = "@" + u.Username
+				team = "new DM"
+			} else {
+				ch := row.ch
+				label = m.channelLabel(ch)
+				team = m.teamHintForChannel(ch)
+				mentionN = m.mentions[ch.Id]
+				unreadN = m.unread[ch.Id]
+			}
 			var badge string
 			switch {
 			case mentionN > 0:

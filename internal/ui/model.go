@@ -411,6 +411,13 @@ type Model struct {
 	switcherIdx        int
 	switcherCmdPending *switcherCommand
 
+	// switcherUsers holds the directory matches for the current switcher
+	// query — people you have no DM channel with yet, so someone who just
+	// joined the workspace is still reachable from ctrl+p. switcherUserSeq
+	// is bumped on every query change so a late response is discarded.
+	switcherUsers   []*model.User
+	switcherUserSeq int
+
 	// indexer is the background channel-backfill state machine. Only one
 	// run is active at a time; subsequent triggers surface a hint.
 	indexer indexerState
