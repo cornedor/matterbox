@@ -1212,6 +1212,23 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case copyClipboardMsg:
 		return m, m.flashStatus("copied " + msg.what + " to clipboard")
 
+	case switcherUserDebounceMsg:
+		if !m.switcherMode || msg.seq != m.switcherUserSeq {
+			return m, nil
+		}
+		return m, m.fetchSwitcherUsers(strings.TrimSpace(m.switcher.Value()), msg.seq)
+
+	case switcherUsersMsg:
+		if !m.switcherMode || msg.seq != m.switcherUserSeq {
+			return m, nil
+		}
+		// A directory search failing is not worth a status line — the channel
+		// matches are still there and usable.
+		if msg.err == nil {
+			m.switcherUsers = msg.users
+		}
+		return m, nil
+
 	case mentionDebounceMsg:
 		if !m.mention.active || msg.seq != m.mention.fetchSeq {
 			return m, nil

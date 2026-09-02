@@ -1020,3 +1020,15 @@ func (c *Client) PublicChannelsForTeam(ctx context.Context, teamID string) ([]*m
 	}
 	return all, nil
 }
+
+// SearchUsers returns users across the workspace whose username or real name
+// matches `query`. Unlike Autocomplete it isn't scoped to a channel, so it
+// also finds people you share no channel with — what the ctrl+p switcher
+// needs to offer a DM with someone who joined after you last looked.
+func (c *Client) SearchUsers(ctx context.Context, query string, limit int) ([]*model.User, error) {
+	r, _, err := c.c.AutocompleteUsers(ctx, query, limit, "")
+	if err != nil {
+		return nil, fmt.Errorf("search users: %w", err)
+	}
+	return r.Users, nil
+}
