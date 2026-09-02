@@ -126,12 +126,19 @@ func (m *Model) msgsStayAtBottom() bool {
 	if m.postIdx < 0 || m.postIdx >= len(m.posts) || m.posts[m.postIdx].Id != m.msgsRenderSel {
 		return false
 	}
+	return m.msgsViewAtBottom()
+}
+
+// msgsViewAtBottom reports whether the message viewport shows the bottom of the
+// laid-out transcript — the same test the scrollbar and the pill use: the offset
+// has reached the last screenful of content. Reads the layout of the *previous*
+// render (msgRowStarts), so before renderMessages replaces it this answers
+// "could the reader see the newest message a moment ago".
+func (m *Model) msgsViewAtBottom() bool {
 	h := m.msgsView.Height()
-	if h <= 0 {
+	if h <= 0 || len(m.msgRowStarts) == 0 {
 		return false
 	}
-	// Same test the scrollbar and the pill use: the viewport is at the bottom
-	// when its offset has reached the last screenful of content.
 	total := m.msgRowStarts[len(m.msgRowStarts)-1]
 	return total <= h || m.msgsView.YOffset() >= total-h
 }

@@ -677,13 +677,26 @@ func (m *Model) renderMessages() {
 		if pinBottom {
 			off = visAcc - h
 		}
+		// A message just landed under a reader who could see the bottom: keep
+		// the bottom on screen so it shows without a scroll. The selection may
+		// sit a few posts up (it stays there and slides up with the rest); only
+		// its top row is defended, so a burst of arrivals parks it at the top
+		// edge and the rest wait under the fold for the pill. A wheel offset
+		// parked at the bottom follows too — the free-scroll case above only
+		// meant to protect a reader who had scrolled *up*.
+		if m.msgsFollowTail {
+			off = visAcc - h
+			if !m.msgScrollFree && off > visStart {
+				off = visStart
+			}
+		}
 		if off < 0 {
 			off = 0
 		}
 		m.msgsView.SetYOffset(off)
 		// Free-scroll reads its offset back on the next render; leave it on the
 		// bottom we just pinned rather than the pre-growth row.
-		if pinBottom && m.msgScrollFree {
+		if (pinBottom || m.msgsFollowTail) && m.msgScrollFree {
 			m.msgFreeOffset = off
 		}
 	}
@@ -692,6 +705,7 @@ func (m *Model) renderMessages() {
 	m.anchorMsgSelTop = false
 	m.anchorMsgSelBottom = false
 	m.anchorMsgSelContext = false
+	m.msgsFollowTail = false
 	m.keepMsgOffset = false
 	// YOffset is final; refresh which animated emoji are actually in view.
 	m.refreshAnimVisibility()

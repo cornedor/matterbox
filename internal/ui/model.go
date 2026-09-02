@@ -339,6 +339,14 @@ type Model struct {
 	// contextAnchorOffset. Cleared on each render.
 	anchorMsgSelContext bool
 
+	// msgsFollowTail is a one-shot flag set by the live new-post path when the
+	// transcript's bottom was on screen as the post arrived: the next
+	// renderMessages keeps the bottom on screen so the new message shows without
+	// a scroll, wherever the selection sits (it only defends the selection's
+	// own top row) and even under a wheel offset parked at the bottom. A
+	// reader who had scrolled up is left alone. Cleared on each render.
+	msgsFollowTail bool
+
 	// keepMsgOffset is a one-shot flag: when set, the next renderMessages
 	// keeps pendingMsgOffset as the viewport offset instead of re-deriving it
 	// from the selection. Set by intra-message scrolling — when the selected

@@ -1658,9 +1658,17 @@ func (m *Model) applyPosted(ev *model.WebSocketEvent) tea.Cmd {
 			}
 			// If the user was viewing the last post, advance selection to the
 			// new last so the incoming message comes into view. Otherwise keep
-			// them where they are.
+			// them where they are — but if the bottom of the transcript was on
+			// screen, keep it on screen: a reader who selected a message a few
+			// rows up (or wheel-parked at the bottom) is still following the
+			// conversation and shouldn't have to scroll to see what just came
+			// in. Answered before the append, from the previous layout.
+			viewAtBottom := m.msgsViewAtBottom()
 			wasAtBottom := m.postIdx >= len(m.posts)-1
 			m.posts = append(m.posts, p)
+			if viewAtBottom {
+				m.msgsFollowTail = true
+			}
 			if wasAtBottom {
 				m.postIdx = len(m.posts) - 1
 				// Following live chat: bound the slice during a long session
