@@ -8,10 +8,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -203,13 +205,13 @@ func (c *Client) SendPhoto(ctx context.Context, chatID, caption, filename string
 	url := fmt.Sprintf("%s/bot%s/sendPhoto", strings.TrimRight(c.base, "/"), c.token)
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, body)
 	if err != nil {
-		return 0, fmt.Errorf("build request: %w", err)
+		return 0, fmt.Errorf("build request: %w", c.scrub(err))
 	}
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return 0, fmt.Errorf("call telegram sendPhoto: %w", err)
+		return 0, fmt.Errorf("call telegram sendPhoto: %w", c.scrub(err))
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -301,11 +303,11 @@ func (c *Client) downloadFile(ctx context.Context, filePath string, limit int64)
 	url := fmt.Sprintf("%s/file/bot%s/%s", strings.TrimRight(c.base, "/"), c.token, filePath)
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
+		return nil, fmt.Errorf("build request: %w", c.scrub(err))
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("download telegram file: %w", err)
+		return nil, fmt.Errorf("download telegram file: %w", c.scrub(err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -333,14 +335,14 @@ func (c *Client) call(ctx context.Context, method string, timeout time.Duration,
 	url := fmt.Sprintf("%s/bot%s/%s", strings.TrimRight(c.base, "/"), c.token, method)
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
-		return fmt.Errorf("build request: %w", err)
+		return fmt.Errorf("build request: %w", c.scrub(err))
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("call telegram %s: %w", method, err)
+		return fmt.Errorf("call telegram %s: %w", method, c.scrub(err))
 	}
 	defer resp.Body.Close()
 
@@ -358,6 +360,30 @@ func (c *Client) call(ctx context.Context, method string, timeout time.Duration,
 		}
 	}
 	return nil
+}
+
+// scrub removes the bot token from an error's message. Transport and
+// URL-parse failures come back as *url.Error, whose Error() echoes the full
+// request URL — which embeds the token (".../bot<token>/..."). The daemon logs
+// these verbatim, so redact before they escape the package. The wrapped cause
+// is preserved so errors.Is/As still work.
+func (c *Client) scrub(err error) error {
+	if err == nil || c.token == "" {
+		return err
+	}
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return &url.Error{Op: ue.Op, URL: c.redact(ue.URL), Err: ue.Err}
+	}
+	if strings.Contains(err.Error(), c.token) {
+		return errors.New(c.redact(err.Error()))
+	}
+	return err
+}
+
+// redact replaces every occurrence of the bot token with a placeholder.
+func (c *Client) redact(s string) string {
+	return strings.ReplaceAll(s, c.token, "<redacted>")
 }
 
 func firstNonEmpty(vals ...string) string {
