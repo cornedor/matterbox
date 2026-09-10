@@ -36,6 +36,22 @@ const (
 	mashThreshold = 4
 )
 
+// mashExempt are the actions whose repetition is the point. Moving a cursor or
+// a viewport by one step fires four times in a second and a half during
+// ordinary scrolling, which is not someone waiting for feedback — and counting
+// it as mashing made it 61% of every friction event the first fortnight of
+// telemetry produced, burying the signals that do mean something.
+//
+// The run is still counted for these, so a later run of a non-exempt action is
+// measured from the right place; only the friction signal is withheld.
+var mashExempt = map[string]bool{
+	"up": true, "down": true, "left": true, "right": true,
+	"input_up": true, "input_down": true,
+	"page_up": true, "page_down": true, "top": true, "bottom": true,
+	"select_up": true, "select_down": true, "select_left": true, "select_right": true,
+	"next_match": true, "prev_match": true,
+}
+
 // escCascade is how many escapes in a row count as trying to get out of
 // something. Two is ordinary (leave the composer, close the thread); three
 // means the way out wasn't obvious.
@@ -127,7 +143,7 @@ func Action(id, context string) (mashed bool, runLength int) {
 		tally.repeatRun = 1
 	}
 	tally.lastAction, tally.lastActionAt = id, now
-	if tally.repeatRun == mashThreshold {
+	if tally.repeatRun == mashThreshold && !mashExempt[id] {
 		bump(&tally.friction, "action_repeated")
 		return true, tally.repeatRun
 	}

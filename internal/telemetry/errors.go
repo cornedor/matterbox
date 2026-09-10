@@ -13,8 +13,8 @@ package telemetry
 // A stack is also the most dangerous thing this package sends, which is why
 // none of it comes from the PostHog SDK's own extractor. NewDefaultException
 // captures runtime.Frame.File verbatim — an absolute path recorded at compile
-// time, so on a matterbox built from source (the normal way to get it) every
-// frame reads /home/<the user>/…/internal/ui/view.go — plus raw instruction
+// time, so on a matterbox built from source every frame reads
+// /home/<the user>/…/internal/ui/view.go — plus raw instruction
 // addresses and a $debug_images entry identifying their executable. All three
 // are exactly what docs/telemetry.md promises never to send.
 //

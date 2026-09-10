@@ -19,9 +19,8 @@ Setting `enabled: false` stops it for good, and so does removing the
 unlinkable to your past ones.
 
 That config key is the **only** gate. The PostHog project key is compiled into
-the binary — matterbox is normally built from source, so a key supplied only by
-a release build would be a key almost nobody has — but it does nothing on its
-own: with the key present and consent absent, nothing is sent.
+the binary, release builds included — but it does nothing on its own: with the
+key present and consent absent, nothing is sent.
 
 *Where* events go is a separate question from *whether* they are sent, and it
 has two knobs. Neither grants consent:
@@ -151,8 +150,8 @@ A report carries:
 The stack is the part worth being precise about, because it is the part that
 could leak. The PostHog SDK builds one for you, and matterbox does not use it:
 the SDK records each frame's file path as the compiler saw it, which on a
-matterbox built from source — the normal way to get it — is an absolute path
-through your home directory, and it attaches raw instruction addresses and an
+matterbox built from source is an absolute path through your home directory,
+and it attaches raw instruction addresses and an
 identifier for your executable besides.
 
 So frames are rebuilt from scratch, and the rule is the opposite one: a frame
