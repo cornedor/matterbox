@@ -65,7 +65,14 @@ else
 KEYFLAG := -X matterbox/internal/telemetry.projectKey=$(POSTHOG_KEY)
 endif
 
-LDFLAGS  := $(if $(VERSION),-X matterbox/internal/cli.version=$(VERSION),)
+# -s -w drop the symbol table and DWARF, which are a quarter of the binary
+# (64.6MB → 48.5MB here) and are used by nothing this build does: panic stack
+# traces and the telemetry frames come from pclntab, which stays. The release
+# workflow already builds this way, so this makes a local `make install` match
+# what a downloaded release weighs. Only a debugger notices: `make LDFLAGS=`
+# builds unstripped, at the cost of the version and key flags below.
+LDFLAGS  := -s -w
+LDFLAGS  += $(if $(VERSION),-X matterbox/internal/cli.version=$(VERSION),)
 LDFLAGS  += $(KEYFLAG)
 
 # Build tags. Auto-detected per machine unless TAGS is given on the command
