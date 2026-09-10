@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -21,7 +23,18 @@ import (
 // `install` field: an endpoint that could name the script to execute would be a
 // way to point this at another host entirely, and there is no reason to give it
 // one.
-const installerURL = "https://matterbox.work/install.sh"
+// A var only so a test can point it at a local server; nothing reads it from
+// the config or the environment.
+var installerURL = "https://matterbox.work/install.sh"
+
+const (
+	// installerTimeout bounds the download. It is a few kilobytes of shell from
+	// a CDN; the install itself is unbounded and runs after this, so a generous
+	// deadline here costs nothing and a missing one means a hung command.
+	installerTimeout = 30 * time.Second
+	// installerMaxBytes is a ceiling no version of our installer comes near.
+	installerMaxBytes = 1 << 20
+)
 
 func newUpgradeCmd() *cobra.Command {
 	var (
@@ -218,13 +231,24 @@ func installDir() (string, error) {
 // shell. Same script and same trust — HTTPS to our own domain — but a partial
 // download becomes a shell syntax error on a file nobody ran, instead of half
 // an install.
+//
+// That trust is the whole of it, so the transport is held to it: the request is
+// bounded in time and size, and a redirect off the origin installerURL names —
+// another host, or plain http — is refused rather than followed. Without that,
+// the set of parties who can hand this machine a shell script is everyone who
+// can answer for any host we could be pointed at, which is a good deal larger
+// than the one we meant to trust.
 func fetchInstaller(ctx context.Context) (path string, cleanup func(), err error) {
+	origin, err := url.Parse(installerURL)
+	if err != nil {
+		return "", nil, err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, installerURL, nil)
 	if err != nil {
 		return "", nil, err
 	}
 	req.Header.Set("User-Agent", "matterbox")
-	res, err := http.DefaultClient.Do(req)
+	res, err := installerClient(origin).Do(req)
 	if err != nil {
 		return "", nil, fmt.Errorf("could not download the installer: %w", err)
 	}
@@ -238,7 +262,14 @@ func fetchInstaller(ctx context.Context) (path string, cleanup func(), err error
 		return "", nil, err
 	}
 	remove := func() { os.Remove(f.Name()) }
-	if _, err := io.Copy(f, io.LimitReader(res.Body, 1<<20)); err != nil {
+	// One byte past the cap, so a body that overruns it is told apart from one
+	// that ends exactly on it. A truncated script is a script that would run
+	// half an install.
+	n, err := io.Copy(f, io.LimitReader(res.Body, installerMaxBytes+1))
+	if err == nil && n > installerMaxBytes {
+		err = fmt.Errorf("%s is larger than %d bytes; refusing to run it", installerURL, installerMaxBytes)
+	}
+	if err != nil {
 		f.Close()
 		remove()
 		return "", nil, fmt.Errorf("could not download the installer: %w", err)
@@ -248,6 +279,26 @@ func fetchInstaller(ctx context.Context) (path string, cleanup func(), err error
 		return "", nil, err
 	}
 	return f.Name(), remove, nil
+}
+
+// installerClient bounds the download and pins it to the origin installerURL
+// names. The redirect rule is the part that matters: matterbox.work is a
+// hostname we can be sure of, and following a redirect away from it would hand
+// that decision to whoever answered.
+func installerClient(origin *url.URL) *http.Client {
+	return &http.Client{
+		Timeout: installerTimeout,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if req.URL.Scheme != origin.Scheme || req.URL.Host != origin.Host {
+				return fmt.Errorf("refusing a redirect from %s to %s://%s",
+					installerURL, req.URL.Scheme, req.URL.Host)
+			}
+			if len(via) >= 5 {
+				return fmt.Errorf("%s redirected too many times", installerURL)
+			}
+			return nil
+		},
+	}
 }
 
 // runInstaller hands the terminal to the script. Its output is the point — it
