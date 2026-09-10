@@ -221,15 +221,14 @@ func step(m *Model) string { return stepAt(m, m.feedBlobInterval().Seconds()) }
 // motion at several frame rates.
 func stepAt(m *Model, dt float64) string {
 	m.feed.blobPhase += dt
-	m.feed.blobNudge.advance(dt)
+	m.stepFeedBlobs(dt)
 	return stripANSI(renderFeedBlobs(m.feed.view.Width(), m.feed.view.Height(), m.feed.blobPhase, m.feed.blobNudge))
 }
 
 // rimCell is a cell one radius out to the side of a blob's centre — near the
 // peak of blobPushWeight, which is where a poke does the most.
 func rimCell(b blobFrame) (col, row int) {
-	r := math.Sqrt(b.r2)
-	return int(b.cx), int(b.cy + r)
+	return int(b.cx), int(b.cy + b.support(0, 1))
 }
 
 // dist is the distance from cell (col,row) to a blob's centre, in row units —
@@ -381,7 +380,7 @@ func TestFeedBlobPokeStaysCalm(t *testing.T) {
 func TestFeedBlobPokeShape(t *testing.T) {
 	const w, h = 80, 24
 	b := feedBlobFrame(w, h, 0, blobNudges{})[0]
-	r := math.Sqrt(b.r2)
+	r := b.support(0, 1)
 
 	// Push, in cells travelled, from a click r rows off the blob's centre.
 	push := func(mult float64) float64 {
@@ -670,7 +669,7 @@ func TestFeedBlobTickKeepsFrameWhenStill(t *testing.T) {
 	ahead := m
 	dt := m.feedBlobInterval().Seconds()
 	ahead.feed.blobPhase += dt
-	ahead.feed.blobNudge.advance(dt)
+	ahead.stepFeedBlobs(dt)
 	m.feed.blobPainted = ahead.feedEmptyContent()
 
 	m.vcache.viewValid = true

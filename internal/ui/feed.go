@@ -4,6 +4,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -95,9 +96,32 @@ type feedState struct {
 	// memo) alone instead of repainting it with itself. Empty whenever the
 	// viewport holds anything else.
 	blobPainted string
-	// blobNudge is the click-push state: per blob, an offset from its drift
-	// path on a damped spring. Zero when nothing has been poked.
+	// blobNudge is the play state: per blob, where it is relative to its drift
+	// path, how fast, and what shape the springs have it in. Zero when nothing
+	// has been touched.
 	blobNudge blobNudges
+	// blobPress is the blob a press landed in, biased by one the same way
+	// blobGrab is, with blobPressX/Y the cell it landed on. It is only a
+	// candidate: a press is a poke (which is all it ever was), and it becomes a
+	// drag only once the pointer has moved blobDragThreshold away from that
+	// cell. Cleared on release.
+	blobPress              int
+	blobPressX, blobPressY float64
+	// blobGrab is the blob the pointer has hold of, biased by one: the zero
+	// value means nothing is held, so a zero-valued feedState doesn't read as
+	// holding blob 0. Use heldBlob / holdBlob rather than the field.
+	// blobGrabX/Y is the point it was grabbed by, as the offset from the blob's
+	// centre to the pointer, so a drag doesn't snap its middle to the cursor.
+	blobGrab             int
+	blobGrabX, blobGrabY float64
+	// The pointer's last position (in canvas cells) and a smoothed estimate of
+	// its velocity (in pane fractions per second), sampled at blobPtrAt. This
+	// is what a release throws the blob with — a single motion report's delta
+	// is noise, and the timestamp is also how a release tells a throw from
+	// letting go of a blob that had been held still.
+	blobPtrX, blobPtrY   float64
+	blobPtrVX, blobPtrVY float64
+	blobPtrAt            time.Time
 
 	// zones maps viewport visual rows to feed-entry indices for mouse
 	// hit-testing; zonesTotal is the rendered list's full height. Both are
@@ -115,6 +139,19 @@ func newFeedState(showMuted bool) feedState {
 	vp.SoftWrap = true
 	return feedState{view: vp, showMuted: showMuted}
 }
+
+// pressedBlob is the index of the blob a press landed in and has not let go
+// of, or -1. It may not be being dragged yet — see blobDragThreshold.
+func (f *feedState) pressedBlob() int { return f.blobPress - 1 }
+
+// pressBlob records the blob a press landed in; -1 forgets it.
+func (f *feedState) pressBlob(i int) { f.blobPress = i + 1 }
+
+// heldBlob is the index of the blob the pointer has hold of, or -1.
+func (f *feedState) heldBlob() int { return f.blobGrab - 1 }
+
+// holdBlob records which blob the pointer has hold of; -1 lets go.
+func (f *feedState) holdBlob(i int) { f.blobGrab = i + 1 }
 
 // feedTarget is a snapshot of one unread channel taken on the UI
 // goroutine, handed to the worker so it never touches UI state.

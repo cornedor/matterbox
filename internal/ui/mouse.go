@@ -394,6 +394,11 @@ func (m Model) handleMouseRelease(msg tea.MouseReleaseMsg) (tea.Model, tea.Cmd) 
 	if msg.Button != tea.MouseLeft {
 		return m, nil
 	}
+	// Letting go over the empty feed: throw the blob being dragged, or put it
+	// down — and either way forget the press, which on its own was just a poke.
+	if m.feed.heldBlob() >= 0 || m.feed.pressedBlob() >= 0 {
+		return m, m.dropFeedBlobs()
+	}
 	if m.composerDrag {
 		// Leave the selection live so backspace/delete removes it and typing
 		// replaces it — the point of selecting in an editable field. No clipboard
@@ -436,12 +441,27 @@ func (m Model) handleMouseMotion(msg tea.MouseMotionMsg) (tea.Model, tea.Cmd) {
 		return m.stlMouseMotion(msg)
 	}
 	if m.mouseBlocked() {
+		if m.feed.heldBlob() >= 0 || m.feed.pressedBlob() >= 0 {
+			return m, m.dropFeedBlobs() // something opened over the field mid-drag
+		}
 		if m.hover.zone != hitNone {
 			m.hover = hoverState{}
 		}
 		m.setHoverLink(hoverLink{})
 		m.setInfoHover(-1)
 		return m, nil
+	}
+	// A blob under the pointer follows it, wherever it has got to — a drag owns
+	// the pointer until it is released, so this comes before the hover work. A
+	// press that has not travelled far enough to be a drag yet is swallowed
+	// here too, so the pointer can't do anything else with it either.
+	if m.feed.heldBlob() >= 0 || m.feed.pressedBlob() >= 0 {
+		if msg.Button != tea.MouseLeft || !m.feedBlobFieldDrawn() {
+			return m, m.dropFeedBlobs()
+		}
+		if cmd, ok := m.dragFeedBlobMotion(msg.X, msg.Y); ok {
+			return m, cmd
+		}
 	}
 	if m.composerDrag && msg.Button == tea.MouseLeft {
 		return m.dragComposerSel(msg.X, msg.Y)
