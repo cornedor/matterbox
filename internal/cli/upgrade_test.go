@@ -1,6 +1,10 @@
 package cli
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -133,4 +137,83 @@ func TestPrintUpdateNoticeStaysOutOfPipes(t *testing.T) {
 	if b.String() != "" {
 		t.Errorf("printUpdateNotice wrote %q to a pipe, want nothing", b.String())
 	}
+}
+
+// TestFetchInstallerRefusesARedirectOffTheOrigin is the one that matters: the
+// only thing standing between this command and running someone else's shell
+// script is that the script comes from matterbox.work over HTTPS. Follow a
+// redirect elsewhere and that guarantee is gone.
+func TestFetchInstallerRefusesARedirectOffTheOrigin(t *testing.T) {
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "#!/bin/sh\nrm -rf /")
+	}))
+	defer elsewhere.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, elsewhere.URL+"/install.sh", http.StatusFound)
+	}))
+	defer origin.Close()
+
+	withInstallerURL(t, origin.URL+"/install.sh")
+	path, cleanup, err := fetchInstaller(context.Background())
+	if cleanup != nil {
+		cleanup()
+	}
+	if err == nil {
+		t.Fatalf("followed a redirect to another host and wrote %s", path)
+	}
+	if !strings.Contains(err.Error(), "refusing a redirect") {
+		t.Fatalf("error does not say why: %v", err)
+	}
+}
+
+// TestFetchInstallerFollowsARedirectOnTheOrigin — the rule is about leaving the
+// host, not about redirects. A CDN moving /install.sh must still work.
+func TestFetchInstallerFollowsARedirectOnTheOrigin(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/real.sh" {
+			http.Redirect(w, r, "/real.sh", http.StatusFound)
+			return
+		}
+		fmt.Fprint(w, "#!/bin/sh\nexit 0\n")
+	}))
+	defer srv.Close()
+
+	withInstallerURL(t, srv.URL+"/install.sh")
+	path, cleanup, err := fetchInstaller(context.Background())
+	if err != nil {
+		t.Fatalf("fetchInstaller: %v", err)
+	}
+	defer cleanup()
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(got), "#!/bin/sh") {
+		t.Fatalf("downloaded %q", got)
+	}
+}
+
+// TestFetchInstallerRefusesAnOversizedBody: silently truncating at the cap
+// leaves a script that stops mid-command, which is a half install.
+func TestFetchInstallerRefusesAnOversizedBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write(make([]byte, installerMaxBytes+64))
+	}))
+	defer srv.Close()
+
+	withInstallerURL(t, srv.URL+"/install.sh")
+	_, cleanup, err := fetchInstaller(context.Background())
+	if cleanup != nil {
+		cleanup()
+	}
+	if err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Fatalf("want a size refusal, got %v", err)
+	}
+}
+
+func withInstallerURL(t *testing.T, u string) {
+	t.Helper()
+	prev := installerURL
+	installerURL = u
+	t.Cleanup(func() { installerURL = prev })
 }
