@@ -16,6 +16,8 @@ import (
 	"matterbox/internal/semindex"
 	"matterbox/internal/store"
 	"matterbox/internal/viewport"
+
+	"matterbox/internal/safeterm"
 )
 
 // searchDebounce is how long we wait after the last keystroke before
@@ -1145,7 +1147,7 @@ func (m Model) renderHitLine(p *model.Post, width int, muted, match bool) string
 	}
 	prefix := nameStyle.Render(name) + "  " + timeStyle2.Render(ts) + "  "
 	prefixW := lipgloss.Width(prefix)
-	body := strings.ReplaceAll(p.Message, "\n", " ↵ ")
+	body := strings.ReplaceAll(safeterm.Text(p.Message), "\n", " ↵ ")
 	// Collapse tabs to a space: this is a single-line preview, and lipgloss
 	// measures a tab as zero cells while the terminal paints it wider, which
 	// would defeat the width-based truncate below (see expandTabs).

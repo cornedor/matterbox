@@ -10,6 +10,7 @@ import (
 	emoji "github.com/kyokomi/emoji/v2"
 
 	"matterbox/internal/game"
+	"matterbox/internal/safeterm"
 )
 
 // selfMentionReCache memoises the @self mention regex per username. The
@@ -324,6 +325,11 @@ func renderMarkdown(msg string, ei *emojiImages, mr changeInlineFn, self string)
 	// as nothing, but they are still runes the wrapper would have to account for —
 	// strip them before anything measures or lays out the body.
 	msg = game.Strip(msg)
+	// Message bodies are remote input. Strip terminal control characters
+	// before anything below can splice them into styled output — a bare ESC
+	// here reaches the terminal verbatim and lets the sender repaint the
+	// screen or drive OSC 52.
+	msg = safeterm.Text(msg)
 	lines := strings.Split(strings.TrimRight(expandTabs(msg, 4), "\n"), "\n")
 	out := make([]string, 0, len(lines))
 	prevBlank := true // start of message counts as preceded by a blank line

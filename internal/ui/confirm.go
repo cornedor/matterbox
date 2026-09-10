@@ -5,6 +5,8 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/safeterm"
 )
 
 // confirmDialogMaxWidth caps the dialog's outer width so it stays
@@ -35,7 +37,7 @@ func (m *Model) closeDeleteConfirm() {
 // they're about to lose. Attachment-only posts get an explicit label so
 // the dialog doesn't render a blank.
 func postSummary(p *model.Post) string {
-	body := strings.TrimSpace(p.Message)
+	body := strings.TrimSpace(safeterm.Text(p.Message))
 	body = strings.ReplaceAll(body, "\n", " ")
 	if body == "" {
 		if p.Metadata != nil && len(p.Metadata.Files) > 0 {

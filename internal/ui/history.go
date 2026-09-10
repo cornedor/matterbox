@@ -8,6 +8,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/safeterm"
 )
 
 // historyTimeFormat is used for the dim per-revision timestamps. Local
@@ -76,7 +78,7 @@ func (m *Model) renderHistory() {
 			time.UnixMilli(latestStamp(r)).Local().Format(historyTimeFormat),
 		)
 		parts = append(parts, headerStyle.Render(label))
-		body := r.Message
+		body := safeterm.Text(r.Message)
 		if body == "" {
 			body = dim.Render("(empty)")
 		}
@@ -89,7 +91,7 @@ func (m *Model) renderHistory() {
 			time.UnixMilli(m.historyPost.EditAt).Local().Format(historyTimeFormat) + ")"
 	}
 	parts = append(parts, headerStyle.Render(curLabel))
-	body := m.historyPost.Message
+	body := safeterm.Text(m.historyPost.Message)
 	if body == "" {
 		body = dim.Render("(empty)")
 	}

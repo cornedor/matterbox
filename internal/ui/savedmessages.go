@@ -7,6 +7,8 @@ import (
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/safeterm"
 )
 
 // Saved messages are Mattermost's per-user "flagged_post" preferences: a post
@@ -259,7 +261,7 @@ func (m Model) applySavedPostsLoaded(msg savedPostsLoadedMsg) (tea.Model, tea.Cm
 		m.savedPosts.items = append(m.savedPosts.items, savedItem{
 			post:    p,
 			channel: label,
-			text:    strings.Join(strings.Fields(p.Message), " "),
+			text:    strings.Join(strings.Fields(safeterm.Text(p.Message)), " "),
 		})
 		if m.setSaved(p.Id, true) {
 			changed = true

@@ -13,6 +13,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"matterbox/internal/mm"
+
+	"matterbox/internal/safeterm"
 )
 
 // defaultReadLimit is how many recent posts `read` shows when --limit is
@@ -358,8 +360,10 @@ func formatPostsLayout(posts []*model.Post, names map[string]string, layout stri
 		if name == "" {
 			name = "unknown"
 		}
-		prefix := fmt.Sprintf("[%s] @%s  ", time.UnixMilli(p.CreateAt).Format(layout), name)
-		lines := strings.Split(p.Message, "\n")
+		prefix := fmt.Sprintf("[%s] @%s  ", time.UnixMilli(p.CreateAt).Format(layout), safeterm.Line(name))
+		// Remote text going straight to a terminal: strip escape sequences so a
+		// sender can't repaint the screen or drive OSC 52 through `matterbox read`.
+		lines := strings.Split(safeterm.Text(p.Message), "\n")
 		b.WriteString(prefix)
 		b.WriteString(lines[0])
 		b.WriteByte('\n')
