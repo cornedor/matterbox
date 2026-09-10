@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/safeterm"
 )
 
 // postLineCacheCap bounds the rendered-line cache (entries keyed by post
@@ -37,9 +39,9 @@ type postLineCacheEntry struct {
 // Falls back to the cached username, then a truncated UserId.
 func (m *Model) postAuthorName(p *model.Post) string {
 	if ov, ok := p.GetProp("override_username").(string); ok && ov != "" {
-		return ov
+		return safeterm.Line(ov)
 	}
-	name := m.userNames[p.UserId]
+	name := safeterm.Line(m.userNames[p.UserId])
 	if name == "" {
 		name = p.UserId
 		if len(name) > 8 {

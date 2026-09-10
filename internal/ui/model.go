@@ -35,6 +35,8 @@ import (
 	"matterbox/internal/telemetry"
 	"matterbox/internal/update"
 	"matterbox/internal/viewport"
+
+	"matterbox/internal/safeterm"
 )
 
 // inputPromptFunc returns a PromptFunc for the input editor that only
@@ -3280,7 +3282,7 @@ func (m *Model) channelLabel(c *model.Channel) string {
 			return "@" + m.me.Username + " (you)"
 		}
 		if n, ok := m.userNames[other]; ok && n != "" {
-			return "@" + n
+			return "@" + safeterm.Line(n)
 		}
 		if len(other) > 8 {
 			return "@" + other[:8]
@@ -3288,7 +3290,7 @@ func (m *Model) channelLabel(c *model.Channel) string {
 		return "@?"
 	case model.ChannelTypeGroup:
 		if c.DisplayName != "" {
-			return "·" + hidden.Strip(c.DisplayName)
+			return "·" + safeterm.Line(hidden.Strip(c.DisplayName))
 		}
 		return "·group"
 	case model.ChannelTypePrivate:
@@ -3307,7 +3309,7 @@ func (m *Model) channelLabelFX(c *model.Channel) string {
 	if c.Type == model.ChannelTypeDirect || !hasEffectPayload(c.DisplayName) {
 		return m.channelLabel(c)
 	}
-	marked := nameEffectSentinels(c.DisplayName)
+	marked := nameEffectSentinels(safeterm.Line(c.DisplayName))
 	switch c.Type {
 	case model.ChannelTypeGroup:
 		return "·" + marked
@@ -3576,9 +3578,9 @@ func (m Model) persistTeamOrder() tea.Cmd {
 
 func displayTeam(t *model.Team) string {
 	if t.DisplayName != "" {
-		return t.DisplayName
+		return safeterm.Line(t.DisplayName)
 	}
-	return t.Name
+	return safeterm.Line(t.Name)
 }
 
 func displayChannel(c *model.Channel) string {
@@ -3587,7 +3589,7 @@ func displayChannel(c *model.Channel) string {
 		// name; every plain-text consumer (filter, switcher, breadcrumbs,
 		// palette entries) wants only the visible runes. The styled render is
 		// channelLabelFX's job.
-		return hidden.Strip(c.DisplayName)
+		return safeterm.Line(hidden.Strip(c.DisplayName))
 	}
-	return c.Name
+	return safeterm.Line(c.Name)
 }

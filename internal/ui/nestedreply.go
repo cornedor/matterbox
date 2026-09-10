@@ -10,6 +10,8 @@ import (
 
 	"matterbox/internal/hidden"
 	"matterbox/internal/replyto"
+
+	"matterbox/internal/safeterm"
 )
 
 // Nested replies. A Mattermost thread is flat — every reply hangs off the same
@@ -316,7 +318,7 @@ func (m *Model) nestQuoteText(p *model.Post) string {
 	if p.DeleteAt != 0 {
 		return "(deleted)"
 	}
-	if text := strings.Join(strings.Fields(hidden.Strip(p.Message)), " "); text != "" {
+	if text := strings.Join(strings.Fields(hidden.Strip(safeterm.Text(p.Message))), " "); text != "" {
 		return text
 	}
 	if len(p.FileIds) > 0 {

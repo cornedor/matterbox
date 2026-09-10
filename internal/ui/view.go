@@ -18,6 +18,8 @@ import (
 
 	"matterbox/internal/telemetry"
 	"matterbox/internal/textwidth"
+
+	"matterbox/internal/safeterm"
 )
 
 const channelsWidth = 26
@@ -1506,7 +1508,8 @@ func (m *Model) meEmoteLine(p *model.Post) string {
 // into screenshot filenames as "Scherm­afbeelding"). lipgloss reports
 // width 0 for these, but if the terminal renders them at width 1 the
 // attachment line silently overflows the viewport and the bordered
-// layout shifts.
+// layout shifts. Control characters go too: an uploader picks the filename,
+// so it is remote input like any message body.
 func normalizeFilename(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch r {
@@ -1518,7 +1521,7 @@ func normalizeFilename(s string) string {
 			return -1
 		}
 		return r
-	}, s)
+	}, safeterm.Line(s))
 }
 
 // renderAttachments returns one indented line per file attached to the
@@ -1935,6 +1938,8 @@ func (m *Model) dmCustomStatus(c *model.Channel) (model.CustomStatus, bool) {
 	if !ok {
 		return model.CustomStatus{}, false
 	}
+	cs.Text = safeterm.Line(cs.Text)
+	cs.Emoji = safeterm.Line(cs.Emoji)
 	// A zero ExpiresAt means "no expiry"; otherwise drop it once past due.
 	if !cs.ExpiresAt.IsZero() && !cs.ExpiresAt.After(time.Now()) {
 		return model.CustomStatus{}, false

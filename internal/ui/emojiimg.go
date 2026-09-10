@@ -23,6 +23,8 @@ import (
 	"github.com/mattermost/mattermost/server/public/model"
 
 	"matterbox/internal/svgimg"
+
+	"matterbox/internal/safeterm"
 )
 
 // Custom (server) emoji rendered as inline images via the Kitty graphics
@@ -788,6 +790,9 @@ func (e *emojiImages) markFailed(names ...string) {
 // :name: as a last resort. Used by the reaction pills/picker, the emoji popup,
 // and the custom-status surfaces; the message body resolves via renderInline.
 func (m Model) renderEmojiGlyph(name string) string {
+	// Emoji names come from reactions other people made; a custom emoji can
+	// be named anything the server accepted.
+	name = safeterm.Line(name)
 	if g := unicodeEmojiGlyph(name); g != "" {
 		return g
 	}
