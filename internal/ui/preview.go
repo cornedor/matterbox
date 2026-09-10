@@ -63,6 +63,9 @@ type previewItem struct {
 	file *model.FileInfo
 	url  string
 	name string
+	// path is a file on this machine, used for a composer attachment that has
+	// no FileInfo yet (it may still be uploading). Wins over file/url.
+	path string
 }
 
 // previewState holds the live image-preview modal. The zero value is closed.
@@ -451,6 +454,9 @@ func (m Model) encodePreviewNative(frames []image.Image, delays []time.Duration,
 // decode, and PNG re-encode for nothing. The preview is cached under its own
 // path so `o` (open externally) and downloads still get the true original.
 func (m Model) readPreviewBytes(it previewItem) ([]byte, error) {
+	if it.path != "" {
+		return os.ReadFile(it.path)
+	}
 	if it.file != nil {
 		if m.usePreviewRendition(it.file) {
 			if data, err := m.readOrDownloadFilePreview(it.file); err == nil && len(data) > 0 {

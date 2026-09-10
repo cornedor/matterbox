@@ -40,6 +40,7 @@ const (
 	hitFeedMarkAll
 	hitFeedBlobs
 	hitToast
+	hitAttachment
 )
 
 // hit is the result of hitTest. idx's meaning depends on zone: a tab index
@@ -231,6 +232,8 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case hitComposer:
 		return m.clickComposer(h.line, h.col, count, shift)
+	case hitAttachment:
+		return m.clickAttachment(h.idx, h.line == 1)
 	case hitJumpBottom:
 		return m.clickJumpBottom()
 	case hitFeedMarkAll:
@@ -283,6 +286,28 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 			m.renderInfo()
 		}
 		return m, nil
+	}
+	return m, nil
+}
+
+// clickAttachment handles a left click on a composer attachment chip: the ×
+// removes it, anywhere else selects it (focusing the strip) and previews it
+// when it is something we can render — the same thing the keyboard's ↵ does.
+func (m Model) clickAttachment(idx int, close bool) (tea.Model, tea.Cmd) {
+	if idx < 0 || idx >= len(m.attachments) {
+		return m, nil
+	}
+	m.clearTextSel()
+	if close {
+		id := m.attachments[idx].id
+		m.removeAttachment(id)
+		return m, nil
+	}
+	m.input.Blur()
+	m.focus = focusAttachments
+	m.attachmentIdx = idx
+	if attachmentPreviewable(m.attachments[idx]) {
+		return m.previewAttachment(m.attachments[idx])
 	}
 	return m, nil
 }
@@ -472,6 +497,11 @@ func (m *Model) hoverAt(x, y int) hoverState {
 	}
 	// Both zones are disarmed on any tab that doesn't draw their label, so
 	// neither needs a tab guard of its own.
+	// The chip strip's × buttons: small targets that destroy something, so they
+	// light up under the pointer. Only the button hovers, not the chip body.
+	if h := m.hitAttachChip(x, y); h.zone == hitAttachment && h.line == 1 {
+		return hoverState{zone: hitAttachment, idx: h.idx}
+	}
 	if m.vcache != nil {
 		if m.vcache.jumpZone.contains(x, y) {
 			return hoverState{zone: hitJumpBottom}
@@ -797,6 +827,12 @@ func (m *Model) hitTest(x, y int) hit {
 	if m.inComposer(x, y) {
 		vrow, vcol := m.composerCell(x, y)
 		return hit{zone: hitComposer, line: vrow, col: vcol}
+	}
+	// The attachment chip strip sits directly above the compose box (above the
+	// nested-reply bar too, in the thread pane), so it is tested right after it
+	// and before the transcript underneath.
+	if h := m.hitAttachChip(x, y); h.zone != hitNone {
+		return h
 	}
 	// The jump-to-bottom pill is painted over the transcript's last row, so it
 	// wins over the message underneath it.
@@ -1481,6 +1517,39 @@ func placeOffset(total, box int) int {
 func (m *Model) inComposer(x, y int) bool {
 	x0, top, width, height, _ := m.composerGeom()
 	return height > 0 && width > 0 && y >= top && y < top+height && x >= x0 && x < x0+width
+}
+
+// hitAttachChip maps a screen cell to an attachment chip, using the zones the
+// last render recorded (relative to the strip's top-left) and the composer's
+// geometry to place them. line is 1 when the cell falls on the chip's × button,
+// 0 on its body.
+func (m *Model) hitAttachChip(x, y int) hit {
+	if m.vcache == nil || len(m.vcache.attachZones) == 0 {
+		return hit{zone: hitNone}
+	}
+	x0, top, _, height, _ := m.composerGeom()
+	if height <= 0 {
+		return hit{zone: hitNone}
+	}
+	// top-1 is the compose box's rule; the reply bar (thread pane only) sits
+	// between that rule and the strip.
+	barBottom := top - 1 - m.replyBarHeight()
+	row := y - (barBottom - m.vcache.attachBarH)
+	if row < 0 || row >= m.vcache.attachBarH {
+		return hit{zone: hitNone}
+	}
+	col := x - x0
+	for _, z := range m.vcache.attachZones {
+		if row < z.y0 || row >= z.y1 || col < z.x0 || col >= z.x1 {
+			continue
+		}
+		line := 0
+		if col >= z.closeX0 && col < z.closeX1 {
+			line = 1
+		}
+		return hit{zone: hitAttachment, idx: z.idx, line: line}
+	}
+	return hit{zone: hitNone}
 }
 
 // composerCell maps a screen cell to an editor (visual row, visual column),

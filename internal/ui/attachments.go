@@ -265,12 +265,41 @@ func (m *Model) tickAttachmentSpinners(msg spinner.TickMsg) tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+// attachChipZone is one chip's horizontal extent on a row of the chip strip,
+// in coordinates relative to the strip's own top-left cell. closeX0/closeX1
+// bound the chip's × button; the rest of [x0,x1) is the chip body. Recorded by
+// renderAttachmentBar and read back by the mouse layer (see hitAttachChip).
+type attachChipZone struct {
+	// y0/y1 bound the chip's screen lines (a chip is a 3-line box), x0/x1 its
+	// columns; both relative to the strip's top-left cell.
+	y0, y1           int
+	x0, x1           int
+	closeX0, closeX1 int
+	idx              int
+}
+
 // renderAttachmentBar builds the chip strip shown above the textarea.
 // Returns "" when there are no attachments. Width caps how wide chip
-// rows can be before wrapping to a second row.
+// rows can be before wrapping to a second row. Records the click zones for
+// this frame in the view cache (mouse), which is why the whole strip is laid
+// out in one pass rather than measured twice.
 func (m *Model) renderAttachmentBar(width int) string {
-	if len(m.attachments) == 0 {
+	rows, zones := m.attachmentBarLayout(width)
+	if len(rows) == 0 {
 		return ""
+	}
+	if m.vcache != nil {
+		m.vcache.attachZones = zones
+		m.vcache.attachBarH = barLines(rows)
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+}
+
+// attachmentBarLayout lays the chips out into wrapped rows and returns both the
+// rendered rows and each chip's click zone (relative to the strip's top-left).
+func (m *Model) attachmentBarLayout(width int) ([]string, []attachChipZone) {
+	if len(m.attachments) == 0 {
+		return nil, nil
 	}
 	focused := m.focus == focusAttachments
 	if width < 10 {
@@ -280,13 +309,15 @@ func (m *Model) renderAttachmentBar(width int) string {
 	chips := make([]string, len(m.attachments))
 	widths := make([]int, len(m.attachments))
 	for i, att := range m.attachments {
-		c := chipText(att, focused && i == m.attachmentIdx, focused)
+		hovered := m.hover.zone == hitAttachment && m.hover.idx == i
+		c := chipText(att, focused && i == m.attachmentIdx, focused, hovered)
 		chips[i] = c
 		widths[i] = lipgloss.Width(c)
 	}
 
 	// Greedy wrap into rows; chips themselves don't break.
 	var rows []string
+	var zones []attachChipZone
 	var cur []string
 	curW := 0
 	for i, c := range chips {
@@ -305,6 +336,13 @@ func (m *Model) renderAttachmentBar(width int) string {
 			cur = append(cur, " ")
 		}
 		cur = append(cur, c)
+		x0 := curW + add - w
+		// The × is the last content cell; its hit box also takes the padding
+		// cell beside it, so a click one column off still closes the chip.
+		zones = append(zones, attachChipZone{
+			y0: len(rows), x0: x0, x1: x0 + w, idx: i,
+			closeX0: x0 + w - 3, closeX1: x0 + w - 1,
+		})
 		curW += add
 	}
 	if len(cur) > 0 {
@@ -313,14 +351,36 @@ func (m *Model) renderAttachmentBar(width int) string {
 
 	if focused {
 		hint := lipgloss.NewStyle().Foreground(dimColor).Render(
-			"←/→ select · o/↵ open · d/x remove · tab leave",
+			"←/→ select · ↵ preview · o open · d/x remove · ↑ messages",
 		)
 		rows = append([]string{hint}, rows...)
+		for i := range zones {
+			zones[i].y0++
+		}
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+	// Chips are boxes, so a wrapped row is several screen lines: turn each
+	// zone's row index into the line range that row actually occupies.
+	offs := make([]int, len(rows)+1)
+	for i, r := range rows {
+		offs[i+1] = offs[i] + lipgloss.Height(r)
+	}
+	for i := range zones {
+		r := zones[i].y0
+		zones[i].y0, zones[i].y1 = offs[r], offs[r+1]
+	}
+	return rows, zones
 }
 
-func chipText(att pendingAttachment, selected, focused bool) string {
+// barLines is the strip's height in screen lines (a chip row is a 3-line box).
+func barLines(rows []string) int {
+	n := 0
+	for _, r := range rows {
+		n += lipgloss.Height(r)
+	}
+	return n
+}
+
+func chipText(att pendingAttachment, selected, focused, hoverClose bool) string {
 	var glyph string
 	switch att.state {
 	case attUploading:
@@ -347,12 +407,51 @@ func chipText(att pendingAttachment, selected, focused bool) string {
 	}
 
 	border := dimColor
+	closeColor := dimColor
 	if selected && focused {
 		border = focusedColor
+		closeColor = focusedColor
 	}
+	// Trailing ×: the mouse target for dropping this attachment (d/x do the
+	// same from the keyboard). Kept one cell wide so the zone maths in
+	// attachmentBarLayout can address it from the chip's right edge. It turns
+	// red under the pointer, since a click there destroys something and the
+	// button carries no label of its own to say so.
+	closeStyle := lipgloss.NewStyle().Foreground(closeColor)
+	if hoverClose {
+		closeStyle = closeStyle.Foreground(lipgloss.Color("9")).Bold(true)
+	}
+	closeBtn := closeStyle.Render("×")
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(border).
 		Padding(0, 1).
-		Render(fmt.Sprintf("%s %s%s", glyph, body, sizeText))
+		Render(fmt.Sprintf("%s %s%s %s", glyph, body, sizeText, closeBtn))
+}
+
+// attachmentPreviewable reports whether a pending composer attachment is
+// something the preview modal can render: a still image this build decodes, or
+// an SVG. Answered from the filename and the MIME the source reported — the
+// file has no FileInfo yet, and may still be uploading.
+func attachmentPreviewable(att pendingAttachment) bool {
+	ext := ""
+	if i := strings.LastIndex(att.filename, "."); i >= 0 {
+		ext = att.filename[i+1:]
+	}
+	mime, _, _ := strings.Cut(att.mime, ";")
+	mime = strings.TrimSpace(mime)
+	if strings.EqualFold(ext, "svg") || previewableMIME(mime) {
+		return true
+	}
+	return decodableStillExt(ext)
+}
+
+// previewAttachment raises the preview modal on a pending attachment, reading
+// it straight off disk (it may not have finished uploading).
+func (m Model) previewAttachment(att pendingAttachment) (tea.Model, tea.Cmd) {
+	if !attachmentPreviewable(att) {
+		m.status = "no preview for " + att.filename
+		return m, nil
+	}
+	return m.openPreviewItems([]previewItem{{path: att.localPath, name: att.filename}}, 0)
 }

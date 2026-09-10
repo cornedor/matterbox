@@ -95,6 +95,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// forgetting to blur/focus it. Every event funnels through here, so this is
 	// the one place the invariant is guaranteed (see syncComposerFocus).
 	nm.syncComposerFocus()
+	// The chip strip is a row taller while it holds focus (it grows a key hint),
+	// so the space the transcript has to give up changes on a plain focus move,
+	// which no handler resizes for. Same shape as the two syncs around it: one
+	// place, so no focus-changing path has to remember (a stale layout showed as
+	// a blank row above the chips, and a phantom row under the composer once the
+	// strip lost focus again).
+	nm.syncAttachBarFocus()
 	// Same shape for the transcript panes: a focus change that skipped one of
 	// their renders would leave its selection bar on screen (see
 	// syncSelBarFocus).
@@ -148,6 +155,20 @@ func (m *Model) syncComposerFocus() {
 	case m.focus != focusInput && m.input.Focused():
 		m.input.Blur()
 	}
+}
+
+// syncAttachBarFocus re-lays the panes out when the composer's chip strip gains
+// or loses focus, because the hint row it draws while focused changes its
+// height. Adding and removing chips resize on their own account; this covers
+// the focus transition, which otherwise leaves the viewport sized for the
+// wrong strip.
+func (m *Model) syncAttachBarFocus() {
+	focused := m.focus == focusAttachments && len(m.attachments) > 0
+	if focused == m.attachBarFocused {
+		return
+	}
+	m.attachBarFocused = focused
+	m.resizeMessagesViewport()
 }
 
 // preservesFrame reports whether msg leaves the rendered screen byte-identical,
@@ -2602,6 +2623,31 @@ func (m Model) handleAttachmentsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.End):
 		m.attachmentIdx = len(m.attachments) - 1
 		return m, nil
+	case key.Matches(msg, m.keys.Up):
+		// ↑ leaves the strip for the transcript — the second half of the walk
+		// that started with ↑ in the composer.
+		if m.threadOpen {
+			if len(m.threadPosts) == 0 {
+				return m, nil
+			}
+			m.focus = focusThread
+			m.threadIdx = len(m.threadPosts) - 1
+			m.renderMessages()
+			m.renderThread()
+			return m, nil
+		}
+		if len(m.posts) == 0 {
+			return m, nil
+		}
+		m.focus = focusMessages
+		m.selectLastMessage()
+		m.renderMessages()
+		return m, nil
+	case key.Matches(msg, m.keys.Down):
+		m.focus = focusInput
+		return m, m.input.Focus()
+	case key.Matches(msg, m.keys.Preview), key.Matches(msg, m.keys.ApplyOpen):
+		return m.previewAttachment(m.attachments[m.attachmentIdx])
 	case key.Matches(msg, m.keys.OpenAttach):
 		att := m.attachments[m.attachmentIdx]
 		m.status = "opening " + att.filename + "…"
@@ -3249,6 +3295,15 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// falls through to the textarea below); only the top row escapes to
 		// the transcript. Skipped while editing a post so an in-progress edit
 		// isn't abandoned by a stray ↑.
+		// Chips first when the post carries attachments: they sit between the
+		// composer and the transcript on screen, so ↑ walks up through them,
+		// and a second ↑ (handleAttachmentsKey) reaches the messages.
+		if len(m.attachments) > 0 {
+			m.input.Blur()
+			m.focus = focusAttachments
+			m.attachmentIdx = 0
+			return m, nil
+		}
 		if m.threadOpen {
 			if len(m.threadPosts) == 0 {
 				break // nothing to select; let ↑ fall through to the textarea
