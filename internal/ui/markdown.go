@@ -140,8 +140,14 @@ func renderCodeSpan(content string) string {
 // terminal (Ghostty) makes the whole run clickable and keeps it
 // clickable even when soft-wrapping splits it across visual rows, since
 // the hyperlink state persists between the open and close sequences.
+//
+// url is sanitized here rather than at each call site: it is the one place
+// remote text is spliced into an escape sequence. A URL carrying its own
+// terminator (ESC backslash, BEL, or C1 ST) would close the hyperlink early
+// and let the rest of it run as terminal commands. text is already-rendered
+// styled content, so its escapes are ours and stay.
 func osc8Link(url, text string) string {
-	return "\x1b]8;;" + url + "\x1b\\" + text + "\x1b]8;;\x1b\\"
+	return "\x1b]8;;" + safeterm.Line(url) + "\x1b\\" + text + "\x1b]8;;\x1b\\"
 }
 
 // trimTrailingURLPunct splits trailing sentence punctuation off a bare

@@ -18,6 +18,9 @@ var termInjections = []string{
 	"52;c;cHduZWQ=",
 }
 
+// osc8ST is the string terminator osc8Link writes after the destination.
+const osc8ST = "\x1b\\"
+
 // hasTermControl reports whether s carries a character the terminal would act on.
 // The renderers below produce no styling escapes for plain text, so for these
 // inputs the whole output must be free of them.
@@ -102,6 +105,40 @@ func TestPostSummaryStripsTerminalEscapes(t *testing.T) {
 	for _, p := range termInjections {
 		if got := postSummary(&model.Post{Message: "hi " + p}); hasTermControl(got) {
 			t.Errorf("postSummary kept a control char from %q: %q", p, got)
+		}
+	}
+}
+
+func TestOSC8LinkStripsEscapesFromURL(t *testing.T) {
+	for _, p := range termInjections {
+		got := osc8Link("https://example.com/"+p, "label")
+		// Exactly the two terminators osc8Link writes itself, and no other
+		// control character inside the destination.
+		dest, _, ok := strings.Cut(strings.TrimPrefix(got, osc8Open), osc8ST)
+		if !ok {
+			t.Fatalf("malformed link for %q: %q", p, got)
+		}
+		if hasTermControl(dest) {
+			t.Errorf("destination kept a control char from %q: %q", p, dest)
+		}
+	}
+}
+
+func TestOSC8LinkKeepsCleanURL(t *testing.T) {
+	u := "https://example.com/a/b?q=1&r=2#frag"
+	if got := osc8Link(u, "x"); !strings.Contains(got, osc8Open+u+osc8ST) {
+		t.Fatalf("clean URL mangled: %q", got)
+	}
+}
+
+func TestMarkdownLinkStripsEscapesFromURL(t *testing.T) {
+	for _, p := range termInjections {
+		got := renderMarkdown("see [here](https://example.com/"+p+") ok", nil, nil, "")
+		for _, seg := range strings.Split(got, osc8Open)[1:] {
+			dest, _, _ := strings.Cut(seg, osc8ST)
+			if hasTermControl(dest) {
+				t.Errorf("markdown link destination kept %q: %q", p, dest)
+			}
 		}
 	}
 }
