@@ -32,7 +32,7 @@ func TestCachedFilePathStaysInCache(t *testing.T) {
 		"",
 	}
 	for _, name := range names {
-		got, err := m.cachedFilePath(&model.FileInfo{Id: "id", Name: name})
+		got, err := m.cachedFilePath(&model.FileInfo{Id: validFileID, Name: name})
 		if err != nil {
 			t.Fatalf("cachedFilePath(%q): %v", name, err)
 		}
@@ -43,6 +43,36 @@ func TestCachedFilePathStaysInCache(t *testing.T) {
 			t.Errorf("name %q left a traversal component in %s", name, got)
 		}
 	}
+
+	// The id prefix is just as server-controlled as the name, and inline
+	// thumbnails write here without any user gesture at all.
+	ids := []string{
+		"../../../../home/u/.config/autostart/x.desktop",
+		"../../.zshenv",
+		"..",
+		"/etc/passwd",
+		"sub/dir",
+		"",
+	}
+	for _, id := range ids {
+		got, err := m.cachedFilePath(&model.FileInfo{Id: id, Name: "plain.pdf"})
+		if err != nil {
+			t.Fatalf("cachedFilePath(id %q): %v", id, err)
+		}
+		if filepath.Dir(got) != dir {
+			t.Errorf("id %q escaped the cache: %s", id, got)
+		}
+		if strings.Contains(got, "..") {
+			t.Errorf("id %q left a traversal component in %s", id, got)
+		}
+	}
+
+	// Distinct hostile ids must still land on distinct cache entries.
+	a, _ := m.cachedFilePath(&model.FileInfo{Id: "../a", Name: "plain.pdf"})
+	b, _ := m.cachedFilePath(&model.FileInfo{Id: "../b", Name: "plain.pdf"})
+	if a == b {
+		t.Errorf("hostile ids collapsed onto one cache entry: %s", a)
+	}
 }
 
 // TestCachedFilePathKeepsOrdinaryNames guards the fix from over-reaching: the
@@ -51,11 +81,11 @@ func TestCachedFilePathStaysInCache(t *testing.T) {
 func TestCachedFilePathKeepsOrdinaryNames(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	var m Model
-	got, err := m.cachedFilePath(&model.FileInfo{Id: "abc123", Name: "Quarterly Report (final).pdf"})
+	got, err := m.cachedFilePath(&model.FileInfo{Id: validFileID, Name: "Quarterly Report (final).pdf"})
 	if err != nil {
 		t.Fatalf("cachedFilePath: %v", err)
 	}
-	if want := "abc123_Quarterly Report (final).pdf"; filepath.Base(got) != want {
+	if want := validFileID + "_Quarterly Report (final).pdf"; filepath.Base(got) != want {
 		t.Errorf("basename = %q, want %q", filepath.Base(got), want)
 	}
 }
