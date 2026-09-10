@@ -602,7 +602,10 @@ var keyContexts = []keyContext{
 		active:   func(m *Model) bool { return m.focus == focusAttachments },
 		terminal: true,
 		claims: func(m *Model) []key.Binding {
-			return []key.Binding{m.keys.Left, m.keys.Right, m.keys.Home, m.keys.End, m.keys.OpenAttach, m.keys.AttachRemove}
+			return []key.Binding{
+				m.keys.Left, m.keys.Right, m.keys.Up, m.keys.Down, m.keys.Home, m.keys.End,
+				m.keys.OpenAttach, m.keys.Preview, m.keys.ApplyOpen, m.keys.AttachRemove,
+			}
 		},
 	},
 	{

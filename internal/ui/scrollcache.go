@@ -62,6 +62,13 @@ type viewCache struct {
 	// by renderFeedPane and read back by the mouse layer. Cleared each render
 	// alongside jumpZone, so another tab can't inherit the target.
 	feedBtnZone rectZone
+	// attachZones / attachBarH describe the composer's attachment chip strip as
+	// the last render laid it out: one zone per chip, in coordinates relative to
+	// the strip's top-left cell, plus how many rows the strip took. The mouse
+	// layer turns them into screen cells off composerGeom (see hitAttachChip).
+	// Cleared each render alongside the zones above.
+	attachZones []attachChipZone
+	attachBarH  int
 	// tabs memoizes the rendered tab strip, which is invariant between most
 	// frames and was the single most expensive part of a blob-animation frame
 	// once the panes stopped re-measuring themselves (17% of the process's CPU

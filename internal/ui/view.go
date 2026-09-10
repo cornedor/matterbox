@@ -1722,6 +1722,8 @@ func (m *Model) renderViewContent() string {
 		m.vcache.bodyH = bodyH
 		m.vcache.jumpZone = rectZone{}
 		m.vcache.feedBtnZone = rectZone{}
+		m.vcache.attachZones = nil
+		m.vcache.attachBarH = 0
 	}
 
 	// joins collects the columns where a pane's vertical border lands on the

@@ -572,6 +572,9 @@ type Model struct {
 	attachments   []pendingAttachment
 	attachmentIdx int
 	uploadCancel  map[string]context.CancelFunc
+	// attachBarFocused is whether the last layout was done for a focused strip
+	// (which draws an extra hint row); see syncAttachBarFocus.
+	attachBarFocused bool
 
 	// Thread sidebar state. threadOpen toggles the panel; the rest
 	// describes which thread is being shown and the loaded posts.
@@ -1557,7 +1560,7 @@ func (m *Model) ShortHelp() []key.Binding {
 		// k.ChannelInfo doubles as the close key, mirroring the ref pane's OpenRef.
 		return []key.Binding{k.Up, k.Down, k.OpenChannel, k.ChannelInfo, k.Help, k.NavTeam}
 	case m.focus == focusAttachments:
-		return []key.Binding{k.Left, k.Right, k.OpenAttach, k.AttachRemove, k.Tab, k.Help, k.NavTeam, k.Quit}
+		return []key.Binding{k.Left, k.Right, k.Preview, k.OpenAttach, k.AttachRemove, k.Tab, k.Help, k.NavTeam, k.Quit}
 	case m.focus == focusTeams:
 		return []key.Binding{k.Tab, k.LoadTeam, k.MoveTeamLeft, k.MoveTeamRight, k.SearchHere, k.Help, k.NavTeam, k.Switcher, k.CommandPicker, k.Quit}
 	case m.focus == focusSearch:
