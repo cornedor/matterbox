@@ -191,6 +191,29 @@ func TestScrubRedactsIdentifiers(t *testing.T) {
 			"invalid token <token>"},
 		{"nothing left to say", "/home/ana/x.db", "<redacted>"},
 		{"clean error is untouched", "permission denied", "permission denied"},
+		// The shapes Go's net package produces. None of these carry a scheme,
+		// so reURL never sees them, and every one of them names either the
+		// Mattermost server or the machine matterbox is running on.
+		{"dns lookup", "ws dial: dial tcp: lookup chat.example.com: no such host",
+			"ws dial: dial tcp: lookup <host>: no such host"},
+		{"single-label host lookup", "dial tcp: lookup mattermost: no such host",
+			"dial tcp: lookup <host>: no such host"},
+		{"server ip and port", "dial tcp 168.119.88.168:443: connect: network is unreachable",
+			"dial tcp <addr>: connect: network is unreachable"},
+		{"both ends of a connection", "read tcp 192.168.1.124:49704->168.119.88.168:443: read: connection reset by peer",
+			"read tcp <addr>-><addr>: read: connection reset by peer"},
+		{"bracketed ipv6", "dial tcp [2001:db8::1]:443: connect: refused",
+			"dial tcp <addr>: connect: refused"},
+		// "i/o" losing its slash to the path pattern is the trade the path
+		// pattern already made; the address is the part that matters here.
+		{"host with a port", "dial tcp chat.example.com:443: i/o timeout",
+			"dial tcp <addr>: i<path> timeout"},
+		{"host in a certificate error", "x509: certificate is valid for other.example.org, not chat.example.com",
+			"x509: certificate is valid for <host>, not <host>"},
+		// A dotted Mattermost error id is not a hostname, and it is the only
+		// descriptive part of the message.
+		{"error id survives", "NewWebSocketClient: model.websocket_client.connect_fail.app_error",
+			"NewWebSocketClient: model.websocket_client.connect_fail.app_error"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
