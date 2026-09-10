@@ -131,3 +131,45 @@ func TestGetFileError(t *testing.T) {
 		t.Fatalf("want API description in error, got %v", err)
 	}
 }
+
+// TestErrorsDoNotLeakToken: transport failures come back as *url.Error, which
+// echoes the request URL (token included). The daemon logs those, so the token
+// must be redacted before the error leaves the package.
+func TestErrorsDoNotLeakToken(t *testing.T) {
+	const token = "123456:SUPER-SECRET-TOKEN"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("no hijacker")
+			return
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		conn.Close() // kill the connection mid-request
+	}))
+	defer srv.Close()
+
+	c := NewWithBase(token, srv.URL)
+
+	if _, err := c.Send(context.Background(), "42", "hi", nil); err == nil {
+		t.Fatal("want transport error")
+	} else if strings.Contains(err.Error(), token) {
+		t.Fatalf("token leaked in error: %v", err)
+	}
+
+	if _, err := c.SendPhoto(context.Background(), "42", "cap", "a.png", []byte("x"), nil); err == nil {
+		t.Fatal("want transport error")
+	} else if strings.Contains(err.Error(), token) {
+		t.Fatalf("token leaked in error: %v", err)
+	}
+
+	if _, err := c.downloadFile(context.Background(), "photos/a.jpg", 0); err == nil {
+		t.Fatal("want transport error")
+	} else if strings.Contains(err.Error(), token) {
+		t.Fatalf("token leaked in error: %v", err)
+	}
+}
