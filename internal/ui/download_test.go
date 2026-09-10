@@ -40,9 +40,14 @@ func TestDownloadNameStripsPathSeparators(t *testing.T) {
 		{&model.FileInfo{Name: "report.pdf"}, "report.pdf"},
 		{&model.FileInfo{Name: "../../etc/passwd"}, "passwd"},
 		{&model.FileInfo{Name: "sub/dir/file.txt"}, "file.txt"},
-		{&model.FileInfo{Name: "", Id: "abc123"}, "abc123"},
+		{&model.FileInfo{Name: "", Id: validFileID}, validFileID},
 		{&model.FileInfo{Name: "", Id: ""}, "file"},
-		{&model.FileInfo{Name: "/", Id: "id"}, "id"},
+		{&model.FileInfo{Name: "/", Id: validFileID}, validFileID},
+		// An id is server-controlled too: only a real one may name a file.
+		{&model.FileInfo{Name: "", Id: "../../../../home/u/.config/autostart/x.desktop"}, "file"},
+		{&model.FileInfo{Name: "..", Id: ".."}, "file"},
+		{&model.FileInfo{Name: "/", Id: "/etc/passwd"}, "file"},
+		{&model.FileInfo{Name: "", Id: "abc123"}, "file"},
 	}
 	for _, c := range cases {
 		if got := downloadName(c.info); got != c.want {
@@ -50,6 +55,10 @@ func TestDownloadNameStripsPathSeparators(t *testing.T) {
 		}
 	}
 }
+
+// validFileID is a well-formed Mattermost id (26 alphanumerics); anything else
+// is attacker-shaped as far as path building is concerned.
+const validFileID = "abcdefghijklmnopqrstuvwxyz"
 
 func TestUniqueDownloadPath(t *testing.T) {
 	dir := t.TempDir()

@@ -2,6 +2,8 @@ package ui
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -2024,7 +2026,14 @@ func (m Model) cachedFilePath(f *model.FileInfo) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, fmt.Sprintf("%s_%s", f.Id, downloadName(f))), nil
+	// The id prefix keys the cache, but only a validated id is safe to put in a
+	// path; anything else is hashed down to a fixed-shape key.
+	key := safeFileID(f.Id)
+	if key == "" {
+		sum := sha256.Sum256([]byte(f.Id))
+		key = hex.EncodeToString(sum[:])
+	}
+	return filepath.Join(dir, fmt.Sprintf("%s_%s", key, downloadName(f))), nil
 }
 
 func (m Model) copyPostMarkdown(p *model.Post) tea.Cmd {

@@ -95,6 +95,17 @@ func (m Model) downloadFiles(files []*model.FileInfo) tea.Cmd {
 	}
 }
 
+// safeFileID returns f.Id when it is a real Mattermost id, and "" otherwise.
+// Ids arrive from the server just like names do, so an id holding "../" would
+// escape the download or cache directory as surely as a hostile name: nothing
+// derived from an unvalidated id may reach a filename.
+func safeFileID(id string) string {
+	if model.IsValidId(id) {
+		return id
+	}
+	return ""
+}
+
 // downloadName picks the on-disk name for a file, falling back to its id (or
 // a generic "file") when the server reports no name, and stripping any path
 // separators a hostile name might carry so the write stays inside dir.
@@ -103,8 +114,8 @@ func downloadName(f *model.FileInfo) string {
 	// has to be rejected alongside the other degenerate bases, not just cleaned.
 	name := filepath.Base(f.Name)
 	if name == "" || name == "." || name == ".." || name == string(filepath.Separator) {
-		if f.Id != "" {
-			return f.Id
+		if id := safeFileID(f.Id); id != "" {
+			return id
 		}
 		return "file"
 	}
