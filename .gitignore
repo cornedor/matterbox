@@ -26,6 +26,7 @@
 
 # Local project notes, not part of the release
 /PLAN.md
+/local/
 
 # Retrieval/agent eval harnesses (`go test -tags eval`). These are pinned to one
 # person's real message cache — they name actual post ids, usernames, and client
