@@ -475,8 +475,7 @@ popup on it rather than being stamped over whatever you had open.
 ### `matterbox upgrade`
 
 Not a config key, but the other half of the same story. It installs the current
-release over this one by running the same installer the website hands out, and
-works out *how* rather than guessing:
+release over this one, and works out *how* rather than guessing:
 
 ```
 matterbox upgrade                    # the latest release
@@ -485,8 +484,11 @@ matterbox upgrade --version v1.0.0   # a specific release, including an older on
 ```
 
 The release binaries carry inline video, so a build with that is simply replaced
-by one. A build with the `--demo` soundtrack is rebuilt from source instead,
-because no release has it. `matterbox --version` prints which you have. It installs alongside the binary it replaces,
+by one: the release tarball is downloaded, checked against the sha256 published
+with it, and moved into place — nothing that arrives over the network is run
+before that check passes. A build with the `--demo` soundtrack is rebuilt from
+source instead, because no release has it, and that path runs the same installer
+the website hands out. `matterbox --version` prints which you have. It installs alongside the binary it replaces,
 so an upgrade lands wherever the original `--dir` put it, and stays on your
 PATH.
 
