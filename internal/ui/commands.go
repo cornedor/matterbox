@@ -626,6 +626,9 @@ func (m Model) allCommands() []switcherCommand {
 	if unread, ok := m.markUnreadCommand(); ok {
 		contextual = append(contextual, unread)
 	}
+	if prof, ok := m.viewProfileCommand(); ok {
+		contextual = append(contextual, prof)
+	}
 	if sidebar, ok := m.sidebarUnreadCommand(); ok {
 		contextual = append(contextual, sidebar)
 	}
