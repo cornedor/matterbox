@@ -16,7 +16,6 @@ require (
 	github.com/ebitengine/oto/v3 v3.4.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/gotracker/playback v1.5.0
-	github.com/kyokomi/emoji/v2 v2.2.13
 	github.com/mattermost/mattermost/server/public v0.4.0
 	github.com/posthog/posthog-go v1.23.1
 	github.com/rivo/uniseg v0.4.7

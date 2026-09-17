@@ -241,6 +241,11 @@ fmt: ## Format all Go sources
 run: ## Build and launch the TUI
 	$(GO) run $(TAGFLAGS) $(PKG)
 
+.PHONY: emoji
+emoji: ## Regenerate the emoji table from Mattermost's emoji.json (bump defaultRef in internal/emoji/gen first)
+	$(GO) generate ./internal/emoji
+	@git diff --stat -- internal/emoji/table_gen.go
+
 .PHONY: third-party-licenses
 third-party-licenses: ## Write THIRD_PARTY_LICENSES for a release build (LICENSE_TAGS=… to describe a tagged one)
 	@TAGS='$(LICENSE_TAGS)' scripts/third-party-licenses > THIRD_PARTY_LICENSES

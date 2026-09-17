@@ -1,0 +1,213 @@
+// Command gen writes table_gen.go from Mattermost's own emoji data.
+//
+// Run it through the directive in emoji.go rather than by hand:
+//
+//	go generate ./internal/emoji
+//
+// The input is webapp/channels/src/utils/emoji.json — the file the official
+// web client renders from, generated in the Mattermost repo from
+// emoji-datasource. Taking it verbatim is the whole point: every shortcode the
+// server accepts draws here exactly as it draws there.
+//
+// The source commit is pinned in defaultRef below so a regeneration is
+// reproducible. To pick up a newer emoji-datasource, edit that constant and
+// regenerate; -ref only points one run somewhere else, for a look at what has
+// changed upstream:
+//
+//	go run ./gen -ref master -o /tmp/table.go
+package main
+
+import (
+	"encoding/json"
+	"flag"
+	"fmt"
+	"go/format"
+	"io"
+	"net/http"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
+	"unicode"
+)
+
+// defaultRef is the mattermost/mattermost commit the checked-in table came
+// from: the newest change to emoji.json at the time of generation.
+const defaultRef = "ffb86ddcae526ff0c189000f8b41c3c9c98e6fba"
+
+const (
+	repo     = "mattermost/mattermost"
+	jsonPath = "webapp/channels/src/utils/emoji.json"
+)
+
+// mmEmoji is the subset of an emoji.json record this table needs. unified is
+// the codepoint sequence ("1F44D-1F3FB"); short_names[0] is the canonical
+// name and the rest are the aliases Mattermost also accepts.
+type mmEmoji struct {
+	Unified    string   `json:"unified"`
+	ShortName  string   `json:"short_name"`
+	ShortNames []string `json:"short_names"`
+}
+
+func main() {
+	ref := flag.String("ref", defaultRef, "mattermost/mattermost git ref to read emoji.json from")
+	out := flag.String("o", "table_gen.go", "file to write")
+	flag.Parse()
+	if err := run(*ref, *out); err != nil {
+		fmt.Fprintln(os.Stderr, "gen:", err)
+		os.Exit(1)
+	}
+}
+
+func run(ref, out string) error {
+	url := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s", repo, ref, jsonPath)
+	list, err := fetch(url)
+	if err != nil {
+		return err
+	}
+	src, n, aliases, err := render(ref, url, list)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(out, src, 0o644); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "wrote %s: %d emoji, %d shortcodes (%s)\n", out, n, aliases, ref[:min(len(ref), 12)])
+	if ref != defaultRef {
+		fmt.Fprintf(os.Stderr, "note: generated from -ref %s — update defaultRef to keep the pin honest\n", ref)
+	}
+	return nil
+}
+
+func fetch(url string) ([]mmEmoji, error) {
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GET %s: %s", url, resp.Status)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	var list []mmEmoji
+	if err := json.Unmarshal(body, &list); err != nil {
+		return nil, err
+	}
+	if len(list) < 1000 {
+		return nil, fmt.Errorf("got %d emoji, expected thousands — is %s still the right file?", len(list), jsonPath)
+	}
+	return list, nil
+}
+
+// glyph turns "1F44D-1F3FB" into the grapheme it names. Entries with an empty
+// unified (Mattermost's own :mattermost: logo) have no glyph at all and are
+// dropped by the caller — they resolve through the custom-emoji path.
+func glyph(unified string) (string, error) {
+	var b strings.Builder
+	for _, part := range strings.Split(unified, "-") {
+		r, err := strconv.ParseUint(part, 16, 32)
+		if err != nil {
+			return "", fmt.Errorf("codepoint %q: %w", part, err)
+		}
+		// Above MaxRune a conversion to rune is a silent wrap, and WriteRune
+		// would emit U+FFFD for it — so the table would carry a replacement
+		// character where an emoji belongs. Refuse instead.
+		if r > unicode.MaxRune {
+			return "", fmt.Errorf("codepoint %q: not a unicode scalar value", part)
+		}
+		b.WriteRune(rune(r))
+	}
+	return b.String(), nil
+}
+
+func render(ref, url string, list []mmEmoji) ([]byte, int, int, error) {
+	type row struct {
+		name    string
+		glyph   string
+		aliases []string
+	}
+	var rows []row
+	var names []string
+	seen := map[string]string{}
+	for _, e := range list {
+		// :mattermost: is the one record with no codepoints — the logo is an
+		// image, so it resolves through the custom-emoji path like any other.
+		if e.Unified == "" {
+			continue
+		}
+		g, err := glyph(e.Unified)
+		if err != nil {
+			return nil, 0, 0, fmt.Errorf("%s: %w", e.ShortName, err)
+		}
+		if len(e.ShortNames) == 0 {
+			return nil, 0, 0, fmt.Errorf("%s: no short_names", e.ShortName)
+		}
+		for _, n := range e.ShortNames {
+			if prev, dup := seen[n]; dup {
+				return nil, 0, 0, fmt.Errorf("shortcode %q claimed by both %s and %s", n, prev, e.ShortName)
+			}
+			seen[n] = e.ShortName
+			names = append(names, n)
+		}
+		rows = append(rows, row{name: e.ShortNames[0], glyph: g, aliases: e.ShortNames[1:]})
+	}
+	sort.Strings(names)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, `// Code generated by internal/emoji/gen; DO NOT EDIT.
+
+// Emoji data from the Mattermost web client, which generates it in turn from
+// emoji-datasource (MIT, © Cal Henderson):
+//
+//	%s
+//
+// Copyright (c) 2015-present Mattermost, Inc. — Apache License 2.0.
+
+package emoji
+
+// sourceRef is the mattermost/mattermost commit this table was read from.
+const sourceRef = %q
+
+// names is every shortcode Mattermost accepts, sorted — aliases included.
+var names = []string{
+`, url, ref)
+	for _, n := range names {
+		fmt.Fprintf(&b, "\t%q,\n", n)
+	}
+	b.WriteString(`}
+
+// entries is one row per emoji: the canonical shortcode Mattermost names it
+// by, its glyph, and the further shortcodes that resolve to the same thing.
+// names above is the flattened, sorted view of the same set.
+var entries = []struct {
+	name    string
+	glyph   string
+	aliases []string
+}{
+`)
+	for _, r := range rows {
+		fmt.Fprintf(&b, "\t{%q, %q, ", r.name, r.glyph)
+		if len(r.aliases) == 0 {
+			b.WriteString("nil},\n")
+			continue
+		}
+		b.WriteString("[]string{")
+		for i, a := range r.aliases {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(&b, "%q", a)
+		}
+		b.WriteString("}},\n")
+	}
+	b.WriteString("}\n")
+
+	src, err := format.Source([]byte(b.String()))
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("gofmt: %w", err)
+	}
+	return src, len(rows), len(names), nil
+}

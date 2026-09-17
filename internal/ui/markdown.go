@@ -7,7 +7,6 @@ import (
 	"sync"
 
 	"charm.land/lipgloss/v2"
-	emoji "github.com/kyokomi/emoji/v2"
 
 	"matterbox/internal/game"
 	"matterbox/internal/safeterm"
@@ -404,9 +403,8 @@ func renderMarkdown(msg string, ei *emojiImages, mr changeInlineFn, self string)
 	return strings.Join(out, "\n")
 }
 
-// emojiShortcodeRe matches a `:shortcode:` left unresolved by kyokomi — i.e. a
-// custom server emoji candidate. The class mirrors Mattermost's emoji-name
-// charset; code spans are already stashed before this runs.
+// emojiShortcodeRe matches a `:shortcode:`. The class mirrors Mattermost's
+// emoji-name charset; code spans are already stashed before this runs.
 var emojiShortcodeRe = regexp.MustCompile(`:([a-zA-Z0-9_+\-]+):`)
 
 func renderInline(s string, ei *emojiImages, mr changeInlineFn, self string) string {
@@ -420,13 +418,11 @@ func renderInline(s string, ei *emojiImages, mr changeInlineFn, self string) str
 		return mdCodeSentinel + strconv.Itoa(len(codes)-1) + "\x00"
 	})
 
-	// Unicode emoji first (kyokomi font glyphs, exactly as before). Any
-	// surviving :name: is either a Mattermost skin-tone variant kyokomi spells
-	// differently (resolved to a unicode glyph) or a custom-emoji candidate
-	// resolved to an inline-image placeholder when ready (and recorded as a
-	// sighting otherwise). The placeholder carries no markdown metacharacters,
-	// so the styling passes below can't corrupt it.
-	s = emoji.Sprint(s)
+	// Emoji shortcodes first. A name Mattermost knows becomes its font glyph;
+	// anything else is a custom-emoji candidate, resolved to an inline-image
+	// placeholder when ready (and recorded as a sighting otherwise). The
+	// placeholder carries no markdown metacharacters, so the styling passes
+	// below can't corrupt it.
 	s = emojiShortcodeRe.ReplaceAllStringFunc(s, func(m string) string {
 		name := m[1 : len(m)-1]
 		if g := unicodeEmojiGlyph(name); g != "" {
