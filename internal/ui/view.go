@@ -2959,14 +2959,6 @@ func (m *Model) renderFooter() string {
 		}
 	}
 
-	// Leave room for the right-hand status and a one-cell gutter so the
-	// help bubble can ellipsize cleanly if the bindings don't all fit.
-	avail := m.width - lipgloss.Width(right) - lipgloss.Width(rightDot) - 1
-	if avail < 0 {
-		avail = 0
-	}
-	m.help.SetWidth(avail)
-
 	// Prefix the input mode with a quick hint about what typing does — the
 	// help bubble only renders bindings, but this state-mode context used
 	// to ride along in the old footer prompt.
@@ -2982,24 +2974,67 @@ func (m *Model) renderFooter() string {
 		prefix = "type to send  "
 	}
 
+	// The status block can't be ellipsized away, so clip it to the row first
+	// and budget the help around what's left.
+	rightDotW := lipgloss.Width(rightDot)
+	if maxW := m.width - rightDotW - 1; lipgloss.Width(right) > maxW {
+		if maxW < 0 {
+			maxW = 0
+		}
+		right = ansi.Truncate(right, maxW, "…")
+	}
+	rightW := lipgloss.Width(right) + rightDotW
+
+	// Leave room for the right-hand status, the mode prefix and a one-cell
+	// gutter so the help bubble can ellipsize cleanly if the bindings don't
+	// all fit. The prefix shares the row with the help, so it comes out of
+	// the same budget — leave it out and the bindings fill the row and shove
+	// the status off the right edge.
+	avail := m.width - rightW - lipgloss.Width(prefix) - 1
+	if avail < 0 {
+		avail = 0
+	}
+	m.help.SetWidth(avail)
+
 	left := footerStyle.Render(prefix) + m.helpView()
 	if m.help.ShowAll {
 		// The expanded help lists every layer that is live right now, but a
 		// narrow terminal still ellipsizes the rightmost columns — so point at
 		// the sheet that never truncates.
 		left += "\n" + footerStyle.Render(helpKey(m.keys.CommandPicker)+" › Keys — the full cheatsheet")
-		// Full help is multi-line; right-align the status on the last row.
-		gap := m.width - lipgloss.Width(lastLine(left)) - lipgloss.Width(right) - lipgloss.Width(rightDot)
-		if gap < 1 {
-			gap = 1
-		}
-		return left + strings.Repeat(" ", gap) + rightDot + footerStyle.Render(right)
 	}
-	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - lipgloss.Width(rightDot)
+	left = clipFooterLeft(left, m.width, m.width-rightW-1)
+
+	// Full help is multi-line; the status right-aligns on the last row.
+	gap := m.width - lipgloss.Width(lastLine(left)) - rightW
 	if gap < 1 {
 		gap = 1
 	}
 	return left + strings.Repeat(" ", gap) + rightDot + footerStyle.Render(right)
+}
+
+// clipFooterLeft clips the footer's help block to the row: every row to full,
+// and the row the status shares to last. The help bubble can't be trusted to
+// stay inside the width it was given — it only ellipsizes while the ellipsis
+// itself still fits, and otherwise renders the overlong binding anyway.
+func clipFooterLeft(left string, full, last int) string {
+	if full < 0 {
+		full = 0
+	}
+	if last < 0 {
+		last = 0
+	}
+	lines := strings.Split(left, "\n")
+	for i, ln := range lines {
+		w := full
+		if i == len(lines)-1 {
+			w = last
+		}
+		if lipgloss.Width(ln) > w {
+			lines[i] = ansi.Truncate(ln, w, "…")
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // lastLine returns the final line of s (everything after the last "\n").
