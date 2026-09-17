@@ -17,8 +17,10 @@ type Styles struct {
 	// already carry, so a selection reads the same over plain and styled text.
 	Selection lipgloss.Style
 	// Markdown styles the inline markdown spans drawn when Model.MarkdownHighlight
-	// is on. It is themeable but only consulted while that toggle is set.
-	Markdown MarkdownStyles
+	// is on. It is themeable but only consulted while that toggle is set, and is
+	// held behind a pointer to keep a full set of styles out of every editor
+	// value (ui.Model embeds several — see the model-size budget).
+	Markdown *MarkdownStyles
 }
 
 // MarkdownStyles paints the inline markdown spans (see Model.MarkdownHighlight).
@@ -34,6 +36,12 @@ type MarkdownStyles struct {
 	Strike    lipgloss.Style
 	Code      lipgloss.Style
 	CodeBlock lipgloss.Style
+	// LinkMarker paints a link's syntax ([ ] ( ) and a leading !), LinkText its
+	// visible label, and LinkURL the target — deliberately more subdued than the
+	// label, so what the reader will actually see stands out from the plumbing.
+	LinkMarker lipgloss.Style
+	LinkText   lipgloss.Style
+	LinkURL    lipgloss.Style
 }
 
 // DefaultStyles returns plain styles: a reverse-video block cursor and a dim
@@ -46,14 +54,16 @@ func DefaultStyles() Styles {
 		Prompt:      lipgloss.NewStyle(),
 		Cursor:      lipgloss.NewStyle().Reverse(true),
 		Selection:   lipgloss.NewStyle().Reverse(true),
-		Markdown:    DefaultMarkdownStyles(),
+		Markdown:    &defaultMarkdownStyles,
 	}
 }
 
 // DefaultMarkdownStyles dims the markers and renders bold/italic/strikethrough
 // with the matching SGR attribute; inline code and fenced blocks pick up a cyan
 // foreground, mirroring the message-pane renderer.
-func DefaultMarkdownStyles() MarkdownStyles {
+func DefaultMarkdownStyles() MarkdownStyles { return defaultMarkdownStyles }
+
+var defaultMarkdownStyles = func() MarkdownStyles {
 	return MarkdownStyles{
 		Marker:    lipgloss.NewStyle().Faint(true),
 		Bold:      lipgloss.NewStyle().Bold(true),
@@ -61,8 +71,13 @@ func DefaultMarkdownStyles() MarkdownStyles {
 		Strike:    lipgloss.NewStyle().Strikethrough(true),
 		Code:      lipgloss.NewStyle().Foreground(lipgloss.Color("14")),
 		CodeBlock: lipgloss.NewStyle().Foreground(lipgloss.Color("14")),
+		// Link syntax gets its own colour; the label reads like the rendered link
+		// (blue, underlined) and the URL is dimmed behind it.
+		LinkMarker: lipgloss.NewStyle().Foreground(lipgloss.Color("13")),
+		LinkText:   lipgloss.NewStyle().Foreground(lipgloss.Color("12")).Underline(true),
+		LinkURL:    lipgloss.NewStyle().Foreground(lipgloss.Color("240")),
 	}
-}
+}()
 
 // attr returns the raw attribute style for a markdown class (before it is merged
 // over the text style). mdNone yields the zero style.
@@ -80,6 +95,12 @@ func (s MarkdownStyles) attr(c mdClass) lipgloss.Style {
 		return s.Code
 	case mdCodeBlock:
 		return s.CodeBlock
+	case mdLinkMarker:
+		return s.LinkMarker
+	case mdLinkText:
+		return s.LinkText
+	case mdLinkURL:
+		return s.LinkURL
 	default:
 		return lipgloss.Style{}
 	}

@@ -8,13 +8,18 @@ import "unicode"
 type mdClass uint8
 
 const (
-	mdNone      mdClass = iota // ordinary text
-	mdMarker                   // a syntax token: * _ ~ ` or a ``` fence line
-	mdBold                     // **x** / __x__ content
-	mdItalic                   // *x* / _x_ content
-	mdStrike                   // ~~x~~ content
-	mdCode                     // `x` inline-code content
-	mdCodeBlock                // content inside a fenced (``` / ~~~) or indented block
+	mdNone       mdClass = iota // ordinary text
+	mdMarker                    // a syntax token: * _ ~ ` or a ``` fence line
+	mdBold                      // **x** / __x__ content
+	mdItalic                    // *x* / _x_ content
+	mdStrike                    // ~~x~~ content
+	mdCode                      // `x` inline-code content
+	mdCodeBlock                 // content inside a fenced (``` / ~~~) or indented block
+	mdLinkMarker                // a link's syntax: ! [ ] ( ) and any title
+	mdLinkText                  // the [label] of a link/image
+	mdLinkURL                   // the (url) of a link/image
+
+	mdClassMax = mdLinkURL // highest class, for sizing per-class style tables
 )
 
 // markdownClasses scans the whole buffer and returns one mdClass per rune of
@@ -210,6 +215,17 @@ func markInline(cl []mdClass, start int, line []rune) {
 	i := 0
 	for i < n {
 		switch {
+		case line[i] == '!', line[i] == '[':
+			// Link or image: [text](url) / ![text](url), title optional.
+			if l, ok := linkSpan(line, i); ok {
+				set(i, l.textStart, mdLinkMarker)
+				set(l.textStart, l.textEnd, mdLinkText)
+				set(l.textEnd, l.urlStart, mdLinkMarker)
+				set(l.urlStart, l.urlEnd, mdLinkURL)
+				set(l.urlEnd, l.end, mdLinkMarker)
+				i = l.end
+				continue
+			}
 		case line[i] == '`':
 			// Inline code: closes at the next backtick, content non-empty.
 			if j := nextRune(line, i+1, '`'); j > i+1 {
@@ -293,4 +309,65 @@ func closeBoundary(line []rune, after int) bool {
 // digits, and underscore.
 func isWordRune(r rune) bool {
 	return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
+}
+
+// linkPos locates the parts of an inline link within a line: the label between
+// the brackets, the URL inside the parens, and the index just past the closing
+// paren. Everything outside those two ranges (the leading `!`, the brackets,
+// the parens and any CommonMark title) is syntax.
+type linkPos struct {
+	textStart, textEnd int
+	urlStart, urlEnd   int
+	end                int
+}
+
+// linkSpan parses `[text](url)` or `![text](url)` starting at i, with the
+// optional CommonMark title — [text](url "title") — that other clients emit
+// when pasting. It mirrors the message pane's mdLinkRe/mdImageRe: the label may
+// not contain `]`, the URL no spaces or `)`. Reports false when the text at i
+// isn't a complete link.
+func linkSpan(line []rune, i int) (linkPos, bool) {
+	var l linkPos
+	j := i
+	if line[j] == '!' {
+		j++
+	}
+	if j >= len(line) || line[j] != '[' {
+		return l, false
+	}
+	l.textStart = j + 1
+	close := nextRune(line, l.textStart, ']')
+	if close < 0 {
+		return l, false
+	}
+	l.textEnd = close
+	if close+1 >= len(line) || line[close+1] != '(' {
+		return l, false
+	}
+	l.urlStart = close + 2
+	j = l.urlStart
+	for j < len(line) && line[j] != ')' && line[j] != ' ' && line[j] != '\t' {
+		j++
+	}
+	if j == l.urlStart {
+		return l, false
+	}
+	l.urlEnd = j
+	// Skip an optional quoted title before the closing paren.
+	for j < len(line) && (line[j] == ' ' || line[j] == '\t') {
+		j++
+	}
+	if j < len(line) && (line[j] == '"' || line[j] == '\'') {
+		if k := nextRune(line, j+1, line[j]); k >= 0 {
+			j = k + 1
+		}
+	}
+	for j < len(line) && (line[j] == ' ' || line[j] == '\t') {
+		j++
+	}
+	if j >= len(line) || line[j] != ')' {
+		return l, false
+	}
+	l.end = j + 1
+	return l, true
 }

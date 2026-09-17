@@ -45,10 +45,14 @@ func (m *Model) View() string {
 	var classes []mdClass
 	var mdStyles []lipgloss.Style
 	if m.MarkdownHighlight {
+		md := m.Styles.Markdown
+		if md == nil {
+			md = &defaultMarkdownStyles
+		}
 		classes = m.markdownClasses()
-		mdStyles = make([]lipgloss.Style, mdCodeBlock+1)
-		for c := mdMarker; c <= mdCodeBlock; c++ {
-			mdStyles[c] = m.Styles.Markdown.attr(c).Inherit(base).Inline(true)
+		mdStyles = make([]lipgloss.Style, mdClassMax+1)
+		for c := mdMarker; c <= mdClassMax; c++ {
+			mdStyles[c] = md.attr(c).Inherit(base).Inline(true)
 		}
 	}
 
