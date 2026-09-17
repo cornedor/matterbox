@@ -121,27 +121,39 @@ func TestUnicodeEmojiGlyph(t *testing.T) {
 	tests := []struct {
 		name, want string
 	}{
-		// Plain codemap lookups still resolve.
+		// Plain lookups.
 		{"+1", "👍"},
 		{"smile", "😄"},
-		// Mattermost skin-tone naming kyokomi doesn't carry, composed from the
-		// base glyph + Fitzpatrick modifier (matches kyokomi's own _toneN form).
+		{"thumbsup", "👍"}, // alias of the same entry
+		// Skin-tone variants carry the modifier where Mattermost puts it:
+		// straight after the person, inside the ZWJ sequence rather than
+		// trailing it.
 		{"+1_light_skin_tone", "👍🏻"},
 		{"+1_medium_light_skin_tone", "👍🏼"},
 		{"+1_medium_skin_tone", "👍🏽"},
 		{"+1_medium_dark_skin_tone", "👍🏾"},
 		{"+1_dark_skin_tone", "👍🏿"},
 		{"wave_medium_skin_tone", "👋🏽"},
-		// Base glyph carrying a VS16 drops it before the modifier so the
-		// sequence is canonical (one grapheme, not glyph + swatch).
 		{"point_up_medium_skin_tone", "☝🏽"},
-		// Mattermost spells 👯‍♂️/👯‍♀️ singular, kyokomi plural — aliased so they
-		// don't fall through to the custom-emoji path and render as literal text.
-		{"man-with-bunny-ears-partying", "👯‍♂️"},
-		{"woman-with-bunny-ears-partying", "👯‍♀️"},
-		{"men-with-bunny-ears-partying", "👯‍♂️"},
-		{"women-with-bunny-ears-partying", "👯‍♀️"},
-		// Unknown base or non-emoji shortcode stays unresolved.
+		{"man_farmer_light_skin_tone", "👨🏻\u200d🌾"},
+		{"couple_light_skin_tone_dark_skin_tone", "👩🏻\u200d🤝\u200d👨🏿"},
+		// The gender-neutral names are neutral, not a man or a woman.
+		{"runner", "🏃"},
+		{"cop", "👮"},
+		{"family", "👪"},
+		{"person_with_blond_hair", "👱"},
+		// Names only a gemoji-derived table knows stay unresolved: Mattermost
+		// would show them as literal text, so they belong on the custom-emoji
+		// path, not the unicode one.
+		{"men-with-bunny-ears-partying", ""},
+		{"back_arrow", ""},
+		{"+1_tone1", ""},
+		// Mattermost's own singular spelling does resolve.
+		{"man-with-bunny-ears-partying", "👯\u200d♂️"},
+		{"woman-with-bunny-ears-partying", "👯\u200d♀️"},
+		// Case is ignored, as in the web client's renderer.
+		{"SMILE", "😄"},
+		// Unknown names stay unresolved.
 		{"party_parrot", ""},
 		{"definitely_not_an_emoji_dark_skin_tone", ""},
 	}

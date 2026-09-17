@@ -31,7 +31,7 @@ import (
 // protocol's Unicode-placeholder variant — the only variant that survives a
 // full-screen TUI's repaints and scrolling, because the image is anchored to
 // ordinary text cells rather than an absolute screen position. Supported by
-// Kitty and Ghostty. Unicode emoji are unaffected (kyokomi font glyphs).
+// Kitty and Ghostty. Unicode emoji are unaffected (font glyphs).
 // Animated GIF emoji cycle through their frames in place (see advanceFrame and
 // the animation tick in update.go) unless the animations.custom_emoji config
 // toggle is off, in which case they freeze on the first frame.
@@ -785,7 +785,7 @@ func (e *emojiImages) markFailed(names ...string) {
 }
 
 // renderEmojiGlyph resolves a single emoji shortcode (no colons) for display:
-// a kyokomi font glyph for a unicode emoji, the inline-image placeholder for a
+// the font glyph for a unicode emoji, the inline-image placeholder for a
 // ready custom emoji (recording a sighting when not yet ready), or the literal
 // :name: as a last resort. Used by the reaction pills/picker, the emoji popup,
 // and the custom-status surfaces; the message body resolves via renderInline.

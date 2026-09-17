@@ -3,75 +3,25 @@ package ui
 import (
 	"sort"
 	"strings"
-	"sync"
 	"unicode"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	emoji "github.com/kyokomi/emoji/v2"
+
+	"matterbox/internal/emoji"
 )
 
 // emojiLimit caps the picker so the popup stays a few rows tall regardless
 // of how many shortcodes match the query.
 const emojiLimit = 8
 
-// skinTones maps Mattermost's descriptive skin-tone shortcode suffixes to the
-// Unicode Fitzpatrick modifier runes. Mattermost spells toned emoji as
-// "<base>_<tone>_skin_tone" (e.g. ":+1_medium_light_skin_tone:") where kyokomi
-// uses "<base>_toneN", so a direct codemap lookup misses. Ordered longest
-// suffix first so "medium_light"/"medium_dark" win over the "light"/"dark"
-// suffixes they contain.
-// vs16 is the emoji variation selector (U+FE0F). It forces emoji presentation
-// on the base glyph but is redundant — and non-canonical — once a skin-tone
-// modifier follows, so it's stripped before the modifier is appended.
-const vs16 = "️"
-
-var skinTones = []struct {
-	suffix string
-	mod    rune
-}{
-	{"medium_light_skin_tone", '\U0001F3FC'},
-	{"medium_dark_skin_tone", '\U0001F3FE'},
-	{"medium_skin_tone", '\U0001F3FD'},
-	{"light_skin_tone", '\U0001F3FB'},
-	{"dark_skin_tone", '\U0001F3FF'},
-}
-
-// emojiAliases maps Mattermost shortcodes to kyokomi's spelling for the emoji
-// the two emoji-data vintages name differently. Mattermost still ships the
-// singular names for 👯‍♂️/👯‍♀️; upstream renamed them to the plural, so a direct
-// codemap lookup misses and the name would fall through to the custom-emoji
-// path and settle as literal ":man-with-bunny-ears-partying:" text.
-var emojiAliases = map[string]string{
-	"man-with-bunny-ears-partying":   "men-with-bunny-ears-partying",
-	"woman-with-bunny-ears-partying": "women-with-bunny-ears-partying",
-}
-
 // unicodeEmojiGlyph resolves a bare emoji shortcode (no colons) to a unicode
-// glyph, or "" if kyokomi doesn't know it. Beyond a direct codemap lookup it
-// understands Mattermost's "<base>_<tone>_skin_tone" naming: the base glyph is
-// resolved and the matching Fitzpatrick modifier appended, composing the same
-// grapheme kyokomi's "_toneN" variants produce. A trailing VS16 on the base is
-// dropped first — it's redundant before a modifier and yields a non-canonical
-// sequence some terminals split into two glyphs.
+// glyph, or "" if Mattermost doesn't know the name — in which case it's a
+// custom (server) emoji candidate. internal/emoji carries Mattermost's own
+// table, so what resolves here resolves identically in the web client, down to
+// the skin-tone variants and the gender-neutral defaults.
 func unicodeEmojiGlyph(name string) string {
-	if alias := emojiAliases[name]; alias != "" {
-		name = alias
-	}
-	cm := emoji.CodeMap()
-	if g := cm[":"+name+":"]; g != "" {
-		return g
-	}
-	for _, st := range skinTones {
-		base := strings.TrimSuffix(name, "_"+st.suffix)
-		if base == name {
-			continue
-		}
-		if g := cm[":"+base+":"]; g != "" {
-			return strings.TrimSuffix(g, vs16) + string(st.mod)
-		}
-	}
-	return ""
+	return emoji.Glyph(name)
 }
 
 // emojiItem is one picker candidate: `code` is the colon-wrapped shortcode
@@ -97,25 +47,10 @@ type emojiState struct {
 	idx    int
 }
 
-// emojiNames is the sorted list of shortcodes (sans colons) built once from
-// the kyokomi codemap. Sorting up front keeps prefix/substring matches
-// deterministic without re-sorting per keystroke.
-var (
-	emojiOnce  sync.Once
-	emojiNames []string
-)
-
-func emojiIndex() []string {
-	emojiOnce.Do(func() {
-		cm := emoji.CodeMap()
-		emojiNames = make([]string, 0, len(cm))
-		for code := range cm {
-			emojiNames = append(emojiNames, strings.Trim(code, ":"))
-		}
-		sort.Strings(emojiNames)
-	})
-	return emojiNames
-}
+// emojiIndex is the sorted list of shortcodes (sans colons) the picker offers:
+// exactly the set Mattermost resolves, so nothing accepted here reaches anyone
+// else as literal text.
+func emojiIndex() []string { return emoji.Names() }
 
 // updateEmoji recomputes picker state after the textarea has processed a
 // key. Unlike mentions it never needs a fetch, so it returns nothing — the
@@ -219,7 +154,7 @@ func (m *Model) closeEmoji() {
 // tier), then custom-vs-unicode, then match position. Fuzzy matching means
 // ":smle" still finds ":smile:"; the band-first ordering keeps the obvious
 // prefix completion on top while fuzzier hits stay reachable. Custom
-// (server) emoji are merged ahead of the kyokomi index within each tier so
+// (server) emoji are merged ahead of the unicode index within each tier so
 // they stay discoverable against the much larger unicode set; glyphs are
 // resolved at render time, not here.
 func (m Model) emojiMatches(query string) []emojiItem {

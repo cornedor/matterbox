@@ -18,7 +18,6 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	emoji "github.com/kyokomi/emoji/v2"
 	"github.com/spf13/cobra"
 
 	"matterbox/internal/auth"
@@ -143,11 +142,9 @@ func dial() (*config.Config, *mm.Client, error) {
 	return cfg, mm.New(cfg.ServerURL, token), nil
 }
 
-// runTUI reproduces the original main(): optional pprof server, emoji
-// padding tweak, then the bubbletea program over the shared client.
+// runTUI reproduces the original main(): optional pprof server, then the
+// bubbletea program over the shared client.
 func runTUI() error {
-	emoji.ReplacePadding = ""
-
 	if pprofAddr != "" {
 		runtime.SetBlockProfileRate(1)
 		runtime.SetMutexProfileFraction(1)
