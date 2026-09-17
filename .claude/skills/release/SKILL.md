@@ -67,8 +67,11 @@ Do **not** dump the commit list. Curate it:
 Skip a section if it's empty. Aim for the notes to fit on one screen; if a
 release has 30 curated lines, the curation wasn't done.
 
-Write the notes to a scratchpad file and **show them to the user for a quick
-look before publishing** (the release is public the moment it's created).
+Write the notes to a scratchpad file, then **paste the full notes verbatim
+into the chat reply** and ask for a go-ahead before publishing (the release is
+public the moment it's created). `cat`-ing the file does not count — that
+output lives in a tool result the user may never expand. The reply itself must
+contain the notes, and must not say "notes above" or point at a file path.
 
 ## 4. Tag, push, publish
 
