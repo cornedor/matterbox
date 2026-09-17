@@ -47,12 +47,15 @@ func newUpgradeCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "upgrade",
 		Short: "Install the latest matterbox over this one",
-		Long: "Replace this binary with the current release, by running the same installer\n" +
-			"the website hands out (https://matterbox.work/install.sh).\n\n" +
-			"How it rebuilds matters, so it is worked out rather than guessed: the release\n" +
-			"binaries carry inline video, so a build with that is simply replaced by one.\n" +
-			"A build with the --demo soundtrack is rebuilt from source, because no release\n" +
-			"has it. `matterbox --version` prints which you have.\n\n" +
+		Long: "Replace this binary with the current release.\n\n" +
+			"A release binary is downloaded, checked against the checksums published\n" +
+			"with it, and moved into place — nothing that arrives over the network is\n" +
+			"run before its checksum matches. Building from source instead runs the\n" +
+			"installer the website hands out (https://matterbox.work/install.sh).\n\n" +
+			"Which of the two happens matters, so it is worked out rather than guessed:\n" +
+			"the release binaries carry inline video, so a build with that is simply\n" +
+			"replaced by one. A build with the --demo soundtrack is rebuilt from source,\n" +
+			"because no release has it. `matterbox --version` prints which you have.\n\n" +
 			"It installs next to the binary it replaces, whatever `--dir` that took.\n\n" +
 			"  matterbox upgrade\n" +
 			"  matterbox upgrade --check          # say what is current, change nothing\n" +
@@ -89,7 +92,9 @@ type upgradeOpts struct {
 
 func runUpgrade(ctx context.Context, out io.Writer, o upgradeOpts) error {
 	if runtime.GOOS == "windows" {
-		return fmt.Errorf("upgrade runs the shell installer, which this platform has no equivalent of.\n" +
+		// No windows release is built (see the matrix in release.yml), and the
+		// source path is a shell script, so there is nothing here to offer.
+		return fmt.Errorf("upgrade has no path on this platform.\n" +
 			"    The releases are at https://github.com/cornedor/matterbox/releases")
 	}
 	stamp := readBuildStamp()
@@ -145,11 +150,26 @@ func runUpgrade(ctx context.Context, out io.Writer, o upgradeOpts) error {
 		return nil
 	}
 
-	args, err := installerArgs(stamp, o)
+	fmt.Fprintf(out, "installing %s\n", target)
+
+	// A release binary is fetched and verified here rather than by a script:
+	// what comes down the wire is a tarball checked against the checksums
+	// published with it, and nothing downloaded is executed before that check
+	// passes. The script is still the right tool for the source path, which is
+	// a compile — it works out what this machine can build and says which
+	// package would fix what it cannot.
+	if !fromSource(stamp, o) {
+		dst, err := installTarget(o.dir)
+		if err != nil {
+			return err
+		}
+		return installPrebuilt(ctx, out, target, dst)
+	}
+
+	args, err := installerArgs(o)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "installing %s\n", target)
 	script, cleanup, err := fetchInstaller(ctx)
 	if err != nil {
 		return err
@@ -180,24 +200,28 @@ func keptByRelease(tags string) bool {
 	return true
 }
 
-// installerArgs works out what to tell the installer. The mode is the decision
-// worth getting right: a build carrying an optional feature the release binaries
-// don't have must be rebuilt from source, or the upgrade would silently take
-// that feature away. Today that means the --demo soundtrack — the releases carry
-// inline video, so a video build can simply take one. The build itself is the
-// only thing that knows what it has, and it recorded it.
-func installerArgs(stamp buildStamp, o upgradeOpts) ([]string, error) {
-	args := []string{}
+// fromSource is the decision worth getting right: a build carrying an optional
+// feature the release binaries don't have must be rebuilt from source, or the
+// upgrade would silently take that feature away. Today that means the --demo
+// soundtrack — the releases carry inline video, so a video build can simply
+// take one. The build itself is the only thing that knows what it has, and it
+// recorded it.
+func fromSource(stamp buildStamp, o upgradeOpts) bool {
 	switch {
 	case o.source:
-		args = append(args, "--source")
+		return true
 	case o.prebuilt:
-		args = append(args, "--prebuilt")
-	case !keptByRelease(stamp.tags):
-		args = append(args, "--source")
+		return false
 	default:
-		args = append(args, "--prebuilt")
+		return !keptByRelease(stamp.tags)
 	}
+}
+
+// installerArgs is what the installer script is told on the source path. Only
+// the source path: taking a release binary no longer goes through a script at
+// all (see installPrebuilt), so there is no --prebuilt to pass any more.
+func installerArgs(o upgradeOpts) ([]string, error) {
+	args := []string{"--source"}
 	if o.version != "" {
 		args = append(args, "--version", o.version)
 	}

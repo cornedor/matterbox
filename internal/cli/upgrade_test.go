@@ -13,85 +13,53 @@ import (
 	"matterbox/internal/update"
 )
 
-// TestInstallerArgs pins the decision that actually matters here: a build
-// carrying an optional feature the release binaries don't have must be rebuilt
-// from source, or the upgrade would silently take that feature away. The
-// releases carry video, so only demoaudio forces the source path now — get that
+// TestFromSource pins the decision that actually matters here: a build carrying
+// an optional feature the release binaries don't have must be rebuilt from
+// source, or the upgrade would silently take that feature away. The releases
+// carry video, so only demoaudio forces the source path now — get that
 // backwards in either direction and someone loses their soundtrack or spends
 // ten minutes compiling for nothing.
-func TestInstallerArgs(t *testing.T) {
+func TestFromSource(t *testing.T) {
 	cases := []struct {
 		name string
 		tags string
 		opts upgradeOpts
-		want []string
+		want bool
 	}{
-		{
-			name: "a build with the soundtrack rebuilds from source",
-			tags: "demoaudio,video",
-			opts: upgradeOpts{dir: "/opt/bin"},
-			want: []string{"--source", "--dir", "/opt/bin"},
-		},
-		{
-			name: "demoaudio alone is enough to force source",
-			tags: "demoaudio",
-			opts: upgradeOpts{dir: "/opt/bin"},
-			want: []string{"--source", "--dir", "/opt/bin"},
-		},
-		{
-			name: "a video build takes the release binary, which has video too",
-			tags: "video",
-			opts: upgradeOpts{dir: "/opt/bin"},
-			want: []string{"--prebuilt", "--dir", "/opt/bin"},
-		},
-		{
-			name: "the static release tags are not features to preserve",
-			tags: "video,netgo,osusergo",
-			opts: upgradeOpts{dir: "/opt/bin"},
-			want: []string{"--prebuilt", "--dir", "/opt/bin"},
-		},
-		{
-			name: "a plain build takes the release binary",
-			tags: "",
-			opts: upgradeOpts{dir: "/opt/bin"},
-			want: []string{"--prebuilt", "--dir", "/opt/bin"},
-		},
-		{
-			name: "--source overrides the tags",
-			tags: "",
-			opts: upgradeOpts{source: true, dir: "/opt/bin"},
-			want: []string{"--source", "--dir", "/opt/bin"},
-		},
-		{
-			name: "--prebuilt overrides the tags",
-			tags: "video",
-			opts: upgradeOpts{prebuilt: true, dir: "/opt/bin"},
-			want: []string{"--prebuilt", "--dir", "/opt/bin"},
-		},
-		{
-			name: "a pinned version is passed through",
-			tags: "",
-			opts: upgradeOpts{version: "v1.0.0", dir: "/opt/bin"},
-			want: []string{"--prebuilt", "--version", "v1.0.0", "--dir", "/opt/bin"},
-		},
+		{"a build with the soundtrack rebuilds from source", "demoaudio,video", upgradeOpts{}, true},
+		{"demoaudio alone is enough to force source", "demoaudio", upgradeOpts{}, true},
+		{"a video build takes the release binary, which has video too", "video", upgradeOpts{}, false},
+		{"the static release tags are not features to preserve", "video,netgo,osusergo", upgradeOpts{}, false},
+		{"a plain build takes the release binary", "", upgradeOpts{}, false},
+		{"--source overrides the tags", "", upgradeOpts{source: true}, true},
+		{"--prebuilt overrides the tags", "demoaudio", upgradeOpts{prebuilt: true}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, err := installerArgs(buildStamp{tags: c.tags}, c.opts)
-			if err != nil {
-				t.Fatalf("installerArgs: %v", err)
-			}
-			if strings.Join(got, " ") != strings.Join(c.want, " ") {
-				t.Errorf("installerArgs = %v, want %v", got, c.want)
+			if got := fromSource(buildStamp{tags: c.tags}, c.opts); got != c.want {
+				t.Errorf("fromSource = %v, want %v", got, c.want)
 			}
 		})
+	}
+}
+
+// The source path is the only one that still runs the script, so that is all it
+// ever asks for — plus the pinned version, which is the user's own input.
+func TestInstallerArgsAsksForASourceBuild(t *testing.T) {
+	got, err := installerArgs(upgradeOpts{version: "v1.0.0", dir: "/opt/bin"})
+	if err != nil {
+		t.Fatalf("installerArgs: %v", err)
+	}
+	want := []string{"--source", "--version", "v1.0.0", "--dir", "/opt/bin"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Errorf("installerArgs = %v, want %v", got, want)
 	}
 }
 
 // With no --dir the upgrade must land where the binary it replaces already is,
 // which is what keeps it on the PATH.
 func TestInstallerArgsDefaultsToTheRunningBinarysDirectory(t *testing.T) {
-	got, err := installerArgs(buildStamp{}, upgradeOpts{})
+	got, err := installerArgs(upgradeOpts{})
 	if err != nil {
 		t.Fatalf("installerArgs: %v", err)
 	}
