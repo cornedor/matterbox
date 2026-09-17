@@ -10,7 +10,8 @@ import (
 )
 
 // classRune maps an mdClass to a compact symbol for table-driven assertions:
-// '.' none, 'm' marker, 'B' bold, 'i' italic, 's' strike, 'c' code, 'C' block.
+// '.' none, 'm' marker, 'B' bold, 'i' italic, 's' strike, 'c' code, 'C' block,
+// 'L' link syntax, 't' link text, 'u' link url.
 func classRune(c mdClass) byte {
 	switch c {
 	case mdMarker:
@@ -25,6 +26,12 @@ func classRune(c mdClass) byte {
 		return 'c'
 	case mdCodeBlock:
 		return 'C'
+	case mdLinkMarker:
+		return 'L'
+	case mdLinkText:
+		return 't'
+	case mdLinkURL:
+		return 'u'
 	default:
 		return '.'
 	}
@@ -58,6 +65,13 @@ func TestMarkdownClassesInline(t *testing.T) {
 		{"__init__", "mmBBBBmm"},     // space/edge-flanked dunder bolds (CommonMark)
 		{"foo__bar__", ".........."}, // but truly intraword underscores stay literal
 		{"é*b*", ".mim"},             // multibyte head, rune-addressed offsets
+		{"[a](b)", "LtLLuL"},         // link: syntax, label, url
+		{"![a](b)", "LLtLLuL"},       // image: the leading ! is syntax too
+		{`[a](b "t")`, "LtLLuLLLLL"}, // optional title counts as syntax
+		{"[a](b) *c*", "LtLLuL.mim"}, // parsing resumes after the link
+		{"[a] (b)", "......."},       // space between the parts: not a link
+		{"[a](", "...."},             // incomplete link stays plain
+		{"`[a](b)`", "mccccccm"},     // code suppresses links
 	}
 	for _, c := range cases {
 		if got := classString(c.in); got != c.want {

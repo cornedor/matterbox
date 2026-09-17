@@ -18,7 +18,7 @@ func ptrTo[T any](v T) *T { return &v }
 // down; fields touched in the unconditional layout/render passes stay inline
 // (boxing them would nil-panic literal-built test Models). If you add a fat
 // field, box it if it's safe or raise this ceiling deliberately.
-const modelSizeCeiling = 108000
+const modelSizeCeiling = 98000
 
 func TestModelSizeCeiling(t *testing.T) {
 	got := unsafe.Sizeof(Model{})
