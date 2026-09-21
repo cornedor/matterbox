@@ -145,6 +145,7 @@ func (m *Model) applyUserProfile(msg userProfileMsg) {
 		if cs := u.GetCustomStatus(); cs != nil {
 			m.customStatuses[u.Id] = *cs
 		}
+		m.noteDeactivated(map[string]bool{u.Id: u.DeleteAt != 0})
 	}
 	if !m.infoOpen || m.infoMode != infoModeProfile || msg.userID != m.infoProfileUserID {
 		return // stale (closed or switched)
@@ -182,16 +183,23 @@ func (m *Model) infoProfileContent() ([]string, []infoTarget) {
 	}
 	lines = append(lines, lipgloss.NewStyle().Bold(true).Render(head))
 
-	status := m.statuses[u.Id]
-	glyph, st := statusGlyph(status, statusDot, statusHollowDot)
-	if status == "" {
-		status = "offline"
+	// A deactivated account takes the presence line: it is always offline and
+	// can neither read nor answer, which is the one thing worth saying about
+	// it. The custom status it was frozen with is noise, so it is dropped.
+	if u.DeleteAt != 0 {
+		lines = append(lines, infoDeactivatedStyle.Render(deactivatedGlyph+" deactivated account"))
+	} else {
+		status := m.statuses[u.Id]
+		glyph, st := statusGlyph(status, statusDot, statusHollowDot)
+		if status == "" {
+			status = "offline"
+		}
+		presence := st.Render(glyph) + " " + status
+		if cs, ok := m.profileCustomStatus(u); ok {
+			presence += infoDimStyle.Render(" — ") + strings.TrimSpace(m.renderEmojiGlyph(cs.Emoji)+" "+cs.Text)
+		}
+		lines = append(lines, presence)
 	}
-	presence := st.Render(glyph) + " " + status
-	if cs, ok := m.profileCustomStatus(u); ok {
-		presence += infoDimStyle.Render(" — ") + strings.TrimSpace(m.renderEmojiGlyph(cs.Emoji)+" "+cs.Text)
-	}
-	lines = append(lines, presence)
 
 	lines = append(lines, "", infoLabelStyle.Render("Profile"))
 	add := func(key, value string) {
@@ -216,7 +224,7 @@ func (m *Model) infoProfileContent() ([]string, []infoTarget) {
 		add("Roles", "system admin")
 	}
 	if u.DeleteAt != 0 {
-		add("Account", "deactivated")
+		add("Deactivated", time.UnixMilli(u.DeleteAt).Format("2 Jan 2006"))
 	}
 
 	if m.me == nil || u.Id != m.me.Id {

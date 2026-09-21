@@ -478,15 +478,20 @@ func (m *Model) renderSwitcher(maxH int) string {
 		for i, row := range results {
 			var label, team string
 			var mentionN, unreadN int
+			var dead bool
 			if u := row.user; u != nil {
 				label = "@" + u.Username
 				team = "new DM"
+				dead = u.DeleteAt != 0 || m.userDeactivated(u.Id)
 			} else {
 				ch := row.ch
 				label = m.channelLabel(ch)
 				team = m.teamHintForChannel(ch)
 				mentionN = m.mentions[ch.Id]
 				unreadN = m.unread[ch.Id]
+				// The sidebar hides these rows; the picker keeps them (it is
+				// how you reach an old DM) and says why they are gone.
+				dead = m.userDeactivated(m.dmPartnerID(ch))
 			}
 			var badge string
 			switch {
@@ -496,12 +501,17 @@ func (m *Model) renderSwitcher(maxH int) string {
 				badge = unreadStyle.Render(" " + strconv.Itoa(unreadN))
 			}
 
-			// Reserve space for: leading "  ", trailing badge, " <team>".
+			// Reserve space for: leading "  ", trailing badge, the
+			// deactivated marker, " <team>".
 			teamSuffix := ""
 			if team != "" {
 				teamSuffix = "  " + team
 			}
-			reserved := 2 + lipgloss.Width(badge) + lipgloss.Width(teamSuffix)
+			mark := ""
+			if dead {
+				mark = " " + deactivatedLabel
+			}
+			reserved := 2 + lipgloss.Width(badge) + lipgloss.Width(mark) + lipgloss.Width(teamSuffix)
 			labelText := label
 			if reserved < inner {
 				labelText = truncate(label, inner-reserved)
@@ -514,6 +524,16 @@ func (m *Model) renderSwitcher(maxH int) string {
 				labelText = unreadStyle.Render(labelText)
 			}
 			line := "  " + labelText + badge
+			if mark != "" {
+				// Dim on the highlight background is unreadable, so the
+				// selected row keeps the marker unstyled — same rule as the
+				// team suffix below.
+				if selected {
+					line += mark
+				} else {
+					line += dim.Render(mark)
+				}
+			}
 			if teamSuffix != "" {
 				// On the selected row, leave the team suffix unstyled so the
 				// selectedRow foreground applies — dim grey on the highlight
