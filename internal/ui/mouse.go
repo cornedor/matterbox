@@ -1368,6 +1368,8 @@ func (m *Model) editorCursor() (col, row int, ok bool) {
 		return m.switcherCursor()
 	case m.jiraCommentActive:
 		return m.jiraCommentCursor()
+	case m.diffNoteActive():
+		return m.diffNoteCursor()
 	case m.bodyOverlayActive():
 		return 0, 0, false
 	case m.onSearchTab():
@@ -1464,40 +1466,11 @@ func (m *Model) switcherCursor() (col, row int, ok bool) {
 // lipgloss.Place centering renderViewContent applies, so the cell tracks the
 // editor even as the box grows or the reply line appears.
 func (m *Model) jiraCommentCursor() (col, row int, ok bool) {
-	cx, cy, okPos := m.jiraCommentInput.CursorViewPos()
-	if !okPos {
-		return 0, 0, false
-	}
-	bodyH := 0
-	if m.vcache != nil {
-		bodyH = m.vcache.bodyH
-	}
-	if bodyH <= 0 {
-		return 0, 0, false
-	}
-	// Box outer width — same clamp as renderJiraCommentInput.
-	outerW := confirmDialogMaxWidth
-	if outerW > m.width-4 {
-		outerW = m.width - 4
-	}
-	if outerW < 40 {
-		outerW = 40
-	}
-	// Lines stacked above the editor inside the box: header + blank, then an
-	// optional "replying to" line + blank.
-	aboveEditor := 2
+	above := 0
 	if m.jiraCommentReplyTo != "" {
-		aboveEditor += 2
+		above = 1
 	}
-	// Box outer height: rounded border (2) + padding (2 top/bottom) + content
-	// (the lines above the editor, the editor itself, then a blank + the hint).
-	boxH := 4 + aboveEditor + m.jiraCommentInput.Height() + 2
-
-	boxLeft := placeOffset(m.width, outerW)
-	boxTop := tabsHeight + placeOffset(bodyH, boxH)
-	// Editor origin within the box: left border (1) + left padding (3); top
-	// border (1) + top padding (1) + the lines above the editor.
-	return boxLeft + 4 + cx, boxTop + 2 + aboveEditor + cy, true
+	return m.modalComposerCursor(above, &m.jiraCommentInput)
 }
 
 // placeOffset returns the leading pad lipgloss.Place puts before a box of size

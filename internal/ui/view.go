@@ -1862,6 +1862,11 @@ func init() {
 		{func(m *Model) bool { return m.chanConfirm != nil }, func(m *Model, _ int) string { return m.renderChannelConfirm() }},
 		{func(m *Model) bool { return m.summary.active() }, func(m *Model, _ int) string { return m.renderSummaryPopup() }},
 		{func(m *Model) bool { return m.preview.active }, func(m *Model, _ int) string { return m.renderPreviewPopup() }},
+		// The diff review view and the note composer that sits on top of it.
+		// Both last in the table: the composer must win over the view, and the
+		// view over anything left up behind it.
+		{func(m *Model) bool { return m.diff != nil }, func(m *Model, h int) string { return m.renderDiffView(h) }},
+		{(*Model).diffNoteActive, func(m *Model, _ int) string { return m.renderDiffNote() }},
 	}
 }
 

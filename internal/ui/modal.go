@@ -67,7 +67,18 @@ func (m *Model) modalInnerWidth() int {
 // keystroke while open.
 func (m *Model) renderModal(title, hint, body string) string {
 	outerW, _ := m.modalDims()
-	inner := m.modalInnerWidth()
+	return m.renderModalFrame(outerW, title, hint, body)
+}
+
+// renderModalFrame is renderModal with the outer width chosen by the caller,
+// for the one sheet that is not a sheet: the diff review view, which takes the
+// whole terminal because a diff cannot be folded into 96 columns. Everything
+// else goes through renderModal and gets the shared dimensions.
+func (m *Model) renderModalFrame(outerW int, title, hint, body string) string {
+	inner := outerW - 4
+	if inner < 1 {
+		inner = 1
+	}
 	dim := lipgloss.NewStyle().Foreground(dimColor)
 	head := titleStyle.Render(title)
 	if hint != "" {

@@ -79,7 +79,7 @@ func (m *Model) inModal() bool {
 		m.createChan != nil || m.chanEdit != nil || m.chanConfirm != nil || m.joinChan != nil ||
 		m.gorillas.active || m.kurve.active || m.stl.active || m.keyDebugMode ||
 		m.jiraPicker.active || m.jiraPointsActive || m.jiraCommentActive ||
-		m.refConfirm.active || m.linkConfirm.active
+		m.refConfirm.active || m.linkConfirm.active || m.diff != nil
 }
 
 // yesNoConfirm reports whether one of the three y/n confirmations is up: the
@@ -142,6 +142,41 @@ var keyContexts = []keyContext{
 				hardwired("spin the turntable", "s"),
 				hardwired("next / previous model", "n", "p", "tab", "shift+tab"),
 				m.keys.Preview, // the key that opened it closes it
+				hardwired("close", "esc", "q"),
+			}
+		},
+	},
+	{
+		// The diff review view, and its note composer on top. Both are modal
+		// surfaces of their own: the view is a screenful of code with its own
+		// navigation vocabulary, and the composer is a text input.
+		name:     "modal:diff-note",
+		active:   func(m *Model) bool { return m.diffNoteActive() },
+		terminal: true,
+		typing:   true,
+		claims: func(m *Model) []key.Binding {
+			return []key.Binding{m.keys.NewLine, hardwired("post the note", "enter"), hardwired("cancel", "esc")}
+		},
+	},
+	{
+		name:     "modal:diff-review",
+		active:   func(m *Model) bool { return m.diff != nil },
+		terminal: true,
+		claims: func(m *Model) []key.Binding {
+			return []key.Binding{
+				hardwired("move a line", "up", "k", "down", "j"),
+				hardwired("page", "pgup", "pgdown", "ctrl+u", "ctrl+d"),
+				hardwired("top / bottom", "home", "g", "end", "G"),
+				hardwired("pan a wide diff", "left", "h", "right", "l"),
+				hardwired("next / previous file", "]", "["),
+				hardwired("next / previous inline thread", "n", "N"),
+				hardwired("switch panel", "tab", "shift+tab"),
+				hardwired("jump to the highlighted file", "enter"),
+				hardwired("note on this line", "c"),
+				hardwired("resolve / reopen the thread", "R"),
+				hardwired("fold this file / every file", "z", "Z"),
+				hardwired("reload", "r"),
+				hardwired("open in a browser", "o"),
 				hardwired("close", "esc", "q"),
 			}
 		},
@@ -664,6 +699,9 @@ var shadowProbeStates = []struct {
 	{"jira-picker", func(m *Model) { m.jiraPicker.active = true }},
 	{"jira-points", func(m *Model) { m.jiraPointsActive = true }},
 	{"jira-comment", func(m *Model) { m.jiraCommentActive = true }},
+	{"diff-review", func(m *Model) { m.diff = &diffState{} }},
+	{"diff-note", func(m *Model) { m.diff = &diffState{note: diffNoteState{active: true}} }},
+
 	{"confirm", func(m *Model) { m.linkConfirm.active = true }},
 	{"channel-form", func(m *Model) { m.createChan = &createChannelState{} }},
 	{"reaction-picker", func(m *Model) { m.reactionPickerPostID = "x" }},

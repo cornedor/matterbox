@@ -148,7 +148,7 @@ func (m *Model) raiseChannelInfo() tea.Cmd {
 	m.focus = focusInfo
 	m.input.Blur()
 	m.infoView.GotoTop()
-	m.status = "channel info · ↑/↓ select · ↵ open/jump/DM · esc closes"
+	m.setPanelHint("channel info · ↑/↓ select · ↵ open/jump/DM · esc closes")
 	m.resizeMessagesViewport()
 	m.renderMessages()
 	m.renderInfo()
@@ -171,6 +171,7 @@ func (m *Model) closeInfo() {
 	m.infoIdx = -1
 	m.infoHoverIdx = -1
 	m.infoScrollFree = false
+	m.clearPanelHint()
 	if m.focus == focusInfo {
 		m.focus = focusMessages
 	}
@@ -202,7 +203,7 @@ func (m *Model) closeInfoMedia() {
 	m.infoIdx = m.infoMainIdx
 	m.infoHoverIdx = -1
 	m.infoScrollFree = false
-	m.status = "channel info · ↑/↓ select · ↵ open/jump/DM · esc closes"
+	m.setPanelHint("channel info · ↑/↓ select · ↵ open/jump/DM · esc closes")
 	m.renderInfo()
 }
 

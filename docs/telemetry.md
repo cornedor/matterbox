@@ -801,13 +801,13 @@ which is the app's own tested model of which bindings are live where.
 `focus:sqlresults`, `focus:teams`, `focus:thread`, `global:command-picker`,
 `global:nav`, `global:reading`, `global:switcher-chord`, `global:team-jump`,
 `modal:channel-form`, `modal:code-picker`, `modal:confirm`,
-`modal:delete-confirm`, `modal:game`, `modal:history`, `modal:image-preview`,
-`modal:jira-comment`, `modal:jira-picker`, `modal:jira-points`,
-`modal:kaomoji-picker`, `modal:key-debug`, `modal:keys-sheet`,
-`modal:open-picker`, `modal:poll-dialog`, `modal:reaction-picker`,
-`modal:saved-posts`, `modal:stl-view`, `modal:summary`, `modal:switcher`,
-`modal:template-picker`, `modal:text-popup`, `mode:filter`, `unknown`,
-`welcome`
+`modal:delete-confirm`, `modal:diff-note`, `modal:diff-review`, `modal:game`,
+`modal:history`, `modal:image-preview`, `modal:jira-comment`,
+`modal:jira-picker`, `modal:jira-points`, `modal:kaomoji-picker`,
+`modal:key-debug`, `modal:keys-sheet`, `modal:open-picker`,
+`modal:poll-dialog`, `modal:reaction-picker`, `modal:saved-posts`,
+`modal:stl-view`, `modal:summary`, `modal:switcher`, `modal:template-picker`,
+`modal:text-popup`, `mode:filter`, `unknown`, `welcome`
 
 ### Channel types
 
@@ -885,10 +885,10 @@ which is how a binding nobody uses becomes visible.
 `newline`, `next_match`, `open_attachment`, `open_channel`, `open_reference`,
 `open_thread`, `page_down`, `page_up`, `paste`, `prev_match`,
 `prev_own_message`, `preview_image`, `quit`, `react`, `redo`, `ref_approve`,
-`ref_jobs`, `ref_merge`, `refresh`, `reply_in_thread`, `right`, `search_all`,
-`search_here`, `select_down`, `select_left`, `select_right`, `select_up`,
-`send`, `sheet_remove`, `switcher`, `team_next`, `team_prev`, `top`, `undo`,
-`up`
+`ref_diff`, `ref_jobs`, `ref_merge`, `refresh`, `reply_in_thread`, `right`,
+`search_all`, `search_here`, `select_down`, `select_left`, `select_right`,
+`select_up`, `send`, `sheet_remove`, `switcher`, `team_next`, `team_prev`,
+`top`, `undo`, `up`
 
 ### Mouse targets
 

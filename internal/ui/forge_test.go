@@ -510,3 +510,46 @@ func TestInlineBadgeUsesTheOwningForge(t *testing.T) {
 		t.Errorf("GitLab badge should carry only the GitLab mark, got %q", glPill)
 	}
 }
+
+// A panel's key hint lives in the status slot while the panel is open — and has
+// to leave with it. Pressing the open-reference key and then esc used to leave
+// "A approve · M merge · …" sitting in the footer over a screen with no panel
+// on it.
+func TestClosingRefPanelTakesItsHintAway(t *testing.T) {
+	m := openLoadedChange(t, configuredForgeModel(t), forgeGitLab, mrLink, sampleMR())
+	if !strings.Contains(m.status, "approve") {
+		t.Fatalf("the open panel did not set its hint: %q", m.status)
+	}
+	updated, _ := m.handleRefKey(tea.KeyPressMsg{Code: tea.KeyEscape})
+	got := updated.(Model)
+	if got.refOpen {
+		t.Fatal("esc did not close the panel")
+	}
+	if got.status != "" {
+		t.Errorf("status after closing = %q, want the hint gone", got.status)
+	}
+}
+
+// …but only the hint. A message that landed while the panel was open is not the
+// panel's to clear.
+func TestClosingRefPanelKeepsARealMessage(t *testing.T) {
+	m := openLoadedChange(t, configuredForgeModel(t), forgeGitLab, mrLink, sampleMR())
+	m.status = "copied to clipboard"
+	updated, _ := m.handleRefKey(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if got := updated.(Model).status; got != "copied to clipboard" {
+		t.Errorf("status = %q, want the message left alone", got)
+	}
+}
+
+// The channel-info panel writes the same kind of hint through the same pair and
+// had the same leak.
+func TestClosingInfoPanelTakesItsHintAway(t *testing.T) {
+	m := newTestModel()
+	m.width, m.height = 120, 40
+	m.infoOpen = true
+	m.setPanelHint("channel info · ↑/↓ select · ↵ open/jump/DM · esc closes")
+	m.closeInfo()
+	if m.status != "" {
+		t.Errorf("status after closing = %q, want the hint gone", m.status)
+	}
+}

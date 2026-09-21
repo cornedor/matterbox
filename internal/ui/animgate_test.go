@@ -100,6 +100,8 @@ var hidingStates = []struct {
 	{"summary", func(m *Model) { m.summary.phase = summaryPicking }},
 	{"image-preview", func(m *Model) { m.preview.active = true }},
 	{"stl-view", func(m *Model) { m.stl.active = true }},
+	{"diff-review", func(m *Model) { m.diff = &diffState{} }},
+	{"diff-note", func(m *Model) { m.diff = &diffState{note: diffNoteState{active: true}} }},
 	{"feed-tab", func(m *Model) { gotoTab(m, tabFeed) }},
 	{"search-tab", func(m *Model) { gotoTab(m, tabSearch) }},
 	{"sql-tab", func(m *Model) { m.showSQL = true; gotoTab(m, tabSQL) }},

@@ -29,7 +29,8 @@ Screenshots, the feature tour, and the docs live at **[matterbox.work](https://m
 - **Paste and drop** — paste an image from the clipboard, or drag a file onto the
   terminal; both become attachments.
 - **Jira and GitLab** — press `v` on an issue or MR link for a side panel: edit status,
-  assignee, or story points, approve or merge, without leaving the TUI.
+  assignee, or story points, approve or merge, without leaving the TUI. On a merge
+  request, `d` opens a two-panel diff review — file tree, inline notes, resolve.
 - **AI, if you want it** — channel and thread summaries, semantic search over your
   history, and an agentic search that digs through channels to answer a question. All
   optional, all against any OpenAI-compatible endpoint, so nothing needs to leave your
@@ -146,10 +147,22 @@ token allows it. GitLab and GitHub share one forge panel; GitHub issues are
 read-only (approve/merge are pull requests only). Public GitHub repos work
 without a token (60 requests/hour anonymous).
 
+The panel lists the merge request's full conversation: inline notes headed by
+the file and line they sit on, plus the comments on the merge request itself,
+with resolved threads ticked off.
+
+On a GitLab merge request, `d` opens the whole diff — a file tree beside a
+syntax-highlighted, green/red diff — with the existing inline conversations
+under the lines they belong to. `c` on a line posts a review note there, `R`
+resolves a thread, `z`/`Z` fold a file or all of them, and `tab` moves between
+the tree and the diff. A review needs no browser. (GitLab only so far; GitHub is
+next.)
+
 ```yaml
 gitlab:
   base_url: https://git.example.com
   token: glpat-…          # or $GITLAB_TOKEN, or an existing `glab auth login`
+                          # (config file or OS keyring — both are read)
 
 github:
   base_url: https://github.com   # optional default

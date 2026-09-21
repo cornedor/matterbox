@@ -832,7 +832,7 @@ func forgeProviderID(p forge.Provider) string {
 func forgeActionID(action string) string {
 	switch action {
 	case "open", "status", "priority", "points", "assignee", "comment",
-		"reply", "approve", "merge", "jobs", "refresh":
+		"reply", "approve", "merge", "jobs", "refresh", "diff", "note", "resolve":
 		return action
 	}
 	return "refresh"
