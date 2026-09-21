@@ -629,7 +629,15 @@ type Model struct {
 	// forges are the configured code forges (GitLab, GitHub, …), in config order.
 	// A reference remembers its forge by index. Disabled providers are skipped.
 	// refChange is the loaded change request when the current ref is a forge one.
-	refChange             *forge.Change
+	refChange *forge.Change
+	// panelHint is the key hint a side panel wrote into the status slot when it
+	// opened, remembered so closing the panel can take it away again — but only
+	// while nothing else has written there since. See setPanelHint.
+	panelHint string
+	// refThreads is the change request's conversation — the inline notes and the
+	// ones on it as a whole — listed under the description. Best-effort, and
+	// only for a forge that can serve them (see forge.Reviewer).
+	refThreads            []forge.Thread
 	forges                []forge.Provider
 	changeStatus          *changeStatusManager // inline badge state; nil only in bare test models
 	changeFetchGen        int                  // bumped on navigation to debounce scroll fetches
@@ -657,6 +665,11 @@ type Model struct {
 	// Forge action confirm, opened with A (approve) / M (merge) while the panel
 	// shows a change request. Modal — owns every keystroke while open (forge.go).
 	refConfirm refConfirmState
+	// diff is the full-screen diff review view, opened with the diff key while
+	// the panel shows a merge/pull request on a forge that can serve one. nil is
+	// closed; a pointer because the parsed, highlighted diff is far too big to
+	// copy on every event (see diffview.go).
+	diff *diffState
 	// linkConfirm warns before opening a clicked link whose scheme isn't http(s)
 	// — handing a file:/mailto:/custom-scheme target to the OS launcher can do
 	// more than open a browser tab. Modal (linkclick.go).

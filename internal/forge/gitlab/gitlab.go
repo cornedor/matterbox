@@ -43,6 +43,9 @@ type Client struct {
 	token   string
 	rest    *forge.REST
 	cache   forge.Cache
+	// diffs memoises the review diff separately from the change itself: it is a
+	// different (and much larger) fetch, made only when the diff view is opened.
+	diffs forge.Store[*forge.Diff]
 }
 
 // Client is the GitLab half of the panel's provider set.
@@ -176,12 +179,14 @@ func (c *Client) Get(ctx context.Context, project string, iid int, kind string) 
 	return mr, nil
 }
 
-// Invalidate drops any cached copy of the MR so the next Get refetches.
+// Invalidate drops any cached copy of the MR — and of its diff — so the next
+// Get / Diff refetches.
 func (c *Client) Invalidate(project string, iid int) {
 	if c == nil {
 		return
 	}
 	c.cache.Invalidate(project, iid)
+	c.diffs.Invalidate(project, iid)
 }
 
 func (c *Client) fetch(ctx context.Context, project string, iid int) (*forge.Change, error) {

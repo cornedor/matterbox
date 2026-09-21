@@ -30,7 +30,8 @@ package telemetry
 var Contexts = []string{
 	"modal:key-debug", "modal:game", "modal:delete-confirm",
 	"modal:reaction-picker", "modal:jira-picker", "modal:jira-points",
-	"modal:jira-comment", "modal:confirm", "modal:open-picker",
+	"modal:jira-comment", "modal:diff-review", "modal:diff-note",
+	"modal:confirm", "modal:open-picker",
 	"modal:code-picker", "modal:poll-dialog", "modal:channel-form",
 	"modal:saved-posts", "modal:template-picker", "modal:kaomoji-picker",
 	"modal:history", "modal:summary", "modal:keys-sheet",
@@ -114,7 +115,7 @@ var ActionIDs = []string{
 	"move_team_right", "newline", "next_match", "open_attachment",
 	"open_channel", "open_reference", "open_thread", "page_down", "page_up",
 	"paste", "preview_image", "prev_match", "prev_own_message", "quit", "react",
-	"redo", "ref_approve", "ref_jobs", "ref_merge", "refresh",
+	"redo", "ref_approve", "ref_diff", "ref_jobs", "ref_merge", "refresh",
 	"reply_in_thread", "right", "search_all", "search_here",
 	"select_down", "select_left", "select_right", "select_up", "send",
 	"sheet_remove", "switcher", "team_next", "team_prev", "top", "undo", "up",
@@ -518,7 +519,7 @@ var Events = []EventSpec{
 			{Name: "provider", Kind: KindEnum, Values: []string{"jira", "gitlab", "github"}, Desc: "Which provider. Never the instance URL, project or issue key."},
 			{Name: "action", Kind: KindEnum, Values: []string{
 				"open", "status", "priority", "points", "assignee", "comment",
-				"reply", "approve", "merge", "jobs", "refresh",
+				"reply", "approve", "merge", "jobs", "refresh", "diff", "note", "resolve",
 			}, Desc: "What was done."},
 			{Name: "outcome", Kind: KindEnum, Values: Outcomes, Desc: "Result."},
 			{Name: "latency_ms", Kind: KindEnum, Values: MillisBuckets, Desc: "API round trip, bucketed."},

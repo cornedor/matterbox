@@ -1203,6 +1203,15 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case forgeMutatedMsg:
 		return m.handleForgeMutated(msg)
 
+	case diffLoadedMsg:
+		return m.handleDiffLoaded(msg)
+
+	case diffNotePostedMsg:
+		return m.handleDiffNotePosted(msg)
+
+	case diffResolvedMsg:
+		return m.handleDiffResolved(msg)
+
 	case fileInfosLoadedMsg:
 		var persistCmd tea.Cmd
 		for _, p := range m.posts {
@@ -2318,6 +2327,15 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// hjkl and the axis keys are the whole interface.
 	if m.stl.active {
 		return m.handleSTLKey(msg)
+	}
+	// The diff review view is fully modal: it is a screenful of code with its
+	// own navigation, and its note composer sits on top of it (checked first,
+	// so the text input owns the keys while it is open).
+	if m.diff != nil {
+		if m.diff.note.active {
+			return m.handleDiffNoteKey(msg)
+		}
+		return m.handleDiffKey(msg)
 	}
 	// Delete-confirmation modal is fully modal: y/enter performs the
 	// delete, n/esc cancels. Anything else is ignored.
@@ -3642,6 +3660,7 @@ const (
 	wheelFeed
 	wheelSQL
 	wheelModal
+	wheelDiff
 )
 
 // wheelCoalesceDelay is how long accumulated wheel delta waits before being
@@ -3667,7 +3686,10 @@ func (m *Model) wheelTargetForFocus() wheelTarget {
 	// and any other modal swallows it. Focus is untouched while a modal is up, so
 	// without this the wheel scrolled the pane buried behind the popup.
 	if m.inModal() {
-		if m.modalScrollView() != nil {
+		switch {
+		case m.diff != nil && !m.diff.note.active:
+			return wheelDiff
+		case m.modalScrollView() != nil:
 			return wheelModal
 		}
 		return wheelNone
@@ -3727,6 +3749,8 @@ func (m *Model) wheelStep(t wheelTarget) int {
 			return v.MouseWheelDelta
 		}
 		return 0
+	case wheelDiff:
+		return 3
 	default:
 		return 0
 	}
@@ -3833,6 +3857,12 @@ func (m *Model) applyWheel(t wheelTarget, delta int) {
 		// answer — it must not fall through to the pane behind it.
 		if v := m.modalScrollView(); v != nil {
 			v.SetYOffset(v.YOffset() + delta)
+		}
+	case wheelDiff:
+		// The diff view scrolls by moving its cursor: the line the cursor is on
+		// is the line the comment key acts on, so the two cannot drift apart.
+		if m.diff != nil {
+			m.diff.move(delta)
 		}
 	}
 }

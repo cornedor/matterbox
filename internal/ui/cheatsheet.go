@@ -34,6 +34,7 @@ var keysSheetSections = []struct {
 	{title: "Thread", contexts: []string{"focus:thread"}},
 	{title: "Reference (Jira / GitLab / GitHub)", contexts: []string{"focus:ref"}},
 	{title: "Jira editors", contexts: []string{"modal:jira-picker", "modal:jira-points", "modal:jira-comment"}},
+	{title: "Diff review (MR)", contexts: []string{"modal:diff-review", "modal:diff-note"}},
 	{title: "Channel info / media", contexts: []string{"focus:info", "focus:info-media"}},
 	// The preview modal's dismiss keys are hardwired in handlePreviewKey, so the
 	// rows are built from a synthetic source (rows func) that merges them with

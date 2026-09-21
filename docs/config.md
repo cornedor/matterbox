@@ -221,8 +221,8 @@ scrollable cheatsheet. The action ids, by layer:
   `select_left`, `select_right`, `select_up`, `select_down`, `copy_selection`,
   `cut_selection`
 - **Reference panel** — `jira_status`, `jira_priority`, `jira_points`,
-  `jira_assignee`, `jira_comment`, `jira_reply`, `gitlab_approve`,
-  `gitlab_merge`, `gitlab_jobs`
+  `jira_assignee`, `jira_comment`, `jira_reply`, `ref_approve`, `ref_merge`,
+  `ref_jobs`, `ref_diff`
 - **Misc** — `confirm_yes`, `confirm_no`, `sheet_remove`, `help`, `quit`
 
 The jump-to actions (`goto_team` = `alt+1…9`, `goto_dm` = `alt+d`, `goto_feed` =
@@ -394,14 +394,47 @@ gitlab:
 | `jira.projects` | *(empty)* | Project keys whose **bare** ids (`ABC-123`) open the panel. Empty means only full `/browse/KEY` links are detected — so look-alikes like `UTF-8` never trigger. |
 | `jira.story_points_field` | *(empty)* | Pin the story-points custom field (`customfield_10016`). Empty auto-detects it from the instance's field metadata; set this only if auto-detection picks the wrong field. |
 | `gitlab.base_url` | *(empty)* | Instance root, also used to recognise `/-/merge_requests/N` links for this host. |
-| `gitlab.token` | *(empty)* | Personal or project access token. Empty falls back to `GITLAB_TOKEN`, then to the token `glab auth login` stored for this host in `~/.config/glab-cli/config.yml` — so a working `glab` setup needs no secret here. |
+| `gitlab.token` | *(empty)* | Personal or project access token. Empty falls back to `GITLAB_TOKEN`, then to an existing `glab auth login` for this host — from `~/.config/glab-cli/config.yml`, or, when glab stored it in the OS keyring (its default since 1.6x, `use_keyring: "true"` in that file), by asking `glab auth status` for it. So a working `glab` setup needs no secret here either way. |
+
+The panel itself lists the merge request's whole conversation under the
+description — every discussion on it, newest state first-hand from the forge:
+an inline note is headed by the file and line it hangs off
+(`internal/ui/diffview.go:412`, or `…:88 (removed)` when the line is only in the
+old file), the rest by *on the change request*, and a resolved one carries a
+green `✓`. It costs one extra request when the panel opens, and none on the
+inline `!iid` badges.
+
+#### Reviewing a merge request
+
+`d` in the panel opens the full diff: a file tree on the left, the
+syntax-highlighted diff on the right (green/red, scrollable), with the merge
+request's existing inline conversations drawn under the lines they hang off.
+
+| Key | Does |
+|---|---|
+| `tab` | Switch between the file tree and the diff. Each panel's arrows are its own, so `←`/`→` pan whichever one has the keys. |
+| `c` | Write a note on the line under the cursor — or reply, on a note. Posts straight away as a GitLab discussion positioned on that line. |
+| `R` | Resolve the conversation at the cursor, or reopen it. |
+| `z` / `Z` | Fold this file / every file. The tree dims a folded file; the header says how many lines it is holding back. |
+| `]` `[` | Next / previous file. |
+| `n` `N` | Next / previous inline conversation. |
+| `↑` `↓` | A line in the diff, a file in the tree (the other panel follows). |
+| `r` · `o` · `esc` | Reload · open in a browser · close. |
+
+The tree shows `+`/`-` counts per file, `💬n` for conversations still open and a
+green `✓` once they have all been answered.
+
+Diff review is GitLab-only for now — the panel says so on a forge that has no
+diff support yet. Reading the diff needs `read_api`; posting notes and resolving
+threads need `api`.
 
 Jira targets **Cloud** (`/rest/api/3`); Server/Data Center instances won't work
 as-is. What a token needs:
 
 - **GitLab** — `read_api` for everything read-only (the panel, `!iid` badges,
-  pipeline and approval state); `api` for the approve and merge actions, since
-  GitLab has no narrower scope for MR writes.
+  pipeline and approval state, the diff and its inline conversations); `api` for
+  the approve and merge actions and for posting a review note, since GitLab has
+  no narrower scope for MR writes.
 - **Jira, classic token** — unscoped, so access follows your project
   permissions: *Browse Projects* to view, plus *Transition / Assign / Edit
   Issues* for the inline edits.

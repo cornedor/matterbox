@@ -28,7 +28,11 @@ type forgeLoadedMsg struct {
 	repo     string
 	number   int
 	change   *forge.Change
-	err      error
+	// threads is the change request's conversation, fetched alongside it when
+	// the forge can serve one. Best-effort: nil simply means no Discussion
+	// section, never a failed panel.
+	threads []forge.Thread
+	err     error
 	// started dates the fetch, for forge_action's API round trip. The provider
 	// caches, so this measures what the panel actually waited for.
 	started time.Time
@@ -88,6 +92,7 @@ func (m *Model) forgeAt(i int) forge.Provider {
 // (forge.KindPull / KindIssue / empty) forwarded to Provider.Get.
 func (m Model) fetchForgeChange(gen, provider int, repo string, number int, kind string) tea.Cmd {
 	p, ctx := m.forgeAt(provider), m.ctx
+	rv := m.diffReviewer(provider)
 	started := featureStart()
 	return func() tea.Msg {
 		msg := forgeLoadedMsg{gen: gen, provider: provider, repo: repo, number: number, started: started}
@@ -96,6 +101,13 @@ func (m Model) fetchForgeChange(gen, provider int, repo string, number int, kind
 			return msg
 		}
 		msg.change, msg.err = p.Get(ctx, repo, number, kind)
+		// The conversation, when this forge has one to give. It rides along
+		// with the panel fetch rather than with Get, because Get is also what
+		// the inline badges call — a request per badge on a busy channel is not
+		// a price a side panel gets to charge.
+		if msg.err == nil && rv != nil && msg.change != nil && !msg.change.IsIssue {
+			msg.threads, _ = rv.Threads(ctx, repo, number)
+		}
 		return msg
 	}
 }
@@ -115,10 +127,12 @@ func (m Model) handleForgeLoaded(msg forgeLoadedMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
 		m.refErr = msg.err
 		m.refChange = nil
+		m.refThreads = nil
 	} else {
 		m.refErr = nil
 		m.refChange = msg.change
-		m.status = m.refStatusHint(*r, len(m.refs))
+		m.refThreads = msg.threads
+		m.setPanelHint(m.refStatusHint(*r, len(m.refs)))
 	}
 	m.renderRef()
 	return m, nil
@@ -189,14 +203,125 @@ func (m *Model) renderForgeChange(p forge.Provider, ch *forge.Change, width int)
 	b.WriteString("\n" + refDimStyle.Render(hint) + "\n")
 
 	if desc := strings.TrimSpace(ch.Description); desc != "" {
-		divW := width
-		if divW < 1 {
-			divW = 1
-		}
-		b.WriteString("\n" + refDimStyle.Render(strings.Repeat("─", divW)) + "\n")
+		b.WriteString("\n" + refDivider(width) + "\n")
 		b.WriteString(renderMarkdown(desc, m.emojiImg, nil, ""))
 	}
+	m.renderForgeThreads(&b, width)
 	return b.String()
+}
+
+// refDivider is the full-width rule the panel puts between its sections.
+func refDivider(width int) string {
+	if width < 1 {
+		width = 1
+	}
+	return refDimStyle.Render(strings.Repeat("─", width))
+}
+
+// forgeThreadsMax caps how many conversations the panel lists. A merge request
+// with more than this is one to read in a browser; the trailer says so.
+const forgeThreadsMax = 20
+
+// forgeThreadNotesMax caps the replies shown per conversation, so one long
+// argument doesn't bury the twelve threads under it.
+const forgeThreadNotesMax = 4
+
+// renderForgeThreads appends the change request's conversation under the
+// description: every discussion on it, in the forge's order, each headed by
+// where it lives — the file and line for an inline note, so the overview says
+// what the note is about without opening the diff.
+func (m *Model) renderForgeThreads(b *strings.Builder, width int) {
+	threads := m.refThreads
+	if len(threads) == 0 {
+		return
+	}
+	b.WriteString("\n" + refDivider(width) + "\n")
+
+	inline, open := 0, 0
+	for _, t := range threads {
+		if t.Inline() {
+			inline++
+		}
+		if !t.Resolved {
+			open++
+		}
+	}
+	head := fmt.Sprintf("Discussion (%d)", len(threads))
+	var facts []string
+	if inline > 0 {
+		facts = append(facts, fmt.Sprintf("%d inline", inline))
+	}
+	if open < len(threads) {
+		facts = append(facts, fmt.Sprintf("%d unresolved", open))
+	}
+	if len(facts) > 0 {
+		head += "  " + strings.Join(facts, " · ")
+	}
+	b.WriteString(refLabelStyle.Render(head) + "\n\n")
+
+	shown := threads
+	if len(shown) > forgeThreadsMax {
+		shown = shown[:forgeThreadsMax]
+	}
+	for i, t := range shown {
+		b.WriteString(forgeThreadHead(t) + "\n")
+		notes := t.Notes
+		if len(notes) > forgeThreadNotesMax {
+			notes = notes[:forgeThreadNotesMax]
+		}
+		for _, n := range notes {
+			author := n.Author
+			if author == "" {
+				author = "Unknown"
+			}
+			when := ""
+			if !n.Created.IsZero() {
+				when = " · " + n.Created.Format("2006-01-02 15:04")
+			}
+			b.WriteString(refDimStyle.Render(author+when) + "\n")
+			if body := strings.TrimSpace(n.Body); body != "" {
+				// renderMarkdown leaves no trailing newline, and a thread has
+				// several notes in a row — without this the next author's name
+				// runs onto the end of the previous note.
+				rendered := renderMarkdown(body, m.emojiImg, nil, "")
+				b.WriteString(rendered)
+				if !strings.HasSuffix(rendered, "\n") {
+					b.WriteString("\n")
+				}
+			}
+		}
+		if extra := len(t.Notes) - len(notes); extra > 0 {
+			b.WriteString(refDimStyle.Render("…and "+plural(extra, "more reply", "more replies")) + "\n")
+		}
+		if i < len(shown)-1 {
+			b.WriteString("\n")
+		}
+	}
+	if extra := len(threads) - len(shown); extra > 0 {
+		b.WriteString("\n" + refDimStyle.Render(fmt.Sprintf("…and %d more — %s opens the diff, %s the browser",
+			extra, helpKey(m.keys.RefDiff), helpKey(m.keys.OpenAttach))) + "\n")
+	}
+}
+
+// forgeThreadHead is the line above a conversation saying where it hangs: the
+// file and line for an inline note, "on the merge request" for the rest, plus
+// whether it has been resolved.
+func forgeThreadHead(t forge.Thread) string {
+	where := refDimStyle.Render("on the change request")
+	if t.Inline() {
+		n, old := t.Line()
+		loc := fmt.Sprintf("%s:%d", t.Path, n)
+		if old {
+			// The number is a line of the *old* file — saying so beats printing
+			// a number that is not in the branch any more.
+			loc += " (removed)"
+		}
+		where = refKeyStyle.Render(loc)
+	}
+	if t.Resolved {
+		return where + " " + fgGreen.Render("✓")
+	}
+	return where
 }
 
 // maxJobsPerGroup caps how many jobs each group lists when collapsed (the

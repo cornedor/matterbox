@@ -132,7 +132,7 @@ func (m Model) openRefForPost(p *model.Post) (tea.Model, tea.Cmd) {
 	m.refs = refs
 	m.refIdx = 0
 	m.focus = focusRef
-	m.status = m.refStatusHint(refs[0], len(refs))
+	m.setPanelHint(m.refStatusHint(refs[0], len(refs)))
 	cmd := m.loadCurrentRef()
 	m.resizeMessagesViewport()
 	return m, tea.Batch(threadCmd, cmd)
@@ -173,7 +173,11 @@ func (m *Model) refStatusHint(r reference, n int) string {
 		if m.refChange != nil && m.refChange.IsIssue {
 			return shared + refCycleHint(n)
 		}
-		return helpKey(m.keys.RefApprove) + " approve · " + helpKey(m.keys.RefMerge) +
+		diff := ""
+		if m.diffReviewer(r.forge) != nil {
+			diff = helpKey(m.keys.RefDiff) + " diff · "
+		}
+		return diff + helpKey(m.keys.RefApprove) + " approve · " + helpKey(m.keys.RefMerge) +
 			" merge · " + shared + refCycleHint(n)
 	}
 	return shared + refCycleHint(n)
@@ -247,6 +251,7 @@ func (m *Model) loadCurrentRef() tea.Cmd {
 	m.refErr = nil
 	m.jiraIssue = nil
 	m.refChange = nil
+	m.refThreads = nil
 	m.refView.GotoTop()
 	m.renderRef()
 	switch r.kind {
@@ -269,6 +274,7 @@ func (m *Model) closeRef() {
 	m.refIdx = 0
 	m.jiraIssue = nil
 	m.refChange = nil
+	m.refThreads = nil
 	m.refErr = nil
 	m.refLoading = false
 	m.refGen++
@@ -278,6 +284,7 @@ func (m *Model) closeRef() {
 	m.closeJiraComment()
 	m.refConfirm = refConfirmState{}
 	m.refJobsExpanded = false
+	m.clearPanelHint()
 	if m.focus == focusRef {
 		m.focus = focusMessages
 	}
@@ -292,7 +299,7 @@ func (m Model) cycleRef(delta int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.refIdx = ((m.refIdx+delta)%n + n) % n
-	m.status = m.refStatusHint(m.refs[m.refIdx], n)
+	m.setPanelHint(m.refStatusHint(m.refs[m.refIdx], n))
 	cmd := m.loadCurrentRef()
 	return m, cmd
 }
@@ -396,6 +403,8 @@ func (m Model) handleRefKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.openForgeApprove()
 		case key.Matches(msg, m.keys.RefMerge):
 			return m.openForgeMerge()
+		case key.Matches(msg, m.keys.RefDiff):
+			return m.openDiffView()
 		case key.Matches(msg, m.keys.RefJobs):
 			m.refJobsExpanded = !m.refJobsExpanded
 			m.refView.GotoTop()
@@ -517,4 +526,21 @@ func (m *Model) refPaneTitle() string {
 		return fmt.Sprintf("%s · %d/%d", name, m.refIdx+1, len(m.refs))
 	}
 	return name
+}
+
+// setPanelHint writes a side panel's key hint into the status slot and
+// remembers it. The hint describes keys that only work while that panel is
+// open, so it has to leave with the panel — see clearPanelHint.
+func (m *Model) setPanelHint(hint string) {
+	m.status, m.panelHint = hint, hint
+}
+
+// clearPanelHint takes a panel's key hint back out of the status slot when the
+// panel closes. Anything written there since — "copied", "note added", an error
+// — is left alone: the point is to drop a stale hint, not to clear the slot.
+func (m *Model) clearPanelHint() {
+	if m.panelHint != "" && m.status == m.panelHint {
+		m.status = ""
+	}
+	m.panelHint = ""
 }

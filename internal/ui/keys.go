@@ -108,6 +108,7 @@ type keyMap struct {
 	RefApprove   key.Binding
 	RefMerge     key.Binding
 	RefJobs      key.Binding
+	RefDiff      key.Binding
 
 	// List sheets (saved messages, templates): drop the selected row.
 	SheetRemove key.Binding
@@ -281,6 +282,7 @@ var actionDefs = []actionDef{
 	{id: "ref_approve", field: func(k *keyMap) *key.Binding { return &k.RefApprove }, keys: []string{"A"}, desc: "MR/PR: approve"},
 	{id: "ref_merge", field: func(k *keyMap) *key.Binding { return &k.RefMerge }, keys: []string{"M"}, desc: "MR/PR: merge"},
 	{id: "ref_jobs", field: func(k *keyMap) *key.Binding { return &k.RefJobs }, keys: []string{"t"}, desc: "MR/PR: all / fewer checks"},
+	{id: "ref_diff", field: func(k *keyMap) *key.Binding { return &k.RefDiff }, keys: []string{"d"}, desc: "MR: review the diff"},
 
 	{id: "sheet_remove", field: func(k *keyMap) *key.Binding { return &k.SheetRemove }, keys: []string{"d", "D"}, desc: "remove entry"},
 
