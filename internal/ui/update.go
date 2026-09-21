@@ -565,6 +565,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for id, cs := range msg.customStatuses {
 			m.customStatuses[id] = cs
 		}
+		m.noteDeactivated(msg.deactivated)
 		if msg.resync {
 			return m, m.applyChannelsResynced(msg)
 		}
@@ -1150,7 +1151,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.infoMembersLoaded = true
 		m.infoMembersErr = msg.err
-		m.infoMembers = msg.members
+		// The member endpoint still lists people whose account is gone; keep
+		// them out of the panel (and remember them, so their DM drops out of
+		// the sidebar too).
+		m.infoMembers = m.keepActive(msg.members)
 		m.renderInfo()
 		return m, nil
 
@@ -2002,6 +2006,7 @@ func (m *Model) applyUserUpdated(ev *model.WebSocketEvent) tea.Cmd {
 	} else {
 		delete(m.customStatuses, u.Id)
 	}
+	m.noteDeactivated(map[string]bool{u.Id: u.DeleteAt != 0})
 	return nil
 }
 

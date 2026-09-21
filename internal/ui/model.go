@@ -129,6 +129,13 @@ type Model struct {
 	mutedChannels map[string]bool
 	userNames     map[string]string // userID → username
 
+	// deactivatedUsers is the set of user ids whose account has been
+	// deactivated (User.DeleteAt != 0). It is filled from the full user
+	// records we already fetch — the DM-partner batch behind the sidebar and
+	// the channel-info member list — and kept current by user_updated events.
+	// Dead accounts are hidden from the DM sidebar and the member list.
+	deactivatedUsers map[string]bool
+
 	// Presence + custom status for DM partners. statuses is the live
 	// presence (online/away/dnd; offline/unknown absent) refreshed by the
 	// poll + status_change WS events. customStatuses holds the emoji/text a
@@ -1405,6 +1412,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		channels:           map[string][]*model.Channel{},
 		drafts:             map[string]string{},
 		userNames:          map[string]string{},
+		deactivatedUsers:   map[string]bool{},
 		serverCmds:         map[string][]serverCommand{},
 		serverCmdsReq:      map[string]bool{},
 		statuses:           map[string]string{},
@@ -2329,6 +2337,7 @@ func (m Model) fetchAllChannels(userID string, resync bool) tea.Cmd {
 		}
 		names := map[string]string{}
 		custom := map[string]model.CustomStatus{}
+		deactivated := map[string]bool{}
 		if len(need) > 0 {
 			ids := make([]string, 0, len(need))
 			for id := range need {
@@ -2340,14 +2349,17 @@ func (m Model) fetchAllChannels(userID string, resync bool) tea.Cmd {
 			}
 			for _, u := range us {
 				names[u.Id] = u.Username
-				// Custom status rides along on the user object we already
-				// fetch for DM names — no extra request.
+				// Custom status and the deactivation flag ride along on the
+				// user object we already fetch for DM names — no extra request.
 				if cs := u.GetCustomStatus(); cs != nil && (cs.Emoji != "" || cs.Text != "") {
 					custom[u.Id] = *cs
 				}
+				// An entry for every partner, not just the dead ones, so a
+				// reactivation clears the flag on resync.
+				deactivated[u.Id] = u.DeleteAt != 0
 			}
 		}
-		return channelsLoadedMsg{channels: chs, userNames: names, customStatuses: custom, resync: resync}
+		return channelsLoadedMsg{channels: chs, userNames: names, customStatuses: custom, deactivated: deactivated, resync: resync}
 	}
 }
 
@@ -3064,7 +3076,8 @@ func (m *Model) fallbackTeamID() string {
 	return ""
 }
 
-// visibleChannels returns the channels in the current team, filtered: the
+// visibleChannels returns the channels in the current team, filtered: DMs with
+// a deactivated account are dropped (see withoutDeactivatedDMs), the
 // unread-only sidebar (> Sidebar: show unread channels) narrows the list to
 // channels with unread activity plus the open one — which stays put while
 // it's read, so the conversation you're in never vanishes from the list —
@@ -3079,6 +3092,9 @@ func (m *Model) visibleChannels() []*model.Channel {
 // otherwise a team whose remembered channel is read would land nowhere.
 func (m *Model) sidebarChannels(unreadOnly bool) []*model.Channel {
 	all := m.channels[m.currentTeamID()]
+	if len(m.deactivatedUsers) > 0 {
+		all = m.withoutDeactivatedDMs(all)
+	}
 	if unreadOnly {
 		filtered := make([]*model.Channel, 0, len(all))
 		for _, c := range all {

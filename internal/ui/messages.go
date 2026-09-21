@@ -20,6 +20,9 @@ type channelsLoadedMsg struct {
 	channels       []*model.Channel
 	userNames      map[string]string             // pre-resolved usernames for DM partners
 	customStatuses map[string]model.CustomStatus // DM partners' custom statuses (captured with the name fetch)
+	// deactivated carries one entry per resolved DM partner — true when the
+	// account is deactivated — so the handler can both set and clear the flag.
+	deactivated map[string]bool
 	// resync marks a mid-session refetch (a reconnect catch-up, or being added
 	// to a team or channel) rather than the startup load, so its handler only
 	// re-buckets the sidebar instead of re-running the once-per-launch work.
