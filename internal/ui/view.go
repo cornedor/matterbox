@@ -1888,7 +1888,7 @@ func (m *Model) activeBodyOverlay() *bodyOverlay {
 // transcript render either way — so anything asking "is this post's image on the
 // screen right now" has to consult this too.
 func (m *Model) transcriptHidden() bool {
-	return m.onSearchTab() || m.onFeedTab() || m.onSQLTab() || m.activeBodyOverlay() != nil
+	return m.onVirtualTab() || m.activeBodyOverlay() != nil
 }
 
 // statusGlyph maps a presence string to a glyph + style: the filled glyph in

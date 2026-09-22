@@ -1956,7 +1956,7 @@ func (m *Model) isCurrentChannel(channelID string) bool {
 	if channelID == "" || m.openChannelID != channelID {
 		return false
 	}
-	return !m.onFeedTab() && !m.onSearchTab() && !m.onSQLTab()
+	return !m.onVirtualTab()
 }
 
 // parsePost extracts and unmarshals the JSON-encoded post embedded in
@@ -2171,15 +2171,9 @@ func (m *Model) ensureSelection() {
 }
 
 // maxTeamIdx returns the highest valid teamIdx, accounting for the
-// synthetic DM tab (when present), the always-present Feed + Search tabs,
-// and the optional SQL tab (config sql_tab).
+// synthetic DM tab (when present) and the virtual tabs shown this session.
 func (m *Model) maxTeamIdx() int {
-	n := len(m.teams)
-	n++ // Feed is always present
-	n++ // Search is always present
-	if m.showSQL {
-		n++ // SQL is optional (config sql_tab)
-	}
+	n := len(m.teams) + m.numVirtualTabs()
 	if m.hasDMs {
 		n++
 	}
@@ -2550,7 +2544,7 @@ func (m Model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// "f" filters the channel-list sidebar. The sidebar is no longer a
 		// focus, so this works from any content pane on a channel/DM tab;
 		// the Search/Feed/SQL tabs have no channel list to filter.
-		if !m.onSearchTab() && !m.onFeedTab() && !m.onSQLTab() {
+		if !m.onVirtualTab() {
 			m.filterMode = true
 			m.filter.SetValue(m.filterValue)
 			m.filter.Focus()
@@ -3068,7 +3062,7 @@ func (m Model) cycleFocus(step int) (tea.Model, tea.Cmd) {
 		}
 		// The team strip is its own Tab stop only on the Search/Feed/SQL tabs,
 		// whose body panes can't host the ←/→ tab switch themselves.
-		if m.focus == focusTeams && !onSearch && !onFeed && !onSQL {
+		if m.focus == focusTeams && !m.onVirtualTab() {
 			continue
 		}
 		if onSearch && m.focus != focusTeams && m.focus != focusSearch {

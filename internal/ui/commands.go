@@ -682,7 +682,7 @@ func (m Model) commandResults() []switcherCommand {
 // it applies — it only does on a team/DM tab, where the channel list exists.
 // The label states the direction, like the feed's muted toggle.
 func (m *Model) sidebarUnreadCommand() (switcherCommand, bool) {
-	if m.onFeedTab() || m.onSearchTab() || m.onSQLTab() {
+	if m.onVirtualTab() {
 		return switcherCommand{}, false
 	}
 	if m.sidebarUnreadOnly {

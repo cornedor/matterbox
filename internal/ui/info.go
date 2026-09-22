@@ -103,7 +103,7 @@ func (m Model) openChannelInfo() (tea.Model, tea.Cmd) {
 // raiseChannelInfo is the pointer-receiver half of openChannelInfo, so
 // command runners can open the panel without copying the ~133KB Model.
 func (m *Model) raiseChannelInfo() tea.Cmd {
-	if m.onSearchTab() || m.onFeedTab() || m.onSQLTab() {
+	if m.onVirtualTab() {
 		return nil
 	}
 	c := m.findChannel(m.openChannelID)

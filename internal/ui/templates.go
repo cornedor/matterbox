@@ -256,7 +256,7 @@ func (m *Model) insertTemplate(name string) tea.Cmd {
 // composerShown reports whether a channel tab — and so the composer — is on
 // screen; the Feed / Search / SQL tabs own the body without one.
 func (m *Model) composerShown() bool {
-	return !m.onSearchTab() && !m.onFeedTab() && !m.onSQLTab()
+	return !m.onVirtualTab()
 }
 
 // focusComposerIfShown moves focus to the composer after a pick landed text

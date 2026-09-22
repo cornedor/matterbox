@@ -3032,9 +3032,46 @@ func (m *Model) openChannelLoadCmd(channelID, via string) tea.Cmd {
 	return tea.Batch(draftCmd, m.fetchPosts(channelID))
 }
 
+// virtualTab is a synthetic tab that owns the whole body instead of showing a
+// channel list: Feed, Search, SQL. They sit between the DMs tab and the teams,
+// in this order; shown gates an optional one (nil means always present).
+type virtualTab struct {
+	kind  tabKind
+	id    string
+	name  string
+	shown func(*Model) bool
+}
+
+var virtualTabs = []virtualTab{
+	{kind: tabFeed, id: feedTeamID, name: "Feed"},
+	{kind: tabSearch, id: searchTeamID, name: "Search"},
+	{kind: tabSQL, id: sqlTeamID, name: "SQL", shown: func(m *Model) bool { return m.showSQL }},
+}
+
+func (t virtualTab) present(m *Model) bool { return t.shown == nil || t.shown(m) }
+
+// numVirtualTabs counts the virtual tabs present in this session. tabAt runs on
+// the pointer-motion path, so neither builds a slice.
+func (m *Model) numVirtualTabs() int {
+	n := 0
+	for _, t := range virtualTabs {
+		if t.present(m) {
+			n++
+		}
+	}
+	return n
+}
+
+// onVirtualTab reports whether the active tab is a virtual one — no channel
+// list, no transcript, no composer.
+func (m *Model) onVirtualTab() bool {
+	kind, _, _ := m.tabAt(m.teamIdx)
+	return kind != tabTeam && kind != tabDM
+}
+
 // tabAt resolves a 0-based tab index into its kind and (for teams) the
-// team's ID + display name. Tab order is: DMs (if present), Feed, Search,
-// SQL (only when showSQL), teams in their loaded order.
+// team's ID + display name. Tab order is: DMs (if present), the virtual tabs
+// (see virtualTabs), teams in their loaded order.
 func (m *Model) tabAt(i int) (kind tabKind, id, name string) {
 	if m.hasDMs {
 		if i == 0 {
@@ -3042,17 +3079,12 @@ func (m *Model) tabAt(i int) (kind tabKind, id, name string) {
 		}
 		i--
 	}
-	if i == 0 {
-		return tabFeed, feedTeamID, "Feed"
-	}
-	i--
-	if i == 0 {
-		return tabSearch, searchTeamID, "Search"
-	}
-	i--
-	if m.showSQL {
+	for _, t := range virtualTabs {
+		if !t.present(m) {
+			continue
+		}
 		if i == 0 {
-			return tabSQL, sqlTeamID, "SQL"
+			return t.kind, t.id, t.name
 		}
 		i--
 	}
