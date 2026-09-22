@@ -129,6 +129,18 @@ install: build install-completion install-service ## Install binary + completion
 	@install -d "$(BINDIR)"
 	@install -m 0755 "$(BINARY)" "$(BINDIR)/$(BINARY)"
 	@echo "installed $(BINDIR)/$(BINARY)"
+	@# A running listen daemon keeps the old binary in memory and writes to the
+	@# same store, so restart it onto the new one.
+	@case "$$(uname -s)" in \
+	Linux) \
+		if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active --quiet $(SERVICE_NAME); then \
+			systemctl --user restart $(SERVICE_NAME) && echo "restarted $(SERVICE_NAME)"; \
+		fi ;; \
+	Darwin) \
+		if launchctl print "gui/$$(id -u)/$(LAUNCHD_LABEL)" >/dev/null 2>&1; then \
+			launchctl kickstart -k "gui/$$(id -u)/$(LAUNCHD_LABEL)" && echo "restarted $(LAUNCHD_LABEL)"; \
+		fi ;; \
+	esac
 	@if [ "$$(uname -s)" = "Linux" ]; then \
 		if "$(BINDIR)/$(BINARY)" register-handler >/dev/null 2>&1; then \
 			echo "registered mmauth:// login handler (auto-captures the token in 'matterbox login')"; \
@@ -182,8 +194,10 @@ install-service: ## Install the `matterbox listen` background service (systemd o
 			sed 's#^ExecStart=.*#ExecStart=$(BINDIR)/$(BINARY) listen#' "$(SERVICE_SRC)" > "$(SYSTEMD_USER_DIR)/$(SERVICE_NAME)"; \
 			echo "installed $(SYSTEMD_USER_DIR)/$(SERVICE_NAME)  (ExecStart=$(BINDIR)/$(BINARY) listen)"; \
 			systemctl --user daemon-reload 2>/dev/null || true; \
-			echo "not enabled — after 'matterbox login' + telegram config, run:"; \
-			echo "    systemctl --user enable --now $(SERVICE_NAME)"; \
+			if ! systemctl --user is-enabled --quiet $(SERVICE_NAME) 2>/dev/null; then \
+				echo "not enabled — after 'matterbox login' + telegram config, run:"; \
+				echo "    systemctl --user enable --now $(SERVICE_NAME)"; \
+			fi; \
 		else \
 			echo "skipping service: systemctl not found"; \
 		fi ;; \
