@@ -490,7 +490,7 @@ func (m *Model) hoverAt(x, y int) hoverState {
 	if m.vcache != nil && m.vcache.toastZone.contains(x, y) {
 		return hoverState{}
 	}
-	if x < channelsWidth && !m.onSearchTab() && !m.onFeedTab() && !m.onSQLTab() {
+	if x < channelsWidth && !m.onVirtualTab() {
 		if h := m.hitChannel(y); h.zone == hitChannel {
 			return hoverState{zone: hitChannel, idx: h.idx}
 		}

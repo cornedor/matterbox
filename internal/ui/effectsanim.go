@@ -76,7 +76,7 @@ func (m *Model) refreshEffectsVisibility() bool {
 	// their state. Without this the ticker would keep painting a hidden pane.
 	// Switching back re-arms on that very keypress (maybeStartEffectsAnim runs
 	// per event).
-	if m.onSearchTab() || m.onFeedTab() || m.onSQLTab() {
+	if m.onVirtualTab() {
 		m.effectsAnim.onScreen = false
 		return false
 	}
