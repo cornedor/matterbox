@@ -93,9 +93,6 @@ func (m Model) openChannelAtPost(ch *model.Channel, postID string) (tea.Model, t
 	if ch.Id == m.openChannelID {
 		return m.jumpToChannelPost(ch.Id, postID)
 	}
-	if m.infoOpen && ch.Id != m.infoChannelID {
-		m.closeInfo()
-	}
 	m.switchToChannelHomeTeam(ch)
 	m.filterValue = ""
 	m.filter.SetValue("")

@@ -4642,6 +4642,26 @@ func (m Model) openThreadAnswering(p *model.Post, parentID, via string) (tea.Mod
 		m.renderThread()
 		return m, cmd
 	}
+	m.armThreadOpen(rootID, via)
+	if parentID != "" {
+		m.status = "replying to " + m.postAuthorName(p)
+	}
+	selectID := ""
+	if p.RootId != "" {
+		selectID = p.Id
+	}
+	cmd := m.showThread(channelID, rootID, selectID, parentID, nil)
+	m.focus = focusInput
+	focusCmd := m.input.Focus()
+	return m, tea.Batch(cmd, focusCmd)
+}
+
+// showThread opens the thread sidebar on rootID without touching focus — the
+// shared half of openThreadAnswering and a channel's remembered thread coming
+// back (see panelmemo.go). selectID is the reply the cursor should land on
+// ("" = newest); posts, when non-nil, paint straight away while the fetch
+// refreshes them.
+func (m *Model) showThread(channelID, rootID, selectID, parentID string, posts []*model.Post) tea.Cmd {
 	// A thread has its own draft, separate from its channel's. Stash whatever
 	// the composer is currently drafting (the open channel, or a different
 	// thread) and load this thread's draft in its place — so the channel draft
@@ -4657,34 +4677,28 @@ func (m Model) openThreadAnswering(p *model.Post, parentID, via string) (tea.Mod
 	// A different thread: whatever the composer was answering is no longer on
 	// screen, so it is replaced by whatever this open aims at (usually nothing).
 	m.replyParentID = parentID
-	m.threadPosts = nil
-	m.threadIdx = 0
+	m.threadPosts = posts
+	m.threadIdx = newestPostIdx(posts)
 	// Opening a thread on one of its replies puts the cursor on that reply once
 	// the posts land — acting on a message and then finding the cursor somewhere
 	// else is the kind of small betrayal that makes a key feel broken. Opening on
 	// the root is "read this thread", which has no particular message in mind.
-	m.threadSelectID = ""
-	if p.RootId != "" {
-		m.threadSelectID = p.Id
+	m.threadSelectID = selectID
+	if i := indexOfPost(posts, selectID); selectID != "" && i >= 0 {
+		m.threadIdx = i
 	}
-	m.threadLoading = true
-	m.armThreadOpen(rootID, via)
+	m.threadLoading = posts == nil
 	// Don't clobber a "✎ " prompt the user is mid-edit on — beginEditPost
 	// owns the prompt while editingPostID is set, and the patch will
 	// fire on the original post regardless of which pane is open.
 	if m.editingPostID == "" {
 		m.restoreInputPrompt()
 	}
-	if parentID != "" {
-		m.status = "replying to " + m.postAuthorName(p)
-	}
-	m.focus = focusInput
-	focusCmd := m.input.Focus()
 	m.resizeMessagesViewport()
 	m.resizeInput()
 	m.renderMessages()
 	m.renderThread()
-	return m, tea.Batch(m.fetchThread(rootID), focusCmd, draftCmd)
+	return tea.Batch(m.fetchThread(rootID), draftCmd)
 }
 
 // closeThread tears down the sidebar and returns focus to the messages pane.
