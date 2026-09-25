@@ -129,6 +129,7 @@ func (m Model) openRefForPost(p *model.Post) (tea.Model, tea.Cmd) {
 		threadCmd = m.closeThread()
 	}
 	m.refOpen = true
+	m.refChannelID = p.ChannelId
 	m.refs = refs
 	m.refIdx = 0
 	m.focus = focusRef
@@ -270,6 +271,7 @@ func (m *Model) closeRef() {
 		return
 	}
 	m.refOpen = false
+	m.refChannelID = ""
 	m.refs = nil
 	m.refIdx = 0
 	m.jiraIssue = nil

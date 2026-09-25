@@ -616,6 +616,7 @@ type Model struct {
 	// fetch the user already cycled/closed past. See ref.go; forge rendering
 	// lives in forge.go.
 	refOpen         bool
+	refChannelID    string // channel of the post the refs came from (panelmemo.go)
 	refView         viewport.Model
 	refs            []reference
 	refIdx          int
@@ -686,8 +687,12 @@ type Model struct {
 	// enter/o activate (open a link, or jump to a pinned message); infoIdx is the
 	// selected one (-1 = none). infoTargetRows[i] is target i's first content
 	// line, for scroll-into-view and click resolution. See info.go.
-	infoOpen          bool
-	infoChannelID     string
+	infoOpen      bool
+	infoChannelID string
+	// channelPanels remembers the right-slot panel each channel had open when
+	// the user left it, reopened on return. See panelmemo.go.
+	channelPanels     map[string]panelMemo
+	panelOrder        []string // parked channels, least recent first
 	infoView          viewport.Model
 	infoContentVer    uint64
 	infoMembers       []*model.User
@@ -2936,10 +2941,12 @@ func (m Model) persistDelete(p *model.Post) tea.Cmd {
 // the switcher against the keyboard jumps against the outside entry points.
 func (m *Model) enterChannel(channelID, via string) tea.Cmd {
 	m.armChannelOpen(channelID, via)
-	// Close a channel-info panel describing a different channel so it can't
-	// show stale info once the open channel changes out from under it.
-	if m.infoOpen && channelID != m.infoChannelID {
-		m.closeInfo()
+	// The right-slot panel belongs to its channel: park it on the way out and
+	// bring back whatever the incoming channel had open (see panelmemo.go).
+	var parkCmd, restoreCmd tea.Cmd
+	leaving := channelID != m.openChannelID
+	if leaving {
+		parkCmd = m.parkPanel(channelID)
 	}
 	// Stash the outgoing channel's composer draft and restore the incoming one
 	// BEFORE repointing openChannelID (swapChannelDraft reads the old id from
@@ -2970,7 +2977,10 @@ func (m *Model) enterChannel(channelID, via string) tea.Cmd {
 	// quick peek doesn't clear unread.
 	m.viewGen++
 	m.viewSettled = false
-	return draftCmd
+	if leaving {
+		restoreCmd = m.restorePanel(channelID)
+	}
+	return tea.Batch(parkCmd, draftCmd, restoreCmd)
 }
 
 func (m *Model) openChannelLoadCmd(channelID, via string) tea.Cmd {
