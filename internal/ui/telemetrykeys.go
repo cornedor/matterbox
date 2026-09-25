@@ -193,6 +193,8 @@ func (z hitZone) telemetryTarget() string {
 		return "feed_blobs"
 	case hitToast:
 		return "toast"
+	case hitDivider:
+		return "pane_divider"
 	}
 	return "nothing"
 }

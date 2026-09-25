@@ -895,8 +895,8 @@ which is how a binding nobody uses becomes visible.
 The clickable regions of the UI.
 
 `channel`, `composer`, `feed`, `feed_blobs`, `feed_mark_all`, `info`,
-`jump_bottom`, `message`, `nothing`, `reference`, `search`, `sql`, `tab`,
-`thread`, `toast`
+`jump_bottom`, `message`, `nothing`, `pane_divider`, `reference`, `search`,
+`sql`, `tab`, `thread`, `toast`
 
 ### Command palette ids
 
