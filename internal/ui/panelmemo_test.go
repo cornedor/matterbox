@@ -1,9 +1,12 @@
 package ui
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/mattermost/mattermost/server/public/model"
+
+	"matterbox/internal/jira"
 )
 
 // TestPanelFollowsChannel: a thread open in one channel goes away when another
@@ -57,5 +60,44 @@ func TestPanelSwapsBetweenChannels(t *testing.T) {
 	m.enterChannel("c2", "sidebar_key")
 	if m.threadOpen || !m.infoOpen || m.infoChannelID != "c2" {
 		t.Fatalf("back on c2: info=%v thread=%v, want info only", m.infoOpen, m.threadOpen)
+	}
+}
+
+// TestParkedRefKeepsContent: a loaded reference panel comes back without
+// refetching.
+func TestParkedRefKeepsContent(t *testing.T) {
+	m := mouseModel(nil)
+	issue := &jira.Issue{Key: "ABC-1"}
+	m.refOpen, m.refChannelID = true, "c"
+	m.refs = []reference{{kind: refJira, jiraKey: "ABC-1"}}
+	m.jiraIssue = issue
+
+	m.enterChannel("c2", "sidebar_key")
+	if m.refOpen {
+		t.Fatal("ref panel still open on c2")
+	}
+	m.enterChannel("c", "sidebar_key")
+	if !m.refOpen || m.jiraIssue != issue || m.refLoading {
+		t.Fatalf("ref not restored as loaded: open=%v issue=%v loading=%v", m.refOpen, m.jiraIssue, m.refLoading)
+	}
+}
+
+// TestParkedPanelsCapped: past maxParkedPanels the oldest is forgotten.
+func TestParkedPanelsCapped(t *testing.T) {
+	m := mouseModel(nil)
+	for i := range maxParkedPanels + 1 {
+		m.rememberPanel("ch"+strconv.Itoa(i), panelMemo{kind: panelInfo})
+	}
+	if len(m.channelPanels) != maxParkedPanels {
+		t.Fatalf("parked %d, want %d", len(m.channelPanels), maxParkedPanels)
+	}
+	if _, ok := m.channelPanels["ch0"]; ok {
+		t.Error("oldest parked panel kept")
+	}
+	// Re-parking refreshes recency.
+	m.rememberPanel("ch1", panelMemo{kind: panelInfo})
+	m.rememberPanel("new", panelMemo{kind: panelInfo})
+	if _, ok := m.channelPanels["ch1"]; !ok {
+		t.Error("recently re-parked panel dropped")
 	}
 }

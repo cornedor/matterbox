@@ -692,6 +692,7 @@ type Model struct {
 	// channelPanels remembers the right-slot panel each channel had open when
 	// the user left it, reopened on return. See panelmemo.go.
 	channelPanels     map[string]panelMemo
+	panelOrder        []string // parked channels, least recent first
 	infoView          viewport.Model
 	infoContentVer    uint64
 	infoMembers       []*model.User
