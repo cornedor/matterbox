@@ -837,3 +837,46 @@ func TestInfoDragThenReleaseCopiesSelection(t *testing.T) {
 		t.Fatalf("selectedText=%q want %q", got, needle)
 	}
 }
+
+// TestDragPaneDivider: dragging the border between the messages pane and an
+// open side pane resizes the side pane; a double-click restores the half split.
+func TestDragPaneDivider(t *testing.T) {
+	m := mouseModel(nil)
+	m.infoOpen = true
+	rightW := m.width - channelsWidth
+	x := m.width - m.splitRightPane(rightW)
+	for _, dx := range []int{x - 1, x} {
+		if h := m.hitTest(dx, tabsHeight+2); h.zone != hitDivider {
+			t.Fatalf("hitTest(%d) = %v, want hitDivider", dx, h.zone)
+		}
+	}
+	next, _ := m.Update(click(tea.MouseLeft, x, tabsHeight+2))
+	next, _ = next.(Model).Update(motion(tea.MouseLeft, x-5, tabsHeight+2))
+	next, _ = next.(Model).Update(release(tea.MouseLeft, x-5, tabsHeight+2))
+	m = next.(Model)
+	if m.paneDrag {
+		t.Error("paneDrag still set after release")
+	}
+	if got, want := m.splitRightPane(rightW), m.width-(x-5); got != want {
+		t.Errorf("side pane width = %d, want %d", got, want)
+	}
+
+	// Dragging past the edge clamps to the minimum pane width.
+	next, _ = m.Update(click(tea.MouseLeft, x-5, tabsHeight+2))
+	next, _ = next.(Model).Update(motion(tea.MouseLeft, m.width-1, tabsHeight+2))
+	m = next.(Model)
+	if got := m.splitRightPane(rightW); got != threadPaneMinWidth {
+		t.Errorf("clamped width = %d, want %d", got, threadPaneMinWidth)
+	}
+	next, _ = m.Update(release(tea.MouseLeft, m.width-1, tabsHeight+2))
+	m = next.(Model)
+
+	x = m.width - threadPaneMinWidth
+	next, _ = m.Update(click(tea.MouseLeft, x, tabsHeight+2))
+	next, _ = next.(Model).Update(release(tea.MouseLeft, x, tabsHeight+2))
+	next, _ = next.(Model).Update(click(tea.MouseLeft, x, tabsHeight+2))
+	m = next.(Model)
+	if m.sidePaneW != 0 {
+		t.Errorf("double-click left sidePaneW = %d, want 0", m.sidePaneW)
+	}
+}

@@ -41,6 +41,7 @@ const (
 	hitFeedBlobs
 	hitToast
 	hitAttachment
+	hitDivider
 )
 
 // hit is the result of hitTest. idx's meaning depends on zone: a tab index
@@ -214,6 +215,15 @@ func (m Model) handleMouseClick(msg tea.MouseClickMsg) (tea.Model, tea.Cmd) {
 	// things. A no-op otherwise.
 	recordClick(h.zone)
 	switch h.zone {
+	case hitDivider:
+		m.clearTextSel()
+		if count == 2 {
+			// Double-click restores the default half/half split.
+			return m.setSidePaneW(0)
+		}
+		m.paneDrag = true
+		m.paneDragOff = m.width - m.splitRightPane(m.width-channelsWidth) - msg.X
+		return m, nil
 	case hitTab:
 		m.clearTextSel()
 		return m.gotoTab(h.idx)
@@ -394,6 +404,10 @@ func (m Model) handleMouseRelease(msg tea.MouseReleaseMsg) (tea.Model, tea.Cmd) 
 	if msg.Button != tea.MouseLeft {
 		return m, nil
 	}
+	if m.paneDrag {
+		m.paneDrag = false
+		return m, nil
+	}
 	if m.composerDrag {
 		// Leave the selection live so backspace/delete removes it and typing
 		// replaces it — the point of selecting in an editable field. No clipboard
@@ -442,6 +456,9 @@ func (m Model) handleMouseMotion(msg tea.MouseMotionMsg) (tea.Model, tea.Cmd) {
 		m.setHoverLink(hoverLink{})
 		m.setInfoHover(-1)
 		return m, nil
+	}
+	if m.paneDrag && msg.Button == tea.MouseLeft {
+		return m.setSidePaneW(m.width - msg.X - m.paneDragOff)
 	}
 	if m.composerDrag && msg.Button == tea.MouseLeft {
 		return m.dragComposerSel(msg.X, msg.Y)
@@ -796,6 +813,9 @@ func (m *Model) hitTest(x, y int) hit {
 	if m.onSQLTab() {
 		return m.hitSQLRow(x, y)
 	}
+	if m.onPaneDivider(x) {
+		return hit{zone: hitDivider}
+	}
 	// Read-only right panes (reference / channel-info) own their full column —
 	// including the rows that sit at the same height as the composer under the
 	// messages pane. Check them before inComposer so a link at the bottom of
@@ -807,7 +827,7 @@ func (m *Model) hitTest(x, y int) hit {
 		if rightW < 10 {
 			rightW = 10
 		}
-		sideW := splitRightPane(rightW)
+		sideW := m.splitRightPane(rightW)
 		if x >= channelsWidth+(rightW-sideW) {
 			if m.refOpen {
 				if h := m.hitRefContent(x, y); h.zone != hitNone {
@@ -848,7 +868,7 @@ func (m *Model) hitTest(x, y int) hit {
 	}
 	msgsW := rightW
 	if m.threadOpen {
-		threadW := splitRightPane(rightW)
+		threadW := m.splitRightPane(rightW)
 		msgsW = rightW - threadW
 		if x >= channelsWidth+msgsW {
 			tx0, top, w, h, yoff := m.threadGeom()
@@ -857,6 +877,43 @@ func (m *Model) hitTest(x, y int) hit {
 	}
 	mx0, top, w, h, yoff := m.messagesGeom()
 	return m.hitViewportPost(x, y, top, mx0, w, h, yoff, focusMessages, m.msgRowStarts, len(m.posts))
+}
+
+// onPaneDivider reports whether column x is on the border between the messages
+// pane and an open side pane — the side pane's left border or the messages
+// pane's last column beside it — the handle a drag resizes the split with.
+func (m *Model) onPaneDivider(x int) bool {
+	if !m.threadOpen && !m.refOpen && !m.infoOpen {
+		return false
+	}
+	rightW := m.width - channelsWidth
+	if rightW < 10 {
+		rightW = 10
+	}
+	border := m.width - m.splitRightPane(rightW)
+	return x == border || x == border-1
+}
+
+// setSidePaneW sets the side pane's width (0 = default half split), clamped the
+// way splitRightPane clamps it. Like a terminal resize drag, it re-lays-out every
+// frame and defers the content re-render to a settle tick.
+func (m Model) setSidePaneW(w int) (tea.Model, tea.Cmd) {
+	prev := m.sidePaneW
+	m.sidePaneW = w
+	if w > 0 {
+		rightW := m.width - channelsWidth
+		if rightW < 10 {
+			rightW = 10
+		}
+		m.sidePaneW = m.splitRightPane(rightW)
+	}
+	if m.sidePaneW == prev {
+		return m, nil
+	}
+	m.layoutPanes()
+	m.resizeInput()
+	m.resizeGen++
+	return m, resizeSettleCmd(m.resizeGen)
 }
 
 // hitChannel maps a screen row in the sidebar column to a visible-channel
@@ -1344,7 +1401,7 @@ func (m *Model) composerGeom() (x0, top, width, height, yoff int) {
 		if rightW < 10 {
 			rightW = 10
 		}
-		msgsW := rightW - splitRightPane(rightW)
+		msgsW := rightW - m.splitRightPane(rightW)
 		x0 = channelsWidth + msgsW + 1
 	} else {
 		x0 = channelsWidth + 1
@@ -1589,7 +1646,7 @@ func (m *Model) threadGeom() (x0, top, width, height, yoff int) {
 	if rightW < 10 {
 		rightW = 10
 	}
-	msgsW := rightW - splitRightPane(rightW)
+	msgsW := rightW - m.splitRightPane(rightW)
 	return channelsWidth + msgsW + 1, tabsHeight + 1, m.threadView.Width(), m.threadView.Height(), m.threadView.YOffset()
 }
 
@@ -1600,7 +1657,7 @@ func (m *Model) refGeom() (x0, top, width, height, yoff int) {
 	if rightW < 10 {
 		rightW = 10
 	}
-	msgsW := rightW - splitRightPane(rightW)
+	msgsW := rightW - m.splitRightPane(rightW)
 	return channelsWidth + msgsW + 1, tabsHeight + 1, m.refView.Width(), m.refView.Height(), m.refView.YOffset()
 }
 
@@ -1612,7 +1669,7 @@ func (m *Model) infoGeom() (x0, top, width, height, yoff int) {
 	if rightW < 10 {
 		rightW = 10
 	}
-	msgsW := rightW - splitRightPane(rightW)
+	msgsW := rightW - m.splitRightPane(rightW)
 	return channelsWidth + msgsW + 1, tabsHeight + 1, m.infoView.Width(), m.infoView.Height(), m.infoView.YOffset()
 }
 

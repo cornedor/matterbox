@@ -193,7 +193,14 @@ type Model struct {
 	// box is in flight; the editor owns the selection itself (see editor.Model),
 	// this only routes motion/release back to it. Lives in mouse.go.
 	composerDrag bool
-	wrapIdx      wrapCache
+	// sidePaneW is the right detail pane's width once its divider has been
+	// dragged (0 = half the right area); paneDrag is true while that drag is in
+	// flight; paneDragOff is the pressed column's distance left of the border,
+	// so grabbing either side of it doesn't make it jump. All live in mouse.go.
+	sidePaneW   int
+	paneDrag    bool
+	paneDragOff int
+	wrapIdx     wrapCache
 	// clickCount / lastClick* synthesise double- and triple-clicks: the terminal
 	// only reports individual presses, so handleMouseClick counts presses landing
 	// at (about) the same cell within multiClickInterval. 2 selects a word, 3 a

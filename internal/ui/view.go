@@ -170,13 +170,13 @@ func (m *Model) layoutPanes() {
 	// The thread sidebar, reference panel and channel-info panel share the single
 	// right slot — at most one is ever open — so each splits rightW the same way.
 	if m.threadOpen {
-		threadW = splitRightPane(rightW)
+		threadW = m.splitRightPane(rightW)
 		msgsW = rightW - threadW
 	} else if m.refOpen {
-		refW = splitRightPane(rightW)
+		refW = m.splitRightPane(rightW)
 		msgsW = rightW - refW
 	} else if m.infoOpen {
-		infoW = splitRightPane(rightW)
+		infoW = m.splitRightPane(rightW)
 		msgsW = rightW - infoW
 	}
 	// The scrollbar overlays the right border column (rendered by
@@ -292,11 +292,15 @@ func (m *Model) renderAllPanes() {
 
 const threadPaneMinWidth = 24
 
-// splitRightPane returns the width of the right detail pane (thread or Jira)
-// when the right area is rightW wide: half, clamped so neither the detail pane
-// nor the messages pane drops below threadPaneMinWidth.
-func splitRightPane(rightW int) int {
-	w := rightW / 2
+// splitRightPane returns the width of the right detail pane (thread, reference
+// or channel-info) when the right area is rightW wide: the width the divider
+// was dragged to, else half, clamped so neither the detail pane nor the
+// messages pane drops below threadPaneMinWidth.
+func (m *Model) splitRightPane(rightW int) int {
+	w := m.sidePaneW
+	if w <= 0 {
+		w = rightW / 2
+	}
 	if w < threadPaneMinWidth {
 		w = threadPaneMinWidth
 	}
@@ -315,14 +319,7 @@ func (m *Model) resizeInput() {
 		if rightW < 10 {
 			rightW = 10
 		}
-		threadW := rightW / 2
-		if threadW < threadPaneMinWidth {
-			threadW = threadPaneMinWidth
-		}
-		if threadW > rightW-threadPaneMinWidth {
-			threadW = rightW - threadPaneMinWidth
-		}
-		w := threadW - 2
+		w := m.splitRightPane(rightW) - 2
 		if w < 10 {
 			w = 10
 		}
@@ -336,7 +333,7 @@ func (m *Model) resizeInput() {
 		if rightW < 10 {
 			rightW = 10
 		}
-		w := rightW - splitRightPane(rightW) - 2
+		w := rightW - m.splitRightPane(rightW) - 2
 		if w < 10 {
 			w = 10
 		}
@@ -1761,13 +1758,13 @@ func (m *Model) renderViewContent() string {
 		refW := 0
 		infoW := 0
 		if m.threadOpen {
-			threadW = splitRightPane(rightW)
+			threadW = m.splitRightPane(rightW)
 			msgsW = rightW - threadW
 		} else if m.refOpen {
-			refW = splitRightPane(rightW)
+			refW = m.splitRightPane(rightW)
 			msgsW = rightW - refW
 		} else if m.infoOpen {
-			infoW = splitRightPane(rightW)
+			infoW = m.splitRightPane(rightW)
 			msgsW = rightW - infoW
 		}
 		messagesPane := m.renderMessagesPane(bodyH, msgsW)

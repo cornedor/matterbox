@@ -129,7 +129,7 @@ var ActionIDs = []string{
 var MouseTargets = []string{
 	"tab", "channel", "message", "thread", "feed", "search", "reference",
 	"info", "sql", "composer", "jump_bottom", "feed_mark_all", "feed_blobs", "toast",
-	"nothing",
+	"pane_divider", "nothing",
 }
 
 // PaletteIDs are the ">" command-palette entries, by stable id rather than by
