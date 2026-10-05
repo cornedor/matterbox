@@ -122,6 +122,15 @@ CREATE INDEX IF NOT EXISTS idx_post_vectors_model ON post_vectors(model);
 CREATE TRIGGER IF NOT EXISTS posts_delete_vector AFTER DELETE ON posts BEGIN
     DELETE FROM post_vectors WHERE post_id = old.id;
 END;
+
+-- An edit invalidates the embedding of the old text. Dropping it re-queues the
+-- post via PostsMissingVectors; metadata-only updates leave it alone.
+CREATE TRIGGER IF NOT EXISTS posts_edit_vector
+AFTER UPDATE OF message ON posts
+WHEN new.message != old.message
+BEGIN
+    DELETE FROM post_vectors WHERE post_id = old.id;
+END;
 `
 
 // listenSchemaSQL backs the `matterbox listen` daemon. meta is a tiny key/value
