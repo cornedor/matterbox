@@ -165,15 +165,21 @@ func (m *Model) applyPostUnread(ev *model.WebSocketEvent) tea.Cmd {
 		f, _ := data[key].(float64)
 		return int64(f)
 	}
-	mb := model.ChannelMember{
-		ChannelId:        b.ChannelId,
-		UserId:           b.UserId,
-		MsgCount:         num("msg_count"),
-		MsgCountRoot:     num("msg_count_root"),
-		MentionCount:     num("mention_count"),
-		MentionCountRoot: num("mention_count_root"),
-		LastViewedAt:     num("last_viewed_at"),
+	// Start from the stored row: the event only carries counters, and
+	// replacing the row wholesale would drop NotifyProps — unmuting the
+	// channel in the feed.
+	mb := model.ChannelMember{ChannelId: b.ChannelId, UserId: b.UserId}
+	for i := range m.members {
+		if m.members[i].ChannelId == b.ChannelId {
+			mb = m.members[i].ChannelMember
+			break
+		}
 	}
+	mb.MsgCount = num("msg_count")
+	mb.MsgCountRoot = num("msg_count_root")
+	mb.MentionCount = num("mention_count")
+	mb.MentionCountRoot = num("mention_count_root")
+	mb.LastViewedAt = num("last_viewed_at")
 	m.upsertMember(mb)
 
 	unread, mentions := mm.UnreadCounts(ch, &mb)

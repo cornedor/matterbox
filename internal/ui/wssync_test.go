@@ -241,6 +241,24 @@ func TestPostUnreadStoresLastViewedAt(t *testing.T) {
 	t.Error("no member row stored for c1")
 }
 
+// post_unread carries only counters. It must not wipe the stored row's
+// NotifyProps, or the next muted-set rebuild unmutes the channel in the feed.
+func TestPostUnreadKeepsMute(t *testing.T) {
+	m := resyncModel(t)
+	m.setMembers(model.ChannelMembersWithTeamData{{ChannelMember: model.ChannelMember{
+		ChannelId: "c1", UserId: "me",
+		NotifyProps: model.StringMap{model.MarkUnreadNotifyProp: model.ChannelMarkUnreadMention},
+	}}})
+	ev := model.NewWebSocketEvent(model.WebsocketEventPostUnread, "t1", "c1", "me", nil, "")
+	ev.Add("msg_count", float64(3))
+	m.handleWSEvent(ev)
+	m.rebuildMutedChannels()
+
+	if !m.mutedChannels["c1"] {
+		t.Error("marking a post unread unmuted the channel")
+	}
+}
+
 // A ping timeout and a dropped link both classify as "network", so without a
 // cause of its own the one failure that can be ours — a reader that stalled and
 // stopped producing — is indistinguishable from the user's wifi.
