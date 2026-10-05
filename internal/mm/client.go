@@ -314,6 +314,43 @@ func (c *Client) PostsSince(ctx context.Context, channelID string, since int64) 
 	return pl, nil
 }
 
+// PostsCreatedSince returns every post in the channel created at or after
+// since (unix-ms), newest first, paging backward from the newest post. Use it
+// when the whole window matters: GetPostsSince (PostsSince) selects by
+// update_at and the server caps it at an arbitrary 1000 rows.
+func (c *Client) PostsCreatedSince(ctx context.Context, channelID string, since int64) (*model.PostList, error) {
+	const perPage = 200
+	out := model.NewPostList()
+	before := ""
+	for {
+		var pl *model.PostList
+		var err error
+		if before == "" {
+			pl, err = c.Posts(ctx, channelID, perPage)
+		} else {
+			pl, err = c.PostsBefore(ctx, channelID, before, perPage)
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range pl.Order {
+			p := pl.Posts[id]
+			if p == nil {
+				continue
+			}
+			if p.CreateAt < since {
+				return out, nil
+			}
+			out.AddPost(p)
+			out.AddOrder(id)
+		}
+		if len(pl.Order) < perPage {
+			return out, nil
+		}
+		before = pl.Order[len(pl.Order)-1]
+	}
+}
+
 // ChannelMembers returns every channel-member record for the user
 // across all teams, including msg/mention counters needed for the
 // initial unread/mention badges. The server caps per_page at 200
