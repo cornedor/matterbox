@@ -3,6 +3,7 @@ package ui
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -417,38 +418,46 @@ type reactionErrMsg struct{ err error }
 // applier is idempotent (it dedupes by user+emoji) so duplicating the
 // work here is safe.
 func (m *Model) addLocalReaction(postID, userID, emojiName string) {
-	p := m.findPostByID(postID)
-	if p == nil {
-		return
-	}
-	if p.Metadata == nil {
-		p.Metadata = &model.PostMetadata{}
-	}
-	for _, r := range p.Metadata.Reactions {
-		if r != nil && r.UserId == userID && r.EmojiName == emojiName {
-			return
+	for _, p := range m.postCopies(postID) {
+		if p.Metadata == nil {
+			p.Metadata = &model.PostMetadata{}
 		}
+		if slices.ContainsFunc(p.Metadata.Reactions, func(r *model.Reaction) bool {
+			return r != nil && r.UserId == userID && r.EmojiName == emojiName
+		}) {
+			continue
+		}
+		p.Metadata.Reactions = append(p.Metadata.Reactions, &model.Reaction{
+			UserId:    userID,
+			PostId:    postID,
+			EmojiName: emojiName,
+		})
 	}
-	p.Metadata.Reactions = append(p.Metadata.Reactions, &model.Reaction{
-		UserId:    userID,
-		PostId:    postID,
-		EmojiName: emojiName,
-	})
 }
 
 func (m *Model) removeLocalReaction(postID, userID, emojiName string) {
-	p := m.findPostByID(postID)
-	if p == nil || p.Metadata == nil {
-		return
-	}
-	out := p.Metadata.Reactions[:0]
-	for _, r := range p.Metadata.Reactions {
-		if r != nil && r.UserId == userID && r.EmojiName == emojiName {
+	for _, p := range m.postCopies(postID) {
+		if p.Metadata == nil {
 			continue
 		}
-		out = append(out, r)
+		p.Metadata.Reactions = slices.DeleteFunc(p.Metadata.Reactions, func(r *model.Reaction) bool {
+			return r != nil && r.UserId == userID && r.EmojiName == emojiName
+		})
 	}
-	p.Metadata.Reactions = out
+}
+
+// postCopies returns every in-memory copy of a post: the thread pane fetches
+// its own, so a post open in both panes is two objects.
+func (m *Model) postCopies(id string) []*model.Post {
+	var out []*model.Post
+	for _, list := range [][]*model.Post{m.posts, m.threadPosts} {
+		for _, p := range list {
+			if p != nil && p.Id == id && !slices.Contains(out, p) {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
 }
 
 // applyReactionEvent reconciles a `reaction_added` / `reaction_removed`
