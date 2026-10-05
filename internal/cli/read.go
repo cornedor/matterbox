@@ -152,11 +152,11 @@ func runRead(ctx context.Context, spec string, limit int, sinceMs, untilMs int64
 		defer wsc.Close()
 	}
 
-	// --since pulls everything past the boundary in one shot; otherwise fall
-	// back to the recent page (and let --until filter it client-side).
+	// --since pages back to the boundary; otherwise fall back to the recent
+	// page (and let --until filter it client-side).
 	var pl *model.PostList
 	if sinceMs > 0 {
-		pl, err = client.PostsSince(ctx, ch.Id, sinceMs)
+		pl, err = client.PostsCreatedSince(ctx, ch.Id, sinceMs)
 	} else {
 		fetchN := limit
 		if fetchN <= 0 {
