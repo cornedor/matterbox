@@ -1067,14 +1067,27 @@ func rulesCanNotify(rules []Rule) bool {
 // rules instead of the old hardcoded mention/DM test, so a config that, say,
 // only notifies for one channel no longer gets a catch-up digest for the rest.
 func (e *Engine) notifyMatches(ev *model.WebSocketEvent, p *model.Post) bool {
+	ok, _ := e.notifyMatch(ev, p)
+	return ok
+}
+
+// notifyMatch is notifyMatches plus whether a matching rule's notify action is
+// urgent (and so bypasses do-not-disturb).
+func (e *Engine) notifyMatch(ev *model.WebSocketEvent, p *model.Post) (matched, urgent bool) {
 	state := e.matchState()
 	render := e.stateKeyRenderer(msgTrigger(ev, p))
 	for _, r := range e.ruleSet() {
-		if r.fires(EventMessage) && ruleHasNotify(r) && e.matches(ev, p, r.Match, state, render) {
-			return true
+		if !r.fires(EventMessage) || !ruleHasNotify(r) || !e.matches(ev, p, r.Match, state, render) {
+			continue
+		}
+		matched = true
+		for _, a := range r.Actions {
+			if a.Type == ActionNotify && a.Urgent {
+				urgent = true
+			}
 		}
 	}
-	return false
+	return matched, urgent
 }
 
 // applyRules evaluates the engine's rules against an ingested post — the
@@ -1681,24 +1694,29 @@ func (e *Engine) notifyGate(ctx context.Context, t trigger, opts notifyOpts) {
 		return
 	}
 	if !opts.urgent {
-		if e.opts.RespectDND && e.myStatus == model.StatusDnd {
-			e.log.Printf("notifications suppressed while status is dnd")
-			e.reportRuleOutcome(t, ActionNotify, "cancelled")
-			return
-		}
-		if e.opts.RespectMutes && e.isMuted(p.ChannelId) {
-			e.log.Printf("mention in muted channel %s — skipped", p.ChannelId)
-			e.reportRuleOutcome(t, ActionNotify, "cancelled")
-			return
-		}
-		if e.inQuietHoursNow() {
-			e.log.Printf("mention during quiet hours — skipped (cached; use /unread)")
+		if why := e.doNotDisturb(p.ChannelId); why != "" {
+			e.log.Printf("%s", why)
 			e.reportRuleOutcome(t, ActionNotify, "cancelled")
 			return
 		}
 	}
 	e.wg.Add(1)
 	go e.notify(ctx, t, opts)
+}
+
+// doNotDisturb says why a non-urgent notification for channelID must not be
+// pushed now, or "" when it may: DND status, a muted channel, quiet hours.
+// Shared by the live gate and the reconnect catch-up digest.
+func (e *Engine) doNotDisturb(channelID string) string {
+	switch {
+	case e.opts.RespectDND && e.myStatus == model.StatusDnd:
+		return "notifications suppressed while status is dnd"
+	case e.opts.RespectMutes && e.isMuted(channelID):
+		return fmt.Sprintf("mention in muted channel %s — skipped", channelID)
+	case e.inQuietHoursNow():
+		return "mention during quiet hours — skipped (cached; use /unread)"
+	}
+	return ""
 }
 
 // envelope is the JSON view of a post passed to exec/webhook actions. It is

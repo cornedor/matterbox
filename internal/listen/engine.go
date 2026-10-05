@@ -1351,7 +1351,9 @@ func (e *Engine) catchUp(ctx context.Context) {
 	kept := items[:0]
 	for _, it := range items {
 		ev := e.catchupEvent(chByID[it.channelID], it.post, lbl.names[it.post.UserId])
-		if e.notifyMatches(ev, it.post) {
+		// Same do-not-disturb policy as a live notification: a reconnect at
+		// 03:00 mustn't push what quiet hours, DND or a mute would have held.
+		if ok, urgent := e.notifyMatch(ev, it.post); ok && (urgent || e.doNotDisturb(it.channelID) == "") {
 			kept = append(kept, it)
 		}
 	}
