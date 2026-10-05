@@ -1597,7 +1597,22 @@ func writeConfig(p string, cfg *Config) error {
 		"#             anonymous_id is the random id events are grouped by —\n" +
 		"#             delete it for a fresh one. Details:\n" +
 		"#             https://matterbox.work/docs/telemetry\n"
-	if err := os.WriteFile(p, append([]byte(header), body...), FileMode); err != nil {
+	out := append([]byte(header), body...)
+	// An existing file is updated in place instead, so the user's comments
+	// and any keys this version doesn't know survive the save.
+	if existing, err := os.ReadFile(p); err == nil {
+		merged, ok, err := mergeConfigYAML(existing, cfg)
+		if err != nil {
+			return err
+		}
+		if ok {
+			out = merged
+			if !hasSchemaModeline(merged) {
+				out = append([]byte(schemaModeline), merged...)
+			}
+		}
+	}
+	if err := os.WriteFile(p, out, FileMode); err != nil {
 		return err
 	}
 	// WriteFile leaves an existing file's mode alone, so tighten it explicitly:
