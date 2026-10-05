@@ -193,6 +193,37 @@ func TestVectorDeletedWithPost(t *testing.T) {
 	}
 }
 
+// TestVectorDroppedOnEdit: an edit changes the text the vector was built from,
+// so the stale embedding must go and the post must re-queue for embedding. A
+// metadata-only update (same message) keeps it.
+func TestVectorDroppedOnEdit(t *testing.T) {
+	s := tempStore(t)
+	s.mustPost(t, "pa", "c1", "alpha", 100)
+	if err := s.UpsertVector("pa", []float32{1, 0}, "m1", 1000); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	same := &model.Post{Id: "pa", ChannelId: "c1", UserId: "u1", Message: "alpha", CreateAt: 100, UpdateAt: 150, IsPinned: true}
+	if err := s.Upsert(same); err != nil {
+		t.Fatalf("metadata update: %v", err)
+	}
+	if n, _ := s.VectorCount(""); n != 1 {
+		t.Fatalf("metadata-only update dropped the vector, count = %d", n)
+	}
+
+	edited := &model.Post{Id: "pa", ChannelId: "c1", UserId: "u1", Message: "alpha edited", CreateAt: 100, UpdateAt: 200, EditAt: 200}
+	if err := s.Upsert(edited); err != nil {
+		t.Fatalf("edit: %v", err)
+	}
+	if n, _ := s.VectorCount(""); n != 0 {
+		t.Errorf("edit should drop the stale vector, count = %d", n)
+	}
+	pend, _ := s.PostsMissingVectors("m1", 10)
+	if len(pend) != 1 || pend[0].Message != "alpha edited" {
+		t.Errorf("edited post should re-queue with new text, got %v", pend)
+	}
+}
+
 // mustPost upserts a post and fails the test on error.
 func (s *Store) mustPost(t *testing.T, id, ch, msg string, createAt int64) {
 	t.Helper()
