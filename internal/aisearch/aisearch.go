@@ -252,7 +252,7 @@ func Run(ctx context.Context, cfg Config, cat Catalog, messages []Message, ch ch
 		// Echo the assistant turn (with its tool_calls) back into the history.
 		messages = append(messages, Message{Role: "assistant", Content: msg.Content, ToolCalls: msg.ToolCalls})
 
-		for _, tc := range msg.ToolCalls {
+		for i, tc := range msg.ToolCalls {
 			switch tc.Function.Name {
 			case "finish":
 				var fin struct {
@@ -263,11 +263,15 @@ func Run(ctx context.Context, cfg Config, cat Catalog, messages []Message, ch ch
 				if answer == "" {
 					answer = "(no answer text provided)"
 				}
-				// Close out the finish tool call and record the answer as an
-				// assistant turn so the transcript is a valid continuation point.
-				messages = append(messages,
-					Message{Role: "tool", ToolCallID: tc.ID, Content: "Answer delivered to the user."},
-					Message{Role: "assistant", Content: answer})
+				// Close out the finish tool call — and any calls the model put
+				// after it in the same turn, which won't run — then record the
+				// answer as an assistant turn. Every tool_call needs a result or
+				// a follow-up replays an invalid transcript.
+				messages = append(messages, Message{Role: "tool", ToolCallID: tc.ID, Content: "Answer delivered to the user."})
+				for _, rest := range msg.ToolCalls[i+1:] {
+					messages = append(messages, Message{Role: "tool", ToolCallID: rest.ID, Content: "Skipped: finish was called."})
+				}
+				messages = append(messages, Message{Role: "assistant", Content: answer})
 				send(Update{Done: true, Answer: answer, Hits: collected, History: messages})
 				return
 			case "search_messages":
