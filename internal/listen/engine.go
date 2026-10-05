@@ -154,6 +154,11 @@ type Engine struct {
 	opts     Options
 	log      *log.Logger
 
+	// cacheSynced is whether this connection's backfill completed, so live
+	// events alone keep the cache whole (see backfillCache). Touched only on
+	// the Run/consume goroutine.
+	cacheSynced bool
+
 	// rules drives the reaction to each trigger. Either the user's configured
 	// rules (opts.Rules) or, when they configured none, the synthesised default
 	// that reproduces the legacy mention/DM → Telegram bridge (see
@@ -496,9 +501,13 @@ func (e *Engine) Run(ctx context.Context) error {
 		e.log.Printf("connected (%s)", e.opts.ServerURL)
 		go e.refreshMuted(ctx) // pick up mute changes made while we were away
 		e.refreshStatus(ctx)   // same goroutine as consume — myStatus is unmutexed
+		e.backfillCache(ctx)   // store posts that arrived while disconnected
 		e.catchUp(ctx)         // notify mentions that arrived while disconnected
 		cerr := e.consume(ctx, wsc)
 		wsc.Close()
+		if e.cacheSynced {
+			e.markSynced(time.Now())
+		}
 		// A dead session never recovers by reconnecting: the token lives in
 		// memory, so every re-dial would present the same expired one — and the
 		// server accepts such a connection and then delivers nothing, which
@@ -561,6 +570,7 @@ func (e *Engine) consume(ctx context.Context, wsc *model.WebSocketClient) error 
 			if err := e.probeSession(ctx); err != nil {
 				return err
 			}
+			e.keepSynced(ctx)
 		case ev, ok := <-wsc.EventChannel:
 			if !ok {
 				return nil
