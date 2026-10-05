@@ -1616,22 +1616,22 @@ func (e *Engine) runActions(ctx context.Context, t trigger, actions []Action) {
 		case ActionExec:
 			a := a
 			e.wg.Add(1)
-			go e.runExec(ctx, t, a)
+			go e.runExec(ctx, t.withState(e.loadState()), a)
 		case ActionWebhook:
 			a := a
 			e.wg.Add(1)
-			go e.runWebhook(ctx, t, a)
+			go e.runWebhook(ctx, t.withState(e.loadState()), a)
 		case ActionReact:
 			a := a
 			e.wg.Add(1)
-			go e.runReact(ctx, t, a)
+			go e.runReact(ctx, t.withState(e.loadState()), a)
 		case ActionMarkRead:
 			e.wg.Add(1)
 			go e.runMarkRead(ctx, t)
 		case ActionSend:
 			a := a
 			e.wg.Add(1)
-			go e.runSend(ctx, t, a)
+			go e.runSend(ctx, t.withState(e.loadState()), a)
 		case ActionLog:
 			e.runLog(t, a)
 		case ActionStateSet, ActionStateIncr, ActionStateDel:
@@ -1770,6 +1770,9 @@ func (e *Engine) buildEnvelope(t trigger) envelope {
 	e.teamsMu.RLock()
 	team := e.teams[teamID]
 	e.teamsMu.RUnlock()
+	if t.state == nil {
+		t.state = e.loadState()
+	}
 	return envelope{
 		PostID:    p.Id,
 		ChannelID: p.ChannelId,
@@ -1785,7 +1788,7 @@ func (e *Engine) buildEnvelope(t trigger) envelope {
 		Files:     postFileNames(p),
 		CreateAt:  p.CreateAt,
 		Permalink: e.permalink(ev, p.Id),
-		State:     e.loadState(),
+		State:     t.state,
 
 		Event:          t.kind,
 		Emoji:          eventStr(ev, emojiKey),
