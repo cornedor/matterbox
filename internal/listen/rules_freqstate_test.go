@@ -3,7 +3,9 @@ package listen
 import (
 	"io"
 	"log"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -570,5 +572,37 @@ func TestCompileStateIncrBy(t *testing.T) {
 	rules = mustCompile(t, RuleSpec{Actions: []ActionSpec{{Type: ActionStateIncr, Key: "k", By: &five}}})
 	if rules[0].Actions[0].by != 5 {
 		t.Fatalf("by = %d, want 5", rules[0].Actions[0].by)
+	}
+}
+
+// TestAsyncActionSeesStateAtDispatch: exec runs on its own goroutine, so it
+// must read the ledger as it stood when dispatched — not after a state_del
+// later in the same rule (the documented escalate-then-reset pattern).
+func TestAsyncActionSeesStateAtDispatch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses /bin/sh")
+	}
+	out := filepath.Join(t.TempDir(), "seen")
+	e := newStoreEngine(t)
+	if err := e.store.SetState("deploy_failures", "3"); err != nil {
+		t.Fatal(err)
+	}
+	e.rules = mustCompile(t, RuleSpec{
+		Match: MatchSpec{Authors: []string{"bob"}},
+		Actions: []ActionSpec{
+			{Type: ActionExec, Command: []string{"sh", "-c", `printf %s "$MATTERBOX_STATE_DEPLOY_FAILURES" > ` + out}},
+			{Type: ActionStateDel, Key: "deploy_failures"},
+		},
+	})
+	p, ev := bobEvent(t, "deploy failed")
+	e.applyRules(t.Context(), ev, p)
+	e.wg.Wait()
+
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "3" {
+		t.Errorf("exec saw deploy_failures=%q, want 3 (the value before the later state_del)", got)
 	}
 }

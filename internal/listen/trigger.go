@@ -57,6 +57,9 @@ type trigger struct {
 	caps map[string]string
 	// rule names the rule whose timer fired, for a schedule trigger.
 	rule string
+	// state, when non-nil, is the ledger as it stood when an async action was
+	// dispatched (see withState); nil reads it live.
+	state map[string]string
 }
 
 // msgTrigger wraps a live post event, the original (and still most common)
@@ -70,6 +73,17 @@ func msgTrigger(ev *model.WebSocketEvent, p *model.Post) trigger {
 // leaking in.
 func (t trigger) withCaps(caps map[string]string) trigger {
 	t.caps = caps
+	return t
+}
+
+// withState returns the trigger with a ledger snapshot attached. An action
+// that runs on its own goroutine takes it at dispatch, so a state_* action
+// later in the same rule can't change what it sees.
+func (t trigger) withState(state map[string]string) trigger {
+	if state == nil {
+		state = map[string]string{}
+	}
+	t.state = state
 	return t
 }
 
