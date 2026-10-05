@@ -31,16 +31,27 @@ const digestPostCap = 300
 func (e *Engine) handleCommand(ctx context.Context, msg *telegram.Message) {
 	cmd, args := parseCommand(msg.Text)
 	switch cmd {
+	case "ask", "a":
+		e.cmdAsk(ctx, args) // runs the search off the poll loop itself
+		return
+	case "digest", "d":
+		// An LLM summary over every unread channel: too slow for the poll loop.
+		e.wg.Add(1)
+		go func() {
+			defer e.wg.Done()
+			e.cmdDigest(ctx)
+		}()
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, inboundTimeout)
+	defer cancel()
+	switch cmd {
 	case "help", "start":
 		e.sendTG(ctx, helpText)
-	case "ask", "a":
-		e.cmdAsk(ctx, args)
 	case "search", "s":
 		e.cmdSearch(ctx, args)
 	case "unread", "u":
 		e.cmdUnread(ctx)
-	case "digest", "d":
-		e.cmdDigest(ctx)
 	default:
 		e.sendTG(ctx, "Unknown command.\n\n"+helpText)
 	}

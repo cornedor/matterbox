@@ -283,6 +283,11 @@ const askConvoCap = 50
 // edited with the current step, to stay well under Telegram's edit rate limit.
 const askProgressInterval = 2 * time.Second
 
+// inboundTimeout bounds one Telegram update's handler. The poll loop runs
+// handlers in order, so a hung Mattermost call would otherwise stall every
+// later reply and tap. Slow commands (/ask, /digest) run off the loop instead.
+var inboundTimeout = 2 * time.Minute
+
 // cursorKey is the meta-table key for the catch-up cursor.
 const cursorKey = "listen.last_seen_ms"
 
@@ -1057,6 +1062,8 @@ func inboundFile(msg *telegram.Message) (fileID, filename string, ok bool) {
 
 // handleCallback runs a tapped quick-action button (👍 react / ✓ mark read).
 func (e *Engine) handleCallback(ctx context.Context, cb *telegram.CallbackQuery) {
+	ctx, cancel := context.WithTimeout(ctx, inboundTimeout)
+	defer cancel()
 	action, arg := decodeCallback(cb.Data)
 	note := "done"
 	switch action {
@@ -1082,6 +1089,8 @@ func (e *Engine) handleCallback(ctx context.Context, cb *telegram.CallbackQuery)
 // both (a photo/document with a caption); any attachment is pulled from Telegram
 // and re-uploaded to Mattermost, since the Telegram file id means nothing there.
 func (e *Engine) handleReply(ctx context.Context, msg *telegram.Message) {
+	ctx, cancel := context.WithTimeout(ctx, inboundTimeout)
+	defer cancel()
 	target, ok := e.lookupNotif(msg.ReplyToMessage.MessageID)
 	if !ok {
 		reportNotifExpired("reply")
@@ -1118,6 +1127,8 @@ func (e *Engine) handleReply(ctx context.Context, msg *telegram.Message) {
 // Mattermost post (add/remove to match), and marks the channel read — reacting
 // is the closest signal the Bot API gives that you saw the message.
 func (e *Engine) handleReaction(ctx context.Context, mr *telegram.MessageReactionUpdated) {
+	ctx, cancel := context.WithTimeout(ctx, inboundTimeout)
+	defer cancel()
 	target, ok := e.lookupNotif(mr.MessageID)
 	if !ok {
 		reportNotifExpired("react")
