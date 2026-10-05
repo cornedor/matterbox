@@ -12,6 +12,7 @@ package listen
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -622,6 +623,33 @@ func (e *Engine) handle(ctx context.Context, ev *model.WebSocketEvent) {
 		e.deferReaction(ctx, ev, EventUnreact)
 	case model.WebsocketEventStatusChange:
 		e.applyStatusChange(ev)
+	case model.WebsocketEventChannelMemberUpdated:
+		e.applyMemberUpdated(ev)
+	}
+}
+
+// applyMemberUpdated keeps the mute set current when the reader mutes or
+// unmutes a channel on another client mid-connection; refreshMuted only runs
+// on (re)connect.
+func (e *Engine) applyMemberUpdated(ev *model.WebSocketEvent) {
+	raw, _ := ev.GetData()["channelMember"].(string)
+	var mb model.ChannelMember
+	if raw == "" || json.Unmarshal([]byte(raw), &mb) != nil || mb.ChannelId == "" {
+		return
+	}
+	if e.me == nil || mb.UserId != e.me.Id {
+		return
+	}
+	muted := mb.NotifyProps[model.MarkUnreadNotifyProp] == model.ChannelMarkUnreadMention
+	e.mutedMu.Lock()
+	defer e.mutedMu.Unlock()
+	if e.muted == nil {
+		e.muted = map[string]bool{}
+	}
+	if muted {
+		e.muted[mb.ChannelId] = true
+	} else {
+		delete(e.muted, mb.ChannelId)
 	}
 }
 
