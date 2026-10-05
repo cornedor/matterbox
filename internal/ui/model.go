@@ -2883,26 +2883,28 @@ func (m Model) fetchNewer(channelID, afterPostID string) tea.Cmd {
 // persistPosts writes the given posts to the store on a worker
 // goroutine so a slow disk can't stall the UI. No-op when the store is
 // unavailable or the slice is empty.
-func (m Model) persistPosts(posts ...*model.Post) tea.Cmd {
+func (m *Model) persistPosts(posts ...*model.Post) tea.Cmd {
 	if m.store == nil || len(posts) == 0 {
 		return nil
 	}
 	st := m.store
-	// Copy so the caller can safely mutate its slice after returning, dropping
-	// ephemerals on the way: they exist only in this session's transcript, and
-	// a cached one could never be refetched away again — it would haunt search
+	// Drop ephemerals: they exist only in this session's transcript, and a
+	// cached one could never be refetched away again — it would haunt search
 	// and every warm open of the channel. See ephemeral.go.
-	cp := make([]*model.Post, 0, len(posts))
+	keep := make([]*model.Post, 0, len(posts))
 	for _, p := range posts {
 		if !isEphemeral(p) {
-			cp = append(cp, p)
+			keep = append(keep, p)
 		}
 	}
-	if len(cp) == 0 {
+	// Serialize here, not in the cmd: Update mutates these same posts in place
+	// (reactions, file infos) while the worker runs.
+	rows, err := store.PostRows(keep)
+	if err != nil || len(rows) == 0 {
 		return nil
 	}
 	return func() tea.Msg {
-		_ = st.UpsertMany(cp)
+		_ = st.UpsertRows(rows)
 		return nil
 	}
 }
