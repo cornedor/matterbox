@@ -435,7 +435,10 @@ func (m Model) summaryGatherChannelCmd(seq int, channelID string, sinceMs int64,
 	client := m.client
 	ctx := m.ctx
 	return func() tea.Msg {
-		pl, err := client.PostsSince(ctx, channelID, sinceMs)
+		// Not PostsSince: that keys on update_at (pulling in older posts
+		// edited inside the window) and the server caps it at an arbitrary
+		// 1000 rows, so a busy day-long window lost random messages.
+		pl, err := client.PostsCreatedSince(ctx, channelID, sinceMs)
 		if err != nil {
 			return summaryGatheredMsg{seq: seq, err: err}
 		}
