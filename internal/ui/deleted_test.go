@@ -335,3 +335,25 @@ func TestDeletionsSyncedFlipsThreadReply(t *testing.T) {
 		t.Errorf("deleted thread-reply content lingered: %q", r2.Message)
 	}
 }
+
+// TestApplyPostDeletedRootTakesReplies: Mattermost deletes a root's replies
+// with it but sends a single post_deleted, for the root. The replies must
+// become tombstones too; an unrelated post stays.
+func TestApplyPostDeletedRootTakesReplies(t *testing.T) {
+	m := navModel() // openChannelID = c1
+	m.emojiImg = newEmojiImages("off", false)
+	m.posts = []*model.Post{
+		{Id: "root", ChannelId: "c1", UserId: "u1", CreateAt: 1000, Message: "thread"},
+		{Id: "r1", ChannelId: "c1", UserId: "u2", RootId: "root", CreateAt: 2000, Message: "the secret plans"},
+		{Id: "p3", ChannelId: "c1", UserId: "u1", CreateAt: 3000, Message: "unrelated"},
+	}
+
+	(&m).applyPostDeleted(deletedEvent(&model.Post{Id: "root", ChannelId: "c1", DeleteAt: 2500}))
+
+	if r1 := m.posts[1]; r1.DeleteAt == 0 || r1.Message != "" {
+		t.Errorf("reply of a deleted root not tombstoned: %+v", r1)
+	}
+	if p3 := m.posts[2]; p3.DeleteAt != 0 || p3.Message != "unrelated" {
+		t.Errorf("unrelated post touched: %+v", p3)
+	}
+}
