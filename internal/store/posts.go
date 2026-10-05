@@ -731,7 +731,7 @@ func (s *Store) UpsertMany(posts []*model.Post) error {
 // PostRow is a post serialized for UpsertRows. Building it snapshots the post,
 // so a caller can hand rows to another goroutine and keep mutating the posts.
 type PostRow struct {
-	id, channelID, userID, rootID       string
+	id, channelID, userID, rootID        string
 	createAt, updateAt, editAt, deleteAt int64
 	message                              string
 	raw                                  []byte
@@ -846,6 +846,42 @@ func (s *Store) Delete(p *model.Post) error {
 	}
 	defer func() { _ = tx.Rollback() }() // no-op once committed
 
+	root, err := tombstoneTx(tx, p)
+	if err != nil {
+		return err
+	}
+	// Mattermost deletes a thread root's replies with it but sends a single
+	// post_deleted, for the root — so the replies are tombstoned here, or they
+	// stay searchable after the thread is gone.
+	if root.RootId == "" {
+		rows, err := tx.Query(`SELECT id FROM posts WHERE root_id = ? AND delete_at = 0`, root.Id)
+		if err != nil {
+			return fmt.Errorf("load replies for delete: %w", err)
+		}
+		var ids []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return fmt.Errorf("load replies for delete: %w", err)
+			}
+			ids = append(ids, id)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("load replies for delete: %w", err)
+		}
+		for _, id := range ids {
+			if _, err := tombstoneTx(tx, &model.Post{Id: id, DeleteAt: root.DeleteAt}); err != nil {
+				return err
+			}
+		}
+	}
+	return tx.Commit()
+}
+
+// tombstoneTx soft-deletes one post inside tx and returns it as stored.
+func tombstoneTx(tx *sql.Tx, p *model.Post) (*model.Post, error) {
 	// base is a private clone we can strip without touching the caller's post.
 	// Prefer the cached copy when present — it carries fuller fields (e.g.
 	// Props/override_username for the tombstone's author line).
@@ -856,19 +892,19 @@ func (s *Store) Delete(p *model.Post) error {
 	)
 	switch err := tx.QueryRow(`SELECT delete_at, raw_json FROM posts WHERE id = ?`, p.Id).Scan(&storedDeleteAt, &raw); {
 	case err == nil:
-		if storedDeleteAt != 0 {
-			// Already a tombstone — the offline-deletion sync re-reports the same
-			// delete on every catch-up, so don't rewrite (and re-churn FTS) here.
-			return tx.Commit()
-		}
 		var stored model.Post
 		if json.Unmarshal(raw, &stored) == nil {
 			base = &stored
 		}
+		if storedDeleteAt != 0 {
+			// Already a tombstone — the offline-deletion sync re-reports the same
+			// delete on every catch-up, so don't rewrite (and re-churn FTS) here.
+			return base, nil
+		}
 	case errors.Is(err, sql.ErrNoRows):
 		// Not cached yet — fall through with base seeded from the event.
 	default:
-		return fmt.Errorf("load post for delete: %w", err)
+		return nil, fmt.Errorf("load post for delete: %w", err)
 	}
 	// Carry the authoritative delete time from the event / since-response: the
 	// cached copy we just preferred still has delete_at = 0, so without this the
@@ -879,7 +915,7 @@ func (s *Store) Delete(p *model.Post) error {
 	tombstonePost(base)
 	stripped, err := json.Marshal(base)
 	if err != nil {
-		return fmt.Errorf("marshal tombstone: %w", err)
+		return nil, fmt.Errorf("marshal tombstone: %w", err)
 	}
 	// Stamp update_at with the delete time so MaxUpdateAt (the offline-deletion
 	// sync cursor) advances past this deletion and won't re-report it forever.
@@ -891,19 +927,19 @@ func (s *Store) Delete(p *model.Post) error {
 		base.Id, base.ChannelId, base.UserId, base.RootId,
 		base.CreateAt, updateAt, base.EditAt, base.DeleteAt, stripped,
 	); err != nil {
-		return fmt.Errorf("soft-delete post: %w", err)
+		return nil, fmt.Errorf("soft-delete post: %w", err)
 	}
 	// The posts_capture_revision trigger archived the pre-delete row during the
 	// overwrite above; drop it (and any earlier edit history) so the removed
 	// content doesn't linger in post_revisions. The posts_delete_vector trigger
 	// only fires on a row DELETE, never an UPDATE, so clear the embedding here.
 	if _, err := tx.Exec(`DELETE FROM post_revisions WHERE post_id = ?`, p.Id); err != nil {
-		return fmt.Errorf("purge revisions: %w", err)
+		return nil, fmt.Errorf("purge revisions: %w", err)
 	}
 	if _, err := tx.Exec(`DELETE FROM post_vectors WHERE post_id = ?`, p.Id); err != nil {
-		return fmt.Errorf("purge vector: %w", err)
+		return nil, fmt.Errorf("purge vector: %w", err)
 	}
-	return tx.Commit()
+	return base, nil
 }
 
 // deletePredicate returns the SQL fragment that filters out soft-deleted rows,

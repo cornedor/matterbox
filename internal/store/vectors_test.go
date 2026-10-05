@@ -232,3 +232,36 @@ func (s *Store) mustPost(t *testing.T, id, ch, msg string, createAt int64) {
 		t.Fatalf("upsert post %s: %v", id, err)
 	}
 }
+
+// TestDeleteRootTombstonesReplies: Mattermost deletes a thread root's replies
+// with it but sends a single post_deleted, for the root. The replies must stop
+// being searchable and lose their vectors too.
+func TestDeleteRootTombstonesReplies(t *testing.T) {
+	s := tempStore(t)
+	s.mustPost(t, "root", "c1", "secret-token-xyz", 100)
+	reply := &model.Post{Id: "r1", ChannelId: "c1", UserId: "u2", RootId: "root", Message: "rotate secret-token-xyz", CreateAt: 200}
+	if err := s.Upsert(reply); err != nil {
+		t.Fatal(err)
+	}
+	s.mustPost(t, "other", "c1", "unrelated secret-token-xyz", 300)
+	if err := s.UpsertVector("r1", []float32{1, 0}, "m1", 1000); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Delete(&model.Post{Id: "root", ChannelId: "c1", DeleteAt: 5000}); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if got, _ := s.Post("r1"); got == nil || got.DeleteAt != 5000 || got.Message != "" {
+		t.Errorf("reply not tombstoned with the root's delete time: %+v", got)
+	}
+	if n, _ := s.VectorCount(""); n != 0 {
+		t.Errorf("reply kept its vector, count = %d", n)
+	}
+	hits, err := s.Search("secret-token-xyz", nil, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 1 || hits[0].Match.Id != "other" {
+		t.Errorf("search should only find the unrelated post, got %d hits", len(hits))
+	}
+}
