@@ -721,6 +721,47 @@ func (s *Store) UpsertMany(posts []*model.Post) error {
 	if s == nil || len(posts) == 0 {
 		return nil
 	}
+	rows, err := PostRows(posts)
+	if err != nil {
+		return err
+	}
+	return s.UpsertRows(rows)
+}
+
+// PostRow is a post serialized for UpsertRows. Building it snapshots the post,
+// so a caller can hand rows to another goroutine and keep mutating the posts.
+type PostRow struct {
+	id, channelID, userID, rootID       string
+	createAt, updateAt, editAt, deleteAt int64
+	message                              string
+	raw                                  []byte
+}
+
+// PostRows snapshots posts into rows, skipping nil posts and empty Ids.
+func PostRows(posts []*model.Post) ([]PostRow, error) {
+	rows := make([]PostRow, 0, len(posts))
+	for _, p := range posts {
+		if p == nil || p.Id == "" {
+			continue
+		}
+		raw, err := json.Marshal(p)
+		if err != nil {
+			return nil, fmt.Errorf("marshal post %s: %w", p.Id, err)
+		}
+		rows = append(rows, PostRow{
+			p.Id, p.ChannelId, p.UserId, p.RootId,
+			p.CreateAt, p.UpdateAt, p.EditAt, p.DeleteAt,
+			p.Message, raw,
+		})
+	}
+	return rows, nil
+}
+
+// UpsertRows writes rows built by PostRows inside a single transaction.
+func (s *Store) UpsertRows(rows []PostRow) error {
+	if s == nil || len(rows) == 0 {
+		return nil
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -731,22 +772,14 @@ func (s *Store) UpsertMany(posts []*model.Post) error {
 		return fmt.Errorf("prepare: %w", err)
 	}
 	defer stmt.Close()
-	for _, p := range posts {
-		if p == nil || p.Id == "" {
-			continue
-		}
-		raw, err := json.Marshal(p)
-		if err != nil {
-			_ = tx.Rollback()
-			return fmt.Errorf("marshal post %s: %w", p.Id, err)
-		}
+	for _, r := range rows {
 		if _, err := stmt.Exec(
-			p.Id, p.ChannelId, p.UserId, p.RootId,
-			p.CreateAt, p.UpdateAt, p.EditAt, p.DeleteAt,
-			p.Message, raw,
+			r.id, r.channelID, r.userID, r.rootID,
+			r.createAt, r.updateAt, r.editAt, r.deleteAt,
+			r.message, r.raw,
 		); err != nil {
 			_ = tx.Rollback()
-			return fmt.Errorf("upsert post %s: %w", p.Id, err)
+			return fmt.Errorf("upsert post %s: %w", r.id, err)
 		}
 	}
 	return tx.Commit()
