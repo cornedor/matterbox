@@ -1877,6 +1877,10 @@ func (m *Model) applyPostDeleted(ev *model.WebSocketEvent) tea.Cmd {
 	if p == nil {
 		return nil
 	}
+	// Mattermost deletes a root's replies with it but only reports the root.
+	gone := func(ex *model.Post) bool {
+		return ex.Id == p.Id || (p.RootId == "" && ex.RootId == p.Id)
+	}
 	m.invalidatePostLines(p.Id)
 	// Drop it from the unread feed too, in case it's showing there.
 	m.feedRemovePost(p.Id)
@@ -1892,12 +1896,19 @@ func (m *Model) applyPostDeleted(ev *model.WebSocketEvent) tea.Cmd {
 	// silently vanish from under the reader (see deletedPostLines).
 	persistCmd := m.persistDelete(p)
 	if m.isCurrentChannel(p.ChannelId) {
+		changed := false
 		for _, ex := range m.posts {
-			if ex.Id == p.Id {
+			if gone(ex) && ex.DeleteAt == 0 {
+				if ex.Id != p.Id {
+					m.invalidatePostLines(ex.Id)
+					m.feedRemovePost(ex.Id)
+				}
 				markPostDeleted(ex, p.DeleteAt)
-				m.renderMessages()
-				break
+				changed = true
 			}
+		}
+		if changed {
+			m.renderMessages()
 		}
 	}
 	if m.isThreadPost(p) {
