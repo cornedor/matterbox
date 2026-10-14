@@ -42,6 +42,11 @@ type Client struct {
 	// were away, instead of starting deaf. See DialWS and NoteWSEvent.
 	wsConnID string
 	wsSeq    int64
+
+	// anyTeamID is the team a DM thread's follow routes are addressed under
+	// (see anyTeam), looked up on first use.
+	teamMu    sync.Mutex
+	anyTeamID string
 }
 
 // New builds a Client4 wrapper pointed at the given Mattermost server.
