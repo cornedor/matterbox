@@ -617,6 +617,9 @@ func (m Model) allCommands() []switcherCommand {
 		contextual = append(contextual, pins...)
 		contextual = append(contextual, m.saveCommand())
 	}
+	if follow, ok := m.followThreadCommand(); ok {
+		contextual = append(contextual, follow)
+	}
 	if tmpl, ok := m.templateCommands(); ok {
 		contextual = append(contextual, tmpl...)
 	}

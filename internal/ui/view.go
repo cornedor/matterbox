@@ -2458,6 +2458,9 @@ func (m *Model) renderThreadPane(height, width int) string {
 	} else if n := len(m.threadPosts) - 1; n > 0 {
 		title = fmt.Sprintf("Thread · %d %s", n, replyWord(n))
 	}
+	if m.threadFollowKnown && m.threadFollowing {
+		title += " · following"
+	}
 
 	threadTotal, threadPct := m.threadScrollGeom()
 	showScrollbar := threadTotal > m.threadView.Height() && threadPct < 1.0

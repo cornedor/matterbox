@@ -599,6 +599,10 @@ type Model struct {
 	threadIdx       int
 	threadLoading   bool
 	threadView      viewport.Model
+	// threadFollowing is whether the reader follows the open thread, valid
+	// once threadFollowKnown (see threadfollow.go).
+	threadFollowing   bool
+	threadFollowKnown bool
 
 	// threadSelectID is the reply the thread pane should land on once its posts
 	// arrive — set when a thread is opened *on* a reply, so the cursor ends up on
