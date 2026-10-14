@@ -3666,6 +3666,7 @@ const (
 	wheelSQL
 	wheelModal
 	wheelDiff
+	wheelChannels
 )
 
 // wheelCoalesceDelay is how long accumulated wheel delta waits before being
@@ -3730,6 +3731,47 @@ func (m *Model) wheelTargetForFocus() wheelTarget {
 	}
 }
 
+// wheelTargetAt resolves the wheel by pointer position on a channel view: the
+// sidebar, transcript or side pane under the pointer scrolls whatever has
+// focus, so the transcript scrolls while composing. wheelNone (over the
+// composer, the tab strip, or with a modal / overlay up) defers to
+// wheelTargetForFocus.
+func (m *Model) wheelTargetAt(x, y int) wheelTarget {
+	if m.mouseBlocked() || y < tabsHeight || m.onFeedTab() || m.onSearchTab() || m.onSQLTab() {
+		return wheelNone
+	}
+	if x < channelsWidth {
+		return wheelChannels
+	}
+	switch m.hitTest(x, y).zone {
+	case hitMessage, hitJumpBottom:
+		return wheelMsgs
+	case hitThread:
+		return wheelThread
+	case hitRef:
+		return wheelRef
+	case hitInfo:
+		return wheelInfo
+	case hitComposer, hitAttachment, hitDivider:
+		return wheelNone
+	}
+	// Rows with no post under them (a short transcript, the toast) still belong
+	// to their pane.
+	if m.threadOpen {
+		if x0, top, w, h, _ := m.threadGeom(); inRect(x, y, x0, top, w, h) {
+			return wheelThread
+		}
+	}
+	if x0, top, w, h, _ := m.messagesGeom(); inRect(x, y, x0, top, w, h) {
+		return wheelMsgs
+	}
+	return wheelNone
+}
+
+func inRect(x, y, x0, y0, w, h int) bool {
+	return x >= x0 && x < x0+w && y >= y0 && y < y0+h
+}
+
 // wheelStep is the lines-per-event the target viewport scrolls (its
 // MouseWheelDelta), so accumulating ±wheelStep per event reproduces the
 // viewport's own per-event movement.
@@ -3754,7 +3796,7 @@ func (m *Model) wheelStep(t wheelTarget) int {
 			return v.MouseWheelDelta
 		}
 		return 0
-	case wheelDiff:
+	case wheelDiff, wheelChannels:
 		return 3
 	default:
 		return 0
@@ -3787,7 +3829,10 @@ func (m Model) handleMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 	default:
 		return m, nil // ignore horizontal wheel
 	}
-	tgt := m.wheelTargetForFocus()
+	tgt := m.wheelTargetAt(msg.X, msg.Y)
+	if tgt == wheelNone {
+		tgt = m.wheelTargetForFocus()
+	}
 	if tgt == wheelNone {
 		return m, nil
 	}
@@ -3856,6 +3901,20 @@ func (m *Model) applyWheel(t wheelTarget, delta int) {
 		m.feed.view.SetYOffset(m.feed.view.YOffset() + delta)
 	case wheelSQL:
 		m.sql.view.SetYOffset(m.sql.view.YOffset() + delta)
+	case wheelChannels:
+		// Scroll the list without moving the cursor; render keeps this offset
+		// until the cursor moves (see chanFreeActive).
+		vis := m.visibleChannels()
+		listH := m.channelListH()
+		prev := m.channelScrollOff(len(vis), listH)
+		m.chanOff = max(min(prev+delta, len(vis)-listH), 0)
+		// The pointer hasn't moved but the rows under it have.
+		if m.hover.zone == hitChannel {
+			if m.hover.idx += m.chanOff - prev; m.hover.idx >= len(vis) {
+				m.hover = hoverState{}
+			}
+		}
+		m.chanFree = chanFreeScroll{active: true, team: m.teamIdx, chIdx: m.channelIdx}
 	case wheelModal:
 		// Resolved again here rather than captured: a sheet closed mid-burst
 		// leaves the pending delta with nowhere to land, which is the right

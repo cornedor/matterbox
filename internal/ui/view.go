@@ -2032,11 +2032,13 @@ func (m *Model) renderChannelsPane(height int) string {
 
 	// scroll window
 	off := m.chanOff
-	if m.channelIdx < off {
-		off = m.channelIdx
-	}
-	if m.channelIdx >= off+listH {
-		off = m.channelIdx - listH + 1
+	if !m.chanFreeActive() {
+		if m.channelIdx < off {
+			off = m.channelIdx
+		}
+		if m.channelIdx >= off+listH {
+			off = m.channelIdx - listH + 1
+		}
 	}
 	if off < 0 {
 		off = 0

@@ -389,6 +389,11 @@ type Model struct {
 	threadScrollFree bool
 	threadFreeOffset int
 
+	// chanFree is the sidebar's wheel free-scroll: while it holds the current
+	// team + cursor, chanOff is kept as the wheel left it instead of sliding to
+	// keep the cursor row on screen. Moving the cursor or switching team ends it.
+	chanFree chanFreeScroll
+
 	// loadingOlder / loadingNewer are set while a wheel-triggered server fetch
 	// for older / newer history is in flight and cleared when it returns (see
 	// olderPostsMsg / newerPostsMsg / errMsg). They stop a fast wheel flick that

@@ -920,15 +920,7 @@ func (m Model) setSidePaneW(w int) (tea.Model, tea.Cmd) {
 // index, reproducing renderChannelsPane's scroll window so the row the user
 // sees is the one selected.
 func (m *Model) hitChannel(y int) hit {
-	bodyH := m.bodyHeight()
-	innerH := bodyH - 1
-	if innerH < 1 {
-		innerH = 1
-	}
-	listH := innerH - 1
-	if listH < 1 {
-		listH = 1
-	}
+	listH := m.channelListH()
 	vis := m.visibleChannels()
 	off := m.channelScrollOff(len(vis), listH)
 	// Header sits on the body's top row; channel rows start one below it.
@@ -1073,6 +1065,26 @@ func (m *Model) hitSQLRow(x, y int) hit {
 	return hit{zone: hitNone}
 }
 
+// channelListH is the number of channel rows the sidebar shows: the body less
+// its bottom border and header row (renderChannelsPane's math).
+func (m *Model) channelListH() int {
+	innerH := max(m.bodyHeight()-1, 1)
+	return max(innerH-1, 1)
+}
+
+// chanFreeScroll records a sidebar wheel scroll; see Model.chanFree.
+type chanFreeScroll struct {
+	active      bool
+	team, chIdx int
+}
+
+// chanFreeActive reports whether the sidebar is still free-scrolled: the wheel
+// moved it and neither the cursor nor the team has changed since.
+func (m *Model) chanFreeActive() bool {
+	f := m.chanFree
+	return f.active && f.team == m.teamIdx && f.chIdx == m.channelIdx
+}
+
 // channelScrollOff reproduces renderChannelsPane's scroll-window math: start
 // from the persisted offset, then slide just enough to keep the selected row on
 // screen. Reading the same persisted m.chanOff the last render read makes this
@@ -1083,11 +1095,13 @@ func (m *Model) channelScrollOff(visLen, listH int) int {
 	if ci > visLen-1 {
 		ci = visLen - 1
 	}
-	if ci < off {
-		off = ci
-	}
-	if ci >= off+listH {
-		off = ci - listH + 1
+	if !m.chanFreeActive() {
+		if ci < off {
+			off = ci
+		}
+		if ci >= off+listH {
+			off = ci - listH + 1
+		}
 	}
 	if off < 0 {
 		off = 0
