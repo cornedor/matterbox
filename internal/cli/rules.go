@@ -140,7 +140,7 @@ func matchSummary(m config.RuleMatchConfig) string {
 	if m.HasFile {
 		add("has_file", true)
 	}
-	for k, v := range map[string]*bool{"dm": m.DM, "from_me": m.FromMe, "from_bot": m.FromBot, "is_thread": m.IsThread, "viewing": m.Viewing} {
+	for k, v := range map[string]*bool{"dm": m.DM, "from_me": m.FromMe, "from_bot": m.FromBot, "is_thread": m.IsThread, "viewing": m.Viewing, "following": m.Following} {
 		if v != nil {
 			add(k, *v)
 		}
@@ -182,6 +182,7 @@ type probeFlags struct {
 	bot         bool
 	file        bool
 	thread      bool
+	following   bool
 	kind        string
 	emoji       string
 	reactor     string
@@ -227,6 +228,7 @@ func newRulesTestCmd() *cobra.Command {
 	fl.BoolVar(&f.bot, "bot", false, "the message comes from a bot or incoming webhook")
 	fl.BoolVar(&f.file, "file", false, "the message has an attachment")
 	fl.BoolVar(&f.thread, "thread", false, "the message is a thread reply")
+	fl.BoolVar(&f.following, "following", false, "you follow the message's thread (default: ask the server for a real post)")
 	fl.StringVar(&f.kind, "on", "", "trigger kind: message (default), edit, delete, reaction, reaction_removed, schedule")
 	fl.StringVar(&f.emoji, "emoji", "", "reaction shortcode, for --on reaction")
 	fl.StringVar(&f.reactor, "reactor", "", "who reacted, for --on reaction")
@@ -279,6 +281,7 @@ func runRulesTest(ctx context.Context, out io.Writer, postRef string, f probeFla
 		Reactor:     f.reactor,
 		HasFile:     f.file,
 		Thread:      f.thread,
+		Following:   f.following,
 		Bot:         f.bot,
 		At:          at,
 	}

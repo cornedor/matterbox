@@ -152,11 +152,11 @@ func TestReactorCondition(t *testing.T) {
 	}
 	p := &model.Post{Id: "p1", ChannelId: "c1", UserId: "u-me", Message: "hi"}
 	ev := postedEvent(t, p, map[string]string{"channel_type": "O", "sender_name": "@corne", reactorKey: "alice"})
-	if !matchPost(ev, p, m, "u-me", "corne", "", nil, nil, control.Status{}) {
+	if !matchPost(ev, p, m, "u-me", "corne", "", nil, nil, control.Status{}, nil) {
 		t.Error("reactor should match the user who reacted")
 	}
 	ev2 := postedEvent(t, p, map[string]string{"channel_type": "O", "sender_name": "@corne", reactorKey: "bob"})
-	if matchPost(ev2, p, m, "u-me", "corne", "", nil, nil, control.Status{}) {
+	if matchPost(ev2, p, m, "u-me", "corne", "", nil, nil, control.Status{}, nil) {
 		t.Error("reactor should not match somebody else")
 	}
 }

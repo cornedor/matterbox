@@ -47,6 +47,9 @@ type ProbeSpec struct {
 	// HasFile attaches a dummy file, Thread makes the post a reply, and Bot
 	// marks it as coming from an integration.
 	HasFile, Thread, Bot bool
+	// Following says you follow the post's thread. Without it a real post's
+	// thread is looked up on the server; a made-up one is not followed.
+	Following bool
 	// At is the moment the trigger fired, which a `time` condition is tested
 	// against. Zero means now.
 	At time.Time
@@ -245,6 +248,13 @@ func (e *Engine) probeTrigger(spec ProbeSpec) trigger {
 		ev.Add(reactorKey, strings.TrimPrefix(spec.Reactor, "@"))
 	}
 	ev.Add(triggerAtKey, strconv.FormatInt(at.UnixMilli(), 10))
+	if spec.Following || spec.Post == nil {
+		root := p.RootId
+		if root == "" {
+			root = p.Id
+		}
+		e.noteFollowing(ev, root, spec.Following)
+	}
 	return trigger{kind: kind, ev: ev, post: p}
 }
 

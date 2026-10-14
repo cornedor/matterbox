@@ -235,6 +235,7 @@ nobody has sent:
 | `--bot` | The post comes from a bot or incoming webhook — `from_bot: true`. |
 | `--file` | The post carries an attachment — `has_file: true`. |
 | `--thread` | The post is a thread reply — `is_thread: true`. |
+| `--following` | You follow the post's thread — `following: true`. Without it a real post's thread is looked up on the server, and a made-up one is not followed. |
 | `--on` | The trigger kind: `message` (the default), `edit`, `delete`, `reaction`, `reaction_removed`, `schedule`. |
 | `--emoji` | The reaction's shortcode. Needs `--on reaction` (or `reaction_removed`). |
 | `--reactor` | Who reacted. Needs a reaction trigger. |
@@ -449,6 +450,7 @@ Different fields are ANDed; an empty `match` matches every message.
 | `time` | A window of the local clock and/or certain weekdays: `after`, `before`, `days`. See [Office hours](#office-hours-with-time). |
 | `is_thread` | `true` = only thread replies; `false` = only root posts; unset = either. |
 | `viewing` | `true` = only when you are **looking at** the post's channel; `false` = only when you are not; unset = either. See [Not while you're reading it](#not-while-youre-reading-it). |
+| `following` | `true` = only when you **follow** the post's thread; `false` = only when you don't; unset = either. Mattermost follows you into a thread you started, replied in, or were mentioned in, until you unfollow it — the same membership its own clients notify on. With `is_thread: true` it is "a reply in a thread I follow". A root post nobody has replied to is followed by no one. Asking costs a server call for a thread you don't follow, so it is checked after every other condition. |
 | `not` | A nested `match` block that **inverts**: the rule fires only when the post does **not** satisfy it. Recursive. |
 | `frequency` | A rolling-window threshold: even when the fields match, fire only on a **burst**. See [below](#rate-limiting-with-frequency). |
 | `cooldown` | A minimum interval: even when the fields match, fire at most **once per period** (`every: 48h`), then stay quiet. Persisted across restarts. The general form of "once a day/week". See [below](#periodic-firing-with-cooldown). |

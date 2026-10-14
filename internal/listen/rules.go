@@ -124,6 +124,14 @@ type MatchSpec struct {
 	// daemon on another machine) means you aren't viewing anything, so a
 	// `viewing: false` rule keeps firing exactly as it did before.
 	Viewing *bool
+	// Following, when non-nil, requires that you do (true) or don't (false)
+	// follow the post's thread — the per-thread membership Mattermost's
+	// collapsed reply threads notify on. You follow a thread you started, replied
+	// in, or were mentioned in, until you unfollow it; a root post nobody has
+	// replied to yet is followed by no one. `following: true` with `is_thread:
+	// true` is "a reply in a thread I follow". Answering it may cost a server
+	// round-trip, so it is evaluated after every other field condition.
+	Following *bool
 	// Emoji matches a reaction trigger's shortcode (no colons) as a
 	// case-insensitive glob or exact name; the trigger matches when ANY entry
 	// does. Only the reaction kinds carry an emoji, so it never matches a
@@ -331,6 +339,7 @@ type Match struct {
 	hasFile     bool
 	isThread    *bool
 	viewing     *bool
+	following   *bool
 	emojiRes    []*regexp.Regexp
 	reactors    []string
 	chanTypes   []string // Mattermost type letters: O, P, D, G
@@ -639,6 +648,7 @@ func compileMatch(s MatchSpec) (Match, error) {
 		hasFile:     s.HasFile,
 		isThread:    s.IsThread,
 		viewing:     s.Viewing,
+		following:   s.Following,
 		reactors:    s.Reactors,
 		fromBot:     s.FromBot,
 	}
@@ -1315,7 +1325,8 @@ func (e *Engine) matchesWhy(ev *model.WebSocketEvent, p *model.Post, m Match, st
 		}
 		return false, "mention/dm"
 	}
-	return matchPostWhy(ev, p, m, meID, meName, e.teamName(ev), state, render, e.tuiStatus())
+	follows := func() bool { return e.threadFollowing(ev, p) }
+	return matchPostWhy(ev, p, m, meID, meName, e.teamName(ev), state, render, e.tuiStatus(), follows)
 }
 
 // teamName resolves an event's team id to its URL name (slug) for the team
@@ -1336,16 +1347,18 @@ func (e *Engine) teamName(ev *model.WebSocketEvent) string {
 // id and username for the Mention check, the ledger snapshot for `state`
 // conditions, plus tui — the TUI's answer to "are you looking at this?",
 // resolved once per post by the caller (see Engine.tuiStatus) and passed down
-// so a nested not: evaluates `viewing` against the same reading.
-func matchPost(ev *model.WebSocketEvent, p *model.Post, m Match, meID, meName, teamName string, state map[string]string, render func(*template.Template) string, tui control.Status) bool {
-	ok, _ := matchPostWhy(ev, p, m, meID, meName, teamName, state, render, tui)
+// so a nested not: evaluates `viewing` against the same reading. follows answers
+// the `following` condition; it may ask the server, so it is called only when
+// every cheaper condition has passed. nil means "not following".
+func matchPost(ev *model.WebSocketEvent, p *model.Post, m Match, meID, meName, teamName string, state map[string]string, render func(*template.Template) string, tui control.Status, follows func() bool) bool {
+	ok, _ := matchPostWhy(ev, p, m, meID, meName, teamName, state, render, tui, follows)
 	return ok
 }
 
 // matchPostWhy is matchPost plus the name of the first failing condition (""
 // when everything held), so a rule that doesn't fire can say which condition
 // stopped it instead of leaving the user to bisect their config.
-func matchPostWhy(ev *model.WebSocketEvent, p *model.Post, m Match, meID, meName, teamName string, state map[string]string, render func(*template.Template) string, tui control.Status) (bool, string) {
+func matchPostWhy(ev *model.WebSocketEvent, p *model.Post, m Match, meID, meName, teamName string, state map[string]string, render func(*template.Template) string, tui control.Status, follows func() bool) (bool, string) {
 	isDM := eventStr(ev, "channel_type") == string(model.ChannelTypeDirect)
 	if m.dm != nil && *m.dm != isDM {
 		return false, "dm"
@@ -1414,8 +1427,13 @@ func matchPostWhy(ev *model.WebSocketEvent, p *model.Post, m Match, meID, meName
 			return false, "state:" + c.renderedKey(render)
 		}
 	}
+	// Last of the field conditions: it is the only one that can cost a server
+	// round-trip, which a post already rejected above shouldn't pay.
+	if m.following != nil && *m.following != (follows != nil && follows()) {
+		return false, "following"
+	}
 	// A nested not: matches the whole post only when the sub-match does not.
-	if m.not != nil && matchPost(ev, p, *m.not, meID, meName, teamName, state, render, tui) {
+	if m.not != nil && matchPost(ev, p, *m.not, meID, meName, teamName, state, render, tui, follows) {
 		return false, "not"
 	}
 	return true, ""

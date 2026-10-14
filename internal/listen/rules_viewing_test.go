@@ -82,7 +82,7 @@ func TestMatchViewing(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: compile: %v", c.name, err)
 		}
-		if got := matchPost(ev, p, m, "", "", "", nil, nil, c.tui); got != c.want {
+		if got := matchPost(ev, p, m, "", "", "", nil, nil, c.tui, nil); got != c.want {
 			t.Errorf("%s: matched %t, want %t", c.name, got, c.want)
 		}
 	}
@@ -96,10 +96,10 @@ func TestMatchViewingInsideNot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	if matchPost(ev, p, m, "", "", "", nil, nil, control.Status{ChannelID: "c1", Focused: true}) {
+	if matchPost(ev, p, m, "", "", "", nil, nil, control.Status{ChannelID: "c1", Focused: true}, nil) {
 		t.Error("not: {viewing: true} must not match while the channel is being read")
 	}
-	if !matchPost(ev, p, m, "", "", "", nil, nil, control.Status{}) {
+	if !matchPost(ev, p, m, "", "", "", nil, nil, control.Status{}, nil) {
 		t.Error("not: {viewing: true} must match when nothing is being read")
 	}
 }
