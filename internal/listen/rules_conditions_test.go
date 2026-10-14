@@ -46,7 +46,7 @@ func TestMessageMatchesAttachments(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			ev := postedEvent(t, c.post, map[string]string{"channel_type": "O", "sender_name": "@jira"})
-			if got := matchPost(ev, c.post, m, "u-me", "corne", "", nil, nil, control.Status{}); got != c.want {
+			if got := matchPost(ev, c.post, m, "u-me", "corne", "", nil, nil, control.Status{}, nil); got != c.want {
 				t.Errorf("matchPost = %v, want %v (text %q)", got, c.want, matchText(c.post))
 			}
 		})
@@ -93,7 +93,7 @@ func TestFromBot(t *testing.T) {
 				t.Fatalf("compileMatch: %v", err)
 			}
 			ev := postedEvent(t, c.post, map[string]string{"channel_type": "O"})
-			if got := matchPost(ev, c.post, m, "u-me", "corne", "", nil, nil, control.Status{}); got != c.want {
+			if got := matchPost(ev, c.post, m, "u-me", "corne", "", nil, nil, control.Status{}, nil); got != c.want {
 				t.Errorf("matchPost = %v, want %v", got, c.want)
 			}
 		})
@@ -110,7 +110,7 @@ func TestChannelType(t *testing.T) {
 	p := &model.Post{Id: "p1", ChannelId: "c1", Message: "hi"}
 	for letter, want := range map[string]bool{"P": true, "G": true, "O": false, "D": false} {
 		ev := postedEvent(t, p, map[string]string{"channel_type": letter})
-		if got := matchPost(ev, p, m, "", "", "", nil, nil, control.Status{}); got != want {
+		if got := matchPost(ev, p, m, "", "", "", nil, nil, control.Status{}, nil); got != want {
 			t.Errorf("channel_type %s = %v, want %v", letter, got, want)
 		}
 	}
@@ -151,7 +151,7 @@ func TestTimeWindow(t *testing.T) {
 			}
 			p := &model.Post{Id: "p1", ChannelId: "c1", Message: "hi", CreateAt: c.when.UnixMilli()}
 			ev := postedEvent(t, p, map[string]string{"channel_type": "O"})
-			if got := matchPost(ev, p, m, "", "", "", nil, nil, control.Status{}); got != c.want {
+			if got := matchPost(ev, p, m, "", "", "", nil, nil, control.Status{}, nil); got != c.want {
 				t.Errorf("matchPost = %v, want %v", got, c.want)
 			}
 		})
@@ -182,7 +182,7 @@ func TestTriggerTimeBeatsPostTime(t *testing.T) {
 		"channel_type": "O",
 		triggerAtKey:   strconv.FormatInt(reactedAt.UnixMilli(), 10),
 	})
-	if !matchPost(ev, p, m, "", "", "", nil, nil, control.Status{}) {
+	if !matchPost(ev, p, m, "", "", "", nil, nil, control.Status{}, nil) {
 		t.Error("the window should be tested against the trigger time, not the post time")
 	}
 }

@@ -290,6 +290,7 @@ func matchSpec(m config.RuleMatchConfig) listen.MatchSpec {
 		HasFile:      m.HasFile,
 		IsThread:     m.IsThread,
 		Viewing:      m.Viewing,
+		Following:    m.Following,
 		Emoji:        []string(m.Emoji),
 		Reactors:     []string(m.Reactor),
 		ChannelTypes: []string(m.ChannelType),

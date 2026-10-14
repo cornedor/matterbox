@@ -518,6 +518,10 @@ type RuleMatchConfig struct {
 	// — or a daemon on another host — you are viewing nothing, so such a rule
 	// behaves exactly as it did before.
 	Viewing *bool `yaml:"viewing,omitempty"`
+	// Following, when set, requires that you do (true) or don't (false) follow
+	// the post's thread — the membership Mattermost's collapsed reply threads
+	// notify on. With is_thread: true it is "a reply in a thread I follow".
+	Following *bool `yaml:"following,omitempty"`
 	// Emoji matches a reaction trigger's shortcode (no colons), as a
 	// case-insensitive glob or exact name. Accepts a single value or a list
 	// (match any). Needs `on: reaction`.
@@ -1536,6 +1540,7 @@ func writeConfig(p string, cfg *Config) error {
 		"#             reach templates as .match), mention (you were @named), dm,\n" +
 		"#             from_me (your own posts; set false to skip them), from_bot,\n" +
 		"#             channel_type (public/private/dm/group), has_file, is_thread,\n" +
+		"#             following (you follow the post's thread),\n" +
 		"#             emoji + reactor (reaction triggers), time: { after, before,\n" +
 		"#             days } (a local-clock window), viewing (the\n" +
 		"#             channel is open + focused in your TUI — `viewing: false`\n" +

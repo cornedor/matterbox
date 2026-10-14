@@ -719,6 +719,10 @@
           "type": "boolean",
           "description": "When set, require that you are (true) or are not (false) looking at the post's channel \u2014 a matterbox TUI on this machine has it open and its terminal has focus. `viewing: false` keeps a notification rule quiet about the conversation you're already reading."
         },
+        "following": {
+          "type": "boolean",
+          "description": "When set, require that you do (true) or don't (false) follow the post's thread — the membership Mattermost's collapsed reply threads notify on. With `is_thread: true` it is \"a reply in a thread I follow\"."
+        },
         "not": {
           "description": "Inverts a nested match: the rule fires only when the post does NOT satisfy it.",
           "$ref": "#/definitions/ruleMatch"

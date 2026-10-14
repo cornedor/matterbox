@@ -1120,6 +1120,10 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 
+	case threadFollowMsg:
+		m.applyThreadFollow(msg)
+		return m, nil
+
 	case threadLoadedMsg:
 		if !m.threadOpen || msg.rootID != m.threadRootID {
 			return m, nil // stale (closed or switched)
@@ -1608,6 +1612,9 @@ func (m *Model) handleWSEvent(ev *model.WebSocketEvent) tea.Cmd {
 	case model.WebsocketEventDraftDeleted:
 		m.applyDraftDeleted(ev)
 		return nil
+	case model.WebsocketEventThreadFollowChanged:
+		m.applyThreadFollowChanged(ev)
+		return nil
 	}
 	return nil
 }
@@ -1767,6 +1774,11 @@ func (m *Model) applyPosted(ev *model.WebSocketEvent) tea.Cmd {
 	if m.isThreadPost(p) {
 		m.appendThreadPost(p)
 		m.renderThread()
+		// A reply can follow you into the thread — your own, or one that
+		// mentions you — and the server announces neither, so ask again.
+		if p.RootId != "" {
+			cmds = append(cmds, m.fetchThreadFollow())
+		}
 	}
 
 	return tea.Batch(cmds...)
@@ -4744,6 +4756,7 @@ func (m *Model) showThread(channelID, rootID, selectID, parentID string, posts [
 	m.threadOpen = true
 	m.threadRootID = rootID
 	m.threadChannelID = channelID
+	m.threadFollowing, m.threadFollowKnown = false, false
 	// A different thread: whatever the composer was answering is no longer on
 	// screen, so it is replaced by whatever this open aims at (usually nothing).
 	m.replyParentID = parentID
@@ -4768,7 +4781,7 @@ func (m *Model) showThread(channelID, rootID, selectID, parentID string, posts [
 	m.resizeInput()
 	m.renderMessages()
 	m.renderThread()
-	return tea.Batch(m.fetchThread(rootID), draftCmd)
+	return tea.Batch(m.fetchThread(rootID), m.fetchThreadFollow(), draftCmd)
 }
 
 // closeThread tears down the sidebar and returns focus to the messages pane.
@@ -4795,6 +4808,7 @@ func (m *Model) closeThread() tea.Cmd {
 	m.threadPosts = nil
 	m.threadIdx = 0
 	m.threadLoading = false
+	m.threadFollowing, m.threadFollowKnown = false, false
 	if m.focus == focusThread {
 		m.focus = focusMessages
 	}

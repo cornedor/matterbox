@@ -911,8 +911,8 @@ channel name, which is never sent.
 `mark_unread_post`, `message_stats`, `rejoin_game`, `saved_messages`,
 `sidebar_all_channels`, `sidebar_unread_channels`, `start_group_dm`,
 `status_away`, `status_custom_clear`, `status_custom_set`, `status_dnd`,
-`status_offline`, `status_online`, `summarize`, `typing_animation`,
-`view_profile`
+`status_offline`, `status_online`, `summarize`, `thread_follow`,
+`thread_unfollow`, `typing_animation`, `view_profile`
 
 ### Slash commands
 
@@ -966,7 +966,8 @@ never derived from data.
 
 `channels`, `decode`, `digest`, `embed`, `github`, `keys`, `listen`, `login`,
 `mark-read`, `open`, `react`, `read`, `register-handler`, `reply`, `rules`,
-`search`, `send`, `unread`, `upgrade`, `url-handler`, `welcome`, `whoami`
+`search`, `send`, `thread`, `unread`, `upgrade`, `url-handler`, `welcome`,
+`whoami`
 
 ## Checking for yourself
 

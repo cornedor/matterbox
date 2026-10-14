@@ -218,6 +218,14 @@ type Engine struct {
 	tuiCached      control.Status
 	tuiAt          time.Time
 
+	// followed caches the threads known to be followed, for the `following`
+	// condition; notFollowedEv/Root remember the last "no" for the one trigger
+	// it was asked for. See threadFollowing.
+	followMu        sync.Mutex
+	followed        map[string]bool
+	notFollowedEv   *model.WebSocketEvent
+	notFollowedRoot string
+
 	// now is the engine's clock, overridable in tests so the frequency window
 	// can be driven deterministically. nil means time.Now (see clock).
 	now func() time.Time
@@ -329,6 +337,7 @@ func New(client *mm.Client, st *store.Store, ch *chat.Client, tg *telegram.Clien
 		muted:       map[string]bool{},
 		teams:       map[string]string{},
 		freqWindows: map[string][]time.Time{},
+		followed:    map[string]bool{},
 	}
 	if start, end, ok := parseQuietHours(opts.QuietHours); ok {
 		e.quietStart, e.quietEnd, e.quietOn = start, end, true
@@ -506,6 +515,7 @@ func (e *Engine) Run(ctx context.Context) error {
 		connectedAt := time.Now()
 		e.log.Printf("connected (%s)", e.opts.ServerURL)
 		go e.refreshMuted(ctx) // pick up mute changes made while we were away
+		e.resetFollowed()      // and unfollows, which only an event announces
 		e.refreshStatus(ctx)   // same goroutine as consume — myStatus is unmutexed
 		e.backfillCache(ctx)   // store posts that arrived while disconnected
 		e.catchUp(ctx)         // notify mentions that arrived while disconnected
@@ -625,6 +635,8 @@ func (e *Engine) handle(ctx context.Context, ev *model.WebSocketEvent) {
 		e.applyStatusChange(ev)
 	case model.WebsocketEventChannelMemberUpdated:
 		e.applyMemberUpdated(ev)
+	case model.WebsocketEventThreadFollowChanged, model.WebsocketEventThreadUpdated:
+		e.applyFollowEvent(ev)
 	}
 }
 

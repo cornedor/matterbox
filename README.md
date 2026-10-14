@@ -111,6 +111,7 @@ and scripting:
 | `matterbox send <channel> [message...]` | Post a message, with attachments |
 | `matterbox reply <message-id> [message...]` | Reply in a message's thread |
 | `matterbox react <message-id> <emoji> [emoji...]` | React to a message |
+| `matterbox thread status\|follow\|unfollow <message-id>` | Check, follow or unfollow a message's thread |
 | `matterbox read [channel]` | Print recent messages |
 | `matterbox unread` | List unread messages, grouped by channel |
 | `matterbox mark-read <channel>...` | Clear unread on one or more channels |
