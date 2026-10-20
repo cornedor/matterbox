@@ -100,8 +100,11 @@ func (m Model) handleSwitcherKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.notePickerAbandoned("global:command-picker", m.tel.pickerAt())
 		m.closeSwitcher()
 		return m, nil
+	case msg.String() == "tab" && m.inUserArgMode():
+		m.acceptUserArg()
+		return m, nil
 	case key.Matches(msg, m.keys.InputUp):
-		if m.inCommandArgMode() {
+		if m.inCommandArgMode() && !m.inUserArgMode() {
 			// Captive arg-prompt: no list to navigate.
 			return m, nil
 		}
@@ -110,11 +113,13 @@ func (m Model) handleSwitcherKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case key.Matches(msg, m.keys.InputDown):
-		if m.inCommandArgMode() {
+		if m.inCommandArgMode() && !m.inUserArgMode() {
 			return m, nil
 		}
 		var max int
-		if m.inCommandMode() {
+		if m.inUserArgMode() {
+			max = len(m.userArgMatches())
+		} else if m.inCommandMode() {
 			max = len(m.commandResults())
 		} else {
 			max = len(m.switcherRows())
@@ -125,8 +130,14 @@ func (m Model) handleSwitcherKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Matches(msg, m.keys.OpenChannel):
 		if m.inCommandArgMode() {
+			if m.inUserArgMode() {
+				// Enter completes a half-typed name; on an empty token it runs.
+				if _, token := userArgToken(m.switcher.Value()); token != "" && m.acceptUserArg() {
+					return m, nil
+				}
+			}
 			cmd := *m.switcherCmdPending
-			arg := m.switcher.Value()
+			arg := strings.TrimRight(m.switcher.Value(), ", ")
 			m.closeSwitcher()
 			telemetry.Palette(cmd.tid)
 			return m, cmd.run(&m, arg)
@@ -201,13 +212,30 @@ func (m Model) handleSwitcherKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 func (m *Model) switcherUserSearchTick() tea.Cmd {
 	m.switcherUsers = nil
 	m.switcherUserSeq++
-	if m.inCommandMode() || strings.TrimSpace(m.switcher.Value()) == "" {
+	if m.switcherUserQuery() == "" {
 		return nil
 	}
 	seq := m.switcherUserSeq
 	return tea.Tick(switcherUserDebounce, func(_ time.Time) tea.Msg {
 		return switcherUserDebounceMsg{seq: seq}
 	})
+}
+
+// switcherUserQuery is the directory search for the current input: the
+// partial name in a username arg prompt, the whole query in channel mode, and
+// "" (no search) for commands.
+func (m *Model) switcherUserQuery() string {
+	if m.inCommandArgMode() {
+		if !m.inUserArgMode() {
+			return ""
+		}
+		_, token := userArgToken(m.switcher.Value())
+		return token
+	}
+	if m.inCommandMode() {
+		return ""
+	}
+	return strings.TrimSpace(m.switcher.Value())
 }
 
 // fetchSwitcherUsers searches the whole directory (not just channels we
@@ -642,7 +670,12 @@ func (m *Model) renderSwitcherArgPrompt(w, inner int) string {
 		title,
 		m.switcher.View(),
 		dim.Render(strings.Repeat("─", inner)),
-		dim.Render("  enter to run · esc to go back"),
+	}
+	if m.inUserArgMode() {
+		rows = append(rows, m.renderUserArgRows(inner)...)
+		rows = append(rows, dim.Render("  enter/tab to add · enter on empty to run · esc back"))
+	} else {
+		rows = append(rows, dim.Render("  enter to run · esc to go back"))
 	}
 	return lipgloss.NewStyle().
 		Border(border).
