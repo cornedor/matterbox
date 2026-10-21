@@ -24,6 +24,8 @@ type switcherCommand struct {
 	desc           string
 	argPrompt      string // non-empty → switcher swaps to a captive arg input
 	argPlaceholder string
+	// userArgs makes the arg prompt complete "@a, @b" usernames as you type.
+	userArgs bool
 	// run is invoked after the argument is collected. arg == "" when the
 	// command has no argPrompt. The command may mutate the model via the
 	// pointer and return a Cmd for any async work.
@@ -60,7 +62,8 @@ func builtinCommands() []switcherCommand {
 			tid:            "start_group_dm",
 			desc:           "open (creating if new) a group DM with the people you name",
 			argPrompt:      "users: ",
-			argPlaceholder: "@alice, @bob  (2–7 people)",
+			argPlaceholder: "type a name  (2–7 people)",
+			userArgs:       true,
 			run:            runStartGroupDM,
 		},
 		{

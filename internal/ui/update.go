@@ -1258,7 +1258,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.switcherMode || msg.seq != m.switcherUserSeq {
 			return m, nil
 		}
-		return m, m.fetchSwitcherUsers(strings.TrimSpace(m.switcher.Value()), msg.seq)
+		return m, m.fetchSwitcherUsers(m.switcherUserQuery(), msg.seq)
 
 	case switcherUsersMsg:
 		if !m.switcherMode || msg.seq != m.switcherUserSeq {

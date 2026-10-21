@@ -43,7 +43,8 @@ func (m Model) addMembersCommand() (switcherCommand, bool) {
 		name:           "Add members to " + m.channelLabel(c),
 		desc:           "add people to this channel by username",
 		argPrompt:      "users: ",
-		argPlaceholder: "@alice, @bob",
+		argPlaceholder: "type a name",
+		userArgs:       true,
 		run:            runAddChannelMembers(c.Id),
 	}, true
 }
