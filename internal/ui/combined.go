@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"slices"
 	"sort"
 	"strings"
 
@@ -12,11 +13,12 @@ import (
 
 // A combined channel is a local, read-only sidebar entry (combined_channels in
 // config.yaml) that merges the DMs with a set of users — typically bots — into
-// one timeline. The server never sees it: its synthetic row sits at the top of
-// the DM bucket, and everything that would touch the server fans out to the
-// member DMs instead — loading, paging, live posts, badges and mark-read. Posts
-// keep their own ChannelId, so reactions, edits and thread replies go to the
-// DM the message came from; only a top-level send has no target (see
+// one timeline, together with any configured channels from real teams. The
+// server never sees it: its synthetic row sits at the top of the DM bucket, and
+// everything that would touch the server fans out to the member channels
+// instead — loading, paging, live posts, badges and mark-read. Posts keep their
+// own ChannelId, so reactions, edits and thread replies go to the channel the
+// message came from; only a top-level send has no target (see
 // combinedSendBlocked).
 
 // combinedIDPrefix marks a synthetic combined-channel id. Real ids are 26
@@ -29,18 +31,51 @@ const combinedChannelType model.ChannelType = "combined"
 
 type combinedChannel struct {
 	ch        *model.Channel
-	usernames map[string]bool // lowercased, no leading @
-	// memberIDs is the resolved set of DM channel ids, cached against the
-	// inputs it was derived from: the DM bucket's length and the number of
-	// known usernames. Both only grow between bucket rebuilds (which reset
-	// it), so a change in either is what can add a member.
+	usernames map[string]bool  // lowercased, no leading @
+	channels  []teamChannelRef // channels from real teams
+	// memberIDs is the resolved set of channel ids, cached against the inputs
+	// it was derived from: the DM bucket's length, the number of known
+	// usernames and the referenced team buckets' total length. Joining or
+	// leaving a channel, or a new DM or username, changes one of them.
 	memberIDs   []string
-	resolvedFor [2]int
+	resolvedFor [3]int
 	resolved    bool
 }
 
+// teamChannelRef names a channel of a real team by URL names, lowercased.
+type teamChannelRef struct{ team, channel string }
+
+// parseTeamChannelRef reads "team/channel"; ok is false for anything else.
+func parseTeamChannelRef(s string) (ref teamChannelRef, ok bool) {
+	team, channel, ok := strings.Cut(strings.ToLower(strings.TrimSpace(s)), "/")
+	if !ok || team == "" || channel == "" {
+		return teamChannelRef{}, false
+	}
+	return teamChannelRef{team: team, channel: channel}, true
+}
+
+// teamBucket returns the channels we're in on the team named team.
+func (m *Model) teamBucket(team string) []*model.Channel {
+	for _, t := range m.teams {
+		if strings.EqualFold(t.Name, team) {
+			return m.channels[t.Id]
+		}
+	}
+	return nil
+}
+
+// teamChannel finds the channel ref points at among the ones we're in.
+func (m *Model) teamChannel(ref teamChannelRef) *model.Channel {
+	for _, c := range m.teamBucket(ref.team) {
+		if strings.EqualFold(c.Name, ref.channel) {
+			return c
+		}
+	}
+	return nil
+}
+
 // newCombinedChannels builds the synthetic rows from config, skipping entries
-// without a name or members and later duplicates of a name.
+// without a name, without members and channels, and later duplicates of a name.
 func newCombinedChannels(cfgs []config.CombinedChannelConfig) []*combinedChannel {
 	var out []*combinedChannel
 	seen := map[string]bool{}
@@ -55,7 +90,13 @@ func newCombinedChannels(cfgs []config.CombinedChannelConfig) []*combinedChannel
 				users[u] = true
 			}
 		}
-		if len(users) == 0 {
+		var refs []teamChannelRef
+		for _, ch := range c.Channels {
+			if ref, ok := parseTeamChannelRef(ch); ok {
+				refs = append(refs, ref)
+			}
+		}
+		if len(users) == 0 && len(refs) == 0 {
 			continue
 		}
 		seen[name] = true
@@ -67,6 +108,7 @@ func newCombinedChannels(cfgs []config.CombinedChannelConfig) []*combinedChannel
 				Type:        combinedChannelType,
 			},
 			usernames: users,
+			channels:  refs,
 		})
 	}
 	return out
@@ -88,22 +130,32 @@ func (m *Model) combinedByID(id string) *combinedChannel {
 	return nil
 }
 
-// combinedMemberIDs returns the DM channel ids a combined channel merges, or
-// nil when id isn't a combined channel. A member whose DM doesn't exist yet,
-// or whose username isn't resolved yet, is simply absent until it is.
+// combinedMemberIDs returns the channel ids a combined channel merges, or nil
+// when id isn't a combined channel. A member whose DM doesn't exist yet, whose
+// username isn't resolved yet, or a channel we aren't in, is simply absent
+// until it is.
 func (m *Model) combinedMemberIDs(id string) []string {
 	cc := m.combinedByID(id)
 	if cc == nil {
 		return nil
 	}
 	dms := m.channels[dmTeamID]
-	key := [2]int{len(dms), len(m.userNames)}
+	teamLen := 0
+	for _, ref := range cc.channels {
+		teamLen += len(m.teamBucket(ref.team))
+	}
+	key := [3]int{len(dms), len(m.userNames), teamLen}
 	if cc.resolved && cc.resolvedFor == key {
 		return cc.memberIDs
 	}
 	cc.memberIDs = cc.memberIDs[:0]
 	for _, c := range dms {
 		if name := m.userNames[m.dmPartnerID(c)]; name != "" && cc.usernames[strings.ToLower(name)] {
+			cc.memberIDs = append(cc.memberIDs, c.Id)
+		}
+	}
+	for _, ref := range cc.channels {
+		if c := m.teamChannel(ref); c != nil && !slices.Contains(cc.memberIDs, c.Id) {
 			cc.memberIDs = append(cc.memberIDs, c.Id)
 		}
 	}
