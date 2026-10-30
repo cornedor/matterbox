@@ -102,7 +102,7 @@ func (m *Model) applyLocalUnread(p *model.Post) {
 		break
 	}
 	m.unread[channelID] = unread
-	if channelID != m.openChannelID {
+	if !m.openCovers(channelID) {
 		return
 	}
 	// Draw the divider above the post the user just unread, and stop the dwell
@@ -120,5 +120,13 @@ func (m *Model) applyLocalUnread(p *model.Post) {
 // stay that way. The hold is dropped when the channel is next entered (see
 // enterChannel), so leaving and coming back reads it normally.
 func (m *Model) markReadHeld(channelID string) bool {
-	return m.markUnreadHold != "" && m.markUnreadHold == channelID
+	if m.markUnreadHold == "" {
+		return false
+	}
+	// A combined channel is held while any member DM is: marking the combined
+	// one read would mark that member read too.
+	if isCombinedID(channelID) && channelID == m.openChannelID {
+		return m.openCovers(m.markUnreadHold)
+	}
+	return m.markUnreadHold == channelID
 }

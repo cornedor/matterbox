@@ -37,7 +37,7 @@ func (m *Model) maybeSendTyping(now time.Time) tea.Cmd {
 	} else {
 		channelID = m.openChannelID
 	}
-	if channelID == "" {
+	if channelID == "" || isCombinedID(channelID) {
 		return nil
 	}
 	if now.Before(m.nextTypingSend) {

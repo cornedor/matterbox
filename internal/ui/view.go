@@ -2057,8 +2057,7 @@ func (m *Model) renderChannelsPane(height int) string {
 	rows := []string{header}
 	for i := off; i < len(vis) && len(rows) <= listH; i++ {
 		ch := vis[i]
-		mentionN := m.mentions[ch.Id]
-		unreadN := m.unread[ch.Id]
+		unreadN, mentionN := m.channelBadges(ch)
 		var suffix, badgeText string
 		var badgeStyle lipgloss.Style
 		switch {

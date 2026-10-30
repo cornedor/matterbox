@@ -111,6 +111,10 @@ func (m *Model) raiseChannelInfo() tea.Cmd {
 		m.status = "no channel open"
 		return nil
 	}
+	if isCombined(c) {
+		m.status = "a combined channel has no channel info"
+		return nil
+	}
 	// A second press closes the panel — unless it's showing a profile, in
 	// which case the channel-info key means "show me the channel instead".
 	if m.infoOpen && m.infoChannelID == c.Id && m.infoMode != infoModeProfile {

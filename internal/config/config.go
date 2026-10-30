@@ -125,6 +125,12 @@ type Config struct {
 	// startup state: M on the Feed tab flips it for the session. See
 	// internal/ui/feed.go.
 	FeedShowMuted *bool `yaml:"feed_show_muted"`
+	// CombinedChannels are local, read-only sidebar entries pinned to the top of
+	// the DMs tab, each merging the DMs with the listed users (typically bots)
+	// into one timeline. Reading one marks its member DMs read; replies go to a
+	// thread in the message's own DM. Never sent to the server. See
+	// internal/ui/combined.go.
+	CombinedChannels []CombinedChannelConfig `yaml:"combined_channels"`
 	// KaomojiOptions are extra entries for the TUI's /kaomoji picker, listed
 	// after the built-in set.
 	KaomojiOptions []string `yaml:"kaomoji_options"`
@@ -815,6 +821,13 @@ type SearchConfig struct {
 	// unless an older message is much more relevant. Lower = stronger recency
 	// bias; raise it to make age matter less. Defaults to 90.
 	RecencyHalfLifeDays float64 `yaml:"recency_half_life_days"`
+}
+
+// CombinedChannelConfig is one combined channel: a sidebar name and the
+// usernames (with or without a leading @) whose DMs it merges.
+type CombinedChannelConfig struct {
+	Name    string   `yaml:"name"`
+	Members []string `yaml:"members"`
 }
 
 // SummaryConfig holds the settings for the message-summary command. All

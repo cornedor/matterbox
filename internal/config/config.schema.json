@@ -106,6 +106,29 @@
       "description": "Include muted channels in the unread feed and its tab badge (default false \u2014 muting opts a channel out of the feed). Only the startup state: M on the Feed tab toggles it for the session.",
       "default": false
     },
+    "combined_channels": {
+      "type": "array",
+      "description": "Local read-only channels pinned to the top of the DMs tab, each merging the DMs with the listed users (e.g. bots) into one timeline. Reading one marks its member DMs read; replies go to a thread in the message's own DM.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "members"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Sidebar label of the combined channel."
+          },
+          "members": {
+            "type": "array",
+            "description": "Usernames (with or without @) whose DMs are merged.",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "default": []
+    },
     "kaomoji_options": {
       "type": "array",
       "description": "Extra entries for the TUI's /kaomoji picker, listed after the built-in set.",

@@ -126,7 +126,7 @@ func (m *Model) composerDraftTarget() (channelID, rootID string, tracks bool) {
 	if m.threadOpen {
 		return m.threadChannelID, m.threadRootID, m.threadChannelID != "" && m.threadRootID != ""
 	}
-	return m.openChannelID, "", m.openChannelID != ""
+	return m.openChannelID, "", m.openChannelID != "" && !isCombinedID(m.openChannelID)
 }
 
 // stashComposerDraft persists the composer's current text under whatever draft
@@ -173,7 +173,7 @@ func (m *Model) swapChannelDraft(newChannelID string) tea.Cmd {
 		return nil
 	}
 	var cmd tea.Cmd
-	if old != "" {
+	if old != "" && !isCombinedID(old) {
 		cmd = m.stashDraft(old, m.input.Value())
 	}
 	m.setComposerDraft(m.drafts[newChannelID])

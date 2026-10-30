@@ -182,6 +182,12 @@ func (m Model) handleSwitcherKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// action, so land focus in the composer. (Unlike enter on the sidebar,
 		// which stays in the channel list so navigation keys keep working.)
 		m.focus = focusInput
+		if isCombined(ch) {
+			// Nothing to type into at the top level; land on the transcript,
+			// and let the warm-cache load fan out over the member DMs.
+			m.focus = focusMessages
+			return m, tea.Batch(m.openChannelLoadCmd(ch.Id, "switcher"), m.bumpChannelStat(ch.Id))
+		}
 		// This path bypasses openChannelLoadCmd; route the switch through
 		// enterChannel so openChannelID and the mark-read dwell stay in lock-step.
 		draftCmd := m.enterChannel(ch.Id, "switcher")
@@ -356,10 +362,11 @@ func (m *Model) switcherResults() []*model.Channel {
 		return a.lowerLabel < b.lowerLabel
 	}
 	tier := func(ch *model.Channel) int {
+		unread, mentions := m.channelBadges(ch)
 		switch {
-		case m.mentions[ch.Id] > 0:
+		case mentions > 0:
 			return 0
-		case m.unread[ch.Id] > 0:
+		case unread > 0:
 			return 1
 		default:
 			return 2
@@ -449,8 +456,11 @@ func fuzzyScore(haystack, needle string) (band, score int, ok bool) {
 // lives, shown dim next to the match. "DM" for direct/group, the team's
 // display name otherwise.
 func (m *Model) teamHintForChannel(ch *model.Channel) string {
-	if ch.Type == model.ChannelTypeDirect || ch.Type == model.ChannelTypeGroup {
+	switch ch.Type {
+	case model.ChannelTypeDirect, model.ChannelTypeGroup:
 		return "DM"
+	case combinedChannelType:
+		return "combined"
 	}
 	for _, t := range m.teams {
 		if t.Id == ch.TeamId {
@@ -510,8 +520,7 @@ func (m *Model) renderSwitcher(maxH int) string {
 				ch := row.ch
 				label = m.channelLabel(ch)
 				team = m.teamHintForChannel(ch)
-				mentionN = m.mentions[ch.Id]
-				unreadN = m.unread[ch.Id]
+				unreadN, mentionN = m.channelBadges(ch)
 				// The sidebar hides these rows; the picker keeps them (it is
 				// how you reach an old DM) and says why they are gone.
 				dead = m.userDeactivated(m.dmPartnerID(ch))

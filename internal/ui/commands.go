@@ -249,7 +249,7 @@ func runCopyMessageLink(m *Model, _ string) tea.Cmd {
 // runCopyChannelLink copies a web link to the currently open channel.
 func runCopyChannelLink(m *Model, _ string) tea.Cmd {
 	c := m.findChannel(m.openChannelID)
-	if c == nil {
+	if c == nil || isCombined(c) {
 		m.status = "no channel open"
 		return nil
 	}
@@ -456,7 +456,7 @@ func runClearCustomStatus(m *Model, _ string) tea.Cmd {
 // current mute state.
 func (m Model) muteCommand() (switcherCommand, bool) {
 	c := m.findChannel(m.openChannelID)
-	if c == nil {
+	if c == nil || isCombined(c) {
 		return switcherCommand{}, false
 	}
 	label := m.channelLabel(c)
@@ -725,7 +725,7 @@ func (m *Model) setSidebarUnreadOnly(on bool) tea.Cmd {
 // focused channel (i.e. the one open when ctrl+k was pressed).
 func (m Model) indexTargetChannel() (string, string) {
 	c := m.findChannel(m.openChannelID)
-	if c == nil {
+	if c == nil || isCombined(c) {
 		return "", ""
 	}
 	return c.Id, m.channelLabel(c)

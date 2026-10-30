@@ -247,9 +247,10 @@ func (m *Model) channelsFingerprint(vis []*model.Channel, off, listH, innerH int
 		ch := vis[i]
 		b.WriteString(ch.Id)
 		b.WriteByte(':')
-		b.WriteString(strconv.Itoa(m.mentions[ch.Id]))
+		unread, mentions := m.channelBadges(ch)
+		b.WriteString(strconv.Itoa(mentions))
 		b.WriteByte(':')
-		b.WriteString(strconv.Itoa(m.unread[ch.Id]))
+		b.WriteString(strconv.Itoa(unread))
 		b.WriteByte(':')
 		b.WriteString(m.statuses[m.dmPartnerID(ch)])
 		b.WriteByte(':')

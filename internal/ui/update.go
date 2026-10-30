@@ -709,7 +709,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// the "message deleted" marker shows without waiting for a reopen — and
 		// mirror applyPostDeleted's handling of an open thread sidebar so the two
 		// delete paths (live WS vs offline sweep) render the same.
-		if msg.channelID != m.openChannelID {
+		if !m.openCovers(msg.channelID) {
 			return m, nil
 		}
 		changed, threadChanged := false, false
@@ -757,8 +757,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.userNames[id] = name
 		}
 		// Only mutate the visible posts slice if the gap-fill is for the
-		// channel still open in the pane.
-		if msg.channelID != m.openChannelID {
+		// channel still open in the pane (or a member of the open combined
+		// channel, which reconciles one member per message).
+		if !m.openCovers(msg.channelID) {
 			return m, persistCmd
 		}
 		// Merge the fetched page into the visible slice by create_at,
@@ -809,7 +810,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Backstop for an open the cache could only partly satisfy: the warm
 		// path already reported (and this is then a no-op), but a jump that
 		// found nothing cached is first complete here.
-		m.recordChannelOpened(msg.channelID)
+		m.recordChannelOpened(m.openChannelID)
 		return m, tea.Batch(
 			m.scheduleMarkViewed(msg.channelID),
 			persistCmd,
@@ -1976,7 +1977,7 @@ func markPostDeleted(p *model.Post, at int64) {
 // appended to a hidden transcript and silently marked read. Reopening the
 // channel repaints it from the cache.
 func (m *Model) isCurrentChannel(channelID string) bool {
-	if channelID == "" || m.openChannelID != channelID {
+	if !m.openCovers(channelID) {
 		return false
 	}
 	return !m.onVirtualTab()
@@ -3485,6 +3486,10 @@ func (m Model) handleInputKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if text == "" && len(m.attachments) == 0 {
 			return m, nil
 		}
+		if m.combinedSendBlocked() {
+			m.status = "combined channel is read-only — reply in a thread (enter on a message)"
+			return m, nil
+		}
 		if m.hasUploadingAttachments() {
 			m.status = "waiting for upload…"
 			return m, nil
@@ -4025,7 +4030,7 @@ func (m *Model) paginateMsgsOnWheelTop() tea.Cmd {
 	// it to the post at the viewport top so trimPostWindowTail can shed the now-
 	// offscreen tail and keep renderMessages bounded.
 	m.syncMsgSelToViewport()
-	older := m.loadOlderFromStore(m.posts[0].ChannelId, m.posts[0].CreateAt)
+	older := m.loadOlderFromStore(m.openChannelID, m.posts[0].CreateAt)
 	if n := len(older); n > 0 {
 		m.posts = append(older, m.posts...)
 		m.postIdx += n
@@ -4047,7 +4052,7 @@ func (m *Model) paginateMsgsOnWheelTop() tea.Cmd {
 	}
 	m.loadingOlder = true
 	m.noteScrollWall()
-	return m.fetchOlder(m.openChannelID, oldestID)
+	return m.fetchOlderOpen(oldestID)
 }
 
 // paginateMsgsOnWheelBottom is the downward mirror of paginateMsgsOnWheelTop:
@@ -4071,7 +4076,7 @@ func (m *Model) paginateMsgsOnWheelBottom() tea.Cmd {
 		return nil // not at the bottom of the loaded window
 	}
 	last := m.posts[len(m.posts)-1]
-	newer := m.loadNewerFromStore(last.ChannelId, last.CreateAt)
+	newer := m.loadNewerFromStore(m.openChannelID, last.CreateAt)
 	if len(newer) == 0 {
 		return nil // at the live tail; nothing newer to page in
 	}
@@ -4097,7 +4102,7 @@ func (m *Model) paginateMsgsOnWheelBottom() tea.Cmd {
 		return nil
 	}
 	m.loadingNewer = true
-	return m.fetchNewer(m.openChannelID, newestID)
+	return m.fetchNewerOpen(newestID)
 }
 
 // msgFreeAnchor returns the id of the post at the top of the free-scroll
@@ -4211,8 +4216,8 @@ func (m *Model) anchorSelOnLand(dir int) {
 func (m *Model) selectLastMessage() {
 	if len(m.posts) > 0 {
 		last := m.posts[len(m.posts)-1]
-		if newer := m.loadNewerFromStore(last.ChannelId, last.CreateAt); len(newer) > 0 {
-			if latest := m.loadFromStore(last.ChannelId); len(latest) > 0 {
+		if newer := m.loadNewerFromStore(m.openChannelID, last.CreateAt); len(newer) > 0 {
+			if latest := m.loadFromStore(m.openChannelID); len(latest) > 0 {
 				m.posts = latest
 			}
 		}
@@ -4249,7 +4254,7 @@ func (m *Model) gotoPrevOwnMessage() bool {
 		// chunk and resume scanning from where it was prepended. The trim caps
 		// the window, so a channel the user never posted in costs a bounded
 		// store walk, not unbounded growth.
-		older := m.loadOlderFromStore(m.posts[0].ChannelId, m.posts[0].CreateAt)
+		older := m.loadOlderFromStore(m.openChannelID, m.posts[0].CreateAt)
 		if len(older) == 0 {
 			return false
 		}
@@ -4297,7 +4302,7 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, settle
 		}
 		oldestID := m.posts[0].Id
-		older := m.loadOlderFromStore(m.posts[0].ChannelId, m.posts[0].CreateAt)
+		older := m.loadOlderFromStore(m.openChannelID, m.posts[0].CreateAt)
 		if len(older) > 0 {
 			m.posts = append(older, m.posts...)
 			m.postIdx = len(older) - 1
@@ -4315,7 +4320,7 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// second PostsBefore on top of this keyboard-triggered one.
 		m.loadingOlder = true
 		m.noteScrollWall()
-		return m, tea.Batch(settle, m.fetchOlder(m.openChannelID, oldestID))
+		return m, tea.Batch(settle, m.fetchOlderOpen(oldestID))
 	case key.Matches(msg, m.keys.Down):
 		settle := m.bumpChangeFetch()
 		// Tall selected post with content hidden below: scroll within it
@@ -4335,7 +4340,7 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, settle
 		}
 		last := m.posts[len(m.posts)-1]
-		newer := m.loadNewerFromStore(last.ChannelId, last.CreateAt)
+		newer := m.loadNewerFromStore(m.openChannelID, last.CreateAt)
 		if len(newer) == 0 {
 			// On the channel's newest loaded post with nothing newer in the
 			// cache — the absolute last message. ↓ here drops into the
@@ -4365,7 +4370,7 @@ func (m Model) handleMessagesKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// Mark the fetch in flight so a wheel flick onto the bottom doesn't stack
 		// a second PostsAfter on top of this keyboard-triggered one.
 		m.loadingNewer = true
-		return m, tea.Batch(settle, m.fetchNewer(m.openChannelID, newestID))
+		return m, tea.Batch(settle, m.fetchNewerOpen(newestID))
 	case key.Matches(msg, m.keys.Home):
 		m.postIdx = 0
 		m.renderMessages()

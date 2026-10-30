@@ -793,6 +793,10 @@ type Model struct {
 	// internal/ui/search.go for the implementation.
 	search searchState
 
+	// combined holds the combined channels from config, whose synthetic rows
+	// sit pinned at the top of the DM bucket (see combined.go).
+	combined []*combinedChannel
+
 	// Feed tab state: the combined unread feed (one bubble per unread
 	// channel, across every team + DMs). Activated by U or by selecting
 	// the synthetic "Feed" tab. See internal/ui/feed.go.
@@ -1206,6 +1210,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	showDateSeparators := true
 	showSQL := false
 	feedShowMuted := false
+	var combinedCfg []*combinedChannel
 	mouseEnabled := true
 	attachOnDrop := true
 	imageClick := "preview"
@@ -1273,6 +1278,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		if cfg.FeedShowMuted != nil {
 			feedShowMuted = *cfg.FeedShowMuted
 		}
+		combinedCfg = newCombinedChannels(cfg.CombinedChannels)
 		if cfg.Mouse != nil {
 			mouseEnabled = *cfg.Mouse
 		}
@@ -1498,6 +1504,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		help:                h,
 		search:              newSearchState(st != nil),
 		feed:                newFeedState(feedShowMuted),
+		combined:            combinedCfg,
 		showSQL:             showSQL,
 		sql:                 newSQLState(st != nil),
 		ltClient:            ltClient,
@@ -1798,7 +1805,9 @@ func (m *Model) resyncAfterReconnect() []tea.Cmd {
 			m.fetchChannelMembers(m.me.Id),
 		)
 	}
-	if id := m.openChannelID; id != "" {
+	if id := m.openChannelID; isCombinedID(id) {
+		cmds = append(cmds, m.fetchRecentCombined(id), m.syncCombinedDeletions(id))
+	} else if id != "" {
 		cmds = append(cmds, m.fetchRecent(id))
 		// Snapshot the deletion watermark here on the UI goroutine, before
 		// fetchRecent's persists can push it past a missed deletion — same
@@ -1829,6 +1838,9 @@ func (m Model) fetchChannelMembers(userID string) tea.Cmd {
 func (m Model) markChannelViewed(channelID string) tea.Cmd {
 	if m.me == nil {
 		return nil
+	}
+	if isCombinedID(channelID) {
+		return m.markChannelsViewed(m.combinedMemberIDs(channelID))
 	}
 	userID := m.me.Id
 	return func() tea.Msg {
@@ -1875,6 +1887,9 @@ func (m *Model) liveMarkRead(channelID string) tea.Cmd {
 // counters and its feed bubble. The local half of markChannelViewed — the two
 // go together, or the feed keeps showing what the server now calls read.
 func (m *Model) clearUnread(channelID string) {
+	for _, id := range m.combinedMemberIDs(channelID) {
+		m.clearUnread(id)
+	}
 	delete(m.unread, channelID)
 	delete(m.mentions, channelID)
 	m.removeFeedEntry(channelID)
@@ -1942,7 +1957,8 @@ func (m *Model) applyUnreadFromMembers() {
 		}
 	}
 	for _, mb := range m.members {
-		if mb.ChannelId == current {
+		// A combined channel being read covers its member DMs.
+		if mb.ChannelId == current || (current == m.openChannelID && m.openCovers(mb.ChannelId)) {
 			delete(m.unread, mb.ChannelId)
 			delete(m.mentions, mb.ChannelId)
 			continue
@@ -2577,7 +2593,7 @@ func (m Model) loadFromStore(channelID string) []*model.Post {
 	}
 	// includeDeleted=true so a removed message keeps a persistent tombstone in
 	// the transcript across restarts (renderPostLines paints it).
-	posts, err := m.store.RecentForChannel(channelID, initialRenderLimit, true)
+	posts, err := m.store.RecentForChannels(m.postChannelIDs(channelID), initialRenderLimit, true)
 	if err != nil {
 		return nil
 	}
@@ -2596,7 +2612,7 @@ func (m Model) loadOlderFromStore(channelID string, beforeCreateAt int64) []*mod
 	if m.store == nil || channelID == "" || beforeCreateAt <= 0 {
 		return nil
 	}
-	posts, err := m.store.BeforeInChannel(channelID, beforeCreateAt, olderPageSize, true)
+	posts, err := m.store.BeforeInChannels(m.postChannelIDs(channelID), beforeCreateAt, olderPageSize, true)
 	if err != nil {
 		return nil
 	}
@@ -2611,7 +2627,7 @@ func (m Model) loadNewerFromStore(channelID string, afterCreateAt int64) []*mode
 	if m.store == nil || channelID == "" || afterCreateAt <= 0 {
 		return nil
 	}
-	posts, err := m.store.AfterInChannel(channelID, afterCreateAt, olderPageSize, true)
+	posts, err := m.store.AfterInChannels(m.postChannelIDs(channelID), afterCreateAt, olderPageSize, true)
 	if err != nil {
 		return nil
 	}
@@ -3008,7 +3024,9 @@ func (m *Model) openChannelLoadCmd(channelID, via string) tea.Cmd {
 	// messages — otherwise reopening an already-read channel would draw a stale
 	// divider at the old LastViewedAt. This is the normal-open path; the jump
 	// paths land on a specific post and leave the boundary cleared.
-	if m.unread[channelID] > 0 {
+	if isCombinedID(channelID) {
+		m.unreadBoundary = m.combinedUnreadBoundary(channelID)
+	} else if m.unread[channelID] > 0 {
 		for _, mb := range m.members {
 			if mb.ChannelId == channelID {
 				m.unreadBoundary = mb.LastViewedAt
@@ -3051,12 +3069,24 @@ func (m *Model) openChannelLoadCmd(channelID, via string) tea.Cmd {
 		// while we were away (fetchRecent can't — the API omits deleted posts).
 		// Snapshot the deletion-sync watermark here, before fetchRecent can
 		// persist newer live posts and push it past a missed deletion.
+		if isCombinedID(channelID) {
+			return tea.Batch(draftCmd, m.fetchRecentCombined(channelID), m.syncCombinedDeletions(channelID))
+		}
 		deletionSince, _ := m.store.MaxUpdateAt(channelID)
 		return tea.Batch(draftCmd, m.fetchRecent(channelID), m.syncChannelDeletions(channelID, deletionSince))
 	}
 	m.posts = nil
 	m.status = "loading messages…"
 	m.renderMessages()
+	if isCombinedID(channelID) {
+		if len(m.combinedMemberIDs(channelID)) == 0 {
+			m.status = "no DM with any member of this combined channel"
+			return draftCmd
+		}
+		// Each member's page merges in as it lands (postsGapFilledMsg), so
+		// nothing replaces the others the way postsLoadedMsg would.
+		return tea.Batch(draftCmd, m.fetchRecentCombined(channelID))
+	}
 	return tea.Batch(draftCmd, m.fetchPosts(channelID))
 }
 
@@ -3171,7 +3201,7 @@ func (m *Model) sidebarChannels(unreadOnly bool) []*model.Channel {
 	if unreadOnly {
 		filtered := make([]*model.Channel, 0, len(all))
 		for _, c := range all {
-			if c.Id == m.openChannelID || m.unread[c.Id] > 0 || m.mentions[c.Id] > 0 {
+			if unread, mentions := m.channelBadges(c); c.Id == m.openChannelID || unread > 0 || mentions > 0 {
 				filtered = append(filtered, c)
 			}
 		}
@@ -3403,6 +3433,8 @@ func (m *Model) channelLabel(c *model.Channel) string {
 		return "·group"
 	case model.ChannelTypePrivate:
 		return "🔒" + displayChannel(c)
+	case combinedChannelType:
+		return "⧉" + safeterm.Line(c.DisplayName)
 	default:
 		return "#" + displayChannel(c)
 	}
@@ -3451,7 +3483,7 @@ func (m Model) teamName(teamID string) string {
 func (m Model) channelBreadcrumb(c *model.Channel) string {
 	label := m.channelLabel(c)
 	switch c.Type {
-	case model.ChannelTypeDirect, model.ChannelTypeGroup:
+	case model.ChannelTypeDirect, model.ChannelTypeGroup, combinedChannelType:
 		return "DMs › " + label
 	}
 	if name := m.teamName(c.TeamId); name != "" {
@@ -3476,13 +3508,7 @@ func (m *Model) bucketChannels(chs []*model.Channel) {
 		if k == dmTeamID {
 			// DMs sort by most recently chatted in, newest first;
 			// fall back to label for channels with no posts yet.
-			sort.SliceStable(list, func(i, j int) bool {
-				ai, aj := list[i].LastPostAt, list[j].LastPostAt
-				if ai != aj {
-					return ai > aj
-				}
-				return strings.ToLower(m.channelLabel(list[i])) < strings.ToLower(m.channelLabel(list[j]))
-			})
+			m.sortDMs(list)
 		} else {
 			sort.SliceStable(list, func(i, j int) bool {
 				return strings.ToLower(m.channelLabel(list[i])) < strings.ToLower(m.channelLabel(list[j]))
@@ -3490,6 +3516,7 @@ func (m *Model) bucketChannels(chs []*model.Channel) {
 		}
 		m.channels[k] = list
 	}
+	m.pinCombinedChannels()
 	_, m.hasDMs = m.channels[dmTeamID]
 }
 
@@ -3534,13 +3561,7 @@ func (m *Model) sortDMBucket() {
 	if len(list) < 2 {
 		return
 	}
-	sort.SliceStable(list, func(i, j int) bool {
-		ai, aj := list[i].LastPostAt, list[j].LastPostAt
-		if ai != aj {
-			return ai > aj
-		}
-		return strings.ToLower(m.channelLabel(list[i])) < strings.ToLower(m.channelLabel(list[j]))
-	})
+	m.sortDMs(list)
 }
 
 // touchChannelActivity bumps a channel's LastPostAt to at least ts and, if
