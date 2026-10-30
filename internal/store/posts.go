@@ -959,7 +959,15 @@ func deletePredicate(includeDeleted bool) string {
 // the transcript can render their tombstones; pass false to get live posts
 // only.
 func (s *Store) RecentForChannel(channelID string, limit int, includeDeleted bool) ([]*model.Post, error) {
-	if s == nil || channelID == "" || limit <= 0 {
+	return s.RecentForChannels([]string{channelID}, limit, includeDeleted)
+}
+
+// RecentForChannels is RecentForChannel over several channels at once: the
+// newest limit posts across all of them, merged oldest→newest. Backs the UI's
+// combined channels.
+func (s *Store) RecentForChannels(channelIDs []string, limit int, includeDeleted bool) ([]*model.Post, error) {
+	in, args := channelIn(channelIDs)
+	if s == nil || in == "" || limit <= 0 {
 		return nil, nil
 	}
 	// Two-step sort: pick the newest `limit` by create_at DESC, then
@@ -968,14 +976,35 @@ func (s *Store) RecentForChannel(channelID string, limit int, includeDeleted boo
 SELECT raw_json FROM (
     SELECT rowid, raw_json, create_at
     FROM posts
-    WHERE channel_id = ?` + deletePredicate(includeDeleted) + `
+    WHERE channel_id ` + in + deletePredicate(includeDeleted) + `
     ORDER BY create_at DESC
     LIMIT ?
 ) ORDER BY create_at ASC`
-	rows, err := s.db.Query(q, channelID, limit)
+	rows, err := s.db.Query(q, append(args, limit)...)
 	if err != nil {
 		return nil, fmt.Errorf("query recent: %w", err)
 	}
+	return scanPostRows(rows)
+}
+
+// channelIn renders a `IN (?, …)` predicate over the non-empty ids, with its
+// args. Returns "" when there are none.
+func channelIn(ids []string) (string, []any) {
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		if id != "" {
+			args = append(args, id)
+		}
+	}
+	if len(args) == 0 {
+		return "", nil
+	}
+	return "IN (" + strings.TrimSuffix(strings.Repeat("?,", len(args)), ",") + ")", args
+}
+
+// scanPostRows decodes raw_json rows into posts and closes rows. One bad row
+// shouldn't poison the rest, so undecodable ones are skipped.
+func scanPostRows(rows *sql.Rows) ([]*model.Post, error) {
 	defer rows.Close()
 	var out []*model.Post
 	for rows.Next() {
@@ -985,7 +1014,6 @@ SELECT raw_json FROM (
 		}
 		var p model.Post
 		if err := json.Unmarshal(raw, &p); err != nil {
-			// One bad row shouldn't poison the rest — skip and continue.
 			continue
 		}
 		out = append(out, &p)
@@ -1003,35 +1031,25 @@ SELECT raw_json FROM (
 // message). includeDeleted keeps soft-deleted rows so the transcript can render
 // their tombstones.
 func (s *Store) AfterInChannel(channelID string, afterCreateAt int64, limit int, includeDeleted bool) ([]*model.Post, error) {
-	if s == nil || channelID == "" || limit <= 0 {
+	return s.AfterInChannels([]string{channelID}, afterCreateAt, limit, includeDeleted)
+}
+
+// AfterInChannels is AfterInChannel over several channels, merged by create_at.
+func (s *Store) AfterInChannels(channelIDs []string, afterCreateAt int64, limit int, includeDeleted bool) ([]*model.Post, error) {
+	in, args := channelIn(channelIDs)
+	if s == nil || in == "" || limit <= 0 {
 		return nil, nil
 	}
 	q := `
 SELECT raw_json FROM posts
-WHERE channel_id = ?` + deletePredicate(includeDeleted) + ` AND create_at > ?
+WHERE channel_id ` + in + deletePredicate(includeDeleted) + ` AND create_at > ?
 ORDER BY create_at ASC
 LIMIT ?`
-	rows, err := s.db.Query(q, channelID, afterCreateAt, limit)
+	rows, err := s.db.Query(q, append(args, afterCreateAt, limit)...)
 	if err != nil {
 		return nil, fmt.Errorf("query after: %w", err)
 	}
-	defer rows.Close()
-	var out []*model.Post
-	for rows.Next() {
-		var raw []byte
-		if err := rows.Scan(&raw); err != nil {
-			return nil, fmt.Errorf("scan: %w", err)
-		}
-		var p model.Post
-		if err := json.Unmarshal(raw, &p); err != nil {
-			continue
-		}
-		out = append(out, &p)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows: %w", err)
-	}
-	return out, nil
+	return scanPostRows(rows)
 }
 
 // BeforeInChannel returns up to limit posts in the channel strictly older than
@@ -1040,38 +1058,28 @@ LIMIT ?`
 // rendered. includeDeleted keeps soft-deleted rows so the transcript can render
 // their tombstones; the feed's context lines pass false to stay tombstone-free.
 func (s *Store) BeforeInChannel(channelID string, beforeCreateAt int64, limit int, includeDeleted bool) ([]*model.Post, error) {
-	if s == nil || channelID == "" || limit <= 0 {
+	return s.BeforeInChannels([]string{channelID}, beforeCreateAt, limit, includeDeleted)
+}
+
+// BeforeInChannels is BeforeInChannel over several channels, merged by create_at.
+func (s *Store) BeforeInChannels(channelIDs []string, beforeCreateAt int64, limit int, includeDeleted bool) ([]*model.Post, error) {
+	in, args := channelIn(channelIDs)
+	if s == nil || in == "" || limit <= 0 {
 		return nil, nil
 	}
 	q := `
 SELECT raw_json FROM (
     SELECT raw_json, create_at
     FROM posts
-    WHERE channel_id = ?` + deletePredicate(includeDeleted) + ` AND create_at < ?
+    WHERE channel_id ` + in + deletePredicate(includeDeleted) + ` AND create_at < ?
     ORDER BY create_at DESC
     LIMIT ?
 ) ORDER BY create_at ASC`
-	rows, err := s.db.Query(q, channelID, beforeCreateAt, limit)
+	rows, err := s.db.Query(q, append(args, beforeCreateAt, limit)...)
 	if err != nil {
 		return nil, fmt.Errorf("query before: %w", err)
 	}
-	defer rows.Close()
-	var out []*model.Post
-	for rows.Next() {
-		var raw []byte
-		if err := rows.Scan(&raw); err != nil {
-			return nil, fmt.Errorf("scan: %w", err)
-		}
-		var p model.Post
-		if err := json.Unmarshal(raw, &p); err != nil {
-			continue
-		}
-		out = append(out, &p)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("rows: %w", err)
-	}
-	return out, nil
+	return scanPostRows(rows)
 }
 
 // AuthoredBetween returns up to limit non-deleted posts written by authorID

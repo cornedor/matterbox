@@ -77,6 +77,15 @@ func (m *Model) addAttachments(payloads []clipboardPayload, via string) tea.Cmd 
 		m.status = "no channel open"
 		return nil
 	}
+	if isCombinedID(channelID) {
+		// Only a thread reply can carry files here; it posts to the
+		// message's own DM.
+		if !m.threadOpen {
+			m.status = "combined channel is read-only"
+			return nil
+		}
+		channelID = m.threadChannelID
+	}
 
 	var cmds []tea.Cmd
 	dropped := 0

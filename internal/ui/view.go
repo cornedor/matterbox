@@ -2057,8 +2057,7 @@ func (m *Model) renderChannelsPane(height int) string {
 	rows := []string{header}
 	for i := off; i < len(vis) && len(rows) <= listH; i++ {
 		ch := vis[i]
-		mentionN := m.mentions[ch.Id]
-		unreadN := m.unread[ch.Id]
+		unreadN, mentionN := m.channelBadges(ch)
 		var suffix, badgeText string
 		var badgeStyle lipgloss.Style
 		switch {
@@ -2564,7 +2563,7 @@ func (m *Model) tabsFingerprint(joins []int, unreadCh, mentionCh int) uint64 {
 }
 
 func (m *Model) buildTeamTabs(joins []int, unreadCh, mentionCh int) string {
-	if len(m.teams) == 0 && !m.hasDMs {
+	if len(m.tabTeams()) == 0 && !m.hasDMs {
 		// Reserve the same vertical space so body math stays consistent.
 		blank := strings.Repeat("\n", tabsHeight-1)
 		return footerStyle.Render(" (no teams) ") + blank

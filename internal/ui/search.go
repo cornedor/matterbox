@@ -260,6 +260,8 @@ func (m Model) searchInValue(c *model.Channel) string {
 		return ""
 	case model.ChannelTypeGroup:
 		return c.DisplayName
+	case combinedChannelType:
+		return "" // no server-side channel to scope to
 	default:
 		return c.Name
 	}
