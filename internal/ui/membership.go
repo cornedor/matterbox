@@ -193,7 +193,7 @@ func (m *Model) applyChannelsResynced(msg channelsLoadedMsg) tea.Cmd {
 	// from its whole team — and openChannelID is what routing, the title and
 	// every action read, so it can't be left pointing at a channel that is gone.
 	if m.openChannelID != "" && m.findChannel(m.openChannelID) == nil {
-		cmds = append(cmds, m.landAfterOpenChannelGone(m.channels[m.currentTeamID()], m.channelIdx))
+		cmds = append(cmds, m.landAfterOpenChannelGone(m.tabChannels(m.currentTeamID()), m.channelIdx))
 	}
 	// An already-built feed would otherwise keep showing the pre-resync set.
 	if m.feed.built {

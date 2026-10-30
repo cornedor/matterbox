@@ -1351,6 +1351,8 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if changed {
+			// A newly named DM partner can make a DM a local-team member.
+			m.rebuildLocalTeams()
 			m.renderMessages()
 			m.renderThread()
 			m.renderSearchResults()
@@ -2171,7 +2173,7 @@ func (m *Model) maybeFetchInitialPosts() tea.Cmd {
 // previous session, it is restored first; otherwise the first team with
 // channels is selected. Falls back to DMs if no team channels exist.
 func (m *Model) ensureSelection() {
-	if len(m.teams) == 0 && !m.hasDMs {
+	if len(m.tabTeams()) == 0 && !m.hasDMs {
 		return
 	}
 	m.restoreLastActive()
@@ -2179,7 +2181,7 @@ func (m *Model) ensureSelection() {
 		m.teamIdx = 0
 	}
 	for tries := 0; tries <= m.maxTeamIdx(); tries++ {
-		if len(m.channels[m.currentTeamID()]) > 0 {
+		if len(m.tabChannels(m.currentTeamID())) > 0 {
 			break
 		}
 		m.teamIdx++
@@ -2197,7 +2199,7 @@ func (m *Model) ensureSelection() {
 // maxTeamIdx returns the highest valid teamIdx, accounting for the
 // synthetic DM tab (when present) and the virtual tabs shown this session.
 func (m *Model) maxTeamIdx() int {
-	n := len(m.teams) + m.numVirtualTabs()
+	n := len(m.tabTeams()) + m.numVirtualTabs()
 	if m.hasDMs {
 		n++
 	}
@@ -4833,7 +4835,7 @@ func (m *Model) closeThread() tea.Cmd {
 
 func (m Model) handleTeamsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	max := m.maxTeamIdx()
-	if max == 0 && len(m.teams) == 0 && !m.hasDMs {
+	if max == 0 && len(m.tabTeams()) == 0 && !m.hasDMs {
 		return m, nil
 	}
 	switch {

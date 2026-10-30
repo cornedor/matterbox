@@ -2563,7 +2563,7 @@ func (m *Model) tabsFingerprint(joins []int, unreadCh, mentionCh int) uint64 {
 }
 
 func (m *Model) buildTeamTabs(joins []int, unreadCh, mentionCh int) string {
-	if len(m.teams) == 0 && !m.hasDMs {
+	if len(m.tabTeams()) == 0 && !m.hasDMs {
 		// Reserve the same vertical space so body math stays consistent.
 		blank := strings.Repeat("\n", tabsHeight-1)
 		return footerStyle.Render(" (no teams) ") + blank

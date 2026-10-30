@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -797,6 +798,19 @@ type Model struct {
 	// sit pinned at the top of the DM bucket (see combined.go).
 	combined []*combinedChannel
 
+	// localTeams are the local team tabs from config (see localteam.go).
+	// teamTabs is the team part of the tab strip once any exist: m.teams plus
+	// the local teams, sorted together by team_order. localHome maps a channel
+	// a hiding local team took to that team's id; homeVisible holds the
+	// buckets that lost channels to one, without them; channelAlias is the
+	// local name a local team gives a channel. All rebuilt by
+	// rebuildLocalTeams.
+	localTeams   []*localTeam
+	teamTabs     []*model.Team
+	localHome    map[string]string
+	homeVisible  map[string][]*model.Channel
+	channelAlias map[string]string
+
 	// Feed tab state: the combined unread feed (one bubble per unread
 	// channel, across every team + DMs). Activated by U or by selecting
 	// the synthetic "Feed" tab. See internal/ui/feed.go.
@@ -1211,6 +1225,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 	showSQL := false
 	feedShowMuted := false
 	var combinedCfg []*combinedChannel
+	var localTeamsCfg []*localTeam
 	mouseEnabled := true
 	attachOnDrop := true
 	imageClick := "preview"
@@ -1279,6 +1294,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 			feedShowMuted = *cfg.FeedShowMuted
 		}
 		combinedCfg = newCombinedChannels(cfg.CombinedChannels)
+		localTeamsCfg = newLocalTeams(cfg.LocalTeams)
 		if cfg.Mouse != nil {
 			mouseEnabled = *cfg.Mouse
 		}
@@ -1505,6 +1521,7 @@ func New(client *mm.Client, cfg *config.Config) Model {
 		search:              newSearchState(st != nil),
 		feed:                newFeedState(feedShowMuted),
 		combined:            combinedCfg,
+		localTeams:          localTeamsCfg,
 		showSQL:             showSQL,
 		sql:                 newSQLState(st != nil),
 		ltClient:            ltClient,
@@ -3018,6 +3035,10 @@ func (m *Model) enterChannel(channelID, via string) tea.Cmd {
 }
 
 func (m *Model) openChannelLoadCmd(channelID, via string) tea.Cmd {
+	if strings.HasPrefix(channelID, localDMIDPrefix) {
+		// No DM with this local-team member yet: create it, then open it.
+		return m.openLocalDM(channelID)
+	}
 	draftCmd := m.enterChannel(channelID, via)
 	// Freeze the read/unread boundary for this view, then let renderMessages
 	// resolve it to a concrete post. Only when the channel actually has unread
@@ -3146,8 +3167,8 @@ func (m *Model) tabAt(i int) (kind tabKind, id, name string) {
 		}
 		i--
 	}
-	if i >= 0 && i < len(m.teams) {
-		return tabTeam, m.teams[i].Id, displayTeam(m.teams[i])
+	if teams := m.tabTeams(); i >= 0 && i < len(teams) {
+		return tabTeam, teams[i].Id, displayTeam(teams[i])
 	}
 	return tabTeam, "", ""
 }
@@ -3194,7 +3215,7 @@ func (m *Model) visibleChannels() []*model.Channel {
 // remembered channel from the full bucket even while the sidebar is narrowed,
 // otherwise a team whose remembered channel is read would land nowhere.
 func (m *Model) sidebarChannels(unreadOnly bool) []*model.Channel {
-	all := m.channels[m.currentTeamID()]
+	all := m.tabChannels(m.currentTeamID())
 	if len(m.deactivatedUsers) > 0 {
 		all = m.withoutDeactivatedDMs(all)
 	}
@@ -3272,10 +3293,7 @@ func (m *Model) unreadChannels() []*model.Channel {
 // tab (or the switcher / search) so the messages pane stays in sync with
 // isCurrentChannel.
 func (m *Model) switchToChannelHomeTeam(ch *model.Channel) {
-	targetTeamID := ch.TeamId
-	if ch.Type == model.ChannelTypeDirect || ch.Type == model.ChannelTypeGroup || targetTeamID == "" {
-		targetTeamID = dmTeamID
-	}
+	targetTeamID := m.homeTabOf(ch)
 	for i := 0; i <= m.maxTeamIdx(); i++ {
 		_, id, _ := m.tabAt(i)
 		if id == targetTeamID {
@@ -3283,7 +3301,7 @@ func (m *Model) switchToChannelHomeTeam(ch *model.Channel) {
 			break
 		}
 	}
-	for i, c := range m.channels[targetTeamID] {
+	for i, c := range m.tabChannels(targetTeamID) {
 		if c.Id == ch.Id {
 			m.channelIdx = i
 			m.chanOff = 0
@@ -3336,10 +3354,7 @@ func (m *Model) restoreLastActive() {
 			break
 		}
 	}
-	chList, ok := m.channels[m.lastActiveTeamID]
-	if !ok {
-		return
-	}
+	chList := m.tabChannels(m.lastActiveTeamID)
 	for i, c := range chList {
 		if c.Id == m.lastActiveChannelID {
 			m.channelIdx = i
@@ -3432,12 +3447,23 @@ func (m *Model) channelLabel(c *model.Channel) string {
 		}
 		return "·group"
 	case model.ChannelTypePrivate:
-		return "🔒" + displayChannel(c)
+		return "🔒" + m.channelName(c)
 	case combinedChannelType:
 		return "⧉" + safeterm.Line(c.DisplayName)
+	case localDMType:
+		return localDMLabel(c)
 	default:
-		return "#" + displayChannel(c)
+		return "#" + m.channelName(c)
 	}
+}
+
+// channelName is a team channel's name as shown: the local name a local team
+// gives it, else its display name.
+func (m *Model) channelName(c *model.Channel) string {
+	if a, ok := m.channelAlias[c.Id]; ok {
+		return safeterm.Line(a)
+	}
+	return displayChannel(c)
 }
 
 // channelLabelFX is channelLabel with the name's effect spans marked as
@@ -3446,7 +3472,7 @@ func (m *Model) channelLabel(c *model.Channel) string {
 // only differs from channelLabel for a channel whose display name carries an
 // effects payload; DMs never do (their labels are usernames).
 func (m *Model) channelLabelFX(c *model.Channel) string {
-	if c.Type == model.ChannelTypeDirect || !hasEffectPayload(c.DisplayName) {
+	if _, aliased := m.channelAlias[c.Id]; aliased || c.Type == model.ChannelTypeDirect || !hasEffectPayload(c.DisplayName) {
 		return m.channelLabel(c)
 	}
 	marked := nameEffectSentinels(safeterm.Line(c.DisplayName))
@@ -3518,6 +3544,7 @@ func (m *Model) bucketChannels(chs []*model.Channel) {
 	}
 	m.pinCombinedChannels()
 	_, m.hasDMs = m.channels[dmTeamID]
+	m.rebuildLocalTeams()
 }
 
 // sortTeamBucket re-orders a team's bucket alphabetically by label, matching
@@ -3525,12 +3552,10 @@ func (m *Model) bucketChannels(chs []*model.Channel) {
 // lands in its sorted position rather than at the end of the sidebar.
 func (m *Model) sortTeamBucket(teamID string) {
 	list := m.channels[teamID]
-	if len(list) < 2 {
-		return
-	}
 	sort.SliceStable(list, func(i, j int) bool {
 		return strings.ToLower(m.channelLabel(list[i])) < strings.ToLower(m.channelLabel(list[j]))
 	})
+	m.rebuildLocalTeams()
 }
 
 // adoptChannel takes a channel the user has just gained access to — created it,
@@ -3541,7 +3566,7 @@ func (m *Model) sortTeamBucket(teamID string) {
 func (m *Model) adoptChannel(ch *model.Channel) tea.Cmd {
 	if m.findChannel(ch.Id) == nil {
 		m.channels[ch.TeamId] = append(m.channels[ch.TeamId], ch)
-		m.sortTeamBucket(ch.TeamId)
+		m.sortTeamBucket(ch.TeamId) // rebuilds the local teams too
 	}
 	m.switchToChannelHomeTeam(ch)
 	// A live sidebar filter would otherwise hide the row we just jumped to.
@@ -3558,10 +3583,10 @@ func (m *Model) adoptChannel(ch *model.Channel) tea.Cmd {
 // LastPostAt so the sidebar stays "recently chatted in" within a session.
 func (m *Model) sortDMBucket() {
 	list := m.channels[dmTeamID]
-	if len(list) < 2 {
-		return
+	if len(list) >= 2 {
+		m.sortDMs(list)
 	}
-	m.sortDMs(list)
+	m.rebuildLocalTeams()
 }
 
 // touchChannelActivity bumps a channel's LastPostAt to at least ts and, if
@@ -3600,7 +3625,20 @@ func (m *Model) touchChannelActivity(channelID string, ts int64) {
 // forgiving. The team tabs and the ",1".."9" / [N] shortcuts both follow
 // m.teams order, so this is the single place that defines it.
 func (m *Model) applyTeamOrder() {
-	if len(m.teams) < 2 {
+	m.sortByTeamOrder(m.teams)
+	if len(m.localTeams) > 0 {
+		m.teamTabs = slices.Clone(m.teams)
+		for _, lt := range m.localTeams {
+			m.teamTabs = append(m.teamTabs, lt.team)
+		}
+		m.sortByTeamOrder(m.teamTabs)
+		m.rebuildLocalTeams()
+	}
+}
+
+// sortByTeamOrder sorts teams by team_order (see applyTeamOrder).
+func (m *Model) sortByTeamOrder(teams []*model.Team) {
+	if len(teams) < 2 {
 		return
 	}
 	rank := make(map[string]int, len(m.teamOrder))
@@ -3622,16 +3660,16 @@ func (m *Model) applyTeamOrder() {
 		}
 		return 0, false
 	}
-	sort.SliceStable(m.teams, func(i, j int) bool {
-		ri, oki := teamRank(m.teams[i])
-		rj, okj := teamRank(m.teams[j])
+	sort.SliceStable(teams, func(i, j int) bool {
+		ri, oki := teamRank(teams[i])
+		rj, okj := teamRank(teams[j])
 		if oki != okj {
 			return oki // listed teams sort before unlisted ones
 		}
 		if oki && ri != rj {
 			return ri < rj
 		}
-		return strings.ToLower(displayTeam(m.teams[i])) < strings.ToLower(displayTeam(m.teams[j]))
+		return strings.ToLower(displayTeam(teams[i])) < strings.ToLower(displayTeam(teams[j]))
 	})
 }
 
@@ -3659,15 +3697,16 @@ func (m *Model) moveTeam(dir int) bool {
 	if base < 0 {
 		return false
 	}
+	teams := m.tabTeams()
 	pos := m.teamIdx - base
-	if pos < 0 || pos >= len(m.teams) {
+	if pos < 0 || pos >= len(teams) {
 		return false // active tab is a synthetic tab, not a team
 	}
 	np := pos + dir
-	if np < 0 || np >= len(m.teams) {
+	if np < 0 || np >= len(teams) {
 		return false
 	}
-	m.teams[pos], m.teams[np] = m.teams[np], m.teams[pos]
+	teams[pos], teams[np] = teams[np], teams[pos]
 	m.teamIdx = base + np
 	m.teamOrder = m.currentTeamOrder()
 	return true
@@ -3678,8 +3717,9 @@ func (m *Model) moveTeam(dir int) bool {
 // unique and stable, unlike the display name (which can collide or
 // change); applyTeamOrder still accepts either when reading back.
 func (m *Model) currentTeamOrder() []string {
-	out := make([]string, 0, len(m.teams))
-	for _, t := range m.teams {
+	teams := m.tabTeams()
+	out := make([]string, 0, len(teams))
+	for _, t := range teams {
 		out = append(out, teamKey(t))
 	}
 	return out

@@ -129,6 +129,60 @@
       },
       "default": []
     },
+    "local_teams": {
+      "type": "array",
+      "description": "Local team tabs, sorted among the real teams (team_order names them by name), gathering DMs, group DMs, channels from other teams and combined channels.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Tab name, also the key team_order uses."
+          },
+          "hide": {
+            "type": "boolean",
+            "description": "Take the team's DMs, channels and combined channels out of their usual tab, so opening one (ctrl+p, a permalink) lands in this team.",
+            "default": false
+          },
+          "members": {
+            "type": "array",
+            "description": "Usernames (with or without @) whose DMs, and group DMs with only members, are listed. A member without a DM gets a row that creates it when opened.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "channels": {
+            "type": "array",
+            "description": "Channels from real teams.",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["channel"],
+              "properties": {
+                "channel": {
+                  "type": "string",
+                  "description": "team/channel, by URL names (as in the channel's link)."
+                },
+                "name": {
+                  "type": "string",
+                  "description": "Name to show for the channel instead of its own."
+                }
+              }
+            }
+          },
+          "combined": {
+            "type": "array",
+            "description": "Names of combined_channels to list in this team.",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "default": []
+    },
     "kaomoji_options": {
       "type": "array",
       "description": "Extra entries for the TUI's /kaomoji picker, listed after the built-in set.",

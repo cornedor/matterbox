@@ -279,6 +279,7 @@ func (m *Model) dropChannel(channelID string) tea.Cmd {
 	rest = append(rest, list[:idx]...)
 	rest = append(rest, list[idx+1:]...)
 	m.channels[teamID] = rest
+	m.rebuildLocalTeams()
 
 	delete(m.unread, channelID)
 	delete(m.mentions, channelID)

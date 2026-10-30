@@ -131,6 +131,11 @@ type Config struct {
 	// thread in the message's own DM. Never sent to the server. See
 	// internal/ui/combined.go.
 	CombinedChannels []CombinedChannelConfig `yaml:"combined_channels"`
+	// LocalTeams are local team tabs, sorted among the real teams (team_order
+	// names them by name), that gather DMs, group DMs, channels from other
+	// teams and combined channels. Never sent to the server. See
+	// internal/ui/localteam.go.
+	LocalTeams []LocalTeamConfig `yaml:"local_teams"`
 	// KaomojiOptions are extra entries for the TUI's /kaomoji picker, listed
 	// after the built-in set.
 	KaomojiOptions []string `yaml:"kaomoji_options"`
@@ -821,6 +826,26 @@ type SearchConfig struct {
 	// unless an older message is much more relevant. Lower = stronger recency
 	// bias; raise it to make age matter less. Defaults to 90.
 	RecencyHalfLifeDays float64 `yaml:"recency_half_life_days"`
+}
+
+// LocalTeamConfig is one local team. Members are usernames (with or without a
+// leading @): their DMs, and group DMs with only members, are listed; a member
+// without a DM yet gets a row that creates it when opened. Hide takes the
+// team's DMs, channels and combined channels out of their usual tab, so
+// opening one (ctrl+p, a permalink) lands here instead.
+type LocalTeamConfig struct {
+	Name     string                   `yaml:"name"`
+	Hide     bool                     `yaml:"hide"`
+	Members  []string                 `yaml:"members"`
+	Channels []LocalTeamChannelConfig `yaml:"channels"`
+	Combined []string                 `yaml:"combined"`
+}
+
+// LocalTeamChannelConfig is a channel from a real team, addressed as
+// "team/channel" by URL names, optionally shown under another name.
+type LocalTeamChannelConfig struct {
+	Channel string `yaml:"channel"`
+	Name    string `yaml:"name"`
 }
 
 // CombinedChannelConfig is one combined channel: a sidebar name and the
