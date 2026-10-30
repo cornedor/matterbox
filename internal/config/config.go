@@ -848,11 +848,13 @@ type LocalTeamChannelConfig struct {
 	Name    string `yaml:"name"`
 }
 
-// CombinedChannelConfig is one combined channel: a sidebar name and the
-// usernames (with or without a leading @) whose DMs it merges.
+// CombinedChannelConfig is one combined channel: a sidebar name, the
+// usernames (with or without a leading @) whose DMs it merges, and channels
+// from real teams (team/channel, URL names) it merges too.
 type CombinedChannelConfig struct {
-	Name    string   `yaml:"name"`
-	Members []string `yaml:"members"`
+	Name     string   `yaml:"name"`
+	Members  []string `yaml:"members"`
+	Channels []string `yaml:"channels"`
 }
 
 // SummaryConfig holds the settings for the message-summary command. All

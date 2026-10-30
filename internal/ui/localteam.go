@@ -32,7 +32,8 @@ const localDMIDPrefix = "localdm:"
 const localDMType model.ChannelType = "localdm"
 
 type localTeamChannelRef struct {
-	team, channel, alias string // team and channel lowercased URL names
+	teamChannelRef
+	alias string
 }
 
 type localTeam struct {
@@ -79,11 +80,11 @@ func newLocalTeams(cfgs []config.LocalTeamConfig) []*localTeam {
 			}
 		}
 		for _, ch := range c.Channels {
-			team, channel, ok := strings.Cut(strings.ToLower(strings.TrimSpace(ch.Channel)), "/")
-			if !ok || team == "" || channel == "" {
+			ref, ok := parseTeamChannelRef(ch.Channel)
+			if !ok {
 				continue
 			}
-			lt.channels = append(lt.channels, localTeamChannelRef{team: team, channel: channel, alias: strings.TrimSpace(ch.Name)})
+			lt.channels = append(lt.channels, localTeamChannelRef{teamChannelRef: ref, alias: strings.TrimSpace(ch.Name)})
 		}
 		for _, n := range c.Combined {
 			if n = strings.TrimSpace(n); n != "" {
@@ -140,10 +141,6 @@ func (m *Model) rebuildLocalTeams() {
 	}
 	m.localHome = map[string]string{}
 	m.channelAlias = map[string]string{}
-	teamIDs := map[string]string{}
-	for _, t := range m.teams {
-		teamIDs[strings.ToLower(t.Name)] = t.Id
-	}
 	for _, lt := range m.localTeams {
 		var combined, dms, chans, missing []*model.Channel
 		haveDM := map[string]bool{}
@@ -166,13 +163,10 @@ func (m *Model) rebuildLocalTeams() {
 			}
 		}
 		for _, ref := range lt.channels {
-			for _, c := range m.channels[teamIDs[ref.team]] {
-				if strings.EqualFold(c.Name, ref.channel) {
-					chans = append(chans, c)
-					if ref.alias != "" {
-						m.channelAlias[c.Id] = ref.alias
-					}
-					break
+			if c := m.teamChannel(ref.teamChannelRef); c != nil {
+				chans = append(chans, c)
+				if ref.alias != "" {
+					m.channelAlias[c.Id] = ref.alias
 				}
 			}
 		}

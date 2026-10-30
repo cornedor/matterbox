@@ -133,3 +133,56 @@ func equalStrings(a, b []string) bool {
 	}
 	return true
 }
+
+func TestCombinedTeamChannels(t *testing.T) {
+	m := newTestModel()
+	m.me = &model.User{Id: "me"}
+	m.store = openSeededStore(t,
+		&model.Post{Id: "j1", ChannelId: "dmjira", UserId: "ujira", CreateAt: 100, Message: "jira 1"},
+		&model.Post{Id: "d1", ChannelId: "cdeploy", UserId: "ubot", CreateAt: 200, Message: "deployed"},
+		&model.Post{Id: "g1", ChannelId: "cgeneral", UserId: "ualice", CreateAt: 300, Message: "not merged"},
+	)
+	m.userNames = map[string]string{"ujira": "jira"}
+	m.teams = []*model.Team{{Id: "temico", Name: "emico"}}
+	m.combined = newCombinedChannels([]config.CombinedChannelConfig{
+		{Name: "bots", Members: []string{"jira"}, Channels: []string{"Emico/deploy", "emico/missing", "nonsense"}},
+		{Name: "deploys", Channels: []string{"emico/deploy"}},
+	})
+	m.bucketChannels([]*model.Channel{
+		{Id: "dmjira", Name: "me__ujira", Type: model.ChannelTypeDirect},
+		{Id: "cdeploy", TeamId: "temico", Name: "deploy", Type: model.ChannelTypeOpen},
+		{Id: "cgeneral", TeamId: "temico", Name: "general", Type: model.ChannelTypeOpen},
+	})
+
+	if got := m.combinedMemberIDs(botsID); !equalStrings(got, []string{"dmjira", "cdeploy"}) {
+		t.Fatalf("members = %v, want dmjira + cdeploy (team/channel is case-insensitive)", got)
+	}
+	if got := m.combinedMemberIDs(combinedIDPrefix + "deploys"); !equalStrings(got, []string{"cdeploy"}) {
+		t.Errorf("channels-only members = %v, want cdeploy", got)
+	}
+
+	m.openChannelLoadCmd(botsID, "sidebar_key")
+	var got []string
+	for _, p := range m.posts {
+		got = append(got, p.Id)
+	}
+	if want := []string{"j1", "d1"}; !equalStrings(got, want) {
+		t.Errorf("posts = %v, want %v", got, want)
+	}
+
+	m.unread["cdeploy"], m.unread["cgeneral"] = 4, 2
+	if unread, _ := m.channelBadges(m.findChannel(botsID)); unread != 4 {
+		t.Errorf("unread = %d, want 4 from the team channel", unread)
+	}
+	m.clearUnread(botsID)
+	if m.unread["cdeploy"] != 0 || m.unread["cgeneral"] != 2 {
+		t.Errorf("unread after clear = %v, want only cdeploy cleared", m.unread)
+	}
+
+	// Joining a channel later adds it without a DM-bucket change.
+	m.combined[0].channels = append(m.combined[0].channels, teamChannelRef{team: "emico", channel: "ops"})
+	m.channels["temico"] = append(m.channels["temico"], &model.Channel{Id: "cops", TeamId: "temico", Name: "ops", Type: model.ChannelTypeOpen})
+	if got := m.combinedMemberIDs(botsID); !contains(got, "cops") {
+		t.Errorf("members = %v, want the joined channel cops", got)
+	}
+}
