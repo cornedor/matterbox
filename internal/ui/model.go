@@ -3101,7 +3101,7 @@ func (m *Model) openChannelLoadCmd(channelID, via string) tea.Cmd {
 	m.renderMessages()
 	if isCombinedID(channelID) {
 		if len(m.combinedMemberIDs(channelID)) == 0 {
-			m.status = "no DM with any member of this combined channel"
+			m.status = "no DM or channel of this combined channel found"
 			return draftCmd
 		}
 		// Each member's page merges in as it lands (postsGapFilledMsg), so

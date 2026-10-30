@@ -108,11 +108,11 @@
     },
     "combined_channels": {
       "type": "array",
-      "description": "Local read-only channels pinned to the top of the DMs tab, each merging the DMs with the listed users (e.g. bots) into one timeline. Reading one marks its member DMs read; replies go to a thread in the message's own DM.",
+      "description": "Local read-only channels pinned to the top of the DMs tab, each merging the DMs with the listed users (e.g. bots) and the listed team channels into one timeline. Reading one marks those channels read; replies go to a thread in the message's own channel.",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "members"],
+        "required": ["name"],
         "properties": {
           "name": {
             "type": "string",
@@ -121,6 +121,13 @@
           "members": {
             "type": "array",
             "description": "Usernames (with or without @) whose DMs are merged.",
+            "items": {
+              "type": "string"
+            }
+          },
+          "channels": {
+            "type": "array",
+            "description": "Channels from real teams that are merged, as team/channel (URL names).",
             "items": {
               "type": "string"
             }
