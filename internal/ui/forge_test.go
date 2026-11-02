@@ -486,8 +486,8 @@ func TestInlineBadgeUsesTheOwningForge(t *testing.T) {
 	// Before the fetch lands: a plain, linked reference with no pill.
 	m.changeStatus.sighted(ref, "post-1")
 	plain := m.changeStatus.renderChangeBadge(ref, p)
-	if !strings.Contains(plain, "#7") || strings.Contains(plain, reactionCapLeft) {
-		t.Errorf("pending badge should be a plain #7 link, got %q", plain)
+	if !strings.Contains(plain, "o/r#7") || strings.Contains(plain, reactionCapLeft) {
+		t.Errorf("pending badge should be a plain o/r#7 link, got %q", plain)
 	}
 	// After it lands: a pill carrying the state and the check glyph.
 	m.changeStatus.markReady(ref, samplePR())
@@ -508,6 +508,9 @@ func TestInlineBadgeUsesTheOwningForge(t *testing.T) {
 	glPill := m.changeStatus.renderChangeBadge(glRef, glP)
 	if !strings.Contains(glPill, glP.Icon()) || strings.Contains(glPill, p.Icon()) {
 		t.Errorf("GitLab badge should carry only the GitLab mark, got %q", glPill)
+	}
+	if !strings.Contains(glPill, "g/p!5") {
+		t.Errorf("GitLab badge should name the repo, got %q", glPill)
 	}
 }
 

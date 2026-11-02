@@ -222,8 +222,9 @@ var changeChipBg = reactionChipBg // shared constant from reactions.go
 var changeChipCapStyle = lipgloss.NewStyle().Foreground(changeChipBg)
 
 // renderChangeBadge returns the inline pill for one change request. When the
-// status is not yet available, it returns the plain styled reference ("!42",
-// "#42") with an OSC 8 link. When ready, it renders " #42 open ●" inside a
+// status is not yet available, it returns the plain styled reference
+// ("group/repo!42", "owner/repo#42") with an OSC 8 link. When ready, it renders
+// " owner/repo#42 open ●" inside a
 // powerline-capped pill — the leading glyph is the forge's own mark, so a feed
 // mixing GitLab and GitHub badges says which is which without reading the URL.
 func (s *changeStatusManager) renderChangeBadge(r changeRef, p forge.Provider) string {
@@ -231,7 +232,7 @@ func (s *changeStatusManager) renderChangeBadge(r changeRef, p forge.Provider) s
 	if p != nil {
 		sigil, icon = p.Sigil(), p.Icon()
 	}
-	numStr := sigil + strconv.Itoa(r.number)
+	numStr := r.repo + sigil + strconv.Itoa(r.number)
 	webURL := ""
 	if p != nil {
 		webURL = p.WebURL(r.repo, r.number)
