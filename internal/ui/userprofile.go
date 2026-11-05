@@ -38,12 +38,13 @@ func (m *Model) viewProfileCommand() (switcherCommand, bool) {
 	return switcherCommand{
 		name: "View profile",
 		tid:  "view_profile",
-		desc: "who wrote the selected message: name, presence, position, local time",
+		desc: "who wrote the selected message (or your DM partner): name, presence, position, local time",
 		run:  runViewProfile,
 	}, true
 }
 
-// runViewProfile raises the profile panel for the selected post's author. The
+// runViewProfile raises the profile panel for the selected post's author, or
+// in a 1:1 DM with nothing selected, for the other participant. The
 // author is the post's UserId — for a webhook post that is the bot behind it,
 // not the override_username costume, and the panel says so via the bot rows.
 func runViewProfile(m *Model, _ string) tea.Cmd {
@@ -54,6 +55,10 @@ func runViewProfile(m *Model, _ string) tea.Cmd {
 		if m.infoOpen && m.infoMode == infoModeProfile {
 			m.closeInfo()
 			return nil
+		}
+		// A 1:1 DM has an obvious subject even when empty: the other person.
+		if partner := m.dmPartnerID(m.findChannel(m.openChannelID)); partner != "" {
+			return m.raiseUserProfile(partner)
 		}
 		m.status = "no message selected"
 		return nil
