@@ -186,3 +186,23 @@ func TestCombinedTeamChannels(t *testing.T) {
 		t.Errorf("members = %v, want the joined channel cops", got)
 	}
 }
+
+func TestCombinedHideMembersDropsMemberDMsFromSidebar(t *testing.T) {
+	m := combinedModel(t)
+	m.combined[0].hideMembers = true
+	if got, want := visibleIDs(&m), botsID+",dmalice"; got != want {
+		t.Fatalf("visible = %q, want %q", got, want)
+	}
+	// The open member DM (opened via ctrl+p) stays listed so the cursor lands on it.
+	m.openChannelID = "dmjira"
+	if got := visibleIDs(&m); got != botsID+",dmalice,dmjira" {
+		t.Errorf("visible with dmjira open = %q, want it listed", got)
+	}
+}
+
+func TestCombinedWithoutHideMembersKeepsMemberDMs(t *testing.T) {
+	m := combinedModel(t)
+	if got := visibleIDs(&m); got != botsID+",dmalice,dmjira,dmgitlab" {
+		t.Errorf("visible = %q, want every DM listed", got)
+	}
+}

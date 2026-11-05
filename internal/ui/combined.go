@@ -33,6 +33,8 @@ type combinedChannel struct {
 	ch        *model.Channel
 	usernames map[string]bool  // lowercased, no leading @
 	channels  []teamChannelRef // channels from real teams
+	// hideMembers leaves the members' DMs out of the sidebar (hide_members).
+	hideMembers bool
 	// memberIDs is the resolved set of channel ids, cached against the inputs
 	// it was derived from: the DM bucket's length, the number of known
 	// usernames and the referenced team buckets' total length. Joining or
@@ -107,8 +109,9 @@ func newCombinedChannels(cfgs []config.CombinedChannelConfig) []*combinedChannel
 				DisplayName: name,
 				Type:        combinedChannelType,
 			},
-			usernames: users,
-			channels:  refs,
+			usernames:   users,
+			channels:    refs,
+			hideMembers: c.HideMembers,
 		})
 	}
 	return out
@@ -139,6 +142,12 @@ func (m *Model) combinedMemberIDs(id string) []string {
 	if cc == nil {
 		return nil
 	}
+	return m.resolveCombined(cc)
+}
+
+// resolveCombined returns cc's member channel ids, re-resolving them only when
+// the inputs they were derived from changed.
+func (m *Model) resolveCombined(cc *combinedChannel) []string {
 	dms := m.channels[dmTeamID]
 	teamLen := 0
 	for _, ref := range cc.channels {
@@ -161,6 +170,21 @@ func (m *Model) combinedMemberIDs(id string) []string {
 	}
 	cc.resolvedFor, cc.resolved = key, true
 	return cc.memberIDs
+}
+
+// dmHiddenByCombined reports whether c is a member DM of a combined channel
+// with hide_members: the combined row carries its posts and badges, so the
+// sidebar leaves it out. The open conversation stays listed.
+func (m *Model) dmHiddenByCombined(c *model.Channel) bool {
+	if c.Type != model.ChannelTypeDirect || c.Id == m.openChannelID {
+		return false
+	}
+	for _, cc := range m.combined {
+		if cc.hideMembers && slices.Contains(m.resolveCombined(cc), c.Id) {
+			return true
+		}
+	}
+	return false
 }
 
 // postChannelIDs is the set of real channels whose posts make up the

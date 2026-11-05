@@ -87,13 +87,19 @@ func (m *Model) dmWithDeactivated(c *model.Channel) bool {
 	return id != "" && m.deactivatedUsers[id]
 }
 
-// withoutDeactivatedDMs is the sidebar's filter. It runs on every View, so it
+// sidebarHidesDM reports whether the sidebar leaves DM c out: its account is
+// deactivated, or a combined channel with hide_members covers it.
+func (m *Model) sidebarHidesDM(c *model.Channel) bool {
+	return m.dmWithDeactivated(c) || m.dmHiddenByCombined(c)
+}
+
+// withoutHiddenDMs is the sidebar's filter. It runs on every View, so it
 // scans before it allocates: with nothing to hide (the common case) the input
 // slice is handed straight back.
-func (m *Model) withoutDeactivatedDMs(all []*model.Channel) []*model.Channel {
+func (m *Model) withoutHiddenDMs(all []*model.Channel) []*model.Channel {
 	hit := -1
 	for i, c := range all {
-		if m.dmWithDeactivated(c) {
+		if m.sidebarHidesDM(c) {
 			hit = i
 			break
 		}
@@ -104,7 +110,7 @@ func (m *Model) withoutDeactivatedDMs(all []*model.Channel) []*model.Channel {
 	out := make([]*model.Channel, hit, len(all)-1)
 	copy(out, all[:hit])
 	for _, c := range all[hit+1:] {
-		if !m.dmWithDeactivated(c) {
+		if !m.sidebarHidesDM(c) {
 			out = append(out, c)
 		}
 	}

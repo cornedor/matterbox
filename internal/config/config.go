@@ -850,11 +850,13 @@ type LocalTeamChannelConfig struct {
 
 // CombinedChannelConfig is one combined channel: a sidebar name, the
 // usernames (with or without a leading @) whose DMs it merges, and channels
-// from real teams (team/channel, URL names) it merges too.
+// from real teams (team/channel, URL names) it merges too. HideMembers takes
+// the members' DMs out of the sidebar; ctrl+p still opens them.
 type CombinedChannelConfig struct {
-	Name     string   `yaml:"name"`
-	Members  []string `yaml:"members"`
-	Channels []string `yaml:"channels"`
+	Name        string   `yaml:"name"`
+	Members     []string `yaml:"members"`
+	Channels    []string `yaml:"channels"`
+	HideMembers bool     `yaml:"hide_members"`
 }
 
 // SummaryConfig holds the settings for the message-summary command. All

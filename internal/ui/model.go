@@ -3201,11 +3201,11 @@ func (m *Model) fallbackTeamID() string {
 }
 
 // visibleChannels returns the channels in the current team, filtered: DMs with
-// a deactivated account are dropped (see withoutDeactivatedDMs), the
-// unread-only sidebar (> Sidebar: show unread channels) narrows the list to
-// channels with unread activity plus the open one — which stays put while
-// it's read, so the conversation you're in never vanishes from the list —
-// and the f filter then matches on the label.
+// a deactivated account or hidden by a combined channel are dropped (see
+// withoutHiddenDMs), the unread-only sidebar (> Sidebar: show unread
+// channels) narrows the list to channels with unread activity plus the open
+// one — which stays put while it's read, so the conversation you're in never
+// vanishes from the list — and the f filter then matches on the label.
 func (m *Model) visibleChannels() []*model.Channel {
 	return m.sidebarChannels(m.sidebarUnreadOnly)
 }
@@ -3216,8 +3216,8 @@ func (m *Model) visibleChannels() []*model.Channel {
 // otherwise a team whose remembered channel is read would land nowhere.
 func (m *Model) sidebarChannels(unreadOnly bool) []*model.Channel {
 	all := m.tabChannels(m.currentTeamID())
-	if len(m.deactivatedUsers) > 0 {
-		all = m.withoutDeactivatedDMs(all)
+	if len(m.deactivatedUsers) > 0 || len(m.combined) > 0 {
+		all = m.withoutHiddenDMs(all)
 	}
 	if unreadOnly {
 		filtered := make([]*model.Channel, 0, len(all))
