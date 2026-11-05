@@ -85,8 +85,8 @@ func TestSidebarKeepsGroupDMs(t *testing.T) {
 func TestWithoutDeactivatedDMsReturnsInputWhenNothingHidden(t *testing.T) {
 	m := dmModel("alice", "bob")
 	in := m.channels[dmTeamID]
-	if out := m.withoutDeactivatedDMs(in); &out[0] != &in[0] {
-		t.Fatal("withoutDeactivatedDMs copied the slice with nothing to hide")
+	if out := m.withoutHiddenDMs(in); &out[0] != &in[0] {
+		t.Fatal("withoutHiddenDMs copied the slice with nothing to hide")
 	}
 }
 

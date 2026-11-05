@@ -131,6 +131,11 @@
             "items": {
               "type": "string"
             }
+          },
+          "hide_members": {
+            "type": "boolean",
+            "description": "Take the members' DMs out of the sidebar; ctrl+p still opens them.",
+            "default": false
           }
         }
       },
