@@ -75,6 +75,24 @@ func TestRunViewProfileWithoutSelection(t *testing.T) {
 	}
 }
 
+// In a 1:1 DM with no message selected (an empty DM, or the composer
+// focused), the command falls back to the other participant.
+func TestRunViewProfileDMWithoutSelection(t *testing.T) {
+	m := profileModel()
+	ch := m.channels["t1"][0]
+	ch.Type = model.ChannelTypeDirect
+	ch.Name = "me__other"
+	m.posts = nil
+	m.postIdx = -1
+	if cmd := runViewProfile(&m, ""); cmd == nil {
+		t.Fatal("expected the fetch command")
+	}
+	if !m.infoOpen || m.infoMode != infoModeProfile || m.infoProfileUserID != "other" {
+		t.Fatalf("panel not raised for the DM partner: open=%v mode=%v user=%q",
+			m.infoOpen, m.infoMode, m.infoProfileUserID)
+	}
+}
+
 // The command raises the info panel in profile mode aimed at the author,
 // takes focus, and starts the fetch. A second run for the same user closes it.
 func TestRunViewProfileRaisesPanel(t *testing.T) {
