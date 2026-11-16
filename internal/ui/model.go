@@ -3006,7 +3006,9 @@ func (m *Model) enterChannel(channelID, via string) tea.Cmd {
 	m.openChannelID = channelID
 	// The unread-only sidebar keeps the open channel and drops read ones, so
 	// the rows shift the moment the open channel changes: re-point the cursor.
-	if m.sidebarUnreadOnly {
+	// Hidden DMs (hide_members, deactivated users) shift them too: callers like
+	// switchToChannelHomeTeam index the unfiltered bucket, which still holds them.
+	if m.sidebarUnreadOnly || len(m.deactivatedUsers) > 0 || len(m.combined) > 0 {
 		m.snapSidebarCursorToOpen()
 	}
 	// Drop any unread divider carried over from the previous channel; the paths

@@ -3,6 +3,8 @@ package ui
 import (
 	"testing"
 
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 	"github.com/mattermost/mattermost/server/public/model"
 
 	"matterbox/internal/config"
@@ -204,5 +206,50 @@ func TestCombinedWithoutHideMembersKeepsMemberDMs(t *testing.T) {
 	m := combinedModel(t)
 	if got := visibleIDs(&m); got != botsID+",dmalice,dmjira,dmgitlab" {
 		t.Errorf("visible = %q, want every DM listed", got)
+	}
+}
+
+// pickInSwitcher opens ctrl+p, highlights the row for channel id and presses
+// enter, the way a user jumps to a conversation from the switcher.
+func pickInSwitcher(t *testing.T, m Model, id string) Model {
+	t.Helper()
+	if m.switcher == nil {
+		m.switcher = ptrTo(textinput.New())
+	}
+	out, _ := m.openSwitcher()
+	m = out.(Model)
+	m.switcherIdx = -1
+	for i, r := range m.switcherRows() {
+		if r.ch != nil && r.ch.Id == id {
+			m.switcherIdx = i
+		}
+	}
+	if m.switcherIdx < 0 {
+		t.Fatalf("%s not offered by the switcher", id)
+	}
+	out, _ = m.handleSwitcherKey(keyPress(tea.KeyEnter))
+	return out.(Model)
+}
+
+// Member DMs that hide_members takes out of the sidebar still sit in the DM
+// bucket, so a cursor index computed from the bucket points past them. Jumping
+// to a DM with ctrl+p must put the cursor on that DM's visible row.
+func TestCombinedHideMembersSwitcherCursorFollowsOpenDM(t *testing.T) {
+	m := combinedModel(t)
+	m.combined[0].hideMembers = true
+	m.userNames["ubob"] = "bob"
+	m.bucketChannels([]*model.Channel{
+		{Id: "dmalice", Name: "me__ualice", Type: model.ChannelTypeDirect, LastPostAt: 300},
+		{Id: "dmjira", Name: "me__ujira", Type: model.ChannelTypeDirect, LastPostAt: 200},
+		{Id: "dmgitlab", Name: "ugitlab__me", Type: model.ChannelTypeDirect, LastPostAt: 100},
+		{Id: "gm", Name: "h1", DisplayName: "alice, bob, me", Type: model.ChannelTypeGroup, LastPostAt: 50},
+		{Id: "dmbob", Name: "me__ubob", Type: model.ChannelTypeDirect, LastPostAt: 40},
+	})
+	for _, id := range []string{"gm", "dmbob", "dmjira"} {
+		m = pickInSwitcher(t, m, id)
+		vis := m.visibleChannels()
+		if m.channelIdx < 0 || m.channelIdx >= len(vis) || vis[m.channelIdx].Id != id {
+			t.Errorf("after ctrl+p to %s: cursor %d in %s, want it on %s", id, m.channelIdx, visibleIDs(&m), id)
+		}
 	}
 }
